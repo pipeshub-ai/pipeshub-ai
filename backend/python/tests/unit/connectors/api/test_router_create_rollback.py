@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -182,7 +183,7 @@ def _metadata() -> dict[str, Any]:
 
 @pytest.fixture
 async def kv(monkeypatch: pytest.MonkeyPatch) -> KV:
-    monkeypatch.setenv("SECRET_KEY", "router-create-rollback-test")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_hex(32))  # a hardened install refuses a key under 32 characters
     store = KV()
     await store.create_key("/services/endpoints", {"frontend": {"publicEndpoint": "https://pipeshub.example"}})
     return store
@@ -272,7 +273,9 @@ def _rollback_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]
 # ---- every failure after the instance write leaves no connector, and the retry works
 
 async def test_a_named_app_that_does_not_exist_leaves_no_connector(config: ConfigurationService, graph: Graph) -> None:
+    graph.delete_answer = {"success": False}  # a rollback would fail: there is none, the instance is never written
     _refused(await _create(config, graph, _body(LINK_ONLY, oauthConfigId="no-such-app")), 404)
+    assert graph.created == [] and graph.deleted == []
     assert graph.connectors() == [] and graph.edges == []
     await _retry_succeeds(config, graph, _body(LINK_ONLY))
 
@@ -299,7 +302,8 @@ async def test_an_app_list_read_that_fails_after_the_instance_leaves_no_connecto
 async def test_an_app_name_taken_after_the_check_answers_409_and_leaves_no_connector(
     kv: KV, config: ConfigurationService, graph: Graph,
 ) -> None:
-    other = {**SHARED_APP, "_id": "app-2", "oauthInstanceName": NAME}
+    # A personal connector's app is the caller's own, whose names clash only with the caller's other apps.
+    other = {**SHARED_APP, "_id": "app-2", "oauthInstanceName": NAME, "ownerUserId": USER}
 
     async def another_admin_saves_an_app(key: str, n: int) -> None:
         if key == APPS_PATH and n == 2:
@@ -405,7 +409,7 @@ async def test_a_config_save_that_fails_leaves_an_app_it_updated_as_it_is(
     other_org = {**SHARED_APP, "orgId": "org-2", "config": {"clientId": "c3", "clientSecret": "s3"}}
     await kv.create_key(APPS_PATH, [other_org, same_org, SHARED_APP])
     kv.fail_write = _first_connector_config_write()
-    _refused(await _create(config, graph, _body(oauthConfigId="app-1")), 500, ROLLED_BACK)
+    _refused(await _create(config, graph, _body(oauthConfigId="app-1", scope="team")), 500, ROLLED_BACK)
     assert graph.connectors() == []
     theirs, ours, updated = kv.saved(APPS_PATH)
     assert (theirs, ours) == (other_org, same_org)
@@ -434,7 +438,9 @@ async def test_a_failed_update_of_a_named_app_removes_the_connector_and_writes_n
         kv.fail_write = lambda key, n: key == APPS_PATH and n == 2  # write 1 is the seed, write 2 the update
     else:
         kv.lost_reply = lambda key, n: key == APPS_PATH and n == 2
-    _refused(await _create(config, graph, _body(oauthConfigId="app-1")), 500, "Failed to create/update OAuth configuration")
+    _refused(
+        await _create(config, graph, _body(oauthConfigId="app-1", scope="team")), 500, "Failed to create/update OAuth configuration"
+    )
     assert kv.writes[APPS_PATH] == 2
     assert (kv.saved(APPS_PATH) == [SHARED_APP]) is (update == "refused")  # an applied update stays, as on main
     assert graph.connectors() == []
@@ -512,19 +518,14 @@ async def test_a_same_name_connector_that_passed_the_check_alongside_survives_th
 
 # ---- a rollback that cannot finish stops, logs once and keeps the instance with today's answer
 
-@pytest.mark.parametrize("first_failure", ["app-save", "named-app-missing"])
-async def test_any_failure_whose_rollback_stops_says_the_connector_is_left(
-    kv: KV, config: ConfigurationService, graph: Graph, caplog: pytest.LogCaptureFixture, first_failure: str,
+async def test_a_failure_whose_rollback_stops_says_the_connector_is_left(
+    kv: KV, config: ConfigurationService, graph: Graph, caplog: pytest.LogCaptureFixture,
 ) -> None:
     graph.delete_answer = {"success": False}
-    if first_failure == "app-save":
-        kv.fail_write = lambda key, n: key == APPS_PATH and n == 1
-        body, status_before = _body(), 500
-    else:
-        body, status_before = _body(LINK_ONLY, oauthConfigId="no-such-app"), 404
+    kv.fail_write = lambda key, n: key == APPS_PATH and n == 1
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        answer = _refused(await _create(config, graph, body), 500, FINISH_IT)  # not the bare 500 or 404 of the failure
-    assert isinstance(answer.__cause__, HTTPException) and answer.__cause__.status_code == status_before
+        answer = _refused(await _create(config, graph, _body()), 500, FINISH_IT)  # not the bare 500 of the failure
+    assert isinstance(answer.__cause__, HTTPException) and answer.__cause__.status_code == 500
     assert [c["name"] for c in graph.connectors()] == [NAME]
     (line,) = _rollback_lines(caplog)
     assert line.step == "instance"
@@ -589,16 +590,6 @@ async def test_an_instance_the_graph_does_not_delete_stays_after_its_config_went
     assert (line.step, line.error_class, line.levelno) == ("instance", "unavailable", logging.WARNING)
     assert "graph down" not in caplog.text and "not found" not in caplog.text
 
-
-async def test_an_instance_not_deleted_after_a_404_is_logged_as_the_graph_s_failure_not_the_404(
-    config: ConfigurationService, graph: Graph, caplog: pytest.LogCaptureFixture,
-) -> None:
-    graph.delete_answer = {"success": False, "error": "not found"}
-    with caplog.at_level(logging.DEBUG, logger=LOGGER):
-        _refused(await _create(config, graph, _body(LINK_ONLY, oauthConfigId="no-such-app")), 500, FINISH_IT)
-    (line,) = _rollback_lines(caplog)
-    assert (line.step, line.error_class) == ("instance", "unavailable")
-    assert [c["name"] for c in graph.connectors()] == [NAME]
 
 
 # ---- controls

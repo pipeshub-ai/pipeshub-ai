@@ -1,0 +1,192 @@
+{
+ "format": "pipeshub.harness.cassette/v1",
+ "manifest": {
+  "name": "j02-bob",
+  "source": "scripted",
+  "provider": "scripted",
+  "model": "scripted-model",
+  "accepts_output_limit": false
+ },
+ "interactions": [
+  {
+   "request": {
+    "call": "stream",
+    "digest": "568f0357aa7169648cdb",
+    "message_count": 1,
+    "last_user": "Summarize what changed in project Atlas last week across Slack, Jira and Drive, as a 1-page brief.",
+    "tools": [
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [],
+       "tool_calls": [
+        {
+         "id": "s1",
+         "name": "knowledgegraph__search",
+         "arguments": {
+          "query": "Atlas standup auth migration latency"
+         }
+        },
+        {
+         "id": "s2",
+         "name": "knowledgegraph__search",
+         "arguments": {
+          "query": "Atlas issue priority status owner"
+         }
+        },
+        {
+         "id": "s3",
+         "name": "knowledgegraph__search",
+         "arguments": {
+          "query": "Atlas roadmap general availability board"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "stream",
+    "digest": "65a343565a8e3a1a8a50",
+    "message_count": 5,
+    "last_user": "Summarize what changed in project Atlas last week across Slack, Jira and Drive, as a 1-page brief.",
+    "tools": [
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [],
+       "tool_calls": [
+        {
+         "id": "f1",
+         "name": "knowledgegraph__fetch_record",
+         "arguments": {
+          "record_ids": [
+           "rec-atlas-board-update"
+          ],
+          "reason": "The board update for the brief"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "stream",
+    "digest": "a42949b5b7abe0dbb759",
+    "message_count": 7,
+    "last_user": "Summarize what changed in project Atlas last week across Slack, Jira and Drive, as a 1-page brief.",
+    "tools": [
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "delta": "# Atlas, week of 20 October\n\n- Atlas design doc v3 [source](ref1)\n- Atlas roadmap Q4 2025 [source](ref2)\n- #atlas-sales, 23 October 2025 [source](ref3)"
+    },
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": "# Atlas, week of 20 October\n\n- Atlas design doc v3 [source](ref1)\n- Atlas roadmap Q4 2025 [source](ref2)\n- #atlas-sales, 23 October 2025 [source](ref3)"
+        }
+       ],
+       "tool_calls": null,
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "end_turn",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  }
+ ]
+}

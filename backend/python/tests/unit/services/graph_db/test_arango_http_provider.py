@@ -11426,7 +11426,7 @@ class TestValidateFolderCreation:
         result = await connected_provider._validate_folder_creation("kb1", "u1")
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_permission_check_falls_back_to_id_when_kb_name_unavailable(self, connected_provider):
@@ -11935,15 +11935,14 @@ class TestValidateFolderForUpload:
         connected_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_returns_404_with_names(self, connected_provider):
-        """Folder that exists globally but not in this KB: 404 with KB/folder names."""
+    async def test_folder_not_in_kb_names_the_kb_not_the_folder(self, connected_provider):
+        """Folder that exists but not in this KB: 404 naming the KB, not the folder."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
-        connected_provider._fetch_record_name = AsyncMock(return_value="Reports")
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="other-kb-folder", user_id="u1", org_id="org1"
@@ -11951,20 +11950,21 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "other-kb-folder" in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "Reports" in result["reason"]
+        assert "other-kb-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base 'Docs KB' (kb1). "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_falls_back_to_ids_when_names_unavailable(self, connected_provider):
-        """When name lookups return None the reason falls back to bare IDs."""
+    async def test_folder_not_in_kb_falls_back_to_the_kb_id_when_its_name_is_unavailable(self, connected_provider):
+        """With no KB name, the KB id stands in; the folder id the client sent is not quoted."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value=None)
-        connected_provider._fetch_record_name = AsyncMock(return_value=None)
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="ghost-folder", user_id="u1", org_id="org1"
@@ -11972,8 +11972,11 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "ghost-folder" in result["reason"]
-        assert "kb1" in result["reason"]
+        assert "ghost-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base kb1. "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_with_no_access_message(self, connected_provider):
@@ -11990,7 +11993,7 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_reader_role_returns_403_with_role_in_message(self, connected_provider):

@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -87,7 +88,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Airtable toolset
-@ToolsetBuilder("Airtable")\
+@ToolsetBuilder("Airtable", provider=ToolProvider.CONNECTOR)\
     .in_group("Database")\
     .with_description("Airtable integration for database and record management")\
     .with_category(ToolsetCategory.APP)\
@@ -209,7 +210,7 @@ class Airtable:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_records(
         self,
@@ -266,7 +267,7 @@ class Airtable:
                 description="Record ID (starts with 'rec')"
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_record(
         self,
@@ -326,7 +327,7 @@ class Airtable:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_records(
         self,
@@ -389,7 +390,7 @@ class Airtable:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_records(
         self,
@@ -447,7 +448,7 @@ class Airtable:
                 description="Comma-separated record IDs (e.g. rec1,rec2)"
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_records(
         self,
@@ -504,7 +505,7 @@ class Airtable:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_records(
         self,

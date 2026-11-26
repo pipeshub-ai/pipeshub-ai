@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/usage.recorded.schema.json",
+  "title": "UsageRecordedEvent",
+  "description": "Token and cost usage (also recorded for discarded old-fence streams).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "usage.recorded"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/UsageRecordedData"
+    }
+  },
+  "$defs": {
+    "UsageRecordedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "costUsd"
+      ],
+      "properties": {
+        "tokens": {
+          "$ref": "../common.schema.json#/$defs/Usage"
+        },
+        "costUsd": {
+          "$ref": "../common.schema.json#/$defs/Usd"
+        },
+        "route": {
+          "$ref": "../common.schema.json#/$defs/ModelRef"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "usage.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000,
+          "cacheWriteTokens": 0
+        },
+        "costUsd": 0.0123,
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

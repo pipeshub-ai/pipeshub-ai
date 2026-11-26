@@ -14,6 +14,9 @@ type AgentConversationsListApiResponse = {
 };
 import type {
   AgentDetail,
+  AgentVersionDetail,
+  AgentVersionPublished,
+  AgentVersionsList,
   AgentsListApiResponse,
   AgentsListPagination,
   AgentsListParams,
@@ -21,6 +24,10 @@ import type {
   AgentToolsListRow,
   AgentConversationDetailApiResponse,
   AgentConversationsListResult,
+  AgentHarnessRun,
+  AgentRunControlReceipt,
+  AgentRunAdmission,
+  AgentRunAdmissionInput,
   CreateAgentApiResponse,
   FetchAgentConversationResult,
   GetAgentApiResponse,
@@ -34,8 +41,34 @@ import type {
 } from './types';
 import type { AgentFormPayload } from './agent-builder/types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import type { CatalogPage } from './agent-builder/hooks/paged-catalog';
 
 const AGENTS_BASE_URL = '/api/v1/agents';
+
+/** How a save of an existing agent treats its versions (OWD-14). */
+export interface AgentSaveOptions {
+  /** False keeps the edit a draft; omitted, the save publishes the next version. */
+  publish?: boolean;
+  /** What changed, kept on the version the save publishes. */
+  versionNote?: string;
+}
+
+/**
+ * The edit was saved, but publishing it failed: it stays a draft that can be published from the
+ * versions. `agent` is the saved draft as it reads back.
+ */
+export class AgentPublishIncompleteError extends Error {
+  constructor(
+    message: string,
+    readonly agent: AgentDetail | null,
+  ) {
+    super(message);
+    this.name = 'AgentPublishIncompleteError';
+  }
+}
+
+const versionsUrl = (agentKey: string) => `${AGENTS_BASE_URL}/${encodeURIComponent(agentKey)}/versions`;
+const noteBody = (note?: string) => (note && note.trim() ? { note: note.trim() } : {});
 
 const KB_PAGE_MAX = 100;
 
@@ -45,6 +78,17 @@ const KB_PAGE_MAX = 100;
  */
 const DEFAULT_AGENT_ARCHIVES_AGENT_LIMIT = 5;
 const WEB_SEARCH_TOOL_FULL_NAME = 'web_search.search';
+
+function durableSessionUrl(agentId: string, sessionId: string): string {
+  return `${AGENTS_BASE_URL}/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(sessionId)}`;
+}
+
+function responseStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return undefined;
+  const response = error.response;
+  if (typeof response !== 'object' || response === null || !('status' in response)) return undefined;
+  return typeof response.status === 'number' ? response.status : undefined;
+}
 
 /** Stable slug for `tool-*` node types; flow reconstruction matches on `full_name` first. */
 function catalogToolIdFromFullName(fullName: string): string {
@@ -502,6 +546,78 @@ async function requestAgent(agentKey: string, quiet: boolean): Promise<GetAgentR
 }
 
 export const AgentsApi = {
+  async createAgentSessionRun(
+    agentId: string,
+    input: AgentRunAdmissionInput,
+  ): Promise<AgentRunAdmission> {
+    const { data } = await apiClient.post<{ admission: AgentRunAdmission }>(
+      `${AGENTS_BASE_URL}/${encodeURIComponent(agentId)}/runs`,
+      input,
+    );
+    return data.admission;
+  },
+
+  async submitAgentSessionRun(
+    agentId: string,
+    sessionId: string,
+    input: AgentRunAdmissionInput,
+  ): Promise<AgentRunAdmission> {
+    const { data } = await apiClient.post<{ admission: AgentRunAdmission }>(
+      `${durableSessionUrl(agentId, sessionId)}/runs`,
+      input,
+    );
+    return data.admission;
+  },
+
+  async getAgentRun(
+    agentId: string,
+    sessionId: string,
+    runId: string,
+  ): Promise<AgentHarnessRun> {
+    const { data } = await apiClient.get<{ run: AgentHarnessRun }>(
+      `${durableSessionUrl(agentId, sessionId)}/runs/${encodeURIComponent(runId)}`,
+    );
+    return data.run;
+  },
+
+  async controlAgentRun(
+    agentId: string,
+    sessionId: string,
+    runId: string,
+    action: 'cancel' | 'resume',
+    input: { expectedRevision: number; idempotencyKey: string },
+  ): Promise<AgentRunControlReceipt> {
+    const { data } = await apiClient.post<{ receipt: AgentRunControlReceipt }>(
+      `${durableSessionUrl(agentId, sessionId)}/runs/${encodeURIComponent(runId)}/${action}`,
+      input,
+    );
+    return data.receipt;
+  },
+
+  /** Cancel using the latest server revision; safe for UI Stop after progress commits. */
+  async cancelCurrentAgentRun(
+    agentId: string,
+    sessionId: string,
+    runId: string,
+  ): Promise<AgentRunControlReceipt | null> {
+    // Progress/checkpoint commits can advance the revision between GET and
+    // cancel. Retry only that explicit optimistic-concurrency conflict; other
+    // failures retain their original semantics and are surfaced to the UI.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await this.getAgentRun(agentId, sessionId, runId);
+      if (['completed', 'failed', 'cancelled'].includes(current.status)) return null;
+      try {
+        return await this.controlAgentRun(agentId, sessionId, runId, 'cancel', {
+          expectedRevision: current.revision,
+          idempotencyKey: `cancel-${runId}-${Date.now()}-${attempt}`,
+        });
+      } catch (error) {
+        if (responseStatus(error) !== 409 || attempt === 2) throw error;
+      }
+    }
+    return null;
+  },
+
   async getAgents(
     params?: AgentsListParams,
     options?: { suppressErrorToast?: boolean },
@@ -760,8 +876,20 @@ export const AgentsApi = {
    * PUT /api/v1/agents/:agentKey
    * Some deployments return only `{ status, message }` on success; we then GET the agent.
    */
-  async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
-    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
+  async updateAgent(
+    agentKey: string,
+    payload: Partial<AgentFormPayload>,
+    options?: AgentSaveOptions,
+  ): Promise<AgentDetail> {
+    const body: Partial<AgentFormPayload> & AgentSaveOptions = { ...payload };
+    if (options?.publish === false) body.publish = false;
+    if (options?.versionNote?.trim()) body.versionNote = options.versionNote.trim();
+    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, body);
+
+    if (data?.status === 'partial_success') {
+      const { agent } = await this.getAgent(agentKey);
+      throw new AgentPublishIncompleteError(typeof data.message === 'string' ? data.message : '', agent);
+    }
 
     revalidateSwrNamespace(SWR_NS.agentLists);
     forgetPendingAgent(agentKey);
@@ -781,6 +909,44 @@ export const AgentsApi = {
     throw new Error(msg || 'Update agent failed');
   },
 
+  /** GET /api/v1/agents/:agentKey/versions — every published version, newest first, and whether the draft differs. */
+  async listAgentVersions(agentKey: string, options?: { quiet?: boolean }): Promise<AgentVersionsList> {
+    const { data } = await apiClient.get<AgentVersionsList>(
+      versionsUrl(agentKey),
+      options?.quiet ? { suppressErrorToast: true } : undefined,
+    );
+    return {
+      versions: Array.isArray(data?.versions) ? data.versions : [],
+      latestVersion: data?.latestVersion ?? 0,
+      latestDigest: data?.latestDigest ?? '',
+      unpublishedChanges: Boolean(data?.unpublishedChanges),
+    };
+  },
+
+  /** GET /api/v1/agents/:agentKey/versions/:version — one version with the definition it froze. */
+  async getAgentVersion(agentKey: string, version: number): Promise<AgentVersionDetail> {
+    const { data } = await apiClient.get<{ version: AgentVersionDetail }>(`${versionsUrl(agentKey)}/${version}`);
+    return data.version;
+  },
+
+  /** POST /api/v1/agents/:agentKey/versions — publish the saved draft as the next version. */
+  async publishAgentVersion(agentKey: string, note?: string): Promise<AgentVersionPublished> {
+    const { data } = await apiClient.post<AgentVersionPublished>(versionsUrl(agentKey), noteBody(note));
+    return data;
+  },
+
+  /**
+   * POST /api/v1/agents/:agentKey/versions/:version/rollback — reset the draft to `version`, discarding unpublished
+   * changes, and publish it as the next version.
+   */
+  async rollbackAgentVersion(agentKey: string, version: number, note?: string): Promise<AgentVersionPublished> {
+    const { data } = await apiClient.post<AgentVersionPublished>(
+      `${versionsUrl(agentKey)}/${version}/rollback`,
+      noteBody(note),
+    );
+    return data;
+  },
+
   /** DELETE /api/v1/agents/:agentKey */
   async deleteAgent(agentKey: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
@@ -790,28 +956,43 @@ export const AgentsApi = {
     writeSwrKey<GetAgentResult>(agentDetailKey(agentKey), { agent: null, toolFullNames: [] });
   },
 
-  /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */
-  async getKnowledgeBasesForBuilder(params?: { page?: number; limit?: number }): Promise<KnowledgeBasesForBuilderResult> {
+  /** GET /api/v1/knowledgeBase/ — one page of collections for the agent builder (limit 1–100 per request). */
+  async getKnowledgeBasesForBuilder(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<KnowledgeBasesForBuilderResult> {
     const limit = Math.min(Math.max(params?.limit ?? KB_PAGE_MAX, 1), KB_PAGE_MAX);
     const page = Math.max(params?.page ?? 1, 1);
     const { data } = await apiClient.get<KnowledgeBaseListApiResponse>('/api/v1/knowledgeBase/', {
-      params: { page, limit },
+      params: { page, limit, ...(params?.search ? { search: params.search } : {}) },
     });
-    return { knowledgeBases: data?.knowledgeBases ?? [] };
+    const knowledgeBases = data?.knowledgeBases ?? [];
+    return {
+      knowledgeBases,
+      // An older server sends no pagination: a full page may have more.
+      hasNext: data?.pagination ? Boolean(data.pagination.hasNext) : knowledgeBases.length >= limit,
+      total: typeof data?.pagination?.totalCount === 'number' ? data.pagination.totalCount : null,
+    };
   },
 
-  /** Paginate KB list until exhausted (each page obeys API max limit of 100). */
-  async getAllKnowledgeBasesForBuilder(): Promise<KnowledgeBasesForBuilderResult> {
-    const all: KnowledgeBaseForBuilder[] = [];
-    let page = 1;
-    for (;;) {
-      const { knowledgeBases } = await this.getKnowledgeBasesForBuilder({ page, limit: KB_PAGE_MAX });
-      all.push(...knowledgeBases);
-      if (knowledgeBases.length < KB_PAGE_MAX) break;
-      page += 1;
-      if (page > 500) break;
-    }
-    return { knowledgeBases: all };
+  /** The builder's collections catalog, a page at a time (R30-LAT-FU-1); the cursor is the page number. */
+  async knowledgeBasePage(page: number | null, query: string): Promise<CatalogPage<KnowledgeBaseForBuilder, number>> {
+    const at = page ?? 1;
+    const { knowledgeBases, hasNext, total } = await AgentsApi.getKnowledgeBasesForBuilder({ page: at, search: query });
+    return { items: knowledgeBases, next: hasNext ? at + 1 : null, total };
+  },
+
+  /** The builder's connected apps catalog (knowledge-hub root apps), a page at a time by the server's cursor. */
+  async knowledgeHubAppPage(cursor: string | null, query: string): Promise<CatalogPage<KnowledgeHubAppNode, string>> {
+    const { nodes, nextCursor } = await AgentsApi.getKnowledgeHubAppNodes({
+      cursor,
+      limit: KB_PAGE_MAX,
+      flattened: false,
+      ...(query ? { q: query } : {}),
+    });
+    // A server answering the cursor it was given would page forever: that is the end.
+    return { items: nodes, next: nextCursor && nextCursor !== cursor ? nextCursor : null };
   },
 
   /**
@@ -850,32 +1031,6 @@ export const AgentsApi = {
       nodes: items,
       nextCursor: data?.pagination?.nextCursor ?? null,
     };
-  },
-
-  /**
-   * Paginate through all knowledge-hub root nodes.
-   * Used by the agent builder to populate the apps palette.
-   */
-  async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {
-    const all: KnowledgeHubAppNode[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | null = null;
-    for (;;) {
-      // Pass flattened=false to get only root connector apps, not all nested documents
-      const { nodes, nextCursor } = await this.getKnowledgeHubAppNodes({
-        cursor,
-        limit: 100,
-        flattened: false,
-      });
-      all.push(...nodes);
-      // The absent cursor is the end of the result, so no page cap is needed.
-      // The repeat guard only defends against a server echoing a cursor back
-      // instead of advancing, which would otherwise spin forever.
-      if (!nextCursor || seenCursors.has(nextCursor)) break;
-      seenCursors.add(nextCursor);
-      cursor = nextCursor;
-    }
-    return all;
   },
 };
 

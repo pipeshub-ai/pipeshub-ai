@@ -1,0 +1,48 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"message":"SSE connection established"}}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Build me the sales report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Build me the sales report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-5", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Build me the sales report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-5", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-ask", "toolCallName": "internaltools__ask_user_question", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-ask", "delta": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}", "runId": "uuid-1", "argsSummary": "Ask User Question \u2014 user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]", "argsPreview": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "internaltools__ask_user_question", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Build me the sales report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "ask_user_question", "value": {"status": "success", "toolData": {"name": "ask_user_question", "userIntent": "The user wants a report but did not say which region.", "questions": [{"uuid": "uuid-4", "question": "Which region should the report cover?", "options": [{"id": "opt_north_america", "label": "North America", "isUserInput": false}, {"id": "opt_europe", "label": "Europe", "isUserInput": false}, {"id": "opt_asia_pacific", "label": "Asia Pacific", "isUserInput": false}, {"id": "opt_enter_a_region", "label": "Enter a region", "isUserInput": true}], "multiSelect": false}], "expiresAt": "<timestamp>"}}, "runId": "uuid-1"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-ask", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-ask", "content": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"uuid-4\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Build me the sales report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "answer": "", "citations": [], "status": "waiting_input", "succeeded_tool_names": ["internaltools__ask_user_question"], "failed_tool_names": [], "parts": [{"type": "text", "content": "", "runId": "uuid-1", "isFinal": true}, {"type": "tool_call", "toolCallId": "call-ask", "toolName": "internaltools__ask_user_question", "args": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}", "status": "completed", "runId": "uuid-1", "argsSummary": "Ask User Question \u2014 user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]", "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"uuid-4\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}", "resultSummary": "Completed successfully"}]}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"Earlier chat","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"quick"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-4","sharedWith":[],"conversationErrors":[],"activeRunId":"node-uuid-1","createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"","contentFormat":"MARKDOWN","citations":[],"followUpQuestions":[],"modelInfo":{"chatMode":"quick"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"tools":[{"toolName":"ask_user_question","toolResult":{"name":"ask_user_question","userIntent":"The user wants a report but did not say which region.","questions":[{"uuid":"uuid-4","question":"Which region should the report cover?","options":[{"id":"opt_north_america","label":"North America","isUserInput":false},{"id":"opt_europe","label":"Europe","isUserInput":false},{"id":"opt_asia_pacific","label":"Asia Pacific","isUserInput":false},{"id":"opt_enter_a_region","label":"Enter a region","isUserInput":true}],"multiSelect":false}],"expiresAt":"<timestamp>"}}],"parts":[{"type":"text","content":"","runId":"uuid-1","isFinal":true},{"type":"tool_call","toolCallId":"call-ask","toolName":"internaltools__ask_user_question","args":"{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}","status":"completed","runId":"uuid-1","argsSummary":"Ask User Question — user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]","resultPreview":"{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"uuid-4\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}","resultSummary":"Completed successfully"}],"_id":"oid-5","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"reasoning":[]}]},"recordsUsed":0,"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>","recordsUsed":0}}}
+

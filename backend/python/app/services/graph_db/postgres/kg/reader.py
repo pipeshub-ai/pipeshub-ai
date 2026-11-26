@@ -85,6 +85,22 @@ async def load_edges(tx: Tx, org: str, keys: set[Key]) -> tuple[list[GEdge], lis
     return to, frm
 
 
+# A record's isOfType edges to 'files' and what the knowledge-base listing reads of each file (kg.proj_doc; NULL when the file node is gone: kg.proj_doc is not strict, and
+# of a NULL document it gives an empty one, a file that says nothing), one seek of the edges' key per record.
+FILES = """/* pipeshub:kg.read_files */ SELECT e.from_id, e.to_id, CASE WHEN f.id IS NOT NULL THEN kg.proj_doc('files', f.doc) END AS doc FROM graph.edges e
+    LEFT JOIN graph.nodes f ON f.org_id = e.org_id AND f.coll = 'files' AND f.id = e.to_id
+    WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_coll = 'records' AND e.to_coll = 'files' AND e.from_id = ANY($2::text[])"""
+
+
+async def load_files(tx: Tx, org: str, keys: set[Key]) -> dict[Key, list[dict | None]]:
+    """The isOfType targets in 'files' of the records among ``keys``, by the file's id."""
+    ids = sorted(k[1] for k in keys if k[0] == "records" and len(k[1]) <= MAX_ID)
+    out: dict[Key, list[tuple[str, dict | None]]] = {}
+    for r in (await tx.fetch(FILES, org, ids)) if ids else []:
+        out.setdefault(("records", r["from_id"]), []).append((r["to_id"], None if r["doc"] is None else _doc(r["doc"])))
+    return {k: [d for _, d in sorted(v, key=lambda x: x[0])] for k, v in out.items()}
+
+
 async def load_sks(tx: Tx, org: str, keys: set[Key]) -> dict[Key, int]:
     """The sk of keys that already have one."""
     keys = {k for k in keys if k[0] in COLL_CODE}
@@ -201,4 +217,4 @@ async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_childre
     sk = await allocate(existing)
     sk.update(await load_sks(tx, org, (focus | ends) - set(sk)))      # keys of nodes that are gone stay (never deleted)
     kids = await (load_known_children(tx, org, set(nodes), focus, nodes, edges_to, sk) if known_children else load_has_children(tx, org, set(nodes)))
-    return Snapshot(nodes, edges_to, edges_from, sk, kids, org)
+    return Snapshot(nodes, edges_to, edges_from, sk, kids, org, await load_files(tx, org, focus))

@@ -41,7 +41,8 @@ async def _run_stream(conv_id: str, *, disconnect: bool) -> asyncio.Future:
     with (
         patch(
             "app.modules.agents.qna.chat_state.build_initial_state",
-            return_value={"org_id": "o", "user_id": "u", "query": "hi"},
+            # As build_initial_state fills it from the request: the run discards by the context's conversation id.
+            return_value={"org_id": "o", "user_id": "u", "query": "hi", "conversation_id": conv_id},
         ),
         patch("app.utils.connector_instances.fetch_user_connector_instances", new=AsyncMock(return_value=[])),
         patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
@@ -131,7 +132,8 @@ async def test_a_disconnect_with_a_full_queue_still_tears_the_run_down(monkeypat
     with (
         patch(
             "app.modules.agents.qna.chat_state.build_initial_state",
-            return_value={"org_id": "o", "user_id": "u", "query": "hi"},
+            # As build_initial_state fills it from the request: the run discards by the context's conversation id.
+            return_value={"org_id": "o", "user_id": "u", "query": "hi", "conversation_id": "conv-full"},
         ),
         patch("app.utils.connector_instances.fetch_user_connector_instances", new=AsyncMock(return_value=[])),
         patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),

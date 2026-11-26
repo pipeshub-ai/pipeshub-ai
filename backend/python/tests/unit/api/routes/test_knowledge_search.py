@@ -596,23 +596,20 @@ async def test_grep_drops_apps_the_caller_cannot_reach_and_searches_nothing_if_n
 
 # ---- one bounded request ------------------------------------------------------
 async def test_grep_with_a_catastrophic_regex_returns_within_the_budget_and_says_it_is_incomplete() -> None:
-    """End to end with the real line matcher. Only a loose backstop on the wall clock (5 times the budget); what makes it stop in time and
-    keeps the event loop free is asserted structurally by the three tests after it."""
-    import time
-
+    """End to end with the real line matcher: the answer says the time limit cut it. What makes it stop in time and
+    keeps the event loop free is asserted structurally by the three tests after it; without the deadline this
+    pattern does not finish before the test's timeout."""
     line = ",".join(f"v{j}" for j in range(60))
     retrieval = _retrieval()
     retrieval.blob_store.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [
         {"index": 0, "data": "\n".join([line] * 400)},
     ]}})
-    start = time.monotonic()
     with patch.object(ks, "run_pattern_match_with_llm_grep", _fake_grep), \
          patch.object(ks, "check_pattern_match_eligible", AsyncMock(return_value=True)), \
          patch.object(ks, "resolve_frontend_url", AsyncMock(return_value=None)):
         response = await ks.grep(
             _request(), ks.GrepQuery(pattern=r"(?:.*?,){40}x|v0_0", regex=True, timeBudgetMs=1000), retrieval, _graph(True),
         )
-    assert time.monotonic() - start < 5.0
     out = json.loads(response.body)
     assert out["coverage"]["complete"] is False and "time limit" in out["coverage"]["note"]
 

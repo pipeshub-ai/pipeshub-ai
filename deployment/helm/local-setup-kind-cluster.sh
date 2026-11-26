@@ -48,7 +48,9 @@ if ! command -v kind >/dev/null 2>&1; then
       exit 1
     fi
   else
-    curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+    curl -fsSLo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+    echo "513a7213d6d3332dd9ef27c24dab35e5ef10a04fa27274fe1c14d8a246493ded  ./kind" | sha256sum -c - \
+      || { rm -f ./kind; echo "Error: kind failed its pinned checksum; nothing was installed."; exit 1; }
     chmod +x ./kind
     sudo mv ./kind /usr/local/bin/kind
   fi
@@ -65,7 +67,9 @@ if ! command -v kubectl >/dev/null 2>&1; then
       exit 1
     fi
   else
-    curl -Lo kubectl https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl
+    curl -fsSLo kubectl https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl
+    echo "4717660fd1466ec72d59000bb1d9f5cdc91fac31d491043ca62b34398e0799ce  kubectl" | sha256sum -c - \
+      || { rm -f kubectl; echo "Error: kubectl failed its pinned checksum; nothing was installed."; exit 1; }
     chmod +x kubectl
     sudo mv kubectl /usr/local/bin/
   fi

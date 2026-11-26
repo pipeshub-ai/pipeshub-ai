@@ -478,6 +478,21 @@ class TestSync:
         assert (permission.entity_type, permission.email, permission.external_id) == (
             EntityType.USER, "owner@example.com", "u1")
 
+    async def test_a_failed_creator_lookup_keeps_the_database_grants(self) -> None:
+        connector = ready_connector(scope=ConnectorScope.PERSONAL.value, created_by="u1")
+        tx_store = MagicMock()
+        tx_store.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=tx_store)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        connector.data_store_provider.transaction = MagicMock(return_value=transaction)
+
+        await connector._sync_databases([SnowflakeDatabase("DB")])
+
+        # None keeps the stored grants; [] would remove the creator's.
+        ((group, grants),) = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert (group.external_group_id, grants) == ("DB", None)
+
 
 # ---------------------------------------------------------------------------
 # Column records and profiling

@@ -7,6 +7,9 @@ Production-ready Helm chart for deploying PipesHub-AI with optional enterprise f
 - Kubernetes 1.24+
 - Helm 3.11+
 - (Optional) External Secrets Operator for `secretManagement.externalSecrets`
+- An open-file limit of at least 64000 for containers on the nodes that run the data stores. Kubernetes has no
+  per-pod setting: a container gets the limit of the node's container runtime (`LimitNOFILE` of containerd's
+  systemd unit). See [Open-file limits](#open-file-limits).
 
 ## Configuration presets
 
@@ -16,9 +19,9 @@ your own values file layered on top).
 
 | Preset | File | Use for | Footprint |
 |--------|------|---------|-----------|
-| Local  | `values-local.yaml` | kind, minikube, k3d, k3s, Docker Desktop | 1× app, 1× Mongo/Kafka/Redis/Qdrant/Neo4j, RWO storage |
+| Local  | `values-local.yaml` | kind, minikube, k3d, k3s, Docker Desktop | 1× app, single-node Mongo replica set, 1× Kafka/Redis/Qdrant/Neo4j, RWO storage |
 | AWS EKS | `values-eks.yaml` | Amazon EKS. No NFS. One command: `deployment/helm/aws/deploy.sh --domain HOST --region REGION`. Guide: [docs/deployment/aws-eks.md](../../../docs/deployment/aws-eks.md) | gp3 per database, MongoDB ×3, Redis master+replica, Qdrant ×3, Neo4j ×1 |
-| Cloud HA | `values-cloud.yaml` | GKE, AKS, any cluster that already has RWX storage | 2× app + HPA, Bitnami Mongo, Kafka. Not for EKS |
+| Cloud HA | `values-cloud.yaml` | GKE, AKS, any cluster that already has RWX storage | 2× app + HPA, Bitnami Mongo ×3 data members (no arbiter), Kafka. Not for EKS |
 
 Both files document the required `--set` overrides at the top.
 
@@ -44,6 +47,7 @@ helm dependency build ./deployment/helm/pipeshub-ai
 helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --namespace pipeshub-local --create-namespace \
   -f ./deployment/helm/pipeshub-ai/values-local.yaml \
+  --set hardened=true \
   --set secretKey="$(openssl rand -hex 32)" \
   --set mongodb.auth.rootPassword="change-me" \
   --set redis.auth.password="change-me" \
@@ -107,6 +111,7 @@ Query (8000), indexing (8091), embedding (8002), and docling (8081) run inside t
 helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --namespace pipeshub --create-namespace \
   -f ./deployment/helm/pipeshub-ai/values-cloud.yaml \
+  --set hardened=true \
   --set global.storageClass=<block-class> \
   --set persistence.storageClass=<rwx-class> \
   --set ingress.className=<alb|gce|nginx> \
@@ -156,6 +161,84 @@ Provider-specific values for the storage classes:
 
 The chart **refuses to install** when `replicaCount > 1` and persistence is not
 `ReadWriteMany` — to avoid silently leaving replicas stuck on `Multi-Attach`.
+
+## MongoDB topology
+
+Every preset runs MongoDB as a replica set, so multi-document transactions work
+and `REPLICA_SET_AVAILABLE` is `true`. The chart derives both that flag and the
+`replicaSet=` parameter of `MONGO_URI` from `mongodb.architecture`.
+
+| Preset | Members | `MONGO_URI` write concern | Durable agent runs |
+|--------|---------|---------------------------|--------------------|
+| Local | 1 data member, oplog 1 GB | `w=majority` | on |
+| Cloud HA, AWS EKS | 3 data members, no arbiter (PSS) | `w=majority` | on |
+| Chart defaults (`values.yaml`) | 2 data members + arbiter (PSA) | server default (`w:1` with an arbiter) | off: Node's journal probe refuses an arbiter (`GET /api/v1/health` → `agentHarness.reason: arbiter`) |
+
+`w=majority` is only rendered for arbiter-free sets: with an arbiter, one data
+member down stalls every majority write. Prefer PSS for anything that must not
+lose acknowledged writes on failover.
+
+### Upgrading a release that runs an arbiter (Cloud HA)
+
+`values-cloud.yaml` no longer deploys an arbiter. Helm removes the arbiter
+StatefulSet on upgrade, but the replica-set config still lists it. Remove it
+once the upgrade is done:
+
+```bash
+kubectl exec -n <ns> <release>-mongodb-0 -- mongosh -u root -p "$MONGO_ROOT_PASSWORD" \
+  --authenticationDatabase admin --eval \
+  'rs.remove("<release>-mongodb-arbiter-0.<release>-mongodb-arbiter-headless.<ns>.svc.cluster.local:27017")'
+```
+
+### Standalone MongoDB to a replica set
+
+Releases installed from the old standalone `values-local.yaml` keep their data
+in a PVC named `<release>-mongodb`. Switching that release to a replica set
+would make Helm delete the PVC, so the upgrade stops with one of:
+
+- `PVC <release>-mongodb holds data from a standalone MongoDB ...` (this chart)
+- `PASSWORDS ERROR: ... "mongodb-replica-set-key"` (Bitnami: an upgrade must be given the key)
+
+To stay standalone, add `--set mongodb.architecture=standalone` (durable agent
+runs stay unavailable). To convert, move the data across:
+
+```bash
+NS=<ns>; REL=<release>; PW=<mongodb.auth.rootPassword>
+# 1. Back up (this file is your restore point).
+kubectl exec -n $NS deploy/$REL-mongodb -- mongodump --quiet --archive --gzip \
+  -u root -p "$PW" --authenticationDatabase admin > pipeshub-mongo.archive.gz
+# 2. Remove the standalone Deployment and its PVC.
+kubectl delete -n $NS deployment $REL-mongodb
+kubectl delete -n $NS pvc $REL-mongodb
+# 3. Upgrade once with a replica-set key; later upgrades read it from the secret.
+helm upgrade $REL . -n $NS -f values-local.yaml <your usual --set flags> \
+  --set mongodb.auth.replicaSetKey="$(openssl rand -hex 32)"
+# 4. Restore into the new primary, then restart the app.
+kubectl wait -n $NS --for=condition=Ready pod/$REL-mongodb-0 --timeout=300s
+kubectl exec -i -n $NS $REL-mongodb-0 -c mongodb -- mongorestore --quiet --archive --gzip --drop \
+  -u root -p "$PW" --authenticationDatabase admin < pipeshub-mongo.archive.gz
+kubectl rollout restart -n $NS deployment/$REL-pipeshub-ai
+```
+
+## Open-file limits
+
+mongod and Qdrant keep the open-file limit they are started with. Where containerd runs with systemd's defaults
+that is 1024 soft (and 524288 hard), and mongod at 1024 stops accepting connections and then crashes once its
+collections, indexes and client connections pass it. The chart's own MongoDB (`mongodb.builtin`) and Qdrant
+containers raise their soft limit before the server starts, to `mongodb.builtin.openFiles` (64000) and
+`qdrant.openFiles` (50000); that needs no privilege while the node's hard limit is at least that high. When it is
+lower the container says so on stderr (`open files: the hard limit is ...`) and starts on the hard limit: raise
+`LimitNOFILE` of the node's container runtime.
+
+The other stores raise their own soft limit to the hard one at startup (Redis to what `maxclients` needs, the
+JVM for Neo4j, Kafka and ZooKeeper, arangod, etcd), so they need only the node's hard limit.
+
+The Bitnami MongoDB subchart (`mongodb.enabled`, the default) is vendored unchanged and does not raise the
+limit: its mongod runs on the node's soft limit. Check what a pod really has, for any store:
+
+```bash
+kubectl exec <pod> -- sh -c 'grep "open files" /proc/1/limits'
+```
 
 ## Redis: standalone, self-hosted cluster, or AWS MemoryDB
 
@@ -324,7 +407,8 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 
 ## Coding sandbox
 
-`config.sandboxMode` picks where `run_code` executes: `docker` (default),
+`config.sandboxMode` picks where `run_code` executes: `broker` (the default with `hardened=true`), `docker` (the default
+otherwise),
 `e2b` (off-cluster), or `local` (no isolation, development only, needs
 `config.sandboxAllowLocal=true`). `docker` needs a daemon, and the chart
 refuses to install without one:
@@ -521,6 +605,9 @@ carry the label `pipeshub.ai/workload: parsing`.
 | `parsing.healthCheck.*` | see `values.yaml` | probes on `/health` |
 | `parsing.terminationGracePeriodSeconds` | `120` | time for an in-flight parse to finish |
 | `parsing.extraEnv`, `parsing.podAnnotations`, `parsing.podLabels` | empty | extras |
+| `parsing.networkPolicy.extraIngress` | empty | with network policy on (`networkPolicy.enabled` or `hardened`), extra ingress rules; the pods' own policy admits the app pods on `parsing.port` and lets them reach DNS, the key-value store and `networkPolicy.appExternalEgress` |
+
+The parsing pods share the app pods' environment (`pipeshub-ai.appEnv`), so they also mount the root key file (`secretKeyAsFile`) and, with etcd, its client certificate. Node and the agent harness do not run there; their settings are set on the app pods only.
 
 ## High-Value Features
 
@@ -531,14 +618,58 @@ carry the label `pipeshub.ai/workload: parsing`.
 - Optional PDB, NetworkPolicy
 - Product telemetry switch: `telemetry.collection.enabled: false` sets `TELEMETRY_COLLECTION_FLAG=false`
 
+## Security profile: `hardened`
+
+`hardened` (default `false`) picks the defaults that would break a release upgraded from a chart without them
+(ADR-OPS-07). The chart never guesses whether a render is an install or an upgrade (`helm template` in GitOps cannot
+tell), so:
+
+- **New install:** pass `--set hardened=true`.
+- **Upgrade of an existing release:** leave it unset. Nothing below changes until you set it; NOTES says which
+  profile the release runs on every `helm upgrade`.
+
+| Value (unset follows `hardened`) | `hardened=false` (compatibility) | `hardened=true` |
+|---|---|---|
+| `networkPolicy.enabled`, `networkPolicy.namespaceDefaultDeny` | no NetworkPolicy, as before ADR-OPS-04 | default-deny plus one allow per component pair |
+| `securityContext.readOnlyRootFilesystem` (app, sandbox broker) | `false` | `true` |
+| `config.sandboxMode` | `docker` (app-pod DinD behind the policy proxy) | `broker` (a separate sandbox-broker pod) |
+| `kafka.auth.enabled` | PLAINTEXT listeners, no login in the app | SCRAM-SHA-512 on both listeners (SEC-D-06) |
+| `mongodb.builtin.nonRoot` | the entrypoint starts as root and drops to `mongodb` | `mongodb` (999) from the start, restricted container |
+| `qdrant.podSecurityContext` / `securityContext` (empty) | the `-unprivileged` image run as root, so files an earlier root-running image wrote stay writable | uid 1000, non-root, restricted container |
+| `PIPESHUB_HARDENED` in the app | `false`: the services' compatibility profile | `true`: the hardened profile |
+
+An explicit value for any row wins over `hardened`. Before you turn on `hardened` for an existing release: Qdrant's
+volume must be writable by uid 1000 (`fsGroupChangePolicy: OnRootMismatch` hands over only a volume whose root is not
+yet group 1000), turning on Kafka's login restarts the brokers one by one onto SASL, and the network policy needs a
+CNI that enforces it and the right `networkPolicy.ingressControllers`. What changes in the services is in
+[HARNESS-OFF.md](../../../docs/agent-harness-v2/guides/HARNESS-OFF.md), "Security profile".
+
+Unchanged by the profile: the image tag. Empty `image.tag` renders the chart's `appVersion`, where the chart before
+rendered `latest`; a chart upgrade then moves to that release's image, which is what upgrading the chart means.
+
+## Agent harness
+
+The agent harness (Beta) runs by default: `agentHarness.enabled: true` (it renders `AGENT_HARNESS_WORKER_ENABLED`
+and `AGENT_HARNESS_RELAY_ENABLED`) starts the relay, worker and gateways, idle until an org admin turns on Agent
+harness in Labs, which is off by default. `--set agentHarness.enabled=false` runs none of them and serves no harness
+route, Labs flag or screen. What the switch covers, and the platform
+changes every install gets whatever it says (network policy, non-root stores, store credentials):
+[HARNESS-OFF.md](../../../docs/agent-harness-v2/guides/HARNESS-OFF.md).
+
 ## Metrics
 
-The chart serves the indexing governor's Prometheus metrics (a fixed set of series with closed labels: no pid, pod, org or record label, at most 300 series) when `metrics.enabled` is true (the default). Each pod publishes `/metrics` on the container port named `metrics` (`metrics.port`, default `9091`, plain HTTP, no authentication). `metrics.bind` is the address it listens on: `podIP` (the default) binds the pod's own address through the downward API, `0.0.0.0` listens on every interface, and any other IP address is used as given. The chart sets `PIPESHUB_METRICS_ENABLED`, `PIPESHUB_METRICS_PORT` and `PIPESHUB_METRICS_BIND` from these values.
+`metrics.enabled` (the default) turns on two per-pod Prometheus endpoints, each on a container port of its own. Scrape the pods (Prometheus' `kubernetes_sd_configs` role `pod`, or a ServiceMonitor or PodMonitor of your own), never the Service's address: that answers from a different replica each time, so with two replicas a counter or gauge alternates between them.
+
+The chart serves the indexing governor's Prometheus metrics (a fixed set of series with closed labels: no pid, pod, org or record label, at most 300 series). Each pod publishes `/metrics` on the container port named `metrics` (`metrics.port`, default `9091`, plain HTTP, no authentication). `metrics.bind` is the address it listens on: `podIP` (the default) binds the pod's own address through the downward API, `0.0.0.0` listens on every interface, and any other IP address is used as given. The chart sets `PIPESHUB_METRICS_ENABLED`, `PIPESHUB_METRICS_PORT` and `PIPESHUB_METRICS_BIND` from these values.
 
 - Point your Prometheus at the container port named `metrics` of the application pods (path `/metrics`; the pods carry the label `app.kubernetes.io/component: main`).
 - The chart no longer renders the application `PodMonitor`. If your release had `metrics.podMonitor.enabled`, the upgrade deletes it: create your own `PodMonitor`, or an equivalent scrape configuration, before you upgrade, or scraping stops. The Redis subchart still renders its own `PodMonitor` when `redis.metrics.enabled` and `redis.metrics.podMonitor.enabled` are both true, so keep the PodMonitor CRD installed in that case.
 - With `networkPolicy.enabled: true`, add an ingress rule that lets your Prometheus reach the `metrics` port.
 - Product telemetry is separate: the services push it to the collector (see `telemetry.collection.enabled`), and the exporter never touches it.
+
+Node serves its event-loop utilization on the container port named `node-metrics` (`metrics.node.port`, default `9090`) at `/metrics`, the signal `autoscaling.eventLoopUtilization` scales on. The Service lists that port too, for a ServiceMonitor (which scrapes the Service's endpoints one by one), and each pod carries `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path` annotations naming it; an annotation names one port, so scrape the governor's `metrics` port by its name. The earlier `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
+
+**Agent harness metrics.** Node's merged harness route (its own counters such as `pipeshub_auth_attempts_total`, the gateways', the sandbox broker's and the run store's gauges; the alert rules in `deployment/monitoring/prometheus/agent-harness.rules.yml`) listens only on the pod's loopback (`config.agentHarnessInternalPort`) and takes a scrape credential Node rotates, so no Prometheus outside the pod can read it. Set `metrics.harness.enabled=true` and `metrics.harness.remoteWrite.url` (a Prometheus started with `--web.enable-remote-write-receiver`, or any remote-write receiver): each pod then runs a Prometheus agent that scrapes its own Node with the credential Node writes to a memory-backed volume only the two containers share, and remote-writes every series with `pod` and `namespace` labels. Replicas are separate series: the rules add counters with `sum` and read gauges with `max`, which is right for both per-pod and shared series (the sandbox broker and the run store appear once per pod). With NetworkPolicy on and an in-cluster receiver, list it in `metrics.harness.remoteWrite.peers` (and `remoteWrite.port`); `remoteWrite.bearerTokenSecret` names a Secret key for a receiver that wants a token. Design: ADR-OPS-05.
 
 ## Validation
 
@@ -572,8 +703,15 @@ SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 
 ## Production Checklist
 
-- Set all passwords, `secretKey` and `qdrant.apiKey` securely
+- Set all passwords, `secretKey` and `qdrant.apiKey` securely. The app reads `secretKey` from a file in a Secret
+  volume (`secretKeyAsFile: true`, the default; ADR-KEY-02 D8), so it is not in the pod's environment
+- Running an app image other than this chart's own: set `image.capabilities` to its `ai.pipeshub.capabilities` label
+  (`docker image inspect <image> --format '{{ index .Config.Labels "ai.pipeshub.capabilities" }}'`), or `none` for an
+  image older than the label. The chart then renders only what that image runs: without `secret-key-file` the key is
+  an environment variable, without `sandbox-broker` code runs on `docker` (and `config.sandboxMode=broker` is
+  refused), and without `agent-harness` the harness is off
 - Configure ingress/TLS
 - Enable `podDisruptionBudget` for HA
-- Enable `networkPolicy` with cluster-specific rules
+- Set `hardened=true` (new installs), which turns `networkPolicy` on (ADR-OPS-04); keep it on, on a CNI that enforces it, and set `networkPolicy.ingressControllers`, `clusterCidrs` and, for a KV store outside the cluster, `networkPolicy.sandboxBroker.extraEgress`
+- Check the open-file limit the MongoDB pods run with (see Open-file limits); 64000 is what mongod asks for
 - Validate upgrade path in non-production first

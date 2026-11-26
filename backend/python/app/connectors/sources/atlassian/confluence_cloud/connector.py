@@ -53,6 +53,12 @@ from app.connectors.core.base.error.stream_errors import (
     not_found_at_source,
     to_stream_error,
 )
+from app.connectors.core.base.source_metadata import (
+    ContentMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -131,7 +137,6 @@ from app.models.blocks import (
     Block,
     BlockComment,
     BlockGroup,
-    BlockGroupChildren,
     BlocksContainer,
     BlockSubType,
     BlockType,
@@ -667,6 +672,8 @@ class ConfluenceConnector(BaseConnector):
                 name=str(self.connector_name),
                 logger=self.logger,
             )
+            # Every call still spends the org's shared Atlassian budget (WP-38), not only this process's pace.
+            policy.shared = declared.shared if declared else None
             self._client_policies[rate] = policy
         self._client_policy = policy
         return policy
@@ -684,6 +691,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Build client from services (handles config loading, token, base URL internally)
             self.external_client = await self._build_confluence_client()
+            self.pace_http_client(self.external_client.get_client())
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
@@ -930,6 +938,7 @@ class ConfluenceConnector(BaseConnector):
         self._in_use += 1
         self._sync_finished = False
         self._now_blocks = {}
+        self._content_reader().new_sync()
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -2334,6 +2343,12 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         webpage_record = webpage_record_update.record
+                        listed_space = (item_data.get("space") or {}).get("id")
+                        fields = await self._content_reader().fields_for(
+                            datasource, content_type, str(item_id),
+                            str(listed_space) if listed_space else None, held_metadata(existing_record),
+                        )
+                        apply_source_metadata(webpage_record, existing_record, fields)
 
                         # Set indexing status based on filter
                         if not content_indexing_enabled:
@@ -5426,6 +5441,14 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform attachment: {e}")
             return None
 
+    def _content_reader(self) -> ContentMetadata:
+        """The sync's source metadata reads, made on first use."""
+        reader = getattr(self, "_content_metadata", None)
+        if reader is None:
+            reader = source_metadata().confluence_metadata(self.logger)
+            self._content_metadata = reader
+        return reader
+
     async def _process_webpage_with_update(
         self,
         data: dict[str, Any],
@@ -7204,35 +7227,7 @@ class ConfluenceConnector(BaseConnector):
         ConfluenceBlockParser.sync_table_row_links(blocks, block_groups)
         ConfluenceBlockParser.sync_nested_table_group_links(block_groups)
 
-        # Build children references for block groups
-        blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
-        block_children_map: dict[int, list[int]] = defaultdict(list)
-
-        for bg in block_groups:
-            if bg.parent_index is not None:
-                blockgroup_children_map[bg.parent_index].append(bg.index)
-
-        for b in blocks:
-            if b.parent_index is not None:
-                block_children_map[b.parent_index].append(b.index)
-
-        # Populate children arrays
-        for bg in block_groups:
-            child_block_indices = []
-            child_bg_indices = []
-
-            if bg.index in blockgroup_children_map:
-                child_bg_indices = sorted(blockgroup_children_map[bg.index])
-
-            if bg.index in block_children_map:
-                child_block_indices = sorted(block_children_map[bg.index])
-
-            # Only update if we have children and group doesn't already have children set
-            if (child_block_indices or child_bg_indices) and not bg.children:
-                bg.children = BlockGroupChildren.from_indices(
-                    block_indices=child_block_indices,
-                    block_group_indices=child_bg_indices
-                )
+        ConfluenceBlockParser.rebuild_group_children(blocks, block_groups)
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 

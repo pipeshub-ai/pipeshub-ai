@@ -157,6 +157,7 @@ def test_small_wait_is_not_affected_by_large_files_in_flight(
     _report(f"classes/{budget_kind}", quiet, loaded)
     # The gate: ten large files in flight add no more than a few scheduling quanta to a small file's wait.
     assert loaded <= quiet + 0.15, (quiet, loaded)
+    # wall-clock-ok: a quarter of a large file's hold; the regression it guards waits the whole hold
     assert loaded < LARGE_HOLD_S / 4
 
 
@@ -189,6 +190,7 @@ def test_small_wait_holds_when_the_large_files_arrive_without_a_size(
     )
     _report(f"classes/{budget_kind}/unsized-large", quiet, loaded)
     assert loaded <= quiet + 0.15, (quiet, loaded)
+    # wall-clock-ok: a quarter of a large file's hold; the regression it guards waits the whole hold
     assert loaded < LARGE_HOLD_S / 4
 
 

@@ -41,7 +41,7 @@ envfile() { # major image
     echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
     echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
-    echo "PG_BACKUP_RETRY_SECS=10"
+    echo "PG_BACKUP_RETRY_SECS=10"; echo "PG_ROLES_RECOVERY_WAIT_SECS=7200"
     # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
     # 18: the default named volume. Both are new, as on a first start.
     if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
@@ -57,6 +57,21 @@ stack_env() {
 }
 dc() { $DOCKER compose "$@"; }
 healthy() { for _ in $(seq 1 "${2:-150}"); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-$1-1" 2>/dev/null)" = healthy ] && return 0; sleep 2; done; return 1; }
+# Until the stack's server accepts writes (recovery over, promoted), at most $1 seconds. It stops at once when the container is not
+# running or has restarted: a recovery that cannot reach its target shuts the server down and restart: always starts it again, so the
+# container only ever restarts (and docker exec refuses it). On failure, the container's state and log.
+writable() {
+  local c="$proj-postgres-1" st="" restarts
+  restarts="$($DOCKER inspect -f '{{.RestartCount}}' "$c" 2>/dev/null)" || restarts=""
+  for _ in $(seq 1 "$1"); do
+    st="$($DOCKER inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null)" || st=""
+    [ "$st" = "running $restarts" ] || break
+    [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && return 0
+    sleep 1
+  done
+  echo "FAIL $major: the server does not accept writes (status and restart count '${st:-no container}', ${restarts:-?} restarts before); its log:"
+  $DOCKER logs --tail 30 "$c" 2>&1; fail=1; return 1
+}
 sql() { $DOCKER exec -i "$proj-postgres-1" psql -X -v ON_ERROR_STOP=1 -U postgres -d pipeshub -tAq "$@"; }
 copy_sql() { $DOCKER exec -i "$1" psql -X -v ON_ERROR_STOP=1 -h /tmp -U postgres -d pipeshub -tAq -c "$2"; }
 # one line per schema that holds tables: schema, tables, rows, checksum of every row of every table in it
@@ -123,6 +138,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc up -d --no-build postgres > "$work/up.log" 2>&1 || { echo "FAIL $major: compose up failed:"; cat "$work/up.log"; fail=1; continue; }
   healthy postgres || { echo "FAIL $major: postgres did not become healthy"; dc logs postgres | tail -20; fail=1; continue; }
   check "$major: archiving is on" "$(sql -c 'show archive_mode')" on
+  check "$major: the role setup's recovery wait from .env reaches the server" "$($DOCKER exec "$proj-postgres-1" printenv PG_ROLES_RECOVERY_WAIT_SECS)" 7200
   t0=$(now); seed; echo "info $major: seeded $rows rows per schema in $(secs "$t0" "$(now)")s, database $(sql -c "select pg_size_pretty(pg_database_size('pipeshub'))")"
 
   # the service's first run: stanza, check, then a full backup because there is none
@@ -191,10 +207,21 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc stop > /dev/null 2>&1
   t0=$(now)
   scripts/pg-restore.sh "$target" --in-place > "$work/restore.log" 2>&1 || { echo "FAIL $major: in-place restore:"; tail -20 "$work/restore.log"; fail=1; }
+  check "$major: the reachability check ran on a reachable target" "$(grep -c 'without checking\|cannot be reached' "$work/restore.log")" 0
+  # the container is the same as before, and its log holds every earlier start: a stop during an earlier start's role setup (as the
+  # refusal above can be) logs "role setup failed" there, so only this start's lines count
+  started="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   dc up -d --no-build postgres > /dev/null 2>&1
-  for _ in $(seq 1 600); do [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 1; done
-  echo "info $major: in-place restore to T, server accepting writes: $(secs "$t0" "$(now)")s"
-  check "$major: in-place restore to T: rows and checksums per schema equal those at T" "$(sql -c "$checksums")" "$at_t"
+  if writable 600; then
+    echo "info $major: in-place restore to T, server accepting writes: $(secs "$t0" "$(now)")s"
+    check "$major: in-place restore to T: rows and checksums per schema equal those at T" "$(sql -c "$checksums")" "$at_t"
+    healthy postgres || { echo "FAIL $major: postgres is not healthy after the in-place restore"; fail=1; }
+    # role setup waits for the end of recovery instead of writing into the read-only server
+    $DOCKER logs --since "$started" "$proj-postgres-1" > "$work/pg-inplace.log" 2>&1
+    n="$(grep -c 'read-only transaction\|role setup failed' "$work/pg-inplace.log" || true)"
+    check "$major: role setup logs no failure during recovery" "$n" 0
+    [ "$n" = 0 ] || grep -B3 'read-only transaction\|role setup failed' "$work/pg-inplace.log" | sed "s/^/info $major: postgres log: /"
+  fi
   dc up -d --no-build pg-backup > /dev/null 2>&1
   check "$major: archiving and backups go on after an in-place restore" \
     "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && dc exec -T pg-backup pgbackrest backup --type=incr >> "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
@@ -209,11 +236,16 @@ for major in ${DRILL_MAJORS:-17 18}; do
   pre_outage="$(untouched "$(sql -c "$checksums")")"
   arch=/var/lib/pgbackrest/archive/pipeshub
   mode="$($DOCKER exec "$proj-pg-backup-1" stat -c %a "$arch")"
-  $DOCKER exec -u root "$proj-pg-backup-1" chmod 000 "$arch"
-  # many small transactions, so the dropped segments hold commits and the report can name the first lost one
+  # as its owner, postgres: pg-backup drops every capability, so root could not even reach the directory
+  $DOCKER exec "$proj-pg-backup-1" chmod 000 "$arch"
+  # many small transactions, so the dropped segments hold commits and the report can name the first lost one; then frozen, so that the
+  # WAL their first read writes goes in during the outage. With data checksums (initdb's default from PostgreSQL 18) "hint bit updates
+  # are always WAL-logged" (https://www.postgresql.org/docs/18/runtime-config-wal.html, wal_log_hints): the first read after the
+  # gap-closing backup's checkpoint logs a full image of every page (about 230 MB here), past the 128MiB queue cap whenever archiving
+  # lags, and the server would drop WAL again once the gap is closed.
   sql -c "create table platform.filler (g int, pad text)" \
       -c "do \$\$ begin for i in 1..250 loop insert into platform.filler select g, repeat(md5(g::text), 30) from generate_series(1, 1000) g; commit; end loop; end \$\$" \
-      -c "select pg_switch_wal()" >/dev/null
+      -c "vacuum (freeze) platform.filler" -c "select pg_switch_wal()" >/dev/null
   for _ in $(seq 1 90); do dc exec -T pg-backup test -f /tmp/pg-backup.ok || break; sleep 2; done
   check "$major: dropped WAL turns pg-backup unhealthy" "$(dc exec -T pg-backup test -f /tmp/pg-backup.ok && echo healthy || echo unhealthy)" unhealthy
   check "$major: the server stays up and writable" "$(sql -c 'insert into platform.filler values (0, $$x$$) returning g')" 0
@@ -222,7 +254,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: and the first lost commit, read from the earliest dropped segment" "$([ -n "$lost" ] && echo yes)" yes
   for _ in $(seq 1 75); do [ "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" = unhealthy ] && break; sleep 2; done
   check "$major: docker reports pg-backup unhealthy" "$($DOCKER inspect -f '{{.State.Health.Status}}' "$proj-pg-backup-1")" unhealthy
-  $DOCKER exec -u root "$proj-pg-backup-1" chmod "$mode" "$arch"
+  $DOCKER exec "$proj-pg-backup-1" chmod "$mode" "$arch"
   for _ in $(seq 1 150); do dc exec -T pg-backup test -f /tmp/pg-backup.ok && break; sleep 2; done
   check "$major: a full backup closes the gap once the repository is back" \
     "$(dc exec -T pg-backup sh -c 'test -f /tmp/pg-backup.ok && [ -z "$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d)" ]' && echo closed || echo open)" closed
@@ -233,8 +265,18 @@ for major in ${DRILL_MAJORS:-17 18}; do
   # fatal error", PostgreSQL 19.5.6), while the end of the archive from the backup before the gap restores up to the gap.
   copy="${proj}_pg_restore_gap_$$"; copies+=("$copy"); rc=0
   [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --into "$copy" > "$work/gap-t.log" 2>&1 || rc=$?; }
-  check "$major: a restore to the first lost commit fails, recovery ending at the gap" \
-    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/gap-t.log" 2>/dev/null && echo ended)" "1 ended"
+  check "$major: a restore to the first lost commit is refused before anything is restored, naming the backup before the gap" \
+    "$rc $(grep -c "cannot be reached" "$work/gap-t.log" 2>/dev/null) $(grep -c "pg-restore.sh latest --set $label_pre\$" "$work/gap-t.log" 2>/dev/null) $($DOCKER volume ls -q | grep -cx "$copy")" "4 1 1 0"
+  grep 'pg-restore: ' "$work/gap-t.log" | sed "s/^/info $major: /"
+  # In place, the same. The full backup has removed pg-backup's drop files (and a lost machine takes them with it, in pg_backup_socket):
+  # the repository itself must refuse, before the data volume is touched, instead of a server that stops at the gap and is started
+  # again and again by restart: always.
+  before="$(sql -c "$checksums")"; dc stop > /dev/null 2>&1; rc=0
+  [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --in-place > "$work/gap-i.log" 2>&1 || rc=$?; }
+  check "$major: in place, a restore past the gap is refused, naming the backup before it" \
+    "$rc $(grep -c "pg-restore.sh latest --set $label_pre\$" "$work/gap-i.log")" "4 1"
+  dc up -d --no-build postgres pg-backup > /dev/null 2>&1
+  if writable 300; then check "$major: and the stack's database is untouched" "$(sql -c "$checksums")" "$before"; fi
   # the outage's first gap (a drop during the gap-closing backup can open a second one, held with a later backup)
   check "$major: the backup before the outage is held against expiry" \
     "$(dc exec -T pg-backup sh -c 'cd /var/run/postgresql/pgbackrest-gap-hold.d && cat "$(ls | head -1)"')" "$label_pre"
@@ -251,7 +293,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
     echo "FAIL $major: pg-restore.sh latest --set $label_pre:"; tail -20 "$work/gap-l.log"; fail=1
   fi
   check "$major: clear-gap-hold removes the hold and expires by retention" \
-    "$(dc exec -T pg-backup pg-backup.sh clear-gap-hold > "$work/clear.log" 2>&1 && dc exec -T pg-backup sh -c 'test -z "$(ls -A /var/run/postgresql/pgbackrest-gap-hold.d)"' && grep -q 'expire command end: completed successfully' "$work/clear.log" && echo ok)" ok
+    "$(dc exec -T pg-backup pg-backup.sh clear-gap-hold > "$work/clear.log" 2>&1 && dc exec -T pg-backup sh -c 'test -z "$(ls -A /var/run/postgresql/pgbackrest-gap-hold.d)"' && grep -q 'expire command end: completed successfully' "$work/clear.log" && echo ok || tail -3 "$work/clear.log")" ok
   # the healthcheck itself fails as soon as a drop is marked, even while the last backup's success is still recorded
   hc="$($DOCKER inspect -f '{{index .Config.Healthcheck.Test 1}}' "$proj-pg-backup-1")"
   check "$major: the healthcheck passes with no drop marked" "$($DOCKER exec "$proj-pg-backup-1" sh -c "$hc" && echo pass || echo fail)" pass
@@ -275,8 +317,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   # (whatever autovacuum or the archive timeout did since the mark), so recovery ends before it and the server shuts down.
   copy="${proj}_pg_restore_quiet_time_$$"; copies+=("$copy"); rc=0
   scripts/pg-restore.sh "$(sql -c "select clock_timestamp() + interval '1 hour'")" --into "$copy" > "$work/quiet-time.log" 2>&1 || rc=$?
-  check "$major: a time after the last archived commit cannot be reached" \
-    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/quiet-time.log" && echo ended)" "1 ended"
+  check "$major: a time after the last archived commit is refused before anything is restored" \
+    "$rc $(grep -c 'latest reachable point from that backup is its last commit' "$work/quiet-time.log") $($DOCKER volume ls -q | grep -cx "$copy")" "4 1 0"
   # the restored copies run as one-off pg-backup containers, which mount the data volume too: they go first, as the docs say
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done; copies=()
   change 5
@@ -287,14 +329,16 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: the lost machine has no database volume left" "$($DOCKER volume ls -q | grep -cx "${proj}_postgres_data")" 0
   t0=$(now)
   if scripts/pg-restore.sh "lsn:$(cat "$backup_dir/pg-restore-point.txt")" --in-place > "$work/loss.log" 2>&1; then
+    check "$major: the reachability check ran on the restore point" "$(grep -c 'without checking\|cannot be reached' "$work/loss.log")" 0
     dc up -d --no-build postgres > /dev/null 2>&1
-    for _ in $(seq 1 600); do [ "$(sql -c 'select pg_is_in_recovery()' 2>/dev/null)" = f ] && break; sleep 1; done
-    echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"
-    check "$major: after losing the machine: rows and checksums per schema equal those at the regular backup's restore point" \
-      "$(sql -c "$checksums")" "$at_loss"
-    dc up -d --no-build pg-backup > /dev/null 2>&1
-    check "$major: and archiving and backups go on" \
-      "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
+    if writable 600; then
+      echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"
+      check "$major: after losing the machine: rows and checksums per schema equal those at the regular backup's restore point" \
+        "$(sql -c "$checksums")" "$at_loss"
+      dc up -d --no-build pg-backup > /dev/null 2>&1
+      check "$major: and archiving and backups go on" \
+        "$(dc exec -T pg-backup pgbackrest check > "$work/check.log" 2>&1 && echo ok || tail -5 "$work/check.log")" ok
+    fi
   else
     echo "FAIL $major: restore after losing the machine:"; tail -20 "$work/loss.log"; fail=1
   fi

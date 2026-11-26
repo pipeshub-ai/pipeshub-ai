@@ -8,6 +8,7 @@ resolver/service lookups against one in-memory store.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,6 +42,7 @@ from app.api.routes.mcp_servers import (
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -597,3 +599,9 @@ class TestAnUnconfirmedRoleCreatesNothing:
             record = await create_instance(_as(store, "u-alice"), _payload())
 
         assert record["scope"] == scope
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

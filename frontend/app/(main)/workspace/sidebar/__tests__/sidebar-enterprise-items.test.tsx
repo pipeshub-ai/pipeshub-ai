@@ -32,6 +32,10 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
+  selectScheduledRunsEnabled: () => false,
+  selectAgentHarnessOn: () => false,
+  selectAgentHarnessResumeEnabled: () => false,
+  selectEngineRunsEnabled: () => false,
 }));
 
 // Spread the real module so exports the import graph needs (initReactI18next) stay defined.
@@ -88,7 +92,8 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
       // The tag is hidden from the link's name, so the link still reads as just its label.
       const link = linkTo(label);
       expect(link.getAttribute('href')).toBe(href);
-      const hidden = Array.from(link.querySelectorAll('[aria-hidden="true"]')).map((el) => el.textContent);
+      // The entry's own icon is hidden from the name too, so the tag is one of the hidden marks.
+      const hidden = Array.from(link.querySelectorAll('[aria-hidden="true"]'), (el) => el.textContent);
       expect(hidden).toContain(en.common.enterprise.short);
       expect(hidden).not.toContain('lock');
     }

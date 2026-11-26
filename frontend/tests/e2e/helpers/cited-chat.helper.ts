@@ -242,20 +242,6 @@ export async function visiblePdfPage(page: Page): Promise<number> {
   });
 }
 
-/** The signed-in user's access token, read from the page's own storage. */
-export async function accessTokenOf(page: Page): Promise<string> {
-  const token = await page.evaluate(() => {
-    const direct = localStorage.getItem('jwt_access_token');
-    if (direct) return direct;
-    const raw = localStorage.getItem('pipeshub_org_tokens');
-    if (!raw) return null;
-    const pairs = Object.values(JSON.parse(raw) as Record<string, { accessToken?: string }>);
-    return pairs.length === 1 ? (pairs[0].accessToken ?? null) : null;
-  });
-  if (!token) throw new Error('the page holds no access token');
-  return token;
-}
-
 /** Scrolls every scrollable part of the viewer to its top or bottom. */
 export async function scrollViewer(page: Page, to: 'top' | 'bottom'): Promise<void> {
   await page.evaluate((where) => {

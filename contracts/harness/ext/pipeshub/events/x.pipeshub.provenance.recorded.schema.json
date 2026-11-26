@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.provenance.recorded.schema.json",
+  "title": "PipeshubProvenanceRecordedEvent",
+  "description": "One tool result's provenance (ADR-RUN-01 D3), journaled with the call's outcome by the worker's tool port or Tool Gateway: who may read what it carries (public: anyone; principals: the people its sources' permissions name, decided per viewer; unknown: content nobody can name), who wrote it (first_party, or external: an outsider, the web, an MCP server, a repository), its sources (web pages, repository files at the fetched commit, records, connector items, memories, skills), and the declared rule that decided. The session's provenance ledger folds it: the flow guard reads confidentiality from it, the answer's repository and web citations come from it, audit exports it. Written only to a journal whose claim names provenance_records; an older run's results are replayed from their outcomes and citation deltas. Folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.provenance.recorded"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubProvenanceRecordedData"
+    }
+  },
+  "$defs": {
+    "PipeshubProvenanceRecordedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "toolId",
+        "rule",
+        "provenance"
+      ],
+      "properties": {
+        "invocationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "toolId": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "The call's tool id (source@instance/name); empty when the catalog could not describe the call."
+        },
+        "rule": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "The provenance rule the tool was declared with (no_content, records, derived, child, web, mcp, connector, opaque, repository, export), or undeclared for a tool registered mid-run without one (recorded as unknown)."
+        },
+        "provenance": {
+          "$ref": "#/$defs/PipeshubProvenance"
+        }
+      }
+    },
+    "PipeshubProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "readers",
+        "integrity",
+        "sources"
+      ],
+      "properties": {
+        "readers": {
+          "enum": [
+            "public",
+            "principals",
+            "unknown"
+          ]
+        },
+        "integrity": {
+          "enum": [
+            "first_party",
+            "external"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WebSource"
+              },
+              {
+                "$ref": "#/$defs/RepositorySource"
+              },
+              {
+                "$ref": "#/$defs/RecordSource"
+              },
+              {
+                "$ref": "#/$defs/ConnectorSource"
+              },
+              {
+                "$ref": "#/$defs/MemorySource"
+              },
+              {
+                "$ref": "#/$defs/SkillSource"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "WebSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "url"
+      ],
+      "description": "A web page the call read (an unauthenticated GET or a search result), with when.",
+      "properties": {
+        "kind": {
+          "const": "web"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^https?://"
+        },
+        "fetchedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      }
+    },
+    "RepositorySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "url",
+        "commit"
+      ],
+      "description": "A repository the worker fetched, at the fetched commit; with a path, one file of it (url@commit:path). Links into it at that commit are citable.",
+      "properties": {
+        "kind": {
+          "const": "repository"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^https?://"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "folder": {
+          "type": "boolean",
+          "description": "The path is a folder at the commit (its page is the host's tree view)."
+        }
+      }
+    },
+    "RecordSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "recordId",
+        "recordKind"
+      ],
+      "description": "A record in the graph: indexed, an attachment or an artifact a run produced. An edition's schema overlay may add what it records beside the record.",
+      "properties": {
+        "kind": {
+          "const": "record"
+        },
+        "recordId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "recordKind": {
+          "enum": [
+            "indexed",
+            "attachment",
+            "generated"
+          ]
+        },
+        "publicationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "x-extensible": true
+    },
+    "ConnectorSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "connector",
+        "externalRecordId"
+      ],
+      "description": "An item a tool read straight from a connector with the run owner's credentials. An edition's schema overlay may add what it records beside the item.",
+      "properties": {
+        "kind": {
+          "const": "connector"
+        },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "externalRecordId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "connectorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "x-extensible": true
+    },
+    "MemorySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "memoryId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "memory"
+        },
+        "memoryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "SkillSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "const": "skill"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 10,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_1",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "repository",
+        "provenance": {
+          "readers": "public",
+          "integrity": "external",
+          "sources": [
+            {
+              "kind": "repository",
+              "url": "https://github.com/onyx-dot-app/onyx",
+              "commit": "4f83564c1f0e8596be3f71d78f847a96447a3bdd"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:01.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.provenance.recorded",
+      "data": {
+        "invocationId": "inv_2",
+        "toolId": "pipeshub@knowledgegraph/search",
+        "rule": "records",
+        "provenance": {
+          "readers": "principals",
+          "integrity": "first_party",
+          "sources": [
+            {
+              "kind": "record",
+              "recordId": "rec_1",
+              "recordKind": "indexed"
+            },
+            {
+              "kind": "web",
+              "url": "https://onyx.app/",
+              "fetchedAt": "2026-11-05T12:00:01Z"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

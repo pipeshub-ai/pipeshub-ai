@@ -261,7 +261,7 @@ async def read_record_content(
         # described rather than reported as missing.
         unindexed = (result.get("not_indexed_records") or {}).get(record_id)
         content = (
-            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], unindexed.get('preparing'))}"
+            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], preparing=unindexed.get('preparing'))}"
             if unindexed else "No record found"
         )
         body = {"content": content, "mode": "record", "recordId": record_id, "complete": True,

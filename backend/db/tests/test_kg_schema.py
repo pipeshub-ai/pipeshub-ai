@@ -81,7 +81,8 @@ def test_the_graph_carries_the_eight_capture_triggers_and_refuses_a_truncate(rdb
     cluster, name = rdb
     with connect(cluster, name) as c:
         rows = {tuple(r) for r in c.execute("SELECT tgrelid::regclass::text, tgname, tgenabled FROM pg_trigger WHERE tgrelid IN ('graph.nodes'::regclass, 'graph.edges'::regclass) AND NOT tgisinternal")}
-        assert rows == {(t, f"kg_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete", "truncate")}
+        assert rows == ({(t, f"kg_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete", "truncate")}
+                        | {(t, f"stats_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete")})      # graph_0021's log
         with pytest.raises(psycopg.errors.FeatureNotSupported):
             c.execute("TRUNCATE graph.edges")
 

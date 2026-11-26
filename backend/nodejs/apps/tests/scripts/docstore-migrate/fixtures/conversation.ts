@@ -132,7 +132,8 @@ const build = (): Record<string, unknown[]> => ({
       delete m.contentFormat;
       return m;
     })(),
-    msg(S2, ORG1, 0, { authorUserId: U2, status: 'stopped', sourceRecordIds: [] }),
+    // an answer with no confidence is saved with confidence: null (R48MIGFIX-1: read as absent; the column is NULL)
+    msg(S2, ORG1, 0, { authorUserId: U2, status: 'stopped', sourceRecordIds: [], confidence: null }),
     msg(S3, ORG2, 0, { authorUserId: U3 }),
     // belongs to no session in its organisation: not copied
     msg(S_OTHER, ORG1, 0, { authorUserId: U1 }),

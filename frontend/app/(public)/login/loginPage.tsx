@@ -4,9 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/config';
+import { useAuthStore, GuestGuard, SignInNotices } from '@/config';
 import { toast } from '@/lib/store/toast-store';
-import { GuestGuard } from '@/app/components/ui/guest-guard';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import AuthHero from '../components/auth-hero';
@@ -181,7 +180,12 @@ export default function LoginPage() {
         }}
       >
         <AuthHero splitLayout={splitLayout} />
-        <FormPanel splitLayout={splitLayout}>{renderForm()}</FormPanel>
+        <FormPanel splitLayout={splitLayout}>
+          <Flex direction="column" align="center" style={{ width: '100%' }}>
+            <SignInNotices />
+            {renderForm()}
+          </Flex>
+        </FormPanel>
       </Flex>
     </GuestGuard>
   );

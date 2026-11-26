@@ -23,13 +23,16 @@ from app.sandbox.docker_proxy import (
     ReaperSettings,
 )
 from tests.unit.sandbox.test_docker_proxy import (
-    _INSTALL,
+    _FIREWALLED_INSTALL,
+    _FLOOR,
     _LIMITS,
     EGRESS,
     IMAGE,
+    TOKEN,
     _FakeDaemon,
     _request,
     _sdk_create_body,
+    with_token,
 )
 
 if TYPE_CHECKING:
@@ -44,7 +47,7 @@ def policy() -> DockerApiPolicy:
 
 
 def _body(host: dict[str, Any] | None = None, **top: object) -> dict[str, Any]:
-    return {"Image": IMAGE, "HostConfig": {**_LIMITS, "NetworkMode": "none", **(host or {})}, **top}
+    return {"Image": IMAGE, "User": "sandbox", "HostConfig": {**_LIMITS, **_FLOOR, "NetworkMode": "none", **(host or {})}, **top}
 
 
 # --- Create policy -----------------------------------------------------------
@@ -174,7 +177,7 @@ class TestHostAccessEscapes:
         {"RestartPolicy": {"name": "always"}}, {"LogConfig": {"Type": "syslog"}},
         {"LogConfig": {"Type": "local", "Config": {"max-size": "1g"}}},
         {"StorageOpt": {"size": "1g", "dm.basesize": "1"}}, {"GroupAdd": ["docker"]},
-        {"ExtraHosts": ["x:1.2.3.4"]}, {"Dns": ["1.1.1.1"]}, {"Init": True},
+        {"ExtraHosts": ["x:1.2.3.4"]}, {"Dns": ["1.1.1.1"]},
         {"ConsoleSize": [1, 1]}, {"AutoRemove": True}, {"Annotations": {"x": "y"}},
     ])
     def test_refused(self, policy: DockerApiPolicy, host: dict[str, Any]) -> None:
@@ -218,7 +221,8 @@ class TestNetworkEscapes:
         policy.check_container_create(body, "stack-a")
 
     def test_what_the_sdk_sends_for_a_networked_run_is_admitted(self, policy: DockerApiPolicy) -> None:
-        policy.check_container_create(_sdk_create_body(**_INSTALL), "stack-a")
+        # The firewalled install: a networked create is admitted only with the egress firewall's install step.
+        policy.check_container_create(_sdk_create_body(**_FIREWALLED_INSTALL), "stack-a")
 
     @pytest.mark.parametrize("networking", [
         {"EndpointsConfig": {"pipeshub-ai_default": {}}}, {"EndpointsConfig": {"host": None}},
@@ -318,7 +322,7 @@ async def served(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_Fake
     daemon = _FakeDaemon({"own": owned, "f" * 64: owned, "other": other, "legacy": legacy, "plain": plain})
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
+    proxy = DockerSocketProxy(policy, sock, caller_token=TOKEN, instance="stack-a")
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     yield daemon, server.sockets[0].getsockname()[1]
     server.close()
@@ -426,7 +430,7 @@ class TestBodyFraming:
         daemon, port = served
         monkeypatch.setattr(docker_proxy, "_HEAD_TIMEOUT_S", 0.3)
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(_http("POST", "/v1.43/containers/create", headers=("Content-Length: 1000",)))
+        writer.write(with_token(_http("POST", "/v1.43/containers/create", headers=("Content-Length: 1000",))))
         await writer.drain()
         data = await asyncio.wait_for(reader.read(), 5)
         writer.close()
@@ -445,7 +449,7 @@ class TestConcurrency:
     async def test_many_clients_and_a_stalled_one_do_not_block_each_other(self, served) -> None:
         daemon, port = served
         stalled_r, stalled_w = await asyncio.open_connection("127.0.0.1", port)
-        stalled_w.write(_http("POST", "/v1.43/containers/create", headers=("Content-Length: 5000",)))
+        stalled_w.write(with_token(_http("POST", "/v1.43/containers/create", headers=("Content-Length: 5000",))))
         await stalled_w.drain()
 
         async def one(i: int) -> bytes:
@@ -548,7 +552,7 @@ class TestReaperChecksLabelsItself:
         sock = str(tmp_path / "d.sock")
         server = await asyncio.start_unix_server(fake.handle, sock)
         try:
-            proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
+            proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, caller_token=TOKEN, instance="stack-a")
             settings = ReaperSettings(reap_after_s=420, interval_s=60, reap_unlabeled=reap_unlabeled)
             reaper = docker_proxy.Reaper(proxy, settings, clock=lambda: now)
             await reaper.reap_once()

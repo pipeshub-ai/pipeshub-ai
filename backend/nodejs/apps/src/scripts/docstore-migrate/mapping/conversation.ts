@@ -74,6 +74,22 @@ const sharedChild = (table: string, parentCol: string): ChildMap => ({
   derived: ['org_id'],
 });
 
+/** The message fields the `harness` column holds (the store's `shapeHarnessFields`, written separately here). */
+export const MESSAGE_HARNESS_FIELDS = [
+  'foreignTurn',
+  'copied',
+  'runId',
+  'errorCode',
+  'errorServers',
+  'errorStop',
+  'truncatedBy',
+  'budgetScope',
+  'runOutcome',
+  'notFound',
+  'limits',
+  'command',
+];
+
 const jsonArray = (col: string, path: string): FieldMap => ({
   col,
   path,
@@ -142,11 +158,35 @@ export const chatSessions: CollectionMapping = {
     },
     { col: 'project_id', path: 'projectId', type: 'oid' },
     { col: 'project_visibility', path: 'projectVisibility', type: 'text' },
+    // the agent harness's fields of a session (conversation_0003, conversation_0004)
+    { col: 'harness_version', path: 'harnessVersion', type: 'text' },
+    { col: 'harness_ledger', path: 'harnessLedger', type: 'json' },
+    { col: 'erasure_requested_at', path: 'erasureRequestedAt', type: 'bigint' },
+    { col: 'harness_seen', path: 'harnessSeen', type: 'json' },
     { col: 'created_at', path: 'createdAt', type: 'date' },
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
   ],
   children: [sharedChild('conversation.chat_session_members', 'session_id')],
-  derived: [],
+  // conversation_0003 added these, but the PostgreSQL store keeps a chat's engine choices in harness.personal_choices and
+  // never writes or reads the columns: they stay NULL (the fields are held below)
+  derived: ['coding_engine', 'coding_engine_pin', 'repository'],
+  held: [
+    {
+      path: 'codingEngine',
+      reason:
+        "a chat's coding engine lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
+    },
+    {
+      path: 'codingEnginePin',
+      reason:
+        "a chat's engine version pin lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
+    },
+    {
+      path: 'repository',
+      reason:
+        "a chat's chosen repository lives in harness.personal_choices on PostgreSQL (R45MIGR-FU-1)",
+    },
+  ],
   dropped: [
     {
       path: 'compareOf',
@@ -199,10 +239,37 @@ export const chatSessionMessages: CollectionMapping = {
     jsonArray('tools', 'tools'),
     jsonArray('reasoning', 'reasoning'),
     jsonArray('parts', 'parts'),
+    // the agent harness's fields of a message (conversation_0003): a collaborator's turn's sender, the answer's label, and the
+    // rest as one object whose keys sit at the top of the document
+    { col: 'sender_id', path: 'senderId', type: 'oid' },
+    { col: 'label', path: 'label', type: 'json' },
+    { col: 'harness', path: '', type: 'json', spread: MESSAGE_HARNESS_FIELDS },
     { col: 'created_at', path: 'createdAt', type: 'date' },
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
   ],
   derived: [],
+  // An answer with no confidence is saved with `confidence: null` (the legacy chat and the durable projection both; R48MIGFIX-1):
+  // every reader treats null and absent alike, and the column holds NULL for both.
+  nullOk: ['confidence'],
+  transforms: [
+    {
+      name: 'confidence null compared as absent (no confidence, as the column keeps it)',
+      apply(doc: Doc): boolean {
+        if (doc.confidence !== null) return false;
+        delete doc.confidence;
+        return true;
+      },
+    },
+    {
+      name: 'command without args read as args {} (the schema default)',
+      apply(doc: Doc): boolean {
+        const c = doc.command as Doc | null | undefined;
+        if (!c || typeof c !== 'object' || c.args !== undefined) return false;
+        c.args = {};
+        return true;
+      },
+    },
+  ],
   dropped: [
     {
       path: 'authorUserId',

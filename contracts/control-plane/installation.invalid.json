@@ -1,0 +1,18 @@
+[
+  {
+    "description": "a secret in the installation",
+    "instance": {"schemaVersion": 1, "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "owner": "org", "visibility": "org", "config": {}, "approved": null, "pending": null, "status": "draft", "installedVia": null, "credentialMode": "none", "revision": 1, "updatedAt": 0, "updatedBy": "user:u1", "apiKey": "sk-not-here"}
+  },
+  {
+    "description": "an agent cannot own an installation",
+    "instance": {"schemaVersion": 1, "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "owner": "agent:a7", "visibility": "org", "config": {}, "approved": null, "pending": null, "status": "draft", "installedVia": null, "credentialMode": "none", "revision": 1, "updatedAt": 0, "updatedBy": "user:u1"}
+  },
+  {
+    "description": "an unknown status",
+    "instance": {"schemaVersion": 1, "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "owner": "org", "visibility": "org", "config": {}, "approved": null, "pending": null, "status": "live", "installedVia": null, "credentialMode": "none", "revision": 1, "updatedAt": 0, "updatedBy": "user:u1"}
+  },
+  {
+    "description": "an approved set without its digest",
+    "instance": {"schemaVersion": 1, "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "item": "mcp:pipeshub/linear@3", "kind": "mcp", "owner": "org", "visibility": "org", "config": {}, "approved": {"tools": {}, "approvalRef": null, "at": 0, "by": "user:u1"}, "pending": null, "status": "enabled", "installedVia": null, "credentialMode": "none", "revision": 1, "updatedAt": 0, "updatedBy": "user:u1"}
+  }
+]

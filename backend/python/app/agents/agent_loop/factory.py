@@ -137,15 +137,16 @@ from app.agents.agent_loop.hooks import (
     sync_visible_tools_for_prompt,
 )
 from app.agents.agent_loop.hooks.attachment_resolver import default_message_budget
+from app.agents.agent_loop.hooks.context_reduction import report_context_reduction
+from app.agents.agent_loop.hooks.flow_guard import register_legacy_flow_guard
 from app.agents.agent_loop.hooks.progressive_tools import (
     ENTITY_TOOL_NAMES,
-    PROGRESSIVE_TOOL_NAMES,
-    entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
+    LAZY_ONLY_TOOL_NAMES,
     META_TOOL_NAMES,
     lazy_tools_enabled,
     lazy_tools_scope,
@@ -155,6 +156,7 @@ from app.agents.agent_loop.lazy_tools_wiring import (
 )
 from app.agents.agent_loop.loops.orchestrator import (
     COORDINATION_TOOL_NAMES,
+    COORDINATOR_QUESTION_TOOLS,
     domain_spec_factory,
     install_phase_gate,
     register_coordination_tools,
@@ -209,6 +211,7 @@ from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import (
+    is_agent_harness_on,
     is_named_entity_extraction_enabled,
     is_skills_enabled,
 )
@@ -216,9 +219,10 @@ from app.utils.citations import rewrite_request_refs
 from app.utils.image_policy import resolve_image_policy
 from app.utils.logging_fields import log_event, log_once
 from app.utils.render_budget import fetch_result_cap
+from harness_core.context.results import RESULT_CAP_STATE, loop_result_cap
 
 
-def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
+def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
     """Register FinalAnswerTool when PIPESHUB_ENABLE_FINAL_ANSWER is set."""
     from app.agent_loop_lib.tools.builtin.planning.final_answer import (
         FinalAnswerTool,
@@ -238,6 +242,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agent_loop_lib.core.types import Goal
+    from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agent_loop_lib.transport.base import LLMTransport
     from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
     from app.agents.agent_loop.context import AgentContext
@@ -366,8 +371,11 @@ _PROTECTED_TOOLS = frozenset({
 
 def _chat_context_profile(
     context: "AgentContext", transport_registry: Any, model_name: str,  # noqa: ANN401
+    *, reduce_history: bool = True, harness_on: bool = True,
 ) -> ContextProfile:
-    """The chat agent's PRE_MODEL profile for `build_context_pipeline`."""
+    """The chat agent's PRE_MODEL profile for `build_context_pipeline`. ``reduce_history=False`` leaves out the
+    layers that cut history (L2-L8): a durable run reduces it only through its journaled ladder. ``harness_on=False``
+    (the org's harness off, ADR-OPS-08) reports no reduction, as a release without the harness did not."""
     # Fetch sized by characters gets a cap equal to its own budget, so the
     # shared 64K cap never cuts a fetch in the middle.
     fetch_cap = fetch_result_cap(context.context_length)
@@ -379,10 +387,21 @@ def _chat_context_profile(
             if transport_registry is not None else None
         ),
         image_injectors=(shape_image_injection(context),),
+        # Measures what L4-L9 take off the request and tells the person (QAFIX4).
+        before_history=(report_context_reduction(context),) if reduce_history and harness_on else (),
+        max_result_chars=loop_result_cap(context.tool_state.get(RESULT_CAP_STATE)),
         tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else {},
+        disabled=frozenset() if reduce_history else _HISTORY_LAYERS,
         artifact_keep_last_n_turns=2,
         auto_compact_tail_ratios=_AUTO_COMPACT_TAIL_RATIOS,
     )
+
+
+# The layers that cut history, left out of a durable run's pipeline.
+_HISTORY_LAYERS = frozenset({
+    "artifact_compaction", "tool_result_clearing", "loop_compaction", "deterministic_compact",
+    "auto_compact", "sliding_window", "synthesis_guard",
+})
 
 
 def _composed_agents_enabled() -> bool:
@@ -392,16 +411,49 @@ def _composed_agents_enabled() -> bool:
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
+# Results L3 (and, with the context compiler, the clear rung) never clear: the plan tools'
+# results are the plan; WebToolAdapter's Citation IDs (`url/Citation ID: ...`) are only
+# readable from the result itself, so clearing it makes every citation the model already saw
+# unciteable on a later turn (`shape_artifact_compaction` still summarizes these after
+# `keep_last_n_turns=2`; see `_find_web_record_by_url`'s page-level fallback); fetch_full_record
+# results carry the [refN] markers AnswerFinalizer needs to build citations; code-graph walks
+# need each earlier hop (`_CODE_TRAVERSAL_TOOLS`).
+UNCLEARED_RESULT_TOOLS = frozenset({
+    "create_plan", "critique_plan",
+    "dynamic__web_search", "dynamic__fetch_url",
+    "knowledgegraph__fetch_record",
+}) | _CODE_TRAVERSAL_TOOLS
+
+
 def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
     """Entity tools are hidden when no entity store is wired (they could only
-    fail). ``find_records_by_entity`` needs an entityId, so it starts hidden
-    until ``search_entities`` runs (``hooks/progressive_tools.py``) — unless an
-    earlier turn already used an entity tool and its ids are in the history."""
+    fail). With one, both are granted from the start: a chat's tool list is fixed
+    at its first request (R4), and ``find_records_by_entity``'s own description
+    says it takes an entityId from ``search_entities``."""
     if not context.tool_state.get("entity_vector_store"):
         return [n for n in tool_names if n not in ENTITY_TOOL_NAMES]
-    if entity_tools_used_in_history(context.previous_conversations):
-        return tool_names
-    return [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
+    return tool_names
+
+
+def session_tool_grant(tool_names: list[str], context: "AgentContext", registry: "ToolRegistry") -> list[str]:
+    """A grant with what the loop used to grant mid-run already in it, since a chat's tool list is fixed at its
+    first request (R4): the entity tools (``_initial_entity_tool_grant``), and ``fetch_record``, which the loop
+    granted once any tool returned records. Which tool will return records is not known until one does, so every
+    agent with tools gets it, except deep mode's orchestrator, whose grant stays its coordination tools (the tool is
+    registered for its children, granted to none but this agent). Its description says it reads a record a search
+    returned."""
+    from app.agents.agent_loop.hooks.citations import (
+        _FETCH_FULL_RECORD_TOOL_NAME,  # pyright: ignore[reportPrivateUsage]
+        register_fetch_full_record,
+    )
+
+    names = _initial_entity_tool_grant(tool_names, context)
+    if not names:
+        return names
+    register_fetch_full_record(context, registry)
+    if set(names) <= {*COORDINATION_TOOL_NAMES, *COORDINATOR_QUESTION_TOOLS} or _FETCH_FULL_RECORD_TOOL_NAME in names:
+        return names
+    return [*names, _FETCH_FULL_RECORD_TOOL_NAME]
 
 
 class PipesHubAgentFactory:
@@ -651,11 +703,17 @@ class PipesHubAgentFactory:
 
         _mark("f:sandbox+skills")
         artifact_store = build_artifact_store(context)
+        harness_on = await is_agent_harness_on(context.config_service)
         hooks = self._build_hooks(
             context, sandbox_manager, allow_network=network_enabled,
             artifact_store=artifact_store, tool_registry=tool_registry,
             transport_registry=transport_registry, model_name=model_name,
+            harness_on=harness_on,
         )
+        # Today's loop cannot hold a call for approval: the flow guard refuses there (UX3). Where the agent harness is
+        # off for the org the loop runs as a release without the harness, which had no flow guard (ADR-OPS-08).
+        if harness_on:
+            _ = await register_legacy_flow_guard(hooks, context)
         tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
         _register_final_answer_if_enabled(tool_registry)
         if skill_manager is not None:
@@ -814,6 +872,8 @@ class PipesHubAgentFactory:
             # `step()`'s per-tool-call check) when this is set, so those
             # callers are unaffected.
             cancellation_token=context.cancellation_token,
+            checkpoint_store=context.durable_checkpoint_store,
+            invocation_journal=context.durable_checkpoint_store,
         )
         if skill_manager is not None:
             # `hooks` here is the SAME HookRegistry instance now held by
@@ -823,7 +883,8 @@ class PipesHubAgentFactory:
             # doesn't exist until this line.
             register_skill_learning(
                 hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name,
-                context_window=configured_window,
+                context_window=configured_window, conversation_id=context.conversation_id,
+                agent_key=context.agent_key,
             )
 
         # Domain-agent composition, registration half: now that the
@@ -889,6 +950,7 @@ class PipesHubAgentFactory:
                     provider=_transport_provider(), model_name=model_name,
                     default_tool_names=_initial_entity_tool_grant(composed_names, context),
                     context=context, context_window=configured_window,
+                    grant=lambda names: session_tool_grant(names, context, tool_registry),
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -912,6 +974,7 @@ class PipesHubAgentFactory:
                     context,
                 ),
                 context=context, context_window=configured_window,
+                grant=lambda names: session_tool_grant(names, context, tool_registry),
             )
 
         # `run_code`'s own description (see `CodingSandboxTool.description`)
@@ -971,7 +1034,7 @@ class PipesHubAgentFactory:
         # that does real work in eager mode (auth-aware global discovery,
         # including now the MCP `mcp_unavailable` hits from step 5).
         if tool_disclosure != "lazy":
-            tool_names = [n for n in tool_names if n not in ("list_toolsets", "fetch_tools")]
+            tool_names = [n for n in tool_names if n not in LAZY_ONLY_TOOL_NAMES]
         # Every toolset group `group_connector_toolsets` was told to leave
         # alone (skills, plus whichever internal toolsets loaded with
         # `essential=True` metadata this request — see
@@ -990,7 +1053,10 @@ class PipesHubAgentFactory:
         else:
             grouped = []
 
-        tool_names = _initial_entity_tool_grant(tool_names, context)
+        tool_names = session_tool_grant(tool_names, context, tool_registry)
+        from app import edition_services
+
+        tool_names = edition_services.extend_tool_grant(tool_names, context, tool_registry)
 
         spec = AgentSpec(
             name="pipeshub-agent",
@@ -1008,13 +1074,20 @@ class PipesHubAgentFactory:
         context.root_agent_spec = spec
 
         # Stop Generation (Phase 3a): `context.run_id`, when already set by
-        # `stream_bridge.py`/`bridge.py` from the client-supplied `runId`,
+        # `stream_bridge.py` from the client-supplied `runId`,
         # becomes the root run's OWN `RunContext.run_id` — so every AG-UI
         # frame this run emits already carries the id the client used to
         # register the cancel-able run, with no separate mapping to keep
-        # in sync. `None` (callers that never set one) falls through to
-        # `Agent.__init__`'s own `RunContext` default (a fresh uuid4).
-        agent = Agent(spec, runtime, session_id=session_id, run_id=context.run_id)
+        # in sync. A durable harness run pins its own run id instead, since
+        # checkpoints and the invocation journal are keyed on it. `None`
+        # (callers that never set one) falls through to `Agent.__init__`'s
+        # own `RunContext` default (a fresh uuid4).
+        agent = Agent(
+            spec,
+            runtime,
+            session_id=session_id,
+            run_id=context.durable_run_id or context.run_id,
+        )
         # `AGUIFormatter` (direct EventSink writers — see protocol/formatter.py)
         # has no Agent/RunContext reference of its own; stash the top-level
         # run_id here, the one place both `context` and the freshly-built
@@ -1079,11 +1152,22 @@ class PipesHubAgentFactory:
         context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,  # noqa: ANN401
         artifact_store: Any = None, tool_registry: Any = None,  # noqa: ANN401
         transport_registry: Any = None, model_name: str = "",  # noqa: ANN401
+        error_tracker: ToolErrorTracker | None = None,
+        repeated_reads: RepeatedReadGuard | None = None,
+        reduce_history: bool = True,
+        harness_on: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
-        state isolation across concurrent requests)."""
+        state isolation across concurrent requests).
+
+        `error_tracker` and `repeated_reads`, when given, are the ones the hooks
+        use (a durable run rebuilds their state from the journal); fresh ones otherwise.
+        `reduce_history=False` leaves out the shapers that cut history (L2-L8): a durable
+        run reduces it only through its journaled ladder (`app/harness/assembly/hooks.py`).
+        `harness_on=False` (the org's harness off, ADR-OPS-08) streams what a release without the harness streamed:
+        no context-compacted row and the provider wait as the plain ``status`` frame."""
         hooks = HookRegistry()
 
         # --- POST_TOOL_USE: artifact registration (Phase 1 of two-phase compaction) ---
@@ -1113,20 +1197,28 @@ class PipesHubAgentFactory:
         # (context/pipeline.py); this profile is what chat changes. L0 puts
         # image attachments on a copy of the current request (no-op when
         # context.attachment_image_blocks is empty — deferred check).
-        for layer in build_context_pipeline(_chat_context_profile(context, transport_registry, model_name)):
+        profile = _chat_context_profile(
+            context, transport_registry, model_name, reduce_history=reduce_history, harness_on=harness_on,
+        )
+        for layer in build_context_pipeline(profile):
             hooks.on(HookEvent.PRE_MODEL).use(layer)
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status
         # feedback — see retry_with_status.py's docstring for why this lives
         # here instead of agent_loop_lib's own RetryHook (which ControlPlane
         # wires by default but this adapter path never goes through).
-        hooks.wrapper(HookEvent.PRE_MODEL_CALL).use(retry_with_status(context.event_sink))
+        hooks.wrapper(HookEvent.PRE_MODEL_CALL).use(retry_with_status(
+            context.event_sink,
+            **({"wait_frames": lambda retry_at, message: context.formatter.provider_wait(
+                context, retry_at=retry_at, message=message,
+            )} if harness_on else {}),
+        ))
 
-        error_tracker = ToolErrorTracker()
+        error_tracker = error_tracker or ToolErrorTracker()
         hooks.on(HookEvent.PRE_TOOL_USE).use(error_tracker.pre_tool_use)
         hooks.on(HookEvent.POST_TOOL_USE).use(error_tracker.post_tool_use)
         # Successful repeats aren't failures: without this an identical MCP read can fill every turn.
-        repeated_reads = RepeatedReadGuard(context)
+        repeated_reads = repeated_reads or RepeatedReadGuard(context)
         hooks.on(HookEvent.PRE_TOOL_USE).use(repeated_reads.pre_tool_use)
         hooks.on(HookEvent.POST_TOOL_USE).use(repeated_reads.post_tool_use)
 
@@ -1161,6 +1253,9 @@ class PipesHubAgentFactory:
 
         # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
+        from app import edition_services
+
+        edition_services.register_extra_agent_hooks(hooks, context)
         # Last: a reply the gates above already sent back is not checked for a text question.
         hooks.on(HookEvent.POST_MODEL).use(ask_in_text_recovery(context))
 
@@ -1189,90 +1284,19 @@ class PipesHubAgentFactory:
         message_budget_tokens: int | None = None,
     ) -> int:
         """Loads prior turns into the agent's `ContextManager` so the model
-        sees them as ordinary conversation history on turn 0 — the
-        agent-loop equivalent of `nodes.py::_build_conversation_messages`.
-
-        What is replayed fits the history share of `message_budget_tokens`
-        (`history_window.py`): the newest exchanges whole, older ones reduced
-        to question, answer opening and tool names, the oldest left out with a
-        note saying how many. Document attachments of exchanges kept whole are
-        rendered from blob storage within the history's attachment share;
-        others are named with how to read them. ``virtual_record_id_to_result``
-        and ``citation_ref_mapper`` are populated as a side-effect so
-        ``dynamic_fetch_full_record`` remains available.
-
-        `message_budget_tokens` is the budget the run's model calls will have
-        (the factory passes it); without it the model's window alone sizes it.
-        Returns the estimated tokens replayed.
-        """
+        sees them as ordinary conversation history on turn 0 (see
+        `history_messages`). Returns the estimated tokens replayed."""
         from app.agent_loop_lib.context.manager import ContextManager
         from app.agent_loop_lib.core.tokens import count_tokens
-        from app.utils.render_budget import RenderBudget
-
-        if message_budget_tokens is None:
-            message_budget_tokens = default_message_budget(context)
-        history_tokens = share_tokens(message_budget_tokens, HISTORY_SHARE)
-        exchanges = split_exchanges(previous_conversations, _opens_an_exchange)
-
-        attachments = _HistoryAttachments(context, RenderBudget(max_chars=earlier_attachment_chars(history_tokens)))
-        # Newest first, and only as far back as exchanges could still be kept
-        # whole: when the share runs out it is the oldest files that are named,
-        # and an exchange that will be reduced costs no blob read or image slot.
-        spent = 0
-        for index in range(len(exchanges) - 1, -1, -1):
-            spent += exchange_tokens(exchanges[index])
-            if spent > history_tokens:
-                break
-            await attachments.render(index, exchanges[index])
-            spent += attachments.tokens(index)
-        plan = plan_history(exchanges, history_tokens, [attachments.tokens(i) for i in range(len(exchanges))])
 
         ctx = ContextManager()
-        history: list[Message] = []
-        if plan.omitted:
-            history.append(UserMessage(content=omitted_note(plan.omitted), injected=True))
-        tool_results_at: dict[str, int] = {}
-        after_answer = False
-        unanswered = 0
-        for index in plan.kept:
-            whole = index in plan.whole
-            for position, turn in enumerate(exchanges[index] if whole else reduce_exchange(exchanges[index])):
-                if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
-                    _drop_closing_text(history)
-                    after_answer = True
-                    continue
-                messages = _convert_conversation_turn(turn)
-                if messages and _opens_a_new_question(turn) and _ends_on_open_question(history):
-                    history.append(AssistantMessage(content=UNANSWERED_ANSWER))
-                    unanswered += 1
-                if turn.get("role") == "user_query" and messages and turn.get("attachments"):
-                    attachments.attach(messages[0], index, turn, whole=whole and position == 0)
-                _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
-                after_answer = after_answer and turn.get("role") != "bot_response"
-
-        # The run adds the current request next.
-        if _ends_on_open_question(history):
-            history.append(AssistantMessage(content=UNANSWERED_ANSWER))
-            unanswered += 1
-
-        # After the fold: folding an approval answer relies on its repeated id.
-        dedupe_tool_call_ids(history, set())
+        history = await history_messages(
+            previous_conversations, context, message_budget_tokens=message_budget_tokens,
+        )
         for message in history:
             await ctx.add(message)
         agent.seed_context(ctx)
-        replayed = count_tokens(history)
-        statuses = [turn.get("status") for turn in previous_conversations if turn.get("role") == "bot_response"]
-        logger.info(
-            "history_seeded run_id=%s conversation_id=%s turns=%d exchanges=%d whole=%d reduced=%d omitted=%d "
-            "messages=%d tokens=%d share=%d failed=%d stopped=%d unanswered=%d "
-            "attachment_chars=%d attachments_truncated=%d attachments_named=%d",
-            context.run_id, context.conversation_id, len(previous_conversations), len(exchanges),
-            len(plan.whole), plan.reduced, plan.omitted, len(history), replayed, history_tokens,
-            statuses.count(FAILED), statuses.count(STOPPED), unanswered,
-            attachments.chars_rendered(plan.whole), attachments.truncated(plan.whole),
-            attachments.named,
-        )
-        return replayed
+        return count_tokens(history)
 
 
 def _message_budget_tokens(spec: AgentSpec, runtime: AgentRuntime, goal: Any) -> int:  # noqa: ANN401
@@ -1358,6 +1382,7 @@ class _HistoryAttachments:
         if question.get("role") != "user_query" or not attachments or not context.blob_store:
             return
         from app.utils.image_admission import admission_from_state
+        from app.utils.record_access import attachment_reader_id
 
         state = context.tool_state
         outcomes: list[Any] = []
@@ -1367,7 +1392,7 @@ class _HistoryAttachments:
             is_multimodal_llm=context.is_multimodal_llm,
             image_budget=state["image_budget"],
             image_admission=admission_from_state(state),
-            user_id=context.user_id,
+            user_id=attachment_reader_id(context.user_id, context.user_info),
             graph_provider=context.graph_provider,
             is_service_account=context.is_service_account,
             render_budget=self._budget,
@@ -1429,6 +1454,92 @@ def _attached_documents(text: str) -> str:
 def _opens_an_exchange(turn: dict[str, Any]) -> bool:
     """A question the person asked: not an answer to a card or an approval."""
     return _opens_a_new_question(turn) and not is_tool_approval_resume_query(str(turn.get("content") or ""))
+
+
+async def history_messages(
+    previous_conversations: list[dict[str, Any]],
+    context: "AgentContext",
+    *,
+    message_budget_tokens: int | None = None,
+) -> list[Message]:
+    """Prior turns as the messages the model sees before this request's goal —
+    the agent-loop equivalent of `nodes.py::_build_conversation_messages`. A
+    durable run renders the history it imported with this same function.
+
+    What is replayed fits the history share of `message_budget_tokens`
+    (`history_window.py`): the newest exchanges whole, older ones reduced
+    to question, answer opening and tool names, the oldest left out with a
+    note saying how many. Document attachments of exchanges kept whole are
+    rendered from blob storage within the history's attachment share;
+    others are named with how to read them. ``virtual_record_id_to_result``
+    and ``citation_ref_mapper`` are populated as a side-effect so
+    ``dynamic_fetch_full_record`` remains available.
+
+    `message_budget_tokens` is the budget the run's model calls will have;
+    without it the model's window alone sizes it.
+    """
+    from app.agent_loop_lib.core.tokens import count_tokens
+    from app.utils.render_budget import RenderBudget
+
+    if message_budget_tokens is None:
+        message_budget_tokens = default_message_budget(context)
+    history_tokens = share_tokens(message_budget_tokens, HISTORY_SHARE)
+    exchanges = split_exchanges(previous_conversations, _opens_an_exchange)
+
+    attachments = _HistoryAttachments(context, RenderBudget(max_chars=earlier_attachment_chars(history_tokens)))
+    # Newest first, and only as far back as exchanges could still be kept
+    # whole: when the share runs out it is the oldest files that are named,
+    # and an exchange that will be reduced costs no blob read or image slot.
+    spent = 0
+    for index in range(len(exchanges) - 1, -1, -1):
+        spent += exchange_tokens(exchanges[index])
+        if spent > history_tokens:
+            break
+        await attachments.render(index, exchanges[index])
+        spent += attachments.tokens(index)
+    plan = plan_history(exchanges, history_tokens, [attachments.tokens(i) for i in range(len(exchanges))])
+
+    history: list[Message] = []
+    if plan.omitted:
+        history.append(UserMessage(content=omitted_note(plan.omitted), injected=True))
+    tool_results_at: dict[str, int] = {}
+    after_answer = False
+    unanswered = 0
+    for index in plan.kept:
+        whole = index in plan.whole
+        for position, turn in enumerate(exchanges[index] if whole else reduce_exchange(exchanges[index])):
+            if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
+                _drop_closing_text(history)
+                after_answer = True
+                continue
+            messages = _convert_conversation_turn(turn)
+            if messages and _opens_a_new_question(turn) and _ends_on_open_question(history):
+                history.append(AssistantMessage(content=UNANSWERED_ANSWER))
+                unanswered += 1
+            if turn.get("role") == "user_query" and messages and turn.get("attachments"):
+                attachments.attach(messages[0], index, turn, whole=whole and position == 0)
+            _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
+            after_answer = after_answer and turn.get("role") != "bot_response"
+
+    # The run adds the current request next.
+    if _ends_on_open_question(history):
+        history.append(AssistantMessage(content=UNANSWERED_ANSWER))
+        unanswered += 1
+
+    # After the fold: folding an approval answer relies on its repeated id.
+    dedupe_tool_call_ids(history, set())
+    statuses = [turn.get("status") for turn in previous_conversations if turn.get("role") == "bot_response"]
+    logger.info(
+        "history_seeded run_id=%s conversation_id=%s turns=%d exchanges=%d whole=%d reduced=%d omitted=%d "
+        "messages=%d tokens=%d share=%d failed=%d stopped=%d unanswered=%d "
+        "attachment_chars=%d attachments_truncated=%d attachments_named=%d",
+        context.run_id, context.conversation_id, len(previous_conversations), len(exchanges),
+        len(plan.whole), plan.reduced, plan.omitted, len(history), count_tokens(history), history_tokens,
+        statuses.count(FAILED), statuses.count(STOPPED), unanswered,
+        attachments.chars_rendered(plan.whole), attachments.truncated(plan.whole),
+        attachments.named,
+    )
+    return history
 
 
 def _inject_images_into_message(
@@ -1981,4 +2092,4 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
     return messages
 
 
-__all__ = ["PipesHubAgentFactory"]
+__all__ = ["PipesHubAgentFactory", "history_messages"]

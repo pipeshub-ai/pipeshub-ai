@@ -144,6 +144,27 @@ describe('Mongo store fence', () => {
     }
   })
 
+  it('a newer read still in flight when a draining answer lands does not re-trust active either', async () => {
+    setFenceTrustMsForTests(60000)
+    try {
+      const resolvers: Array<(d: { mode: string }) => void> = []
+      let reads = 0
+      const db = { collection: () => ({ findOne: () => new Promise((res) => { reads += 1; resolvers.push(res as never) }) }) }
+      const older = assertMongoWritable(db as never)
+      const newer = assertMongoWritable(db as never)
+      resolvers[0]!({ mode: 'draining' }) // the older read sees the move
+      await older
+      resolvers[1]!({ mode: 'active' }) // the newer one was served before it, and answers last
+      await newer
+      await Promise.resolve(); const third = assertMongoWritable(db as never)
+      resolvers[2]!({ mode: 'draining' })
+      await third
+      expect(reads).to.equal(3) // the stale active was not trusted: the next write read the fence again
+    } finally {
+      setFenceTrustMsForTests(0)
+    }
+  })
+
   it('a missing fence document means active', async () => {
     const { state, c } = setup(null)
     await c.updateOne({ a: 1 }, { $set: { b: 1 } })
@@ -262,5 +283,59 @@ describe('Mongo store fence', () => {
       process.env.DOC_STORE_FENCE = 'on'
     }
     expect(fresh().mongoFenceArmed()).to.equal(true)
+  })
+
+  describe('consumers pause while the store is moved (F3)', () => {
+    // the fence a consumer reads: the same collection API the wrapped driver reads it through
+    // the module stays cached for later suites in this worker: leave no instance pointing a consumer at a frozen fence
+    const opened: Array<ReturnType<typeof fresh>> = []
+    afterEach(() => { for (const f of opened.splice(0)) f.setConsumerPauseDb(undefined) })
+    after(() => { delete require.cache[require.resolve('../../../src/libs/repositories/fence')] })
+    const armed = (state: { fence: Fence; log: unknown[][] }) => {
+      const f = fresh()
+      opened.push(f)
+      f.setFenceTrustMsForTests(0)
+      f.installMongoFence(makeCollectionClass(state))
+      f.setConsumerPauseDb(new (makeCollectionClass(state))('x').s.db as never)
+      return f
+    }
+
+    it('a consumer holds off while the fence is draining, read-only or retired, and goes on when it is active or missing', async () => {
+      for (const [fence, moving] of [[{ mode: 'draining' }, true], [{ mode: 'readonly' }, true], [{ mode: 'retired' }, true], [{ mode: 'active' }, false], [null, false]] as const) {
+        const f = armed({ fence, log: [] })
+        expect(await f.mongoStoreMoving(), JSON.stringify(fence)).to.equal(moving)
+      }
+    })
+
+    it('does not hold off when the fence is off in this process, or when the fence cannot be read (writes are refused then anyway)', async () => {
+      const off = fresh()
+      opened.push(off)
+      off.setConsumerPauseDb(new (makeCollectionClass({ fence: { mode: 'readonly' }, log: [] }))('x').s.db as never)
+      expect(await off.mongoStoreMoving()).to.equal(false)
+      expect(await armed({ fence: new Error('down'), log: [] }).mongoStoreMoving()).to.equal(false)
+    })
+
+    it('a pause holds through a failed fence read and ends only on active', async () => {
+      const state = { fence: { mode: 'draining' } as Fence, log: [] as unknown[][] }
+      const f = armed(state)
+      setTimeout(() => { state.fence = new Error('primary stepping down') }, 15)
+      setTimeout(() => { state.fence = { mode: 'active' } }, 60)
+      const t0 = Date.now()
+      expect(await f.untilMongoWritable(() => true, 5)).to.equal(true)
+      expect(Date.now() - t0, 'released at active, not at the failed read').to.be.at.least(55)
+      expect(state.log.filter((l) => l[0] === 'fence-read').length).to.be.greaterThan(4)
+    })
+
+    it('waits until the store is writable again, and stops waiting when the consumer stops', async () => {
+      const state = { fence: { mode: 'readonly' } as Fence, log: [] as unknown[][] }
+      const f = armed(state)
+      setTimeout(() => { state.fence = { mode: 'active' } }, 30)
+      expect(await f.untilMongoWritable(() => true, 5)).to.equal(true)
+      expect(state.log.filter((l) => l[0] === 'fence-read').length).to.be.greaterThan(1)
+      state.fence = { mode: 'retired' }
+      let running = true
+      setTimeout(() => { running = false }, 30)
+      expect(await f.untilMongoWritable(() => running, 5)).to.equal(false)
+    })
   })
 })

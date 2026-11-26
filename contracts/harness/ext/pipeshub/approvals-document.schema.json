@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/approvals-document.schema.json",
+  "title": "PipeshubApprovalsDocument",
+  "description": "The configuration document /services/agentHarness/approvals (P2.6c). The Python worker reads its rule layers (default, then agents[agentKey]; each only narrows), written by the operator. An edition's overlay may add top-level sections (x-extensible), each a map of orgId to that org's entry, read through the edition's own rules. An unknown top-level key or a section that is not an object makes the document invalid: the worker fails closed (writes ask). An entry the rules schema refuses fails closed for that entry only.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-extensible": true,
+  "properties": {
+    "default": {
+      "description": "Every org of the deployment (operator only).",
+      "$ref": "../../core/approval-rules.schema.json"
+    },
+    "agents": {
+      "description": "Deployment-wide per-agent rules (P2.6c, operator only).",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 128,
+        "not": {
+          "const": "__proto__"
+        }
+      },
+      "additionalProperties": {
+        "$ref": "../../core/approval-rules.schema.json"
+      }
+    }
+  },
+  "examples": [
+    {},
+    {
+      "default": {
+        "writes": "ask"
+      }
+    },
+    {
+      "default": {
+        "writes": "ask"
+      },
+      "agents": {
+        "agent-a": {
+          "tools": {
+            "jira.create_issue": "deny"
+          }
+        }
+      }
+    }
+  ]
+}

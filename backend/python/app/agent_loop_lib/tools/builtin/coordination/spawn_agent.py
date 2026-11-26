@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.exceptions import (
@@ -27,6 +27,8 @@ from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_SPAWN_BATCH
 from app.utils.error_class import failure_reason, log_failure
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.agent.spec import AgentSpec
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -223,6 +225,10 @@ class SpawnAgentTool(Tool):
     `run_ctx`/`_detached_tasks`/`_pending_spawn_tasks`, none of which a
     stateless `Tool` instance shared across the whole registry can hold.
     """
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on a child agent loop, every step of which is bounded on its own.
+        return None
 
     @property
     def log_kind(self) -> str:

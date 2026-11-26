@@ -7,6 +7,7 @@ windows, from a boundary (keyset), so a page never scans the connector.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -115,6 +116,33 @@ def after(field_: str, sort_dir: str, direction: str, boundary: dict[str, Any], 
 # the planner from joining the test against the organisation's rows). Of those records the browse keeps the ones whose arrow is on (``_kh_browse``): a child is no promise the viewer may open it.
 WITH_CHILDREN = ("(r.kind = 2 OR r.folder OR EXISTS (SELECT 1 FROM kg.records k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind IN (2, 3) AND NOT k.deleted AND NOT k.alien OFFSET 0) "
                  "OR EXISTS (SELECT 1 FROM kg.links k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind = 1 OFFSET 0))")
+
+
+# The graph nodes of the connector ``$1`` a name search can match (``graph.records_by_name``, graph_0022: a trigram index of the nodes' names): ``$2`` a pattern
+# of :func:`name_pattern`, ``$3`` nodes at most.
+NAME_NODES = "/* pipeshub:kg.listing_name_nodes */ SELECT coll, node_id FROM graph.records_by_name($1, $2, $3)"
+# The keys ('code:id') of the connector's nodes whose changes the projection has not taken yet (the capture logs a node under its connector, and under the
+# one it left), ``$3`` at most: their kg rows may still hold the names the graph no longer has, which the listing's search reads.
+NAME_PENDING = ("/* pipeshub:kg.listing_name_pending */ SELECT e AS key FROM kg.graph_changes c CROSS JOIN LATERAL unnest(c.ends) AS e "
+                "WHERE c.org_id = $1 AND c.app_id = $2 LIMIT $3")
+# Their rows in kg (``$2`` the kg codes of their collections, ``$3`` their ids), each a probe of its key (OFFSET 0): as one join with the function the plan
+# hashed the organisation's rows.
+NAME_ROWS = ("/* pipeshub:kg.listing_name_rows */ SELECT r.sk FROM unnest($2::smallint[], $3::text[]) AS g(coll, id) "
+             "CROSS JOIN LATERAL (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.coll = g.coll AND r.id = g.id OFFSET 0) r")
+# The characters a pattern is made of: those that only themselves and their ASCII capital lowercase to (in Python, which writes name_key, and in any
+# PostgreSQL locale but a Turkish one): a capital I with a dot and the Kelvin sign lowercase to "i" and "k" in Python, so those two are left out.
+_PIECE = re.compile("[0-9a-hjl-z]+")
+
+
+def name_pattern(query: str | None) -> str | None:
+    """The ILIKE pattern of ``graph.records_by_name`` for a name search: the query's key (as ``filters_sql`` compares it) cut to its runs of :data:`_PIECE` characters,
+    in order. Every name whose key holds the query's key holds those runs in that order, whatever its case, so the pattern finds every row the search keeps
+    (and some it does not; the search's own condition decides). None when no run has three characters (the index has no trigram to look up: the listing then walks)."""
+    if not query:
+        return None
+    pieces = _PIECE.findall(name_query_key(query))
+    pattern = "%" + "%".join(pieces) + "%"
+    return pattern if any(len(p) >= 3 for p in pieces) and len(pattern) <= 2000 else None
 
 
 def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> str:

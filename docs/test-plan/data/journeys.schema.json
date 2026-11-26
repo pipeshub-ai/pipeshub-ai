@@ -1,0 +1,21 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "pipeshub/docs/test-plan/data/journeys.schema.json",
+ "title": "R31-JOURNEY feature registry (ADR-TEST-01)",
+ "description": "scripts/journey_matrix.py --check validates journeys.json against the required keys here (standard library only: required keys and types, then its own cross-checks).",
+ "type": "object",
+ "required": ["schemaVersion", "features", "paths", "shapes", "codeKeys", "rules", "tests", "gaps", "mustRun", "knownRed", "tiers"],
+ "properties": {
+  "schemaVersion": {"const": 1},
+  "features": {"type": "array", "items": {"type": "object", "required": ["id", "label", "area"]}},
+  "paths": {"type": "array", "items": {"type": "object", "required": ["id", "label", "shapes", "primaryShape", "code"]}},
+  "shapes": {"type": "array", "items": {"type": "object", "required": ["id", "label", "fixture"]}},
+  "codeKeys": {"type": "object", "required": ["toolSources", "executorKinds", "runKinds", "surfaces", "via", "engines"]},
+  "rules": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "features", "paths", "shapes", "reason"]}},
+  "tests": {"type": "array", "items": {"type": "object", "required": ["ref", "cells"]}},
+  "gaps": {"type": "array", "items": {"type": "object", "required": ["id", "features", "paths", "shapes", "why", "waitsOn"]}},
+  "mustRun": {"type": "array", "items": {"type": "object", "required": ["id", "title", "cells", "evidence"]}},
+  "knownRed": {"type": "array", "items": {"type": "object", "required": ["id", "journeys", "features", "why"]}},
+  "tiers": {"type": "object", "required": ["gate", "full"]}
+ }
+}

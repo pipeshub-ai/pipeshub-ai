@@ -25,10 +25,14 @@ jobs:
     container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build tools
         run: |
           dnf install -y -q perl-IPC-Cmd perl-Time-Piece perl-Pod-Html zlib-devel flex bison
-          /opt/python/cp312-cp312/bin/pip install -q "uv==$(sed -n 's/^UV_VERSION=//p' deployment/native/versions.env)"
+          # uv from the hashed tools lock (SEC-SC-07); it pins the UV_VERSION of deployment/native/versions.env
+          PYTHON=/opt/python/cp312-cp312/bin/python sh backend/python/requirements/install.sh tools
+          grep -q "^uv==$(sed -n 's/^UV_VERSION=//p' deployment/native/versions.env) " backend/python/requirements/tools.lock
           ln -sf /opt/python/cp312-cp312/bin/uv /usr/local/bin/uv
           # PostgreSQL's initdb and server refuse to run as root
           useradd -m builder && chown -R builder "$GITHUB_WORKSPACE"
@@ -47,6 +51,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: uv version
         id: uv
         run: echo "version=$(sed -n 's/^UV_VERSION=//p' deployment/native/versions.env)" >> "$GITHUB_OUTPUT"

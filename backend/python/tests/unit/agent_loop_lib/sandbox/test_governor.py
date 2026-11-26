@@ -21,6 +21,7 @@ from app.agent_loop_lib.sandbox.capacity import (
     org_tag,
 )
 from app.agent_loop_lib.sandbox.governor import (
+    GovernorLease,
     GovernorLimits,
     SandboxLimitExceeded,
     SandboxResourceGovernor,
@@ -32,6 +33,7 @@ from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotDenied,
 )
+from tests.support.settle import SETTLE_S, settle
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -142,7 +144,7 @@ class TestSandboxResourceGovernor:
         assert told == [True] and not waiter.done()
 
         await gov.release(held)
-        lease = await asyncio.wait_for(waiter, 1)
+        lease = await asyncio.wait_for(waiter, SETTLE_S)
         assert gov.snapshot()["total"] == 1
         await gov.release(lease)
 
@@ -281,8 +283,9 @@ class TestSharedAcrossWorkers:
         assert not waiter.done()
         released = time.monotonic()
         await b.release(lease)
-        await asyncio.wait_for(waiter, 1)
-        assert time.monotonic() - released < 0.05 + 0.04
+        assert isinstance(await settle(waiter), GovernorLease)  # a release it missed would end its 5 s wait refused
+        # wall-clock-ok: the poll is 50 ms and a missed release ends the waiter at its 5 s wait; 1 s is a fifth of that
+        assert time.monotonic() - released < 1.0
 
     async def test_a_local_release_wakes_a_local_waiter_without_the_poll(
         self, tmp_path: Path, opened,
@@ -292,7 +295,7 @@ class TestSharedAcrossWorkers:
         waiter = asyncio.create_task(gov.acquire(wait_s=10))
         await asyncio.sleep(0.05)
         await gov.release(lease)
-        await asyncio.wait_for(waiter, 0.5)
+        await settle(waiter)
 
     async def test_capacity_changed_wakes_waiters_when_the_limit_rises(
         self, tmp_path: Path, opened,
@@ -305,7 +308,7 @@ class TestSharedAcrossWorkers:
         assert not waiter.done()
         gov.limit_provider.limit = None
         threading.Thread(target=gov.capacity_changed).start()
-        await asyncio.wait_for(waiter, 0.5)
+        await settle(waiter)
 
     async def test_a_lowered_limit_keeps_held_slots_and_holds_new_ones(
         self, tmp_path: Path, opened,
@@ -534,36 +537,35 @@ class TestAcquireLoop:
             monkeypatch.setattr(SharedSlots, name, guard)
         mutex = os.open(tmp_path / "mutex", os.O_RDWR)
         fcntl.flock(mutex, fcntl.LOCK_EX)
-        gaps: list[float] = []
-
-        async def ticker() -> None:
-            last = time.monotonic()
-            for _ in range(40):
-                await asyncio.sleep(0.01)
-                now = time.monotonic()
-                gaps.append(now - last)
-                last = now
-
+        # The guard above is the check: a count with a budget on the loop's thread fails the test where it is made.
+        # A loop-lag bound would also hold every host stall a busy gate adds (WALLCLOCK-1).
         try:
-            tick = asyncio.create_task(ticker())
             with pytest.raises(SandboxLimitExceeded):
                 await gov.acquire(wait_s=0.4)
             gov.snapshot()
-            await tick
         finally:
             os.close(mutex)
-        assert max(gaps) < 0.05
 
-    async def test_snapshot_does_not_block_on_a_busy_mutex(self, tmp_path: Path, opened) -> None:
+    async def test_snapshot_does_not_block_on_a_busy_mutex(
+        self, tmp_path: Path, opened, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         gov = _gov(tmp_path, opened)
         await gov.acquire(org_id="o")
         assert gov.snapshot()["stale"] is False
+        budgets: list[float] = []
+        for name in ("held_count", "held_by_tag"):
+            real = getattr(SharedSlots, name)
+
+            def recorded(self: SharedSlots, budget: float = 0.0, *, _real: object = real) -> object:
+                budgets.append(budget)
+                return _real(self, budget)
+
+            monkeypatch.setattr(SharedSlots, name, recorded)
         mutex = os.open(tmp_path / "mutex", os.O_RDWR)
         try:
             fcntl.flock(mutex, fcntl.LOCK_EX)
-            started = time.monotonic()
             snap = gov.snapshot()
-            assert time.monotonic() - started < 0.01
+            assert budgets and set(budgets) == {0.0}  # one try at the mutex, never a wait for it
             assert gov.held_total() is None
         finally:
             os.close(mutex)

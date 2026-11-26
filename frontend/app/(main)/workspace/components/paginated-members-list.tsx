@@ -85,7 +85,7 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
         size="2"
       >
         <TextField.Slot>
-          <MaterialIcon name="search" size={14} color="var(--slate-9)" />
+          <MaterialIcon name="search" size={14} color="var(--slate-11)" />
         </TextField.Slot>
       </TextField.Root>
 
@@ -110,7 +110,7 @@ export const PaginatedMembersList = React.forwardRef(function PaginatedMembersLi
           {isLoadingMore && (
             <Flex align="center" justify="center" gap="2" style={{ padding: 4 }}>
               <Spinner size={12} />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 Loading...
               </Text>
             </Flex>

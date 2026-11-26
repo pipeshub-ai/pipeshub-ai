@@ -255,7 +255,7 @@ async def test_a_fill_page_reads_at_most_a_page_of_records_even_when_none_carrie
         assert await pg_db.run(epoch) == 7
     assert await bf.fill_trash(pg_db, org, KB, page=2, after="b") == ("enforce", None)
     with ctx(org):
-        assert await pg_db.run(epoch) == CODE_EPOCH
+        assert await pg_db.run(epoch) == bf.TOPS_FROM                                     # the pc_top and the grant marks fills take it on to this code's epoch
 
 
 def _relabel_sql() -> str:
@@ -464,8 +464,8 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
     await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)        # what the rows above log is in kg already: page() reads the connector from kg
     with ctx(org):
         app = await pg_db.run(lambda tx: tx.fetchval("SELECT app_sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'e'", org))
-    cases = {"page": (kg_trash.PAGE, [app, KB, org, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, KB, org, True, 1790000000700, "pb-700", 26, 25]),
-             "count": (kg_trash.COUNT, [app, KB, org, False, None, None, 10001])}
+    cases = {"page": (kg_trash.PAGE, [app, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, True, 1790000000700, "pb-700", 26, 25]),
+             "count": (kg_trash.COUNT, [app, False, None, None, 10001])}
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE graph.nodes; ANALYZE graph.edges")

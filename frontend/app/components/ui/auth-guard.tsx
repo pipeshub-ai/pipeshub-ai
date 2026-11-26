@@ -23,7 +23,7 @@ export function LoadingScreen() {
 /**
  * Blocks rendering of protected routes until auth state is resolved.
  *
- * - While the Zustand store is rehydrating from localStorage: shows a loading screen.
+ * - While the session is being restored: shows a loading screen.
  * - Once hydrated and not authenticated: redirects to /login (loading screen prevents any flash).
  * - Once hydrated and authenticated: renders children.
  */

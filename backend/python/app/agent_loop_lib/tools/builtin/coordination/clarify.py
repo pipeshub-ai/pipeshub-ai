@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.exceptions import ToolError
@@ -9,10 +9,17 @@ from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 class ClarifyTool(Tool):
     """Runs via `SpecialRouteHandler.handle()` (below) — pauses for HIL via
     `agent/observability.py:handle_clarify`. Never executed directly."""
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on a person's answer, every step of which is bounded on its own.
+        return None
 
     @property
     def name(self) -> str:

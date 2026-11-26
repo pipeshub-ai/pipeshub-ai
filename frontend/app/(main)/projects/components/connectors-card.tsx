@@ -227,7 +227,7 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
 
   if (isLoading) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('common.loading', { defaultValue: 'Loading…' })}
       </Text>
     );
@@ -243,7 +243,7 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
   }
   if (connectors.length === 0 && savedNodes.length === 0) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('chat.projects.workspace.noConnectorsAvailable', {
           defaultValue: 'No connectors to add yet.',
         })}
@@ -253,7 +253,7 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
 
   return (
     <Flex direction="column" gap="1">
-      <Text size="1" style={{ color: 'var(--slate-10)', marginBottom: 'var(--space-1)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', marginBottom: 'var(--space-1)' }}>
         {t('chat.projects.workspace.connectorsSubtitle', {
           defaultValue: 'Chats in this project search only these connectors.',
         })}

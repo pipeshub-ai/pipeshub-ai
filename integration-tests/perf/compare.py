@@ -1,9 +1,10 @@
 """Compare a benchmark result with a committed baseline.
 
 Handles the benchmarks in ``perf/``: ``indexing`` (bench_indexing.py), ``costclass`` (bench_costclass.py),
-``query`` (bench_query.py), ``scale`` (bench_scale.py) and ``load``
-(bench_load.py). The result's own ``benchmark`` field picks the checks, and two
-results of different benchmarks are never compared.
+``query`` (bench_query.py), ``scale`` (bench_scale.py), ``load``
+(bench_load.py) and ``harness`` (bench_harness.py). The result's own
+``benchmark`` field picks the checks, and two results of different benchmarks
+are never compared.
 
 Reports only: it exits 0 whatever it finds unless ``--fail-on-regression`` is
 passed, so a noisy week cannot block anyone while the thresholds are still
@@ -86,6 +87,24 @@ LOAD_CHECKS: tuple[Check, ...] = (
     Check("Successful operations/min", lambda m: m.get("succeeded_per_minute"), -1, 0.20, "", gates=False),
 )
 
+
+def _route(metrics: dict[str, Any], route: str, measure: str, pct: str) -> float | None:
+    value = ((metrics.get(route) or {}).get(measure) or {}).get(pct)
+    return value if isinstance(value, (int, float)) else None
+
+
+# The non-model milliseconds of each route; SLO #2's own gate is the ratio
+# inside one run (bench_harness.py), these catch a route drifting week to week.
+HARNESS_CHECKS: tuple[Check, ...] = tuple(
+    Check(f"{route} {name}", lambda m, r=route, k=key, p=pct: _route(m, r, k, p), +1, 0.30, " ms")
+    for route in ("harness", "legacy")
+    for name, key, pct in (
+        ("TTFT p50", "ttft_nonmodel", "p50_ms"),
+        ("TTFT p95", "ttft_nonmodel", "p95_ms"),
+        ("turn done p50", "done_nonmodel", "p50_ms"),
+    )
+)
+
 # Fields that must match for the numbers to be comparable at all.
 _SHARED_COMPARABLE = (
     ("label", lambda r: r["environment"]["label"]),
@@ -111,6 +130,14 @@ LOAD_COMPARABLE = _SHARED_COMPARABLE + (
     ("think time", lambda r: r["profile"]["think_time_seconds"]),
     ("question set", lambda r: r["profile"]["question_set"]),
     ("operation mix", lambda r: r["profile"]["mix"]),
+)
+
+HARNESS_COMPARABLE = (
+    ("label", lambda r: r["environment"]["label"]),
+    ("profile", lambda r: r["profile"]),
+    ("message broker", lambda r: (r["environment"].get("deployment") or {}).get("messageBrokerType")),
+    ("model latency", lambda r: r["environment"]["model_latency_ms"]),
+    ("chunk interval", lambda r: r["environment"].get("chunk_interval_ms")),
 )
 
 # The cost-class bench (bench_costclass.py): numbers are per corpus kind, and only comparable when the
@@ -163,6 +190,7 @@ BENCHMARKS: dict[str, tuple[tuple[Check, ...], tuple[Any, ...]]] = {
     # 100,000-file one. Stress runs are deliberately absent: their result is a
     # list of pass-or-fail verdicts, not numbers to compare.
     "scale": (INDEXING_CHECKS, INDEXING_COMPARABLE),
+    "harness": (HARNESS_CHECKS, HARNESS_COMPARABLE),
     "costclass": ((), COSTCLASS_COMPARABLE),
 }
 
@@ -333,6 +361,10 @@ def _failure_row(benchmark: str, base_m: dict[str, Any], cur_m: dict[str, Any]) 
         if base is None or cur is None:
             return Row("Error rate", base, cur, None, False, "not measured on one side", "", False)
         return Row("Error rate", base, cur, None, cur - base > 0.01, "flags a rise of over 1 point", "", False)
+    if benchmark == "harness":
+        base = sum(route.get("samples", 0) - route.get("ok", 0) for route in base_m.values())
+        cur = sum(route.get("samples", 0) - route.get("ok", 0) for route in cur_m.values())
+        return Row("Failed turns", base, cur, None, cur > base, "flags any increase", "")
     if benchmark == "query":
         base = sum(op.get("errors", 0) for op in (base_m.get("operations") or {}).values())
         cur = sum(op.get("errors", 0) for op in (cur_m.get("operations") or {}).values())

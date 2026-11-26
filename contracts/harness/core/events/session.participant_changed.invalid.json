@@ -1,0 +1,128 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_left",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_owner1",
+        "subject": "p_user2",
+        "role": "viewer",
+        "prevRole": "none"
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only node writes session.participant_changed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "shared",
+      "data": {
+        "by": "p_owner1",
+        "subject": "p_user2",
+        "role": "viewer",
+        "prevRole": "none"
+      }
+    }
+  },
+  {
+    "description": "role is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_owner1",
+        "subject": "p_user2",
+        "prevRole": "none"
+      }
+    }
+  },
+  {
+    "description": "unknown role",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_owner1",
+        "subject": "p_user2",
+        "role": "admin",
+        "prevRole": "none"
+      }
+    }
+  },
+  {
+    "description": "by is a principal ref",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "user-1",
+        "subject": "p_user2",
+        "role": "viewer",
+        "prevRole": "none"
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.participant_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_owner1",
+        "subject": "p_user2",
+        "role": "viewer",
+        "prevRole": "none",
+        "email": "a@b.c"
+      }
+    }
+  }
+]

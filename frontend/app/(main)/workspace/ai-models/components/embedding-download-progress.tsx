@@ -147,7 +147,7 @@ export function EmbeddingDownloadProgress({
             <MaterialIcon
               name={isFailed ? 'error' : 'downloading'}
               size={24}
-              color={isFailed ? 'var(--red-10)' : 'var(--jade-10)'}
+              color={isFailed ? 'var(--red-11)' : 'var(--jade-11)'}
             />
             <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
               <Text size="4" weight="bold">
@@ -185,7 +185,7 @@ export function EmbeddingDownloadProgress({
           )}
 
           {!isFailed && (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.aiModels.downloadDialogHint')}
             </Text>
           )}

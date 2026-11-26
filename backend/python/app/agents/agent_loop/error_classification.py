@@ -112,6 +112,7 @@ _SERVER_ERROR_HINTS = (
     "overloaded",
 )
 _TIMEOUT_HINTS = ("timeout", "timed out")
+_RECONCILIATION_HINT = "needs_reconciliation:"
 
 _USER_MESSAGES: dict[str, str] = {
     "content_filter": (
@@ -154,7 +155,30 @@ _USER_MESSAGES: dict[str, str] = {
         "Something went wrong while answering. Please try again, and if it keeps "
         "happening, contact your workspace admin."
     ),
+    "needs_reconciliation": (
+        "A tool action may have completed before its result was recorded. "
+        "An administrator must reconcile the action before this run can continue."
+    ),
+    # The run's own budget stopped it (P6.5, LC2FIX): the model call was never made, so no provider failed.
+    "budget_exhausted": "This reply stopped because it reached its spending limit.",
+    "budget_insufficient": (
+        "This reply stopped because its spending limit had too little left for the next step."
+    ),
 }
+
+
+def register_answer_error(code: str, message: str) -> None:
+    """An error answer code an edition adds (its overlay of ``AnswerErrorCode``) with the words it answers in, for a
+    model call that fails with it (``model_call_failure_message``). A code this build has is refused."""
+    if code in _USER_MESSAGES and _USER_MESSAGES[code] != message:
+        raise ValueError(f"error answer {code!r} is already defined")
+    _USER_MESSAGES[code] = message
+
+# A run whose org's MCP servers could not be listed (CPD-7 FB-3): the web app words the code (chatStream.runError).
+MCP_UNAVAILABLE = "mcp_unavailable"
+_MCP_UNAVAILABLE_MESSAGE = (
+    "MCP servers can't be reached right now. Try again in a minute; if it keeps happening, ask your admin."
+)
 
 # An unclassified failure of the model call itself still tells the user more
 # than "something went wrong": the model call, not the search, failed.
@@ -258,7 +282,9 @@ def classify_error(error_msg: str) -> tuple[str, str]:
 
     lower = error_msg.lower()
 
-    if any(hint in lower for hint in _CONTENT_FILTER_HINTS):
+    if _RECONCILIATION_HINT in lower:
+        error_code = "needs_reconciliation"
+    elif any(hint in lower for hint in _CONTENT_FILTER_HINTS):
         error_code = "content_filter"
     elif any(hint in lower for hint in _REQUEST_TOO_LARGE_HINTS):
         error_code = "request_too_large"
@@ -307,12 +333,19 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     """
     from starlette.exceptions import HTTPException
 
-    from app.utils.llm import (
-        LLMNotConfiguredError,  # heavy module; avoid import at load
+    from app.agents.mcp.service import MCPInstancesUnavailable
+    from app.utils.llm import (  # heavy module; avoid import at load
+        LLMNotConfiguredError,
+        ModelNotAllowedError,
     )
 
+    if isinstance(exc, ModelNotAllowedError) and exc.answer_code is not None:
+        # The rule that refused the model names its own answer; its message says so and what to do.
+        return exc.answer_code, str(exc)
     if isinstance(exc, LLMNotConfiguredError):
         return "llm_not_configured", str(exc)
+    if isinstance(exc, MCPInstancesUnavailable):
+        return MCP_UNAVAILABLE, _MCP_UNAVAILABLE_MESSAGE
     if isinstance(exc, PermissionVerificationUnavailableError):
         # Not "no access": the graph could not say, so the reader is told to retry.
         from app.modules.retrieval.retrieval_service import (
@@ -330,6 +363,88 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
+def model_call_failure_message(code: str) -> str:
+    """The answer for a failed model call already classified as ``code`` (the durable model port journals the
+    class, not the provider's text): what ``classify_error`` answers for that call's error."""
+    return _MODEL_CALL_FAILED_MESSAGE if code == "unknown" else _USER_MESSAGES[code]
+
+
+# A provider's error type or code in an error body (OpenAI/Azure `server_error`, Anthropic `overloaded_error`/
+# `api_error`) for a failure on its side.
+_PROVIDER_SERVER_ERROR_TYPES = frozenset(
+    {"server_error", "api_error", "internal_error", "internal_server_error", "overloaded_error", "service_unavailable"}
+)
+# Network failures by class name, for SDKs that do not subclass OSError or httpx's types (FIX-R2 B4).
+_NETWORK_ERROR_NAME_HINTS = (
+    "connectionerror", "protocolerror", "readerror", "writeerror", "networkerror", "incompleteread",
+)
+
+
+def _body_fields(exc: BaseException) -> tuple[str, ...]:
+    values: list[object] = [getattr(exc, "type", None), getattr(exc, "code", None)]
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        values += [body.get("type"), body.get("code")]
+    return tuple(v.lower() for v in values if isinstance(v, str))
+
+
+def _class_of(exc: BaseException) -> str | None:
+    """What one exception in a failed model call's chain says it is, from its status, its provider body and its
+    type; ``None`` when it says nothing."""
+    from harness_core.models.transports.failures import NETWORK_ERRORS
+
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        if status == HTTPStatus.REQUEST_TIMEOUT:
+            return "timeout"
+        if status == HTTPStatus.TOO_MANY_REQUESTS:
+            return "rate_limit"
+        if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            return "server_error"
+    fields = _body_fields(exc)
+    if any(hint in field for field in fields for hint in _CONTENT_FILTER_HINTS):
+        return "content_filter"
+    # OpenAI reports an exhausted account inside an accepted Responses stream as an error event whose message
+    # ("You have no credits remaining") names no code; read as the stream's server error below, it was retried
+    # and answered "the provider is not responding" instead of the quota.
+    if any(field in _QUOTA_HINTS for field in fields):
+        return "quota_exceeded"
+    if any(field in _PROVIDER_SERVER_ERROR_TYPES for field in fields):
+        return "server_error"
+    name = type(exc).__name__.lower()
+    if isinstance(exc, TimeoutError) or "timeout" in name:
+        return "timeout"
+    if isinstance(exc, NETWORK_ERRORS) or any(hint in name for hint in _NETWORK_ERROR_NAME_HINTS):
+        return "server_error"
+    if name == "apierror" and status is None and hasattr(exc, "body"):
+        # The SDK's base error with no HTTP status is the provider's error event inside a stream it had already
+        # accepted (openai's `Stream`): a refused request is answered with a status before any stream starts.
+        return "server_error"
+    return None
+
+
+def classify_model_exception(exc: BaseException) -> str:
+    """The error code for a failed model call, as the durable model port acts on it (FIX-R2 B4).
+
+    ``classify_error`` reads the text, which says nothing for a failure whose class is in its type, status or
+    body: a server error reported inside an accepted stream, a dropped connection, a read with no message, a
+    529. Those read as ``unknown`` and failed the run with no retry; here the exception chain decides them.
+    A failure nothing in the chain explains stays ``unknown``.
+    """
+    code, _ = classify_error(str(exc))
+    if code != "unknown":
+        return code
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        found = _class_of(current)
+        if found is not None:
+            return found
+        current = current.__cause__ or current.__context__
+    return "unknown"
 def run_error_text(result: object) -> str | None:
     """What a run's user-facing answer is classified from: the raw text behind `AgentResult.error` (`error_detail`),
     else `error`. Duck-typed: a result that keeps no raw text (a stub, an older result type) gives its `error`."""
@@ -337,8 +452,11 @@ def run_error_text(result: object) -> str | None:
 
 
 __all__ = [
+    "MCP_UNAVAILABLE",
     "classify_error",
     "classify_exception",
+    "classify_model_exception",
+    "model_call_failure_message",
     "register_error_classifier",
     "run_error_text",
 ]
