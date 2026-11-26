@@ -403,6 +403,7 @@ async def test_an_explicit_transaction_the_system_role_and_a_failing_read_take_t
     assert await _ask(pg_provider, c.org, c.uid, c.ids, c.access, None) == want       # fails closed to the walk, not to nothing
 
 
+@pytest.mark.pg_table_lock           # LOCK TABLE kg.records
 async def test_a_blocked_or_slow_read_hands_the_call_to_the_walk_at_once(layer, pg_provider, pg_db, monkeypatch) -> None:
     c = await _case(layer, pg_provider, pg_db)
     want = await _ask(pg_provider, c.org, c.uid, c.ids, c.access, "0")
