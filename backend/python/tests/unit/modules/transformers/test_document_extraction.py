@@ -695,6 +695,9 @@ class TestExtractMetadata:
         assert result is not None
         assert result.summary == "Fallback summary text"
         mock_fallback.assert_awaited_once()
+        sent = mock_fallback.await_args.args[1]
+        assert "**Summary**" in sent[0]["text"]
+        assert sent[-1]["text"] == "Some content"
 
     @pytest.mark.asyncio
     async def test_extract_metadata_empty_content_returns_none(self) -> None:
