@@ -83,6 +83,8 @@ def is_credential_name(name: str) -> bool:
             return True
         if i and word == "key" and words[i - 1] in _KEY_QUALIFIERS:
             return True
+        if i and word == "json" and words[i - 1] == "account":
+            return True
         if i and word == "string" and words[i - 1] == "connection":
             return True
     return False

@@ -60,6 +60,24 @@ const CREDENTIAL_WORDS = new Set([
   'apikey',
 ]);
 
+// Log-only names; kept in step with LOG_CREDENTIAL_WORDS in backend/python/app/utils/sensitive_names.py.
+const LOG_CREDENTIAL_WORDS = new Set([
+  'authorization',
+  'cookie',
+  'passphrase',
+  'privatekey',
+  'accesskey',
+  'secretkey',
+  'connectionstring',
+]);
+
+/** Decoded claims and scope lists are not credentials and stay useful in logs. */
+export const SAFE_LOG_FIELD_NAMES = new Set([
+  'tokenpayload',
+  'tokenscopes',
+  'tokenusage',
+]);
+
 const SECRET_HEADERS = new Set([
   'authorization',
   'proxy-authorization',
@@ -83,6 +101,37 @@ const URL_HEADERS = new Set([
 const URL_LIKE_KEYS = new Set(['path', 'href']);
 
 export const REDACTED = '[REDACTED]';
+
+const KEY_QUALIFIERS = new Set([
+  'api',
+  'private',
+  'secret',
+  'access',
+  'auth',
+  'encryption',
+  'signing',
+  'master',
+  'account',
+]);
+
+/**
+ * Whether a metadata field name labels a credential (`apiKey`,
+ * `awsAccessSecretKey`, `serviceAccountJson`). Unlike a query name, a bare
+ * `state`, `code` or `key` is an ordinary field here.
+ */
+const isCredentialFieldName = (name: string): boolean => {
+  if (SAFE_LOG_FIELD_NAMES.has(name.toLowerCase().replace(/[^a-z0-9]/g, '')))
+    return false;
+  const words = keyWords(name);
+  return words.some(
+    (word, i) =>
+      CREDENTIAL_WORDS.has(word) ||
+      LOG_CREDENTIAL_WORDS.has(word) ||
+      (i > 0 && word === 'string' && words[i - 1] === 'connection') ||
+      (i > 0 && word === 'key' && KEY_QUALIFIERS.has(words[i - 1] ?? '')) ||
+      (i > 0 && word === 'json' && words[i - 1] === 'account'),
+  );
+};
 
 const PLACEHOLDER_ORIGIN = 'http://placeholder.invalid';
 
@@ -841,7 +890,12 @@ function redactContainer(
   let out: Record<string, unknown> | null = null;
   for (const [key, value] of Object.entries(meta)) {
     let next: unknown;
-    if (SECRET_HEADERS.has(key.toLowerCase()) && value != null) {
+    if (
+      (SECRET_HEADERS.has(key.toLowerCase()) || isCredentialFieldName(key)) &&
+      value != null &&
+      typeof value !== 'number' &&
+      typeof value !== 'boolean'
+    ) {
       next = REDACTED;
     } else if (
       isUrlLikeKey(key) &&

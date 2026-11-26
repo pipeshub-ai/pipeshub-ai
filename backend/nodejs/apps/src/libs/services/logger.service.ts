@@ -16,6 +16,7 @@ import {
   axiosErrorForLog,
   redactHeadersForLog,
   redactLogMetadata,
+  SAFE_LOG_FIELD_NAMES,
   redactQueryForLog,
   redactSecretsInText,
 } from '../utils/log-redaction.utils';
@@ -75,16 +76,9 @@ const SENSITIVE_KEY_FRAGMENTS = [
   'salt',
 ];
 
-/** Decoded claims and scope lists are not credentials and stay useful in logs. */
-const SAFE_KEY_EXCEPTIONS = new Set([
-  'tokenpayload',
-  'tokenscopes',
-  'tokenusage',
-]);
-
 function isSensitiveKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (SAFE_KEY_EXCEPTIONS.has(normalized)) {
+  if (SAFE_LOG_FIELD_NAMES.has(normalized)) {
     return false;
   }
   return SENSITIVE_KEY_FRAGMENTS.some((fragment) =>
