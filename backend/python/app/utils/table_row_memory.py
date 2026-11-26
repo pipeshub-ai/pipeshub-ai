@@ -137,7 +137,7 @@ def decode_stored_tables(raw: bytes) -> Optional[list[StoredTable]]:
         return None
     try:
         value = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the decoder allows, well under the size cap
         return None
     if not isinstance(value, list) or not all(_is_stored_table(table) for table in value):
         return None

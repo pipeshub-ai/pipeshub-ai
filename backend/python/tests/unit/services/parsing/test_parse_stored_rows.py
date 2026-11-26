@@ -48,8 +48,9 @@ class TestTheWireFormat:
 
     @pytest.mark.parametrize(
         "raw",
-        [b"not json", b'{"d": ["t"]}', b'[{"d": "t"}]', b'[{"d": [1]}]', b"[[]]", b'[{"d": ["\xff"]}]'],
-        ids=["not-json", "not-a-list", "text-not-a-list", "number-text", "table-not-a-dict", "bad-utf8"],
+        [b"not json", b'{"d": ["t"]}', b'[{"d": "t"}]', b'[{"d": [1]}]', b"[[]]", b'[{"d": ["\xff"]}]',
+         b"[" * 100_000 + b"0" + b"]" * 100_000],
+        ids=["not-json", "not-a-list", "text-not-a-list", "number-text", "table-not-a-dict", "bad-utf8", "nested-too-deep"],
     )
     def test_anything_else_is_refused(self, raw: bytes) -> None:
         assert decode_stored_tables(raw) is None
@@ -139,3 +140,16 @@ class TestTheRoute:
             assert _post(seen, json.dumps({"d": "not rows"}).encode()) == 200
         assert seen == [None]
         assert any("unreadable or too large" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_part_that_cannot_be_read_offers_nothing_and_the_parse_goes_on(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Kills: the optional part's read error escaping, so the file itself is never parsed.
+        from app.api.routes import parsing
+
+        part = MagicMock(read=AsyncMock(side_effect=OSError("spooled file gone")))
+        with caplog.at_level(logging.WARNING):
+            await parsing._offer_stored_rows(part, "w.pdf")
+        assert await previous_row_texts() is None
+        assert sum("unreadable or too large" in r.getMessage() for r in caplog.records) == 1

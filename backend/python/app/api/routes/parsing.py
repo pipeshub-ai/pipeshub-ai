@@ -330,7 +330,12 @@ async def _offer_stored_rows(part: UploadFile | None, record_name: str) -> None:
     keeps its text. Rows that cannot be read are ignored: the tables are described as on a first index."""
     if part is None:
         return
-    tables = decode_stored_tables(await part.read(MAX_SENT_ROW_BYTES + 1))
+    try:
+        raw = await part.read(MAX_SENT_ROW_BYTES + 1)
+    except OSError:
+        # The part is optional: a read that fails must not stop the parse of the file itself.
+        raw = b""
+    tables = decode_stored_tables(raw) if raw else None
     if tables is None:
         logger.warning("Parse of %s: the stored table rows sent with it are unreadable or too large; its tables are described again", record_name)
         return
