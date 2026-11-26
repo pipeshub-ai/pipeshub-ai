@@ -351,9 +351,12 @@ groups:
       - alert: PgBackupNoFullBackup
         # Before the first full backup there is no backup time to age, so PgBackupTooOld cannot fire: measure from the scheduler's first
         # start instead (pg-backup.sh records it once). The first full backup of a large database takes hours, well inside 1.5 schedules.
+        # Only while the repository can be read: if it cannot, whether a full backup exists is unknown, and
+        # PgBackupRepositoryUnreadable is the one alert.
         expr: >-
           (time() - pipeshub_pg_backup_scheduler_start_timestamp_seconds)
           / on (instance, job) pipeshub_pg_backup_schedule_seconds{type="full"} > 1.5
+          and on (instance, job) pipeshub_pg_backup_repository_up == 1
           unless on (instance, job) pipeshub_pg_backup_last_success_timestamp_seconds{type="full"}
         labels:
           severity: critical

@@ -54,7 +54,7 @@ services:
         hard: 4096
     # Says so loudly when the image predates the backup metrics: this file can be newer than an image built before it
     # (postgres/image-rev.txt).
-    command: ["sh", "-c", "[ -x /usr/local/bin/pg-backup-metrics.pl ] || echo 'pg-backup: STALE IMAGE: /usr/local/bin/pg-backup-metrics.pl is missing, so no backup metrics are served on 9188 and PgBackupMetricsMissing fires. Rebuild the PostgreSQL image (docker compose build pg-backup), then docker compose up -d' >&2; exec pg-backup.sh"]
+    command: ["sh", "-c", "[ -x /usr/local/bin/pg-backup-metrics.pl ] || echo 'pg-backup: STALE IMAGE: /usr/local/bin/pg-backup-metrics.pl is missing, so no backup metrics are served on 9188 and PgBackupMetricsMissing fires. Rebuild the PostgreSQL image (docker compose build postgres: the postgres service builds the image pg-backup runs), then docker compose up -d' >&2; exec pg-backup.sh"]
     init: true   # the scheduler stops at once on `docker compose stop` instead of after the 10 s timeout
     # On TERM the scheduler passes it to a running pgBackRest and waits for it to stop cleanly (pg-backup.sh, on_term) before the
     # runtime's SIGKILL; 60 s leaves room for it to stop and release its lock (the next backup resumes a stopped one, --resume).

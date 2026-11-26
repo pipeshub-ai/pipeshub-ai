@@ -380,6 +380,12 @@ tests:
         values: '604800x10'
       - series: 'pipeshub_pg_backup_schedule_seconds{instance="done", job="pg-backup", type="full"}'
         values: '604800x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="new", job="pg-backup"}'
+        values: '1x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="stuck", job="pg-backup"}'
+        values: '1x10'
+      - series: 'pipeshub_pg_backup_repository_up{instance="done", job="pg-backup"}'
+        values: '1x10'
     alert_rule_test:
       - eval_time: 10m
         alertname: PgBackupNoFullBackup
@@ -410,3 +416,23 @@ tests:
             exp_annotations:
               summary: "The backup repository cannot be read"
               description: "pgbackrest info has not read the repository on unreadable for 15 minutes (unreachable, wrong credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known."
+
+  - name: a repository never readable on a new volume
+    interval: 1m
+    input_series:
+      # nothing is known about the backups: only the unreadable repository is reported
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="never", job="pg-backup"}'
+        values: '-1209000x20'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="never", job="pg-backup", type="full"}'
+        values: '604800x20'
+      - series: 'pipeshub_pg_backup_repository_up{instance="never", job="pg-backup"}'
+        values: '0x20'
+    alert_rule_test:
+      - {eval_time: 20m, alertname: PgBackupNoFullBackup, exp_alerts: []}
+      - eval_time: 20m
+        alertname: PgBackupRepositoryUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: never, job: pg-backup}
+            exp_annotations:
+              summary: "The backup repository cannot be read"
+              description: "pgbackrest info has not read the repository on never for 15 minutes (unreachable, wrong credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known."

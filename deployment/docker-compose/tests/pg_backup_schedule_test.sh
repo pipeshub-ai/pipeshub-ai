@@ -12,6 +12,7 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2',
 cat > "$work/pgbackrest" <<'EOF'
 #!/bin/sh
 case "$*" in
+  *stanza-create*) [ -z "${STUB_STANZA_FAIL:-}" ] || exit 1 ;;   # STUB_STANZA_FAIL: the repository cannot be reached at all
   *info*) # STUB_INFO_FAIL_UNTIL_BACKUP: the repository cannot be read until a backup has run; STUB_INFO_FAIL: never
     if [ -n "${STUB_INFO_FAIL:-}" ]; then exit 1; fi
     if [ -n "${STUB_INFO_FAIL_UNTIL_BACKUP:-}" ] && ! grep -q backup "$STUB_LOG"; then exit 1; fi
@@ -93,6 +94,9 @@ rm -rf "$work/socket" "$work/tmp"; mkdir -p "$work/socket" "$work/tmp"; t0=$(dat
 started="$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)"
 check "metrics: the scheduler's start is exported from the first loop, before any backup or readable repository" \
   "$([ -n "$started" ] && [ "$started" -ge "$t0" ] && [ "$started" -le "$(date +%s)" ] && echo now)" now
+rm -f "$work/metrics.prom"; STUB_STANZA_FAIL=1 decide "$recent" >/dev/null 2>&1
+check "metrics: a repository that cannot even be set up reads as down from the first loop (not absent)" \
+  "$(head -1 "$work/log"):$(metric pipeshub_pg_backup_repository_up)" "sleep 300:0"
 decide "$recent" >/dev/null 2>&1
 check "metrics: a restart keeps the first start, so a first full backup that never completes keeps ageing" \
   "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" "$started"

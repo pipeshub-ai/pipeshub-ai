@@ -24,4 +24,14 @@ else
     "$(grep -c 'STALE IMAGE: /usr/local/bin/pg-backup-metrics.pl is missing' <<<"$out"):$(tail -1 <<<"$out")" "1:scheduler started"
 fi
 check "a stale image fails the healthcheck" "$(grep -c "&& test -x /usr/local/bin/pg-backup-metrics.pl']" docker-compose.postgres-backup.yml)" 1
+
+# the rebuild the message and the README name must build the image: only a service with a build section does (`docker compose build
+# <service>` builds nothing for one without, and pg-backup only reuses the postgres service's image)
+has_build() { awk -v svc="$1" '/^  [A-Za-z0-9_.-]+:/ { cur = $1; sub(":", "", cur) } cur == svc && /^    build:/ { found = 1 } END { exit !found }' docker-compose*.yml; }
+for where in docker-compose.postgres-backup.yml postgres/README.md; do
+  for svc in $(grep -o 'docker compose build [a-z0-9_-]*' "$where" | awk '{print $4}' | sort -u); do
+    check "$where: \`docker compose build $svc\` names a service that builds the image" "$(has_build "$svc" && echo builds)" builds
+  done
+done
+check "the stale-image message names a rebuild" "$(grep -c 'docker compose build ' docker-compose.postgres-backup.yml)" 1
 exit "$fail"
