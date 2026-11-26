@@ -133,12 +133,12 @@ async def _apply(tx: Tx, org: str, ids: list[str]) -> None:
             await tx.execute(ADD_COUNTS, org, *map(list, zip(*keys, strict=True)), [diff[k] for k in keys])
 
 
-async def drain(db: KernelDB, org: str) -> int:
-    """Recount what up to ``LOG_ROWS`` log rows of the org name, in one unit (while no app of the org is counted whole, drop the log instead); the rows taken (0: none,
-    or another unit holds the org)."""
-    async def go(tx: Tx) -> int:
+async def drain(db: KernelDB, org: str) -> int | None:
+    """Recount what up to ``LOG_ROWS`` log rows of the org name, in one unit (while no app of the org is counted whole, drop the log instead); the rows taken (0: none),
+    or None when another unit holds the org."""
+    async def go(tx: Tx) -> int | None:
         if not await _locked(tx, org):
-            return 0
+            return None
         if not await tx.fetchval(COUNTING, org):
             # Nothing is read from the counts, and the first count (seed) has not started: every page of it reads the graph after this unit commits (it takes the same
             # lock), so the log, every row of a new install's or a restore's whole graph, names nothing that count will miss. Once it has started, a record written
@@ -198,6 +198,8 @@ async def run(db: KernelDB, org: str, *, stop: asyncio.Event | None = None) -> i
         if stop is not None and stop.is_set():
             return done
         n = await drain(db, org)
+        if n is None:
+            return done         # another unit holds the org (it may be dropping the log): an app is counted on a later pass, once a drain here finds the log
         done += n
         if n < LOG_ROWS:
             break
