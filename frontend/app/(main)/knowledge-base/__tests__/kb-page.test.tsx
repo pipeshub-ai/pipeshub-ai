@@ -175,6 +175,14 @@ vi.mock('@/config', async (importOriginal) => {
   };
 });
 
+// The chat composer at the foot of the page reads the org's models and whether web search is set up when it
+// mounts. No case here answers those reads, and a failed one shows an error toast of its own.
+vi.mock('@/chat/hooks/use-web-search-configured', () => ({ useWebSearchConfigured: () => null }));
+vi.mock('@/chat/utils/fetch-models-for-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/chat/utils/fetch-models-for-context')>()),
+  fetchModelsForContext: async () => [],
+}));
+
 vi.mock('@/app/components/ui/lottie-loader', () => ({
   LottieLoader: ({ label }: { label?: string }) => <div role="status">{label ?? 'Loading'}</div>,
 }));
