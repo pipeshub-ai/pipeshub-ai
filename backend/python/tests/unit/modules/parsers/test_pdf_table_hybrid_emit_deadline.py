@@ -209,3 +209,22 @@ def test_an_error_text_never_carries_the_service_url(caplog: pytest.LogCaptureFi
     run_page(em, words, boxes)
     em.finish()
     assert "secret" not in caplog.text and "svc.internal" not in caplog.text
+
+
+def test_the_sync_client_ends_a_trickled_answer_at_its_timeout() -> None:
+    import time
+
+    import httpx
+
+    from app.modules.parsers.pdf.table_hybrid_sync_client import SyncTableClient
+
+    class Trickle(httpx.SyncByteStream):
+        def __iter__(self):  # noqa: ANN204
+            for _ in range(30):  # each chunk well inside any per-read timeout, the whole answer far past the budget
+                time.sleep(0.1)
+                yield b" "
+
+    c = SyncTableClient("http://svc", httpx.MockTransport(lambda r: httpx.Response(200, stream=Trickle())))
+    t0 = time.monotonic()
+    out = c.post_batch({"v": 1, "tables": []}, {"c0": b"x"}, deadline_ms=1000, timeout_s=0.5)
+    assert out.kind == "timeout" and time.monotonic() - t0 < 1.5

@@ -7,6 +7,7 @@ its own thread, so it uses ``httpx.Client``. An error text never carries the URL
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -28,14 +29,25 @@ class SyncTableClient:
 
     def post_batch(self, meta: dict[str, Any], files: dict[str, bytes], *, deadline_ms: int, timeout_s: float) -> BatchOutcome:
         timeout = httpx.Timeout(timeout_s, connect=min(CONNECT_TIMEOUT_S, timeout_s))
+        end = time.monotonic() + timeout_s
         try:
-            with httpx.Client(timeout=timeout, transport=self._transport) as http:
-                resp = http.post(
-                    f"{self._base_url}/table-structure",
-                    data={"meta": json.dumps(meta, separators=(",", ":"))},
-                    files={name: (f"{name}.png", data, "image/png") for name, data in files.items()},
-                    headers={DEADLINE_HEADER: str(max(0, int(deadline_ms)))},
-                )
+            with httpx.Client(timeout=timeout, transport=self._transport) as http, http.stream(
+                "POST",
+                f"{self._base_url}/table-structure",
+                data={"meta": json.dumps(meta, separators=(",", ":"))},
+                files={name: (f"{name}.png", data, "image/png") for name, data in files.items()},
+                headers={DEADLINE_HEADER: str(max(0, int(deadline_ms)))},
+            ) as resp:
+                # httpx bounds each read, not the whole answer: the worker's wait ends at timeout_s however the answer
+                # trickles in. shortcut: the upload is bounded per write only; a server that reads the request slowly
+                # can hold it longer (connect is capped at CONNECT_TIMEOUT_S).
+                body = bytearray()
+                for chunk in resp.iter_bytes():
+                    body += chunk
+                    if time.monotonic() > end:
+                        return BatchOutcome("timeout")
+                # the body is decoded already: the answer is read from it, by its status and JSON only
+                resp = httpx.Response(resp.status_code, content=bytes(body))
         except httpx.ConnectError:
             return BatchOutcome("service_down")
         except httpx.TimeoutException:
