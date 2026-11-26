@@ -2219,7 +2219,56 @@
         "subtitle": "Everything you have today, plus what larger companies need: more control, stronger security and a clear view of cost.",
         "seePreview": "See how it looks",
         "seePreviewLabel": "See how {{name}} looks",
-        "communityNote": "The Community Edition stays open source and free.",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Your plan",
+            "summary": "Free and open source, self-hosted",
+            "lead": "What you have today",
+            "items": {
+              "search": "Search and chat across your connected apps",
+              "agents": "Agents, actions and MCP servers",
+              "people": "People and teams",
+              "signIn": "Password, one-time code, Google and Microsoft sign-in"
+            },
+            "current": "You're on this plan"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "For larger companies. Pricing on request.",
+            "lead": "Everything in Community, plus:",
+            "seeAll": "See all {{count}} features"
+          }
+        },
+        "compare": {
+          "title": "Compare the editions",
+          "feature": "Feature",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Pricing on request",
+          "included": "Included",
+          "notIncluded": "Not included",
+          "communityHas": {
+            "scim": "Add and remove people by hand",
+            "groups": "Teams",
+            "sso": "Password, one-time code, Google and Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Questions",
+          "free": {
+            "question": "Does the Community Edition stay free?",
+            "answer": "Yes. It stays open source and free."
+          },
+          "preview": {
+            "question": "Can I see a feature before I talk to anyone?",
+            "answer": "Yes. Features marked “{{label}}” open the page where they would live, with a preview of the screen."
+          },
+          "get": {
+            "question": "How do I get the Enterprise Edition?",
+            "answer": "{{contact}}. We’ll go through what your company needs and how to set it up."
+          }
+        },
         "groups": {
           "scale": "Scale",
           "governance": "Access and governance",

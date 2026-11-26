@@ -6,6 +6,13 @@ export interface EnterpriseOverviewItem {
   icon: string;
   /** The locked page that shows it, when there is one. */
   feature?: EnterpriseFeature;
+  /** Listed on the Enterprise plan card, among what matters most to an admin deciding. */
+  highlight?: boolean;
+  /**
+   * The Community Edition covers part of the same need, said in
+   * `workspace.enterprise.overview.compare.communityHas.<key>`; otherwise it has nothing for it.
+   */
+  inCommunity?: boolean;
 }
 
 export interface EnterpriseOverviewGroup {
@@ -14,22 +21,30 @@ export interface EnterpriseOverviewGroup {
   items: EnterpriseOverviewItem[];
 }
 
-const fromFeature = (key: string, feature: EnterpriseFeature): EnterpriseOverviewItem => ({
+const fromFeature = (
+  key: string,
+  feature: EnterpriseFeature,
+  extra: Partial<EnterpriseOverviewItem> = {}
+): EnterpriseOverviewItem => ({
   key,
   icon: ENTERPRISE_FEATURES[feature].icon,
   feature,
+  ...extra,
 });
 
 /** Everything in the Enterprise Edition, grouped by what an admin is trying to do. */
 export const ENTERPRISE_OVERVIEW_GROUPS: EnterpriseOverviewGroup[] = [
   {
     key: 'scale',
-    items: [fromFeature('tenants', 'tenants'), fromFeature('scim', 'scim')],
+    items: [
+      fromFeature('tenants', 'tenants', { highlight: true }),
+      fromFeature('scim', 'scim', { highlight: true, inCommunity: true }),
+    ],
   },
   {
     key: 'governance',
     items: [
-      fromFeature('groups', 'groups'),
+      fromFeature('groups', 'groups', { highlight: true, inCommunity: true }),
       { key: 'toolApprovals', icon: 'rule' },
       { key: 'actOnBehalf', icon: 'badge' },
       { key: 'peoplesOwnApps', icon: 'apps' },
@@ -37,10 +52,18 @@ export const ENTERPRISE_OVERVIEW_GROUPS: EnterpriseOverviewGroup[] = [
   },
   {
     key: 'security',
-    items: [{ key: 'sso', icon: 'key' }, fromFeature('auditLogs', 'auditLogs')],
+    items: [
+      { key: 'sso', icon: 'key', highlight: true, inCommunity: true },
+      fromFeature('auditLogs', 'auditLogs', { highlight: true }),
+    ],
   },
   {
     key: 'cost',
-    items: [fromFeature('usage', 'usage'), { key: 'indexingPriority', icon: 'low_priority' }],
+    items: [fromFeature('usage', 'usage', { highlight: true }), { key: 'indexingPriority', icon: 'low_priority' }],
   },
 ];
+
+export const ENTERPRISE_OVERVIEW_ITEMS = ENTERPRISE_OVERVIEW_GROUPS.flatMap((group) => group.items);
+
+/** What the Community Edition already has, on its plan card: `workspace.enterprise.overview.plans.community.items.<key>`. */
+export const COMMUNITY_PLAN_ITEMS = ['search', 'agents', 'people', 'signIn'] as const;

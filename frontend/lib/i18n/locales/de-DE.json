@@ -2219,7 +2219,56 @@
         "subtitle": "Alles, was Sie heute haben, plus das, was größere Unternehmen brauchen: mehr Kontrolle, mehr Sicherheit und einen klaren Blick auf die Kosten.",
         "seePreview": "So sieht es aus",
         "seePreviewLabel": "So sieht {{name}} aus",
-        "communityNote": "Die Community Edition bleibt Open Source und kostenlos.",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Ihr Tarif",
+            "summary": "Kostenlos, Open Source, selbst gehostet",
+            "lead": "Was Sie heute haben",
+            "items": {
+              "search": "Suchen und chatten über Ihre verbundenen Apps",
+              "agents": "Agents, Aktionen und MCP-Server",
+              "people": "Personen und Teams",
+              "signIn": "Anmeldung mit Passwort, Einmalcode, Google und Microsoft"
+            },
+            "current": "Ihr aktueller Tarif"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "Für größere Unternehmen. Preis auf Anfrage.",
+            "lead": "Alles aus Community, dazu:",
+            "seeAll": "Alle {{count}} Funktionen ansehen"
+          }
+        },
+        "compare": {
+          "title": "Die Editionen im Vergleich",
+          "feature": "Funktion",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Preis auf Anfrage",
+          "included": "Enthalten",
+          "notIncluded": "Nicht enthalten",
+          "communityHas": {
+            "scim": "Personen von Hand hinzufügen und entfernen",
+            "groups": "Teams",
+            "sso": "Passwort, Einmalcode, Google und Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Fragen",
+          "free": {
+            "question": "Bleibt die Community Edition kostenlos?",
+            "answer": "Ja. Sie bleibt Open Source und kostenlos."
+          },
+          "preview": {
+            "question": "Kann ich eine Funktion ansehen, bevor ich mit jemandem spreche?",
+            "answer": "Ja. Funktionen mit „{{label}}“ öffnen die Seite, auf der sie wären, mit einer Vorschau des Bildschirms."
+          },
+          "get": {
+            "question": "Wie bekomme ich die Enterprise Edition?",
+            "answer": "{{contact}}. Wir besprechen, was Ihr Unternehmen braucht und wie die Einrichtung abläuft."
+          }
+        },
         "groups": {
           "scale": "Skalierung",
           "governance": "Zugriff und Steuerung",

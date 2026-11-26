@@ -2286,7 +2286,56 @@
         "subtitle": "包含你現在擁有的一切，再加上大型企業需要的：更多管控、更強安全、清楚的成本檢視。",
         "seePreview": "查看介面",
         "seePreviewLabel": "查看{{name}}的介面",
-        "communityNote": "社群版將繼續開源且免費。",
+        "plans": {
+          "community": {
+            "name": "社群版",
+            "yourPlan": "你的版本",
+            "summary": "免費、開源、自行部署",
+            "lead": "你現在擁有",
+            "items": {
+              "search": "在已連接的應用程式中搜尋和聊天",
+              "agents": "代理程式、動作和 MCP 伺服器",
+              "people": "成員和團隊",
+              "signIn": "密碼、一次性驗證碼、Google 和 Microsoft 登入"
+            },
+            "current": "你正在使用此版本"
+          },
+          "enterprise": {
+            "name": "企業版",
+            "summary": "適合規模較大的企業。價格請洽詢。",
+            "lead": "包含社群版的全部功能，另外還有：",
+            "seeAll": "查看全部 {{count}} 項功能"
+          }
+        },
+        "compare": {
+          "title": "版本比較",
+          "feature": "功能",
+          "community": "社群版",
+          "enterprise": "企業版",
+          "pricing": "價格請洽詢",
+          "included": "包含",
+          "notIncluded": "不包含",
+          "communityHas": {
+            "scim": "手動新增和移除成員",
+            "groups": "團隊",
+            "sso": "密碼、一次性驗證碼、Google 和 Microsoft"
+          }
+        },
+        "faq": {
+          "title": "常見問題",
+          "free": {
+            "question": "社群版會一直免費嗎？",
+            "answer": "會。它將繼續開源且免費。"
+          },
+          "preview": {
+            "question": "聯絡你們之前能先看看某項功能嗎？",
+            "answer": "可以。標有「{{label}}」的功能會開啟它所在的頁面，並顯示介面預覽。"
+          },
+          "get": {
+            "question": "如何取得企業版？",
+            "answer": "{{contact}}。我們會了解你的企業需要什麼，以及如何部署。"
+          }
+        },
         "groups": {
           "scale": "規模",
           "governance": "存取與治理",

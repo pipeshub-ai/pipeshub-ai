@@ -2265,7 +2265,56 @@
         "subtitle": "Todo lo que tiene hoy, más lo que necesitan las empresas grandes: más control, más seguridad y una visión clara del gasto.",
         "seePreview": "Ver cómo es",
         "seePreviewLabel": "Ver cómo es {{name}}",
-        "communityNote": "La Community Edition sigue siendo de código abierto y gratuita.",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Su plan",
+            "summary": "Gratis, de código abierto y autoalojada",
+            "lead": "Lo que tiene hoy",
+            "items": {
+              "search": "Buscar y chatear en sus apps conectadas",
+              "agents": "Agentes, acciones y servidores MCP",
+              "people": "Personas y equipos",
+              "signIn": "Inicio de sesión con contraseña, código de un solo uso, Google y Microsoft"
+            },
+            "current": "Es su plan actual"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "Para empresas grandes. Precio a consultar.",
+            "lead": "Todo lo de Community, y además:",
+            "seeAll": "Ver las {{count}} funciones"
+          }
+        },
+        "compare": {
+          "title": "Compare las ediciones",
+          "feature": "Función",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Precio a consultar",
+          "included": "Incluido",
+          "notIncluded": "No incluido",
+          "communityHas": {
+            "scim": "Añadir y quitar personas a mano",
+            "groups": "Equipos",
+            "sso": "Contraseña, código de un solo uso, Google y Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Preguntas",
+          "free": {
+            "question": "¿La Community Edition sigue siendo gratuita?",
+            "answer": "Sí. Sigue siendo de código abierto y gratuita."
+          },
+          "preview": {
+            "question": "¿Puedo ver una función antes de hablar con alguien?",
+            "answer": "Sí. Las funciones marcadas con «{{label}}» abren la página donde estarían, con una vista previa de la pantalla."
+          },
+          "get": {
+            "question": "¿Cómo consigo la Enterprise Edition?",
+            "answer": "{{contact}}. Repasaremos lo que necesita su empresa y cómo ponerla en marcha."
+          }
+        },
         "groups": {
           "scale": "Escala",
           "governance": "Acceso y gobierno",

@@ -2286,7 +2286,56 @@
         "subtitle": "지금 쓰는 모든 기능에 더해, 큰 조직에 필요한 더 많은 관리, 더 강한 보안, 명확한 비용 파악을 제공합니다.",
         "seePreview": "화면 미리 보기",
         "seePreviewLabel": "{{name}} 화면 미리 보기",
-        "communityNote": "Community Edition은 계속 오픈 소스이며 무료입니다.",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "현재 플랜",
+            "summary": "무료 오픈 소스, 직접 호스팅",
+            "lead": "지금 쓰고 있는 기능",
+            "items": {
+              "search": "연결된 앱 전체에서 검색과 채팅",
+              "agents": "에이전트, 작업, MCP 서버",
+              "people": "사용자와 팀",
+              "signIn": "비밀번호, 일회용 코드, Google, Microsoft 로그인"
+            },
+            "current": "현재 사용 중인 플랜입니다"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "규모가 큰 조직용. 가격은 문의해 주세요.",
+            "lead": "Community의 모든 기능에 더해:",
+            "seeAll": "기능 {{count}}개 모두 보기"
+          }
+        },
+        "compare": {
+          "title": "에디션 비교",
+          "feature": "기능",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "가격 문의",
+          "included": "포함",
+          "notIncluded": "포함되지 않음",
+          "communityHas": {
+            "scim": "사용자를 직접 추가하고 제거",
+            "groups": "팀",
+            "sso": "비밀번호, 일회용 코드, Google, Microsoft"
+          }
+        },
+        "faq": {
+          "title": "자주 묻는 질문",
+          "free": {
+            "question": "Community Edition은 계속 무료인가요?",
+            "answer": "네. 계속 오픈 소스이며 무료입니다."
+          },
+          "preview": {
+            "question": "문의하기 전에 기능을 볼 수 있나요?",
+            "answer": "네. \"{{label}}\" 표시가 있는 기능은 해당 기능이 있을 페이지를 화면 미리 보기와 함께 엽니다."
+          },
+          "get": {
+            "question": "Enterprise Edition은 어떻게 받나요?",
+            "answer": "{{contact}}를 눌러 주세요. 조직에 필요한 것과 설정 방법을 함께 살펴봅니다."
+          }
+        },
         "groups": {
           "scale": "확장",
           "governance": "접근 및 거버넌스",

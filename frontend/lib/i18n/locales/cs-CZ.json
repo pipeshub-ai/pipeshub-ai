@@ -2423,7 +2423,56 @@
         "subtitle": "Vše, co máte dnes, a k tomu to, co potřebují větší firmy: více kontroly, lepší zabezpečení a jasný přehled o nákladech.",
         "seePreview": "Jak to vypadá",
         "seePreviewLabel": "Jak vypadá {{name}}",
-        "communityNote": "Edice Community zůstává open source a zdarma.",
+        "plans": {
+          "community": {
+            "name": "Edice Community",
+            "yourPlan": "Váš tarif",
+            "summary": "Zdarma, open source, na vlastním serveru",
+            "lead": "Co máte dnes",
+            "items": {
+              "search": "Hledání a chat napříč propojenými aplikacemi",
+              "agents": "Agenti, akce a servery MCP",
+              "people": "Lidé a týmy",
+              "signIn": "Přihlášení heslem, jednorázovým kódem, přes Google a Microsoft"
+            },
+            "current": "Tento tarif používáte"
+          },
+          "enterprise": {
+            "name": "Edice Enterprise",
+            "summary": "Pro větší firmy. Cena na vyžádání.",
+            "lead": "Vše z edice Community a navíc:",
+            "seeAll": "Zobrazit všech {{count}} funkcí"
+          }
+        },
+        "compare": {
+          "title": "Srovnání edic",
+          "feature": "Funkce",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Cena na vyžádání",
+          "included": "Součástí",
+          "notIncluded": "Není součástí",
+          "communityHas": {
+            "scim": "Ruční přidávání a odebírání lidí",
+            "groups": "Týmy",
+            "sso": "Heslo, jednorázový kód, Google a Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Otázky",
+          "free": {
+            "question": "Zůstane edice Community zdarma?",
+            "answer": "Ano. Zůstane open source a zdarma."
+          },
+          "preview": {
+            "question": "Můžu si funkci prohlédnout, než s někým budu mluvit?",
+            "answer": "Ano. Funkce označené „{{label}}“ otevřou stránku, kde by byly, s náhledem obrazovky."
+          },
+          "get": {
+            "question": "Jak získám edici Enterprise?",
+            "answer": "{{contact}}. Probereme, co vaše firma potřebuje a jak vše nastavit."
+          }
+        },
         "groups": {
           "scale": "Škálování",
           "governance": "Přístup a správa",
