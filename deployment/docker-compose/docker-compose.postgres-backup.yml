@@ -41,7 +41,7 @@ services:
 
   pg-backup:
     profiles: ["postgres"]
-    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-2}
     user: postgres
     # Runs as postgres from the start, so it needs no capability and gains none.
     cap_drop: [ALL]
@@ -52,7 +52,9 @@ services:
       nofile:
         soft: 4096
         hard: 4096
-    command: ["pg-backup.sh"]
+    # Says so loudly when the image predates the backup metrics: this file can be newer than an image built before it
+    # (postgres/image-rev.txt).
+    command: ["sh", "-c", "[ -x /usr/local/bin/pg-backup-metrics.pl ] || echo 'pg-backup: STALE IMAGE: /usr/local/bin/pg-backup-metrics.pl is missing, so no backup metrics are served on 9188 and PgBackupMetricsMissing fires. Rebuild the PostgreSQL image (docker compose build pg-backup), then docker compose up -d' >&2; exec pg-backup.sh"]
     init: true   # the scheduler stops at once on `docker compose stop` instead of after the 10 s timeout
     # On TERM the scheduler passes it to a running pgBackRest and waits for it to stop cleanly (pg-backup.sh, on_term) before the
     # runtime's SIGKILL; 60 s leaves room for it to stop and release its lock (the next backup resumes a stopped one, --resume).
@@ -91,7 +93,8 @@ services:
       - pipeshub
     healthcheck:
       # the last backup succeeded, and no WAL was dropped since (pgbackrest-archive-push.sh adds a file per drop, even during a backup)
-      test: ["CMD-SHELL", 'test -f /tmp/pg-backup.ok && [ -z "$$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d 2>/dev/null)" ]']
+      # and the image carries the metrics script (a stale image is unhealthy, not only unscraped)
+      test: ["CMD-SHELL", 'test -f /tmp/pg-backup.ok && [ -z "$$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d 2>/dev/null)" ] && test -x /usr/local/bin/pg-backup-metrics.pl']
       interval: 60s
       timeout: 5s
       retries: 1

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # PostgreSQL image for the opt-in `postgres` compose profile: pgvector, pg_trgm, pg_textsearch,
 # PgBouncer (the same image runs the `postgres` and `pgbouncer` services) and pgBackRest (the opt-in `pg-backup` service).
-#   docker build --build-arg PG_MAJOR=17 -t pipeshubai/postgres:17-1 deployment/docker-compose/postgres
+#   docker build --build-arg PG_MAJOR=17 -t pipeshubai/postgres:17-2 deployment/docker-compose/postgres
 # Both bases are multi-arch (linux/amd64, linux/arm64) and pinned by digest. To bump one, resolve the
 # new digest for the tag, update it here, and run tests/postgres_roles_test.sh and tests/postgres_persistence_test.sh on both majors.
 ARG PG_MAJOR=18
