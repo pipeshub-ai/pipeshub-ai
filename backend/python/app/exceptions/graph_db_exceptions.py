@@ -28,7 +28,18 @@ class PermissionVerificationUnavailableError(Exception):
     Raised rather than returning an empty map, because an empty map is also the
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
+
+    Raise it ``from`` the failure with the default message, never ``str(exc)``:
+    a driver's text (host, query, values) would travel in it to every log line
+    and tool result that prints this error. The cause keeps type and text, and
+    its chain is logged without messages (``log_failure`` and any ``exc_info``
+    record), whether or not the graph client stamped the cause.
     """
+
+    log_hide_text = True
+
+    def __init__(self, message: str = "The graph could not verify access.") -> None:
+        super().__init__(message)
 
 
 class GraphLockUnavailableError(GraphDBError):
@@ -88,12 +99,18 @@ class KnowledgeHubListingTooLarge(GraphDBError):
 
 
 class KnowledgeHubListingBusy(GraphDBError):
-    """The listing could not get what it needs right now: a walk waited too long for a turn, or the database ran
-    out of transaction memory because other requests held it. Nothing is wrong with the request; retry."""
+    """The listing could not get what it needs right now: a walk waited too long for a turn, the database ran
+    out of transaction memory because other requests held it, or the request's deadline passed (``timed_out``).
+    Nothing is wrong with the request; retry."""
 
-    def __init__(self, *, out_of_memory: bool = False) -> None:
+    def __init__(self, *, out_of_memory: bool = False, ran_s: float | None = None, timed_out: bool = False) -> None:
         self.out_of_memory = out_of_memory
-        super().__init__("The listing is busy right now. Please try again in a few seconds.")
+        # How long the statement itself ran before the database gave up, when that excludes a wait for its plan.
+        self.ran_s = ran_s
+        self.timed_out = timed_out
+        super().__init__(
+            "The listing took too long. Please try again in a moment." if timed_out
+            else "The listing is busy right now. Please try again in a few seconds.")
 
 
 class KnowledgeHubListingNotReady(GraphDBError):
@@ -116,6 +133,27 @@ def is_out_of_memory(error: BaseException) -> bool:
             return True
         error = getattr(error, "__cause__", None)
     return False
+
+
+def listing_busy(error: BaseException) -> KnowledgeHubListingBusy | None:
+    """The listing's own busy refusal behind ``error``, however it was wrapped on the way up (``check_access`` wraps whatever stopped it,
+    a passed deadline too, in ``PermissionVerificationUnavailableError``), or None."""
+    seen: set[int] = set()
+
+    def find(error: BaseException | None) -> KnowledgeHubListingBusy | None:
+        # A group can sit anywhere along the chain (a check that ran several tasks), so its members are searched at every link.
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, KnowledgeHubListingBusy):
+                return error
+            if isinstance(error, BaseExceptionGroup):
+                for member in error.exceptions:
+                    if (busy := find(member)) is not None:
+                        return busy
+            error = getattr(error, "__cause__", None)
+        return None
+
+    return find(error)
 
 
 def is_graph_memory_refusal(exc: BaseException) -> bool:

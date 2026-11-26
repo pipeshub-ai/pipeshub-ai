@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import zlib
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -15,7 +16,7 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
-from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import counts as kg_counts
 from app.services.graph_db.postgres.kg.drainer import drain_org
@@ -28,6 +29,7 @@ from tests.permissions.kh_layer import (
     browse_pages,
     check_world,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     listing,
 )
@@ -37,7 +39,9 @@ from tests.permissions.kh_worlds import (
     CHAIN,
     CHAINLINK,
     DECLPAG,
+    FOLDERSTUB,
     KH_WORLDS,
+    LEVELS,
     OPENGRANT,
     OPENGRANTTEAM,
     PAGMEMBER,
@@ -221,6 +225,44 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
     assert not bad, f"{layer.name} with counters\n{_describe(bad)}"
 
 
+@pytest.mark.parametrize("kh_layer", ["current", "not_current"], indirect=True)
+async def test_a_name_search_by_the_trigram_index_lists_what_the_walk_lists_in_every_world(kh_layer, monkeypatch) -> None:
+    """Every golden and adversarial world, every viewer, searches for the first letters of the names the world holds: the rows and the total read by the trigram index
+    of the graph nodes' names (``graph.records_by_name``) are the ones the walk of the sort order lists, with kg deciding access and with the live walk deciding it."""
+    real = kh_listing.KhListingMixin._kh_name_hits
+    used: list[bool] = []
+
+    async def indexed(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        used.append(got is not None)
+        return got
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[str] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for offset, world in enumerate(chunk):
+            terms = sorted({n.id[:4] for n in world.nodes if n.kind != "app" and sum(c.isalnum() for c in n.id[:4]) >= 3})[:3]
+            with bind(OrgContext((await kh_layer._ns(world)).org, None, "job", "job:test", "t")):
+                for viewer in world.users():
+                    for term in terms:
+                        try:
+                            monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", indexed)
+                            a = await listing(kh_layer, world, viewer, {"search_query": term})
+                            monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+                            b = await listing(kh_layer, world, viewer, {"search_query": term})
+                        except KnowledgeHubListingNotReady:
+                            continue
+                        if [r["id"] for r in a.rows] != [r["id"] for r in b.rows] or a.total != b.total:
+                            bad.append(f"golden-{start + offset} {viewer} {term!r}: {[r['id'] for r in a.rows]} ({a.total}) by the index, {[r['id'] for r in b.rows]} ({b.total}) by the walk")
+        await kh_layer.release(chunk)
+    assert not bad, "\n".join(bad[:40])
+    assert sum(used) > 100, f"the trigram index read only {sum(used)} of {len(used)} searches"
+
+
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))
 async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, monkeypatch) -> None:
     # The typed graph takes the four access rules a connector writes; the adversarial generator also writes INHERITED, which no connector does and which the projection refuses (the connector is then never
@@ -346,6 +388,17 @@ async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_no
     assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
     assert cursors, kh_layer.name
     assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
+
+
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(kh_layer) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do."""
+    await kh_layer.preload([FOLDERSTUB])
+    with bind(OrgContext((await kh_layer._ns(FOLDERSTUB)).org, None, "job", "job:test", "t")):
+        items, pages = await counts_from_the_second_page(kh_layer, FOLDERSTUB, "u", "f", "folder", 4)
+    by_type = dict(Counter(i.nodeType for i in items))
+    assert len(items) == 9 and len(pages) == 2, (kh_layer.name, len(items), pages)
+    assert all(p == (9, 9, 9, by_type) for p in pages), (kh_layer.name, pages, by_type)
 
 
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
@@ -486,6 +539,20 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) 
         assert await children_of(kh_layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}, kh_layer.name
         assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
     bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
+    assert not bad, _describe(bad)
+
+
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(kh_layer) -> None:
+    """LEVELS (a Jira security level's group): as on Neo4j and ArangoDB, the group is never listed, every issue under it is listed once where it
+    is filed, and a granted record below it whose other parent the viewer cannot open is a chain-top of its own group."""
+    await kh_layer.preload([LEVELS])
+    with bind(OrgContext((await kh_layer._ns(LEVELS)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "u", "E", "record") == {"s1": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, kh_layer.name
+        assert "L" not in {r["id"] for r in (await listing(kh_layer, LEVELS, "u")).rows}, kh_layer.name
+    bad = _bad(await check(kh_layer, LEVELS, "levels"))
     assert not bad, _describe(bad)
 
 

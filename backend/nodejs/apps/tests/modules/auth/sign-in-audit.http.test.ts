@@ -24,11 +24,11 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import mongoose from 'mongoose';
 import { Container } from 'inversify';
-import { LoginTicket } from 'google-auth-library';
+import { LoginTicket, OAuth2Client } from 'google-auth-library';
 import { createUserAccountRouter } from '../../../src/modules/auth/routes/userAccount.routes';
 import { createOrgAuthConfigRouter } from '../../../src/modules/auth/routes/orgAuthConfig.routes';
 import * as userAdmin from '../../../src/modules/user_management/services/user-admin.service';
-import { UserAccountController } from '../../../src/modules/auth/controller/userAccount.controller';
+import { GOOGLE_ID_TOKEN_MISSING, UserAccountController } from '../../../src/modules/auth/controller/userAccount.controller';
 import { SessionService } from '../../../src/modules/auth/services/session.service';
 import { JitProvisioningService } from '../../../src/modules/auth/services/jit-provisioning.service';
 import { IamService } from '../../../src/modules/auth/services/iam.service';
@@ -64,6 +64,9 @@ import type { ICacheService } from '../../../src/libs/services/cache/cacheServic
 import { createMockRedisService } from '../../helpers/mock-redis';
 import { useCommunitySignInLists } from '../../helpers/sign-in-lists';
 import { stubGoogleIdTokenCheck } from '../../helpers/google-id-token';
+import { GOOGLE_SIGN_IN_FAILED } from '../../../src/modules/auth/utils/googleIdTokenValidation';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 
 const JWT_SECRET = 'sign-in-audit-jwt-secret';
 const SCOPED_SECRET = 'sign-in-audit-scoped-secret';
@@ -106,6 +109,26 @@ interface Cred {
 }
 type Rec = Record<string, any>;
 
+/**
+ * Whether a log text quotes `part`, a segment of a token. A long segment is looked for as it is. A short one ('e30' is the
+ * base64url of `{}`) is looked for as a whole word only: the records hold random ids (24 hex characters for each account), and
+ * 'e30' sits inside about one in 200 of those, which failed this test on code that logged nothing of the token.
+ */
+const quotes = (log: string, part: string): boolean =>
+  part.length >= 12 ? log.includes(part) : new RegExp(`(?<![A-Za-z0-9_-])${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_-])`).test(log);
+
+describe('the check that a log does not quote a token segment', () => {
+  it('does not take a short segment inside a random id for a quote of it', () => {
+    expect(quotes('{"user_id":"6563e30a9d5f2b1c7e8f0a12"}', 'e30')).to.equal(false);
+    expect(quotes('{"id":"4d0e30c1-0e30-4e30-8e30-e30e30e30e30"}', 'e30')).to.equal(false);
+  });
+  it('still finds a segment that is quoted, short or long', () => {
+    expect(quotes('{"msg":"bad token eyJhbGciOiJSUzI1NiJ9.e30.c2ln"}', 'e30')).to.equal(true);
+    expect(quotes('{"cause":"Unexpected token e30"}', 'e30')).to.equal(true);
+    expect(quotes('{"msg":"eyJhbGciOiJSUzI1NiJ9"}', 'eyJhbGciOiJSUzI1NiJ9')).to.equal(true);
+  });
+});
+
 describe('auth audit lines (HTTP)', function () {
   this.timeout(20000);
   useCommunitySignInLists();
@@ -130,6 +153,7 @@ describe('auth audit lines (HTTP)', function () {
   let iam: Record<string, (...args: any[]) => Promise<any>>;
   let savedLevel: string;
   let maxAuthRequestsPerMinute: number;
+  let googleCheck: sinon.SinonStub;
 
   const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const audits = () =>
@@ -240,6 +264,7 @@ describe('auth audit lines (HTTP)', function () {
     };
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => undefined };
     const config = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, cmBackend: 'http://cm', connectorBackend: 'http://connector.test', frontendUrl: 'http://app', iamBackend: IAM_BACKEND, maxAuthRequestsPerMinute, rsAvailable: 'false' };
+    registerAppUpstreams(config as never);
     const logger = Logger.getInstance({ service: 'UserAccountController' });
     const controller = new UserAccountController(
       ...([config, iamProxy, mailService, sessionService, configService, logger, new JitProvisioningService(logger, events as any), events] as unknown as ConstructorParameters<typeof UserAccountController>),
@@ -359,7 +384,7 @@ describe('auth audit lines (HTTP)', function () {
     sinon.stub(groupRepo, 'getGroupRepository').returns({ addToEveryone: async () => undefined } as any);
     sinon.stub(resetLinkRepo, 'getResetLinkRepository').returns({ claim: async () => resetLinkClaimed, release: async () => undefined } as any);
     // `email|second` tokens: Google verifies the token twice per sign-in (provider flow, then the method step).
-    stubGoogleIdTokenCheck().callsFake((async (idToken: string) => {
+    googleCheck = stubGoogleIdTokenCheck().callsFake((async (idToken: string) => {
       // google-auth-library quotes the token it refuses.
       if (idToken.startsWith('eyJ')) throw new Error(`Invalid token signature: ${idToken}`);
       const [, email] = idToken.split('|');
@@ -370,6 +395,7 @@ describe('auth audit lines (HTTP)', function () {
 
   afterEach(async () => {
     sinon.restore();
+    registerUpstreams({});
     nock.cleanAll();
     root().level = savedLevel;
     delete process.env.TURNSTILE_SECRET_KEY;
@@ -509,12 +535,101 @@ describe('auth audit lines (HTTP)', function () {
       expectNoPrivateData();
     });
 
-    it('T8 a token Google rejects is sso_token_invalid, still a 500 (F31), and the token is in no record', async () => {
-      const forged = jwt.sign({ email: bob.email }, 'forged-key');
-      const r = await attempt({ method: 'google', credentials: forged });
-      expect(r.status).to.equal(500);
-      expect(audits()).to.deep.equal([signInFailure('sso_token_invalid', undefined, 'google')]);
-      for (const part of forged.split('.')) expect(JSON.stringify(records)).to.not.include(part);
+    describe('T8 the real Google token check (google-auth-library against Google keys served by nock)', () => {
+      const GOOGLE_CERTS = () => nock('https://www.googleapis.com').get('/oauth2/v1/certs');
+      const googleKey = () => privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+      const googleToken = (claims: Rec = {}, key = googleKey()) =>
+        jwt.sign({ iss: 'https://accounts.google.com', aud: 'google-client', email: bob.email, ...claims }, key, {
+          algorithm: 'RS256', keyid: 'g1', ...('exp' in claims ? {} : { expiresIn: '5m' }),
+        });
+      const anHourAgo = () => Math.floor(Date.now() / 1000) - 3600;
+      const errorLine = () => records.find((r) => r.message === 'http.request.error')!;
+
+      beforeEach(() => {
+        (OAuth2Client.prototype.getFederatedSignonCertsAsync as unknown as sinon.SinonStub).restore();
+        (OAuth2Client.prototype.verifySignedJwtWithCertsAsync as unknown as sinon.SinonStub).restore();
+        nock.disableNetConnect();
+        nock.enableNetConnect('127.0.0.1');
+      });
+      afterEach(() => nock.enableNetConnect());
+
+      for (const [name, token, cause] of [
+        ['signed with a key Google does not hold', () => googleToken({}, otherKey.export({ type: 'pkcs8', format: 'pem' }) as string), /^Invalid token signature/],
+        ['for another client', () => googleToken({ aud: 'someone-else' }), /^Wrong recipient/],
+        ['expired', () => googleToken({ iat: anHourAgo() - 300, exp: anHourAgo() }), /^Token used too late/],
+        ['not a JWT', () => 'not-a-google-token', /^Wrong number of segments/],
+        ['that is an opaque access token', () => 'ya29.a0AfB_opaqueAccessToken1234567890', /^Wrong number of segments/],
+        ['with an unparsable header', () => 'a.b.c', /^Can't parse token envelope/],
+        ['with an unparsable payload', () => `${Buffer.from('{"alg":"RS256","kid":"g1"}').toString('base64url')}.%%%.c2ln`, /^Can't parse token payload$/],
+        ['whose key id is not a key', () => `${Buffer.from('{"alg":"RS256","kid":{"toString":1,"valueOf":1}}').toString('base64url')}.${Buffer.from('{}').toString('base64url')}.c2ln`, /^Cannot convert object to primitive value$/],
+      ] as const) {
+        it(`a token ${name} is a 401 wrong credential: one sso_token_invalid line, WARN, the reason as the cause`, async () => {
+          GOOGLE_CERTS().reply(200, { g1: (publicKey as KeyObject).export({ type: 'spki', format: 'pem' }) });
+          const t = token();
+          const r = await attempt({ method: 'google', credentials: t });
+          expect(r.status).to.equal(401);
+          expect(r.body.error).to.include({ code: 'HTTP_UNAUTHORIZED', message: GOOGLE_SIGN_IN_FAILED });
+          expect(audits()).to.deep.equal([signInFailure('sso_token_invalid', undefined, 'google')]);
+          expect(errorLine()).to.include({ level: 'warning', status: 401, error_class: 'bad_request', error_type: 'WrongCredentialError' });
+          expect(errorLine().metadata.error.cause.message).to.match(cause);
+          // The library quotes the token, or its claims, whatever their shape: none of it reaches a log line.
+          for (const part of [t, ...t.split('.').filter((p) => p.length > 1)]) expect(quotes(JSON.stringify(records), part), `a log line quotes ${part}`).to.equal(false);
+          expectNoPrivateData();
+        });
+      }
+
+      it('a good token signs in (checked twice per sign-in, each check fetching the keys)', async () => {
+        GOOGLE_CERTS().times(2).reply(200, { g1: (publicKey as KeyObject).export({ type: 'spki', format: 'pem' }) });
+        const r = await attempt({ method: 'google', credentials: googleToken() });
+        expect(r.status).to.equal(200);
+        expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'success', actor: bob._id, auth_method: 'google' }]);
+        expect(nock.isDone()).to.equal(true);
+      });
+
+      it('[guard] an empty key set from Google: 500 internal at ERROR, no audit line', async () => {
+        GOOGLE_CERTS().reply(200, {});
+        const r = await attempt({ method: 'google', credentials: googleToken() });
+        expect(r.status).to.equal(500);
+        expect(r.body.error.code).to.equal('INTERNAL_ERROR');
+        expect(audits()).to.deep.equal([]);
+        expect(errorLine()).to.include({ level: 'error', error_class: 'internal' });
+      });
+
+      it("[guard] a key Google served that crypto can't read: 500 internal at ERROR, no audit line", async () => {
+        GOOGLE_CERTS().reply(200, { g1: '-----BEGIN CERTIFICATE-----\nnot-a-certificate\n-----END CERTIFICATE-----\n' });
+        const r = await attempt({ method: 'google', credentials: googleToken() });
+        expect(r.status).to.equal(500);
+        expect(r.body.error.code).to.equal('INTERNAL_ERROR');
+        expect(audits()).to.deep.equal([]);
+        expect(errorLine()).to.include({ level: 'error', error_class: 'internal' });
+      });
+
+      it("[guard] Google's key endpoint refuses the connection: 503, no audit line", async () => {
+        // Persisted: the library retries a request that got no answer.
+        nock('https://www.googleapis.com').persist().get('/oauth2/v1/certs').replyWithError(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+        const r = await attempt({ method: 'google', credentials: googleToken() });
+        expect(r.status).to.equal(503);
+        expect(audits()).to.deep.equal([]);
+        expect(JSON.stringify(errorLine().metadata)).to.include('ECONNREFUSED');
+      });
+
+      it("[guard] Google's key endpoint answers with an error: 500 internal at ERROR, no audit line", async () => {
+        GOOGLE_CERTS().times(4).reply(500, 'backend error');
+        const r = await attempt({ method: 'google', credentials: googleToken() });
+        expect(r.status).to.equal(500);
+        expect(r.body.error.code).to.equal('INTERNAL_ERROR');
+        expect(audits()).to.deep.equal([]);
+        expect(errorLine()).to.include({ level: 'error', error_class: 'internal' });
+      });
+
+      // The documented object form reaches both checks as the token itself.
+      it('a good token sent as {credential} signs in, the same as the bare token', async () => {
+        GOOGLE_CERTS().times(2).reply(200, { g1: (publicKey as KeyObject).export({ type: 'spki', format: 'pem' }) });
+        const r = await attempt({ method: 'google', credentials: { credential: googleToken() } });
+        expect(r.status).to.equal(200);
+        expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'success', actor: bob._id, auth_method: 'google' }]);
+        expect(nock.isDone()).to.equal(true);
+      });
     });
 
     it('T9 JIT: the new account, then its sign-in', async () => {
@@ -527,6 +642,72 @@ describe('auth audit lines (HTTP)', function () {
         { event: 'auth.sign_in', outcome: 'success', actor: created, auth_method: 'google' },
       ]);
       expectNoPrivateData();
+    });
+
+    describe('T31 Google: the ID token sent bare or as { credential } (F60)', () => {
+      const token = `${GOOGLE_TOKEN}|${bob.email}`;
+      for (const [form, credentials] of [
+        ['bare', token],
+        // Google's sign-in button response, passed on as is.
+        ['{ credential, select_by }', { credential: token, select_by: 'btn' }],
+      ] as const) {
+        it(`a ${form} token signs in: 200, one success line, and both checks are handed the token string`, async () => {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(200);
+          expect(r.body.message).to.equal('Fully authenticated');
+          expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'success', actor: bob._id, auth_method: 'google' }]);
+          expect(googleCheck.args.map((a) => a[0])).to.deep.equal([token, token]);
+          expect(failureLines()).to.deep.equal([]);
+          expectNoPrivateData();
+        });
+      }
+
+      it('JIT with { credential }: the new account, then its sign-in (not an account created and then a 500)', async () => {
+        jit = true;
+        const newcomerToken = `${GOOGLE_TOKEN}|${NEWCOMER}`;
+        const r = await attempt({ method: 'google', credentials: { credential: newcomerToken } });
+        expect(r.status).to.equal(200);
+        const created = directory[NEWCOMER]!._id;
+        expect(audits()).to.deep.equal([
+          { event: 'auth.jit_provision', outcome: 'success', actor: created, auth_method: 'google' },
+          { event: 'auth.sign_in', outcome: 'success', actor: created, auth_method: 'google' },
+        ]);
+        expect(googleCheck.args.map((a) => a[0])).to.deep.equal([newcomerToken, newcomerToken]);
+        expect(failureLines()).to.deep.equal([]);
+        expectNoPrivateData();
+      });
+
+      for (const [name, credentials] of [
+        ['no credential', {}],
+        ['only a Microsoft idToken', { idToken: token }],
+        ['an empty credential', { credential: '' }],
+        ['a null credential', { credential: null }],
+        ['a numeric credential', { credential: 123 }],
+        ['a boolean credential', { credential: true }],
+        ['the token inside an array', { credential: [token] }],
+        ['the token one object deeper', { credential: { credential: token } }],
+      ] as const) {
+        it(`${name}: 400 bad request, one sso_token_invalid line at WARN, and Google is never asked`, async () => {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(400);
+          expect(r.body.error).to.include({ code: 'HTTP_BAD_REQUEST', message: GOOGLE_ID_TOKEN_MISSING });
+          expect(audits()).to.deep.equal([signInFailure('sso_token_invalid', undefined, 'google')]);
+          expect(failureLines()).to.have.length(1);
+          expect(failureLines()[0]).to.include({ level: 'warning', status: 400, error_class: 'bad_request', error_type: 'BadRequestError' });
+          expect(googleCheck.called).to.equal(false);
+          expectNoPrivateData();
+        });
+      }
+
+      it('[guard] an empty or non-string bare credential is still refused by validation, not audited', async () => {
+        for (const credentials of ['', 42]) {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(400);
+          expect(r.body.error.code).to.equal('VALIDATION_ERROR');
+          expect(audits()).to.deep.equal([]);
+        }
+        expect(googleCheck.called).to.equal(false);
+      });
     });
 
     it('T11 Microsoft success; Microsoft unreachable is no audit line and one error line with the cause', async () => {
@@ -733,14 +914,15 @@ describe('auth audit lines (HTTP)', function () {
       expect((await validate(token)).status).to.equal(401);
       emailTaken = true;
       lastPasswordChange = null; // a fresh link, issued after the change above
-      expect((await validate(emailToken())).status).to.equal(400);
+      const taken = await validate(emailToken());
+      expect(taken.status).to.equal(400);
+      expect(taken.body.error.message).to.equal('Email already in use');
       expect(audits()).to.deep.equal([
         { event: 'auth.email.change', outcome: 'success', reason: 'link', actor: alice._id },
         { event: 'auth.email.change', outcome: 'failure', reason: 'link_used', actor: alice._id },
         { event: 'auth.email.change', outcome: 'failure', reason: 'email_taken', actor: alice._id },
       ]);
-      // F31 removes the address from the email-taken message; until then only that error line has it.
-      expectNoPrivateData((r) => r.message === 'http.request.error');
+      expectNoPrivateData();
     });
 
     it('T20 refresh refusals; a successful refresh writes no audit line', async () => {

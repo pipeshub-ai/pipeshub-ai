@@ -171,6 +171,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_roles_on_record = AsyncMock(return_value=({}, {}))
         dep.inheritance_when_unreadable = AsyncMock(return_value=False)
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
@@ -184,6 +185,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.get_users_with_permission_to_node = AsyncMock(
             return_value=[user_with_permission] if user_with_permission is not None else []
         )
+        dep.get_groups_with_permission_to_node = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()
@@ -3438,7 +3440,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with patch("os.path.exists", return_value=False):
                 with pytest.raises(HTTPException):
-                    await conn._convert_to_pdf("/tmp/test.docx", str(tmp_path))
+                    await conn._convert_to_pdf(str(tmp_path / "test.docx"), str(tmp_path))
 
     @pytest.mark.asyncio
     async def test_timeout(self):

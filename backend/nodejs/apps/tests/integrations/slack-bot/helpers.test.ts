@@ -345,6 +345,16 @@ describe('slack-bot/helpers', () => {
         expect(apiCall.firstCall.args[0]).to.equal('auth.test');
       });
 
+      it("names the bot's own workspace, the one a sender must belong to (SEC-C-03)", async () => {
+        const apiCall = sinon.stub().resolves({ ok: true, user_id: 'UBOT', bot_id: 'BOWN', team_id: 'T0HOME' });
+        const client = { apiCall } as unknown as TypedSlackClient;
+        expect(await resolveOwnBotIdentity(client, 'cache-test-team')).to.deep.equal({
+          userId: 'UBOT',
+          botId: 'BOWN',
+          teamId: 'T0HOME',
+        });
+      });
+
       it('falls back to the known user id and retries after a failure', async () => {
         const apiCall = sinon.stub();
         apiCall.onFirstCall().rejects(new Error('ratelimited'));

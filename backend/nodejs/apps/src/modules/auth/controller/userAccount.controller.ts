@@ -10,7 +10,6 @@ import {
   jwtGeneratorForForgotPasswordLink,
   mailJwtGenerator,
   passwordResetLinkLifetime,
-  refreshTokenJwtGenerator,
 } from '../../../libs/utils/createJwt';
 import { asAccount, forOrg } from '../../../libs/context/orgContext';
 import { generateOtp } from '../utils/generateOtp';
@@ -54,7 +53,10 @@ import {
   microsoftAccountIdentity,
   validateAzureAdUser,
 } from '../utils/azureAdTokenValidation';
-import { verifyGoogleIdToken } from '../utils/googleIdTokenValidation';
+import {
+  GOOGLE_SIGN_IN_FAILED,
+  verifyGoogleIdToken,
+} from '../utils/googleIdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -86,8 +88,25 @@ import {
   generateAuthToken,
   SERVICE_ACCOUNT_SIGN_IN_MESSAGE,
 } from '../utils/generateAuthToken';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  adoptIntoCookieRequested,
+  refreshRotationWanted,
+  SESSION_DELIVERY_COOKIE,
+  sessionCameFromCookie,
+  setSessionCookie,
+  signedOutSessionTokens,
+  wantsCookieDelivery,
+} from '../session-cookie';
+import { SessionReuseDetected, SessionRotation } from '../session-rotation';
+import {
+  chainSessionReplayAudit,
+  type SessionReplayAudit,
+} from '../session-replay-audit';
+import { orgLifecycle } from '../../../libs/org-lifecycle';
+import {
+  domainFromEmail,
+  recordEvent,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
@@ -109,6 +128,11 @@ import {
   IOrgAuthConfigLike,
 } from '../utils/authMethodGuard';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import {
+  recordAuthAttempt,
+  refusalOutcome,
+  signInMethod,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   executeConnectorCommand,
   handleBackendError,
@@ -159,6 +183,8 @@ export const EMAIL_MISMATCH =
   "You signed in with a different account than the email you entered. Sign in with the matching account, or go back and enter that account's email.";
 export const PROVIDER_SHARED_NO_EMAIL =
   "Your sign-in provider didn't share an email address, so we couldn't sign you in. Ask your admin to allow the email permission for PipesHub.";
+export const GOOGLE_ID_TOKEN_MISSING =
+  "Sign-in with Google didn't include an ID token. Send the token as credentials, or as credentials.credential.";
 export const ADMIN_ONLY_SIGN_IN_SETTINGS =
   'Only workspace admins can view or change sign-in settings.';
 export const SIGN_IN_ACCOUNT_CHANGED =
@@ -173,6 +199,21 @@ export const PASSWORD_RESET_REQUESTED = {
 };
 export const SIGN_IN_CODE_REQUESTED =
   'If that email can sign in with a code, one is being sent. It works for 10 minutes. If nothing arrives, check your spam folder or try again later.';
+
+/** The Google ID token from either documented form of `credentials`: the token itself, or `{ credential }` as Google's button returns it. */
+export const googleIdTokenOf = (credentials: unknown): string => {
+  const idToken =
+    typeof credentials === 'string'
+      ? credentials
+      : (credentials as { credential?: unknown } | null)?.credential;
+  if (typeof idToken !== 'string' || idToken === '') {
+    throw authRefusal(
+      new BadRequestError(GOOGLE_ID_TOKEN_MISSING),
+      'sso_token_invalid',
+    );
+  }
+  return idToken;
+};
 
 let decoyHash: Promise<string> | undefined;
 
@@ -200,6 +241,14 @@ export class UserAccountController {
     @inject('EntitiesEventProducer')
     protected eventService: EntitiesEventProducer,
   ) {}
+
+  /** Refresh-token families (ADR-WEB-02 D9): started at sign-in, rotated on every refresh. */
+  protected readonly sessions = new SessionRotation(
+    () => this.config.scopedJwtSecret,
+  );
+
+  /** Where an ended sign-in is recorded: the org's audit chain. */
+  protected sessionReplayAudit: SessionReplayAudit = chainSessionReplayAudit();
 
   /**
    * If the verified token contains an 'email' claim (e.g. the mail attribute in Entra ID)
@@ -606,8 +655,12 @@ export class UserAccountController {
     try {
       const email = req.body?.email || '';
 
-      const org = await getOrgRepository().getFirstLive({ hydrate: true });
       // the organisation was found by the server itself (the install's first), so its configuration is read as that organisation
+      // With no live organisation, the lifecycle hook may still name one whose people can prove who they are.
+      const org =
+        (await getOrgRepository().getFirstLive({ hydrate: true })) ??
+        (await orgLifecycle().orgLifecycleHook?.signInPageOrg()) ??
+        null;
       const orgAuthConfig = org
         ? await forOrg(org._id, 'sign-in-page', () =>
             getOrgAuthConfigRepository().getLive(org._id),
@@ -1268,7 +1321,11 @@ export class UserAccountController {
       userId,
       orgId,
     );
-    const org = await getOrgRepository().getLive(orgId);
+    // The account's own org, never another; one that is not live is named only through the lifecycle hook.
+    const org =
+      (await getOrgRepository().getLive(orgId)) ??
+      (await orgLifecycle().orgLifecycleHook?.notLiveOrgOf(orgId)) ??
+      null;
 
     if (
       userCredentialData &&
@@ -1459,13 +1516,109 @@ export class UserAccountController {
       // Again, right before minting: a deletion recorded while this refresh ran
       // would otherwise get a token newer than the deletion.
       await this.refuseIfSessionEnded(userId, orgId, req.tokenPayload?.iat);
+      const intoCookie =
+        sessionCameFromCookie(res) || adoptIntoCookieRequested(res);
+      if (!intoCookie && !refreshRotationWanted(req)) {
+        // R51-COMPAT (ADR-OPS-07): a body-token client that did not ask for rotation keeps its token, as before D9;
+        // a token its family already replaced is still judged a replay.
+        await this.keepSession(req);
+        const accessToken = await generateAuthToken(
+          user,
+          this.config.jwtSecret,
+        );
+        res.status(200).json({ user: user, accessToken: accessToken });
+        return;
+      }
+      const session = await this.rotateSession(req);
       const accessToken = await generateAuthToken(user, this.config.jwtSecret);
 
-      res.status(200).json({ user: user, accessToken: accessToken });
+      // The replacement goes where the presented token came from: the cookie (or into it, for the
+      // localStorage move), else the body, which a bearer client must keep in place of the one it sent.
+      if (intoCookie) {
+        setSessionCookie(req, res, session);
+        res.status(200).json({ user: user, accessToken: accessToken });
+        return;
+      }
+      res
+        .status(200)
+        .json({ user: user, accessToken: accessToken, refreshToken: session });
       return;
     } catch (error) {
       auditAuthRefusal('auth.session.refresh', error);
       next(error);
+    }
+  }
+
+  /** Checks the presented refresh token without replacing it; a replayed token ends its family, recorded here. */
+  protected async keepSession(req: AuthenticatedServiceRequest): Promise<void> {
+    const payload = req.tokenPayload ?? {};
+    try {
+      await this.sessions.keep(req.verifiedToken ?? '', {
+        userId: String(payload.userId),
+        orgId: String(payload.orgId),
+        sid: payload.sid,
+        jti: payload.jti,
+        exp: payload.exp,
+      });
+    } catch (error) {
+      if (error instanceof SessionReuseDetected && error.endedNow) {
+        await this.recordSessionReplay(req, error);
+      }
+      throw error;
+    }
+  }
+
+  /** The refresh token that replaces the presented one; a replayed token ends its family, recorded here. */
+  protected async rotateSession(
+    req: AuthenticatedServiceRequest,
+  ): Promise<string> {
+    const payload = req.tokenPayload ?? {};
+    try {
+      const rotated = await this.sessions.rotate(req.verifiedToken ?? '', {
+        userId: String(payload.userId),
+        orgId: String(payload.orgId),
+        sid: payload.sid,
+        jti: payload.jti,
+        exp: payload.exp,
+      });
+      return rotated.refreshToken;
+    } catch (error) {
+      if (error instanceof SessionReuseDetected && error.endedNow) {
+        await this.recordSessionReplay(req, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * A replaced refresh token came back: the person's sign-in on that device has been ended. Logged and recorded as
+   * a security event of the account; never with the token.
+   */
+  protected async recordSessionReplay(
+    req: AuthenticatedServiceRequest,
+    error: SessionReuseDetected,
+  ): Promise<void> {
+    const orgId = req.tokenPayload?.orgId as string | undefined;
+    const userId = req.tokenPayload?.userId as string | undefined;
+    this.logger.warn('auth.session_replay_detected', {
+      orgId,
+      userId,
+      familyId: error.familyId,
+      ip: req.ip,
+    });
+    try {
+      await this.sessionReplayAudit({
+        orgId: String(orgId),
+        userId: String(userId),
+        familyId: error.familyId,
+      });
+    } catch (auditError) {
+      this.logger.error('Recording a replayed session failed', {
+        orgId,
+        userId,
+        error:
+          auditError instanceof Error ? auditError.message : String(auditError),
+      });
     }
   }
 
@@ -1562,6 +1715,12 @@ export class UserAccountController {
         activityType: LOGOUT,
         ipAddress: req.ip,
       });
+      if (orgId && userId)
+        await this.sessions.endSignedOut(
+          orgId,
+          userId,
+          signedOutSessionTokens(res),
+        );
       audit('auth.sign_out', { outcome: 'success' });
 
       res.status(200).end();
@@ -1718,9 +1877,7 @@ export class UserAccountController {
     const payload = ticket.getPayload();
     if (!payload) {
       throw authRefusal(
-        new WrongCredentialError(
-          "Sign-in with Google didn't complete. Try again, or use another sign-in method.",
-        ),
+        new WrongCredentialError(GOOGLE_SIGN_IN_FAILED),
         'sso_token_invalid',
       );
     }
@@ -1804,7 +1961,11 @@ export class UserAccountController {
         await this.authenticateWithOtp(user, credentials.otp, req.ip!);
         break;
       case AuthMethodType.GOOGLE:
-        await this.authenticateWithGoogle(user, credentials, req.ip!);
+        await this.authenticateWithGoogle(
+          user,
+          googleIdTokenOf(credentials),
+          req.ip!,
+        );
         break;
       case AuthMethodType.MICROSOFT:
         await this.authenticateWithMicrosoft(user, credentials, req.ip!);
@@ -1864,6 +2025,19 @@ export class UserAccountController {
     } else {
       // 5. FINAL SUCCESS
       await this.sessionService.completeAuthentication(sessionInfo);
+      // Every credential is proven; only now may the lifecycle hook say why the account cannot sign in.
+      const refusal =
+        (await orgLifecycle().orgLifecycleHook?.signInRefusal(
+          String(user._id),
+          {
+            frontendUrl: this.config.frontendUrl,
+            scopedJwtSecret: this.config.scopedJwtSecret,
+          },
+        )) ?? null;
+      if (refusal !== null) {
+        res.status(refusal.status).json(refusal.body);
+        return;
+      }
       const accessToken = await generateAuthToken(
         user,
         this.config.jwtSecret,
@@ -1898,16 +2072,25 @@ export class UserAccountController {
         );
       }
 
+      const { refreshToken } = await this.sessions.start(
+        String(user._id),
+        String(user.orgId),
+      );
       setContextIdentity({ orgId: who.org, userId: who.actor });
       audit('auth.sign_in', { ...who, outcome: 'success' });
+      if (wantsCookieDelivery(req)) {
+        setSessionCookie(req, res, refreshToken);
+        res.status(200).json({
+          message: 'Fully authenticated',
+          accessToken,
+          session: SESSION_DELIVERY_COOKIE,
+        });
+        return;
+      }
       res.status(200).json({
         message: 'Fully authenticated',
         accessToken,
-        refreshToken: refreshTokenJwtGenerator(
-          user._id,
-          user.orgId,
-          this.config.scopedJwtSecret,
-        ),
+        refreshToken,
       });
     }
   }
@@ -1917,6 +2100,9 @@ export class UserAccountController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const attempted = signInMethod(
+      (req.body as { method?: unknown } | undefined)?.method,
+    );
     // Read by the catch: a refusal is audited for the account it was for, when known.
     let user: Record<string, any> | undefined;
     try {
@@ -2000,7 +2186,7 @@ export class UserAccountController {
             const { clientId } = configManagerResponse.data;
             const ticket = await verifyGoogleIdToken(
               clientId,
-              String(credentials.credential || credentials),
+              googleIdTokenOf(credentials),
             );
             const payload = ticket.getPayload();
             if (!payload?.email)
@@ -2148,7 +2334,9 @@ export class UserAccountController {
             sessionInfo,
           ),
       );
+      recordAuthAttempt(attempted, 'success');
     } catch (error) {
+      recordAuthAttempt(attempted, refusalOutcome(error));
       const method: unknown = (req.body as { method?: unknown } | undefined)
         ?.method;
       auditAuthRefusal('auth.sign_in', error, {
@@ -2236,7 +2424,7 @@ export class UserAccountController {
       // the event, which is how a failed event write is retried.
       if (await getUserRepository().emailTakenElsewhere(email, userId)) {
         throw authRefusal(
-          new BadRequestError(`Email already in use: ${newEmail}`),
+          new BadRequestError('Email already in use'),
           'email_taken',
         );
       }

@@ -63,9 +63,9 @@ export const WebSearchApi = {
     return data.providers;
   },
 
-  async getConfig(): Promise<WebSearchConfigData> {
+  async getConfig(options?: { suppressErrorToast?: boolean }): Promise<WebSearchConfigData> {
     try {
-      const { data } = await apiClient.get(BASE_URL);
+      const { data } = await apiClient.get(BASE_URL, { suppressErrorToast: options?.suppressErrorToast });
       if (data.status === 'success') {
         const providers: ConfiguredWebSearchProvider[] = Array.isArray(data.providers)
           ? data.providers.map((provider: { providerKey: string; provider: string; configuration?: Record<string, unknown>; isDefault?: boolean }) => ({

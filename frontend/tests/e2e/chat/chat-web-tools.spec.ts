@@ -202,19 +202,20 @@ function plusMenuButton(page: Page) {
   return page.getByRole('button', { name: /^Attach files and capabilities/ }).filter({ visible: true }).first();
 }
 
-/** Opens a header (the reply's "Used N tools" section, a "Ran N tools" group) if it is closed. */
-async function open(page: Page, header: RegExp) {
-  const toggle = page.locator('[role="button"][aria-expanded]').filter({ hasText: header }).first();
-  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
-  return toggle;
-}
-
-/** A tool's card: the web calls of one turn sit in a group inside the reply's activity section. */
+/**
+ * A tool's card: the reply's steps open from its summary line, which names what the run did ("Searched the web ·
+ * Read a page", CTL-3b), and a web call's card is a row among them; a group of calls opens onto its rows.
+ */
 async function stepCard(page: Page, label: RegExp) {
-  await open(page, /Used \d+ tools?/);
-  const group = await open(page, /Ran \d+ tools/);
-  await expect(group).not.toContainText('Dynamic');
-  return page.locator('[role="button"][aria-expanded]').filter({ hasText: label }).first();
+  const summary = page.getByTestId('activity-summary').first();
+  await expect(summary).toBeVisible({ timeout: 15_000 });
+  if ((await summary.getAttribute('aria-expanded')) === 'false') await summary.click();
+  await expect(summary).toHaveAttribute('aria-expanded', 'true');
+  await expect(summary).not.toContainText('Dynamic');
+  const rows = page.locator('[role="button"][aria-expanded]:not([data-testid="activity-summary"])');
+  const group = rows.filter({ hasText: /Used \d+ tools/ });
+  if ((await group.count()) > 0 && (await group.first().getAttribute('aria-expanded')) === 'false') await group.first().click();
+  return rows.filter({ hasText: label }).filter({ hasNotText: /Used \d+ tools/ }).first();
 }
 
 test.describe('Chat — web tools (mocked backend)', () => {
@@ -257,7 +258,7 @@ test.describe('Chat — web tools (mocked backend)', () => {
     await send(page, QUESTION);
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
 
-    await (await stepCard(page, /Quickstart - PipesHub|Read a web page|docs\.pipeshub\.com\/quickstart/)).click();
+    await (await stepCard(page, /Quickstart - PipesHub|Read a page|docs\.pipeshub\.com\/quickstart/)).click();
 
     const fields = page.getByTestId('tool-result-fields').first();
     await expect(fields).toBeVisible();

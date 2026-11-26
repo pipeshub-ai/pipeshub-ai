@@ -1,6 +1,6 @@
 """The counters of the typed graph (kg.counts): after any sequence of changes, folded or not, a key's rows sum to count(*) of what it counts (by the listing's own
 predicates); a seed counts a connector whole and repairs what drifted; a fold that races the writers loses and doubles nothing; and a listing that counts from them
-counts only what the viewer's classes open."""
+counts only what the viewer's classes open; the check reports counters that differ from a recount and repairs nothing."""
 from __future__ import annotations
 
 import asyncio
@@ -25,9 +25,7 @@ from .test_kg_read import flip
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
 TRUTH = f"""SELECT r.app_sk, 1::smallint AS facet, r.class_id, r.kind, r.folder, NULL::text AS record_type, NULL::text AS origin, count(*) AS n FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {kgl.LIVE} AND {kgl.DECIDED} GROUP BY 1, 3, 4, 5
-  UNION ALL SELECT r.app_sk, 2::smallint, NULL, NULL, NULL, r.record_type, r.origin, count(*) FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {counts.FACET_ROWS} GROUP BY 1, 6, 7"""
+    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {kgl.LIVE} AND {kgl.DECIDED} GROUP BY 1, 3, 4, 5"""
 HELD = """SELECT app_sk, facet, class_id, kind, folder, record_type, origin, sum(n) AS n FROM kg.counts WHERE org_id = $1 AND facet <> 0
     GROUP BY 1, 2, 3, 4, 5, 6, 7 HAVING sum(n) <> 0"""
 
@@ -106,8 +104,39 @@ async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_read
     assert held == truth
     with ctx(org):
         assert await p._q(lambda tx: counts.class_rows(tx, org, sk, []), None) == {}
-        got = await p._q(lambda tx: counts.facets(tx, org, sk), None)
-    assert got is not None and got["origins"] == sorted({k[6] for k in truth if k[0] == sk and k[1] == 2 and k[6]})
+
+
+async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_and_changes_nothing(pg_db, caplog, monkeypatch) -> None:
+    results: list[str] = []
+    monkeypatch.setattr(counts.CHECKED, "inc", lambda *labels, value=1.0: results.extend(labels))
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+    assert await counts.check(pg_db, org, "app1") == []                              # not counted whole yet: nothing to compare, nothing reported
+    assert results == ["unseeded"]                                                   # and not counted as a check that found the counters right
+    await counts.run(pg_db, org)
+    assert await counts.check(pg_db, org, "app1") == []                              # counted whole: the counters are the recount
+    assert results == ["unseeded", "same"]
+
+    async def first_key(tx) -> asyncpg.Record:
+        return await tx.fetchrow("""SELECT c.app_sk, c.class_id, c.kind, c.folder, sum(c.n)::bigint AS n FROM kg.counts c JOIN kg.node_keys k ON k.org_id = c.org_id AND k.sk = c.app_sk
+            WHERE c.org_id = $1 AND k.coll = 1 AND k.id = 'app1' AND c.facet = 1 GROUP BY 1, 2, 3, 4 ORDER BY 2, 3, 4 LIMIT 1""", org)
+    with ctx(org):
+        key = await p._q(first_key, None)
+        assert key is not None
+
+        async def drift(tx) -> None:
+            await KgWriter(tx).counts_add([(key["app_sk"], 1, key["class_id"], key["kind"], key["folder"], None, None, 5)])
+        await p._q(drift, None, write=True)
+    before = await state(p, org)
+    with caplog.at_level(logging.ERROR, logger=counts.logger.name):
+        found = await counts.check(pg_db, org, "app1")
+    assert found == [{"class_id": key["class_id"], "kind": key["kind"], "folder": key["folder"], "kept": key["n"] + 5, "counted": key["n"]}]
+    assert await state(p, org) == before                                             # reported, not repaired
+    assert any("kg counters of connector app1" in r.getMessage() for r in caplog.records)
+    assert results == ["unseeded", "same", "differs"]
+    assert await counts.check(pg_db, org, "app2") == []                              # another connector of the org is not named
+    assert await counts.check(pg_db, new_org(), "app1") == []                        # nor is a connector of another org
 
 
 async def test_a_fold_that_races_the_writers_loses_and_doubles_nothing(pg_db) -> None:
@@ -175,14 +204,23 @@ async def test_a_listing_counts_past_its_cap_from_the_counters_and_only_what_the
     p, org = prov(pg_db), new_org()
     await _group_world(p, pg_db, org, 12)
     monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
+    monkeypatch.delenv("PG_KG_COUNTERS", raising=False)                          # the default: read
     page = await _page(p, org, "u1")
-    assert page["total"] == 4 and page["totalCapped"] is True                    # counted where the rows are: stops at the cap
-    monkeypatch.setenv("PG_KG_COUNTERS", "1")
-    page = await _page(p, org, "u1")
-    assert page["total"] == 4 and page["totalCapped"] is True                    # not counted whole yet: the same
+    assert page["total"] == 4 and page["totalCapped"] is True                    # not counted whole yet: counted where the rows are, up to the cap
     await counts.run(pg_db, org)
+    monkeypatch.setenv("PG_KG_COUNTERS", "0")
+    page = await _page(p, org, "u1")
+    assert page["total"] == 4 and page["totalCapped"] is True                    # the switch off: the same
+    monkeypatch.delenv("PG_KG_COUNTERS")
     page = await _page(p, org, "u1")
     assert page["total"] == 13 and not page.get("totalCapped") and page["counts"] == {"record": 12, "recordGroup": 1}       # the group itself: by its own grant, counted where it is
+    with monkeypatch.context() as m:
+        m.setenv("PG_KG_READ", "0")                                               # the walk decides every row, and counts them all (COUNT_SCAN): the same total and counts
+        walk = await _page(p, org, "u1")
+    assert (walk["total"], walk["counts"], walk.get("totalCapped")) == (page["total"], page["counts"], page.get("totalCapped"))
+    with ctx(org):                                                                # and the listing lists exactly that many rows
+        whole = await p.get_knowledge_hub_connector_page_v3(**_asks(org, "u1"), limit=100, include_total=False)
+    assert len({r["id"] for r in whole["rows"]}) == len(whole["rows"]) == page["total"]
     nobody = await _page(p, org, "u2")                                            # granted nothing: the counters say nothing of the rows
     assert nobody["total"] == 0 and not nobody["rows"]
     filtered = await _page(p, org, "u1", filters={"search_query": "R000"})        # a filter is counted where the rows are
@@ -201,7 +239,7 @@ async def _own_records(p, org: str, n: int) -> list[str]:
 async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_up_to_its_total_on_every_page(pg_db, monkeypatch) -> None:
     """12 rows the viewer reads by class (counted by the counters) and 6 records it reads by their own grant (plus the group, by its own): with the cap at 4 the scan of the
     own-grant rows stops at 4, so the total is 12 + 4, a lower bound that says so, and the counts by type add up to it. The service carries both on its cursor, so every
-    page of the listing reports the same total and counts."""
+    page of the listing reports the same counts, and the same total until the rows shown pass it: then the total is the rows shown, never fewer."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -219,19 +257,20 @@ async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_u
     assert sum(page["counts"].values()) == page["total"] and page["counts"]["record"] >= 12
 
     service = KnowledgeHubService(logging.getLogger("kg-counts"), p, _Config())
-    seen, cursor = [], None
+    seen, cursor, shown = [], None, 0
     for _ in range(10):
         with ctx(org):
             got = await service.get_nodes(user_id="user-1", org_id=org, parent_id="app1", parent_type="app", flattened=True, include=["counts"], limit=5,
                                           sort_by="name", sort_order="asc", **({"cursor": cursor} if cursor else {}))
         assert got.success, got
+        shown += len(got.items)
         seen.append((got.pagination.totalItems, got.pagination.totalCapped, got.counts.total, tuple(sorted((c.label, c.count) for c in got.counts.items))))
+        assert got.pagination.totalItems == got.counts.total == max(16, shown) and got.pagination.totalCapped is True, seen
         cursor = got.pagination.nextCursor
         if not cursor:
             break
-    assert len(seen) > 1 and len(set(seen)) == 1, seen                          # one total and one breakdown for the whole listing
-    total, capped, counted, items = seen[0]
-    assert total == counted == sum(n for _, n in items) == 16 and capped is True
+    assert len(seen) > 1 and len({items for *_, items in seen}) == 1, seen      # one breakdown for the whole listing
+    assert sum(n for _, n in seen[0][3]) == seen[0][0] == 16 and shown == 19
 
 
 async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(pg_db) -> None:
@@ -289,7 +328,7 @@ async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_it
         assert await con.fetchval("SELECT count(*) FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
         # what epoch-5 code left: no kind-3 links, and its epoch on the connectors
         await con.execute("DELETE FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
-        await con.execute("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, CODE_EPOCH - 1)
+        await con.execute("UPDATE kg.projection_state SET code_epoch = 5 WHERE org_id = $1 AND app_sk <> 0", org)        # not 7: the bootstrap fills an epoch 7 copy in place
         with ctx(org):
             await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in late], "records")
             await p.batch_create_edges([edge("fold", "records", i, "records", relationshipType="PARENT_CHILD") for i in late], "nodeRelations")

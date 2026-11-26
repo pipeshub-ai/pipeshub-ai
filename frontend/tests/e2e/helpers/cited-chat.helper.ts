@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from '@playwright/test';
+import { expect, type FrameLocator, type Locator, type Page } from '@playwright/test';
 import { buildAguiConversation } from '../chat/agui-sse-builder';
 
 /**
@@ -123,6 +123,64 @@ export function rendererNode(page: Page): Locator {
 }
 
 /**
+ * The document a docx or HTML preview draws inside its sandboxed frame. The frame's origin is opaque, so
+ * the page's own scripts cannot reach it; its text is found and scrolled through the frame instead.
+ */
+export function previewFrame(page: Page): FrameLocator {
+  return rendererNode(page).locator('iframe').first().contentFrame();
+}
+
+/** Scrolls every scrollable part of the document `locator` lives in to its top or bottom. */
+export async function scrollDocumentOf(locator: Locator, to: 'top' | 'bottom'): Promise<void> {
+  await locator.evaluate((el, where) => {
+    const doc = el.ownerDocument;
+    const nodes = [doc.scrollingElement, ...Array.from(doc.querySelectorAll('*'))].filter(Boolean) as HTMLElement[];
+    for (const node of nodes) {
+      if (node.scrollHeight > node.clientHeight + 5) node.scrollTop = where === 'top' ? 0 : node.scrollHeight;
+    }
+  }, to);
+}
+
+/**
+ * Waits for the preview's frame to finish loading. The viewer sends the active citation to the frame again
+ * on `load`, and the frame scrolls to it, so a scroll started before then can be followed by another.
+ */
+export async function waitForPreviewFrameLoad(page: Page): Promise<void> {
+  const handle = await rendererNode(page).locator('iframe').first().elementHandle();
+  const frame = await handle?.contentFrame();
+  if (!frame) throw new Error('the preview shows no frame');
+  await frame.waitForLoadState('load');
+}
+
+/**
+ * Asserts the element stays out of view for `ms`. A scroll that brings it back on its own before the next click
+ * fails here, so that click is the only thing a later "back in view" check can credit.
+ */
+export async function expectStaysOutOfView(locator: Locator, ms = 1_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    expect(await isInView(locator), 'the element came back into view on its own').toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+/** Waits until the document `locator` lives in stops scrolling: a smooth scroll still running would move it later. */
+export async function waitForScrollToSettle(locator: Locator): Promise<void> {
+  let last: number | null = null;
+  await expect
+    .poll(
+      async () => {
+        const top = await locator.evaluate((el) => el.ownerDocument.scrollingElement?.scrollTop ?? 0);
+        const settled = top === last;
+        last = top;
+        return settled;
+      },
+      { message: 'the document should stop scrolling', timeout: 15_000, intervals: [300] },
+    )
+    .toBe(true);
+}
+
+/**
  * A handle to the renderer's document node, to prove later that it was never replaced.
  * The first citation click opens a card whose Preview button opens the viewer; once the viewer is open, later
  * clicks jump inside it. So the card's button is pressed when it is showing and the renderer is not.
@@ -182,20 +240,6 @@ export async function visiblePdfPage(page: Page): Promise<number> {
     }
     return best;
   });
-}
-
-/** The signed-in user's access token, read from the page's own storage. */
-export async function accessTokenOf(page: Page): Promise<string> {
-  const token = await page.evaluate(() => {
-    const direct = localStorage.getItem('jwt_access_token');
-    if (direct) return direct;
-    const raw = localStorage.getItem('pipeshub_org_tokens');
-    if (!raw) return null;
-    const pairs = Object.values(JSON.parse(raw) as Record<string, { accessToken?: string }>);
-    return pairs.length === 1 ? (pairs[0].accessToken ?? null) : null;
-  });
-  if (!token) throw new Error('the page holds no access token');
-  return token;
 }
 
 /** Scrolls every scrollable part of the viewer to its top or bottom. */

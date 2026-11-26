@@ -37,6 +37,8 @@ export type ConnectorOAuthAppListRow = {
   oauth_instance_name?: string;
   config?: Record<string, unknown>;
   appGroup?: string;
+  /** The caller's own OAuth app, which only they can see and use. */
+  personal?: boolean;
 };
 
 type OAuthAppsListPhase = 'idle' | 'loading' | 'ready';

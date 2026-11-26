@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import multiprocessing as mp
 import os
 import signal
+import sys
 import threading
 import time
+from collections import Counter
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,7 +23,9 @@ from app.capacity.member_budget import AdmissionTimeout, CancelToken, MemberBudg
 from tests.support import ledger_procs as lp
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+    from types import FrameType
 
 GIB = 1 << 30
 POLICY = AdmissionPolicy()
@@ -93,15 +100,53 @@ def test_reserve_requires_a_deadline_or_a_cancel_token(ledger: Path) -> None:
         asyncio.run(b.reserve(Demand(Family.PARSE, 1)))
 
 
-def test_a_wait_ends_at_the_deadline_and_leaves_no_waiter(ledger: Path) -> None:
+def _soon(predicate: Callable[[], bool]) -> bool:
+    end = time.monotonic() + 10
+    while not predicate() and time.monotonic() < end:
+        time.sleep(0.005)
+    return predicate()
+
+
+def test_a_wait_ends_at_the_deadline_and_leaves_no_waiter(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wait's clock is frozen and moved by the test: it must still wait a hair before the deadline, and stop at it."""
     b = open_budget(ledger, c=4)
     first = b.try_reserve(Demand(Family.PARSE, 4, 0, "small"))
     assert first is not None
-    t = time.monotonic()
-    with pytest.raises(AdmissionTimeout):
-        b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=0.2)
-    assert 0.18 <= time.monotonic() - t < 1.0
-    assert b.snapshot()["families"]["parse"]["waiting"] == 0
+    now = [1000.0]
+    monkeypatch.setattr(mb, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time, sleep=time.sleep))
+    checks = [0]
+    real_check = MemberBudget._check_stop
+
+    def counted(*args: object) -> None:
+        checks[0] += 1
+        real_check(*args)
+
+    monkeypatch.setattr(MemberBudget, "_check_stop", staticmethod(counted))
+    raised: list[AdmissionTimeout] = []
+    stop = CancelToken()  # ends the wait at teardown when a broken deadline would not
+
+    def wait() -> None:
+        with contextlib.suppress(mb.Cancelled):
+            try:
+                b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=0.2, cancel=stop)
+            except AdmissionTimeout as exc:
+                raised.append(exc)
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    waiter.start()
+    try:
+        assert _soon(lambda: b.snapshot()["families"]["parse"]["waiting"] == 1)
+        now[0] = 1000.0 + 0.199
+        seen = checks[0]
+        assert _soon(lambda: checks[0] >= seen + 3 or not waiter.is_alive())  # it has looked at the clock since it moved
+        assert waiter.is_alive() and not raised, "the wait ended before its deadline"
+        now[0] = 1000.0 + 0.2
+        waiter.join(10)
+        assert raised, "the wait ran past its deadline"
+        assert b.snapshot()["families"]["parse"]["waiting"] == 0
+    finally:
+        stop.cancel()
+        waiter.join(1)  # cancel ends a healthy waiter at once; a deadlocked one must not push the test past pytest's timeout
 
 
 def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledger: Path) -> None:
@@ -120,6 +165,7 @@ def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledg
         assert permit.cpu == 1
         return time.monotonic() - t
 
+    # wall-clock-ok: the release lands at 0.1 s; the 1 s ceiling is ten times that, far under the 5 s deadline it must beat
     assert 0.08 <= asyncio.run(run()) < 1.0
 
 
@@ -278,6 +324,7 @@ def test_death_reclaim(ledger: Path) -> None:
     proc.join()
     t = time.monotonic()
     p = b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=3)
+    # wall-clock-ok: a dead holder's share is taken back at once (ms); the failure is waiting out the 3 s deadline
     assert p is not None and time.monotonic() - t < 1.0
     snap = b.snapshot()
     assert snap["used"] == 1 and snap["processes"] == 1
@@ -381,15 +428,79 @@ def _skip_on_small_hosts() -> None:
         pytest.skip(f"{_cpus()} CPUs cannot run 16 contending processes; set LEDGER_MIN_PAIRS_PER_S to run it on a smaller host")
 
 
-def test_ledger_throughput(ledger: Path) -> None:
-    """At least 20 000 reserve+release pairs/s across 16 processes, including the admission logic."""
-    floor = int(os.environ.get("LEDGER_MIN_PAIRS_PER_S", "5000"))
-    _skip_on_small_hosts()
-    seconds = 2.0
-    results = _run_hammer(ledger, 16, seconds)
-    rate = sum(r[0] for r in results) / seconds
-    assert sum(r[1] for r in results) == 0
-    assert rate >= floor, f"{rate:.0f} pairs/s < {floor}"
+def _pair_cost(budget: MemberBudget) -> tuple[int, int, int, Counter[str]]:
+    """The Python calls, builtin calls, bytecode instructions and system calls (by name) of one reserve+release pair."""
+
+    def pair() -> None:
+        permit = budget.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
+        assert permit is not None
+        permit.release()
+
+    work: Counter[str] = Counter()
+    system: Counter[str] = Counter()
+
+    def profile(_frame: object, event: str, arg: object) -> None:
+        work[event] += 1
+        if event == "c_call":
+            name = f"{getattr(arg, '__module__', None) or ''}.{getattr(arg, '__name__', '?')}"
+            if name.startswith(("posix.", "os.", "_io.", "fcntl.", "time.", "select.")):
+                system[name] += 1
+
+    def trace(frame: FrameType, event: str, _arg: object) -> object:
+        if event == "call":
+            frame.f_trace_opcodes = True
+        elif event == "opcode":
+            work["opcode"] += 1  # a loop over the process table that makes no call still shows here
+        return trace
+
+    pair()
+    for _ in range(2):  # Python 3.12 counts a code object's instructions from the run after it was first traced
+        work.clear()
+        system.clear()
+        previous_profile, previous_trace, collecting = sys.getprofile(), sys.gettrace(), gc.isenabled()
+        gc.disable()  # a collection inside one measured pair would run weak-reference callbacks in that pair only
+        sys.setprofile(profile)
+        sys.settrace(trace)
+        try:
+            pair()
+        finally:
+            sys.settrace(previous_trace)
+            sys.setprofile(previous_profile)
+            if collecting:
+                gc.enable()
+    return work["call"], work["c_call"], work["opcode"], system
+
+
+def test_ledger_throughput(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reserve+release pair, admission logic included, is two short ledger transactions whose cost does not grow
+    with the processes attached: no scan of the process table, no extra lock round trip, no wait or sync.
+
+    Counted, not timed: a pairs-per-second floor across 16 processes failed on a busy runner (4668 < 5000) with
+    nothing slow in the ledger."""
+    with contextlib.ExitStack() as handles:
+        one = open_budget(ledger, service="one")
+        handles.callback(one.close)
+        alone = _pair_cost(one)
+        for i in range(128):  # 129 attached fill three occupancy words, so per-word work differs from one process
+            handles.callback(open_budget(ledger, service=f"p{i}").close)
+        assert one.snapshot()["processes"] == 129
+        crowded = _pair_cost(one)
+        print(f"pair alone {alone}\npair with 129 attached {crowded}")
+        assert crowded == alone, "a reserve+release pair costs more with more processes attached"
+        system = crowded[3]
+        assert system["fcntl.flock"] == 4, "one ledger lock and unlock per reserve and per release"
+        synced = ("posix.open", "_io.open", "posix.fsync", "posix.fdatasync", "time.sleep")
+        assert not any(system[name] for name in synced), system
+
+        # One read of the whole slot table costs the same at any size: the reads must stay off it.
+        reads: list[tuple[int, int]] = []
+        real_pread = os.pread
+        monkeypatch.setattr(os, "pread", lambda fd, n, at: reads.append((at, n)) or real_pread(fd, n, at))
+        permit = one.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
+        assert permit is not None
+        permit.release()
+        monkeypatch.undo()
+        assert reads and all(at + n <= mb.TABLE_OFFSET or at >= mb.CHANGE_OFFSET for at, n in reads), reads
 
 
 def test_no_sample_shows_more_than_c_held(ledger: Path) -> None:

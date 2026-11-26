@@ -137,19 +137,26 @@ def _timeline_granted(scope: Any) -> bool:  # noqa: ANN401
     return not names or TIMELINE_TOOL_NAME in names
 
 
+def period_summary_section(scope: Any, query: str | None) -> str | None:  # noqa: ANN401
+    """The hint section for the top-level run of a question about a span, when
+    that run can call the timeline tool; None otherwise. Both loops add it."""
+    if (
+        scope is not None
+        and not scope.identity.parent_run_id
+        and asks_for_period_summary(query)
+        and _timeline_granted(scope)
+    ):
+        return PERIOD_SUMMARY_HINT
+    return None
+
+
 def period_summary_hint(context: AgentContext) -> Any:  # noqa: ANN401
-    """PRE_AGENT middleware: the hint section for the top-level run of a
-    question about a span, when that run can call the timeline tool."""
+    """PRE_AGENT middleware: ``period_summary_section`` on the legacy loop."""
 
     async def _middleware(ctx: AgentLifecycleContext, next_fn: Any) -> None:  # noqa: ANN401
-        scope = ctx.scope
-        if (
-            scope is not None
-            and not scope.identity.parent_run_id
-            and asks_for_period_summary(context.query)
-            and _timeline_granted(scope)
-        ):
-            scope.extra_prompt_sections[PERIOD_SUMMARY_SECTION] = PERIOD_SUMMARY_HINT
+        hint = period_summary_section(ctx.scope, context.query)
+        if hint is not None:
+            ctx.scope.extra_prompt_sections[PERIOD_SUMMARY_SECTION] = hint  # pyright: ignore[reportOptionalMemberAccess]
         await next_fn()
 
     return _middleware
@@ -160,5 +167,6 @@ __all__ = [
     "PERIOD_SUMMARY_SECTION",
     "asks_for_period_summary",
     "period_summary_hint",
+    "period_summary_section",
     "timeline_replaces_prefetch",
 ]

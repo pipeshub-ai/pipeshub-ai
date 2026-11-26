@@ -381,6 +381,8 @@ async def _page_query(provider, monkeypatch, **overrides) -> str:
         return await original(query, *args, **kwargs)
 
     monkeypatch.setattr(provider.client, "execute_query", spy)
+    # The shape pinned here is the legacy statement's: the split browse writes no rule into it (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     await _page(provider, **overrides)
     monkeypatch.setattr(provider.client, "execute_query", original)
     return [q for q in seen if "$kh_limit" in q][-1]
@@ -840,3 +842,22 @@ async def test_a_hidden_nested_group_hides_its_contents(
     """The group is listed; its records are not, in the flatten as in browse."""
     assert "v3-dec-nested-hidden" in await _visible(neo4j_provider)
     assert "v3-dec-nested-hidden-r1" not in await _visible(neo4j_provider)
+
+
+# Planning time grows much faster than the statement: on a small server the browse page statement, a few dozen KB,
+# takes minutes to plan without a cached plan, and milliseconds to run once one is. These are the sizes of today's
+# statements; a change that grows one past its budget has to show that it still plans in time, then raise the budget.
+_PAGE_STATEMENT_BUDGET = {
+    # page: (request, (bytes, EXISTS subqueries)); measured 17,802/19, 42,515/80 and 57,698/103 on this fixture
+    "app-flatten": ({"flatten": True}, (18_700, 20)),
+    "app-browse": ({"flatten": False}, (44_700, 84)),
+    "folder-browse": ({"start_id": "v3-dec-folder", "start_type": "record", "flatten": False}, (60_600, 108)),
+}
+
+
+@pytest.mark.parametrize("page", list(_PAGE_STATEMENT_BUDGET))
+async def test_the_page_statement_stays_within_its_planning_budget(v3_graph, neo4j_provider, monkeypatch, page) -> None:
+    request, (max_bytes, max_exists) = _PAGE_STATEMENT_BUDGET[page]
+    query = await _page_query(neo4j_provider, monkeypatch, **request)
+    assert len(query) <= max_bytes
+    assert query.count("EXISTS") <= max_exists

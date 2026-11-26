@@ -31,8 +31,10 @@ from app.services.graph_db.postgres.base import (
     _j,
 )
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -72,6 +74,20 @@ async def _remove_records(tx: Tx, org: str, ids: list[str]) -> int:
         ((coll = 'records' AND id = ANY($2::text[])) OR (coll = ANY($3::text[]) AND id = ANY($4::text[])) OR (coll = 'blocks' AND id = ANY($5::text[])))
         RETURNING coll) SELECT count(*) FILTER (WHERE coll = 'records') FROM d""", org, ids, _TYPE_COLLS, everything, extra)
 
+
+# Whether each collection has a live child: one is enough, so the outer LIMIT 1 stops at the first, where a DISTINCT over the join read every child of every
+# collection. Each child is read by its key: joined, a planner without statistics scanned the org's records once per collection. The collection comes from ``c``
+# (OFFSET 0 keeps it a subquery), as in get_connector_stats: a literal 'records' lets a partial records index bounded by the org alone look as cheap. A
+# collection's edges are a range of one value in edges_by_target's order (org, coll, to_id), read under kg.reader.seeks (no sort, bitmap or sequential scan):
+# only that index returns them so. On a leaf whose statistics put the org at a row, ``to_id = k.id`` tied with the primary key (org, coll, from_id, ...), where
+# to_id is not leading: PostgreSQL 17 read every belongsTo edge of the org per collection, and PostgreSQL 18 skip-scanned it, sorted, from the primary key.
+HUB_ROOT_KB_CHILDREN = """/* pipeshub:graph.hub_root_kb_children */ SELECT k.id FROM unnest($2::text[]) k(id)
+    CROSS JOIN (SELECT 'records'::text AS rec OFFSET 0) c CROSS JOIN LATERAL (
+    SELECT 1 FROM (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id >= k.id AND e.to_id <= k.id
+      AND e.from_coll = 'records' AND e.to_coll = 'apps' ORDER BY e.to_id OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = c.rec AND n.id = e.from_id LIMIT 1) r
+    WHERE r.doc->>'connectorId' = k.id AND r.doc->>'orgId' = $1 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true'
+    LIMIT 1) x"""
 
 class HierarchyMixin(PgBase):
     async def _rows(self, sql: str, *args: Any, transaction: str | None = None) -> list:  # noqa: ANN401
@@ -117,7 +133,8 @@ class HierarchyMixin(PgBase):
                            transaction, write=True)
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error copying relationships from {source_key} to {target_key}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="copy_document_relationships")
             return False
 
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
@@ -139,9 +156,10 @@ class HierarchyMixin(PgBase):
                 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.doc->>'relationshipType' = ANY($5::text[]) AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1)
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_edges_by_relationship_types")
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
@@ -175,8 +193,7 @@ class HierarchyMixin(PgBase):
                 collection=CollectionNames.RECORD_GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_group_relation(
@@ -251,7 +268,7 @@ class HierarchyMixin(PgBase):
             rows = await self._ancestor_chains(record_id, transaction)
             return "/".join(select_canonical_chain_names(rows, ("names",))) if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record path failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_record_path")
             return None
 
     async def get_record_path_segments(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[str]:
@@ -259,9 +276,10 @@ class HierarchyMixin(PgBase):
         try:
             rows = await self._ancestor_chains(record_id, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record path segments failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path_segments")
             return []
         return select_canonical_chain_names(rows, ("names",))
 
@@ -290,9 +308,10 @@ class HierarchyMixin(PgBase):
                   WHERE NOT p.id = ANY(up.ids) AND cardinality(up.ids) <= 50)
                 SELECT ids, gn, nm FROM up ORDER BY cardinality(ids) DESC, ids LIMIT $3""", org, record_group_id, PATH_MAX_CANDIDATES, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record group path failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_path")
             return []
         return select_canonical_chain_names([{"ids": list(r["ids"]), "groupNames": list(r["gn"]), "names": list(r["nm"])} for r in rows], ("groupNames", "names"))
 
@@ -318,7 +337,8 @@ class HierarchyMixin(PgBase):
                 ORDER BY (e.from_coll = 'records') DESC, e.from_id LIMIT 1""", org, record_id, transaction=transaction)
             return {"id": rows[0]["id"], "type": "recordGroup" if rows[0]["coll"] == "recordGroups" else "record"} if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record parent info failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_parent_info")
             return None
 
     async def get_node_depths_batch(self, parent_id: str, node_ids: list[str], max_depth: int = 3, parent_type: str | None = None) -> dict[str, int]:
@@ -362,7 +382,8 @@ class HierarchyMixin(PgBase):
         try:
             return await self._q(walk, None)
         except Exception as e:
-            self.logger.error("get_node_depths_batch failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_node_depths_batch")
             return {}
 
     async def delete_records_and_relations(self, record_key: str, *, hard_delete: bool = False, transaction: str | None = None) -> bool:
@@ -436,7 +457,8 @@ class HierarchyMixin(PgBase):
                         p["taxonomyRefs"] = r
                     payloads.append(p)
         except Exception as e:
-            self.logger.error(f"❌ Failed to prepare deletion event payloads: {e}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_delete_events", step="deletion_event_payload")
         return {"eventType": "deleteRecord", "topic": "record-events", "payloads": payloads} if payloads else None
 
     async def delete_records_recursive(self, record_ids: list[str], connector_id: str, transaction: str | None = None, cascade_children: bool = True,  # noqa: FBT001, FBT002
@@ -488,7 +510,8 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete records recursively: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                            op="delete_records_recursive")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise  # the caller owns the transaction: it needs the real error to roll back and retry
 
@@ -511,7 +534,7 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete single record: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_single_record")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise
 
@@ -546,7 +569,8 @@ class HierarchyMixin(PgBase):
                 "recordType": record.get("recordType"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_create_deleted_record_event_payload")
             return {}
 
     async def is_record_descendant_of(self, record_id: str, ancestor_id: str, transaction: str | None = None) -> bool:
@@ -565,8 +589,9 @@ class HierarchyMixin(PgBase):
         try:
             got = await kg_hier.answer(self, "pc_ancestor", transaction, lambda tx: kg_hier.pc_ancestor(tx, org, record_id, ancestor_id), walk=walk)
             return got if got is not None else await self._q(walk, transaction)
-        except Exception:
-            self.logger.exception("Is record descendant check failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="is_record_descendant_of")
             return False
 
 # ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
@@ -599,8 +624,9 @@ class HubMixin(PgBase):
         org = current_org_id()
         try:
             apps = await self.get_gated_apps(user_key, org_id, transaction=transaction) if org_id == org else []
-        except Exception:
-            self.logger.exception("Failed to get knowledge hub filter options")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_filter_options")
             return {"apps": []}
         rows = [{"id": a.get("_key") or a.get("id"), "name": a.get("name"), "type": a.get("type")} for a in apps if (a.get("type") or "") != "KB" and (a.get("_key") or a.get("id"))]
         return {"apps": sorted(rows, key=lambda a: (a.get("name") or "").lower())}
@@ -617,7 +643,8 @@ class HubMixin(PgBase):
 
     async def _hub_trail(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
         """The trail from the node up to its root, every step's parent in the trail: a record's hierarchy parent, else the group it belongs to, else the app (a
-        collection's folders); a group's group, else its app. It stops at a node with no name, and before a node it has passed."""
+        collection's folders); a group's group, else its app. Of several, the lowest id, except that a record's own group (``recordGroupId``) comes first among its
+        groups, then one with a hierarchy edge to it. It stops at a node with no name, and before a node it has passed."""
         trail: list[dict[str, Any]] = []
         seen: set[str] = set()
         cur: str | None = node_id
@@ -628,11 +655,16 @@ class HubMixin(PgBase):
                 break
             trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
             cur = await tx.fetchval("""/* pipeshub:graph.hub_parent */ SELECT pid FROM (
-                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $3
-                    AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
-                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
-                  UNION ALL SELECT 3, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'apps') p
-                ORDER BY pri, pid LIMIT 1""", org, info["coll"], cur)
+                  SELECT 1 AS pri, 0 AS sub, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records'
+                    AND e.to_id = $3 AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                  UNION ALL SELECT 2, CASE WHEN $2 <> 'records' THEN 0
+                      WHEN b.to_id = (SELECT n.doc->>'recordGroupId' FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = $3) THEN 0
+                      WHEN EXISTS (SELECT 1 FROM graph.edges h WHERE h.org_id = $1 AND h.coll = 'nodeRelations' AND h.to_coll = 'records' AND h.to_id = $3
+                        AND h.from_coll = 'recordGroups' AND h.from_id = b.to_id AND h.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')) THEN 1 ELSE 2 END, b.to_id
+                    FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
+                  UNION ALL SELECT 3, 0, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3
+                    AND b.to_coll = 'apps') p
+                ORDER BY pri, sub, pid LIMIT 1""", org, info["coll"], cur)
         return trail
 
     async def _hub_trail_kg(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
@@ -667,13 +699,16 @@ class HubMixin(PgBase):
                 return []
             visible = (await self.check_access(user_key, org_id, node_ids=[s["id"] for s in trail], transaction=transaction)).node_ids
             return [s for s in reversed(trail) if s["id"] in visible] if trail[0]["id"] in visible else []
-        except Exception:
-            self.logger.exception("Get knowledge hub breadcrumbs failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_breadcrumbs")
             return []
 
     async def get_knowledge_hub_parent_node(self, node_id: str, folder_mime_types: list[str], transaction: str | None = None) -> dict[str, Any] | None:
         """The node's parent as ``{id, name, nodeType, subType}``: a group's group (by ``parentId``) else its app (by ``connectorId``); a record's hierarchy
-        parent, else the group, record or app it belongs to, else what it inherits permissions from (an app for a collection item, a group otherwise)."""
+        parent (the lowest id when several), else the group, record or app it belongs to, else what it inherits permissions from (an app for a collection
+        item, a group otherwise; the lowest id). Of several it belongs to, its own group (``recordGroupId``) comes first, then one with a hierarchy edge to it,
+        then the lowest id."""
         org = current_org_id()
 
         async def go(tx: Tx) -> dict[str, Any] | None:
@@ -696,12 +731,16 @@ class HubMixin(PgBase):
             cid = rec.get("connectorId")
             is_kb = rec.get("connectorName") == "KB" or any((x or {}).get("type") == "KB" for x in (await node("recordGroups", cid), await node("apps", cid)))
             pid = await tx.fetchval("""/* pipeshub:graph.hub_record_parent */ SELECT pid FROM (
-                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $2
+                  SELECT 1 AS pri, 0 AS sub, e.from_id AS pid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $2
                     AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
-                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2
+                  UNION ALL SELECT 2, CASE WHEN b.to_id = $4 THEN 0 WHEN EXISTS (SELECT 1 FROM graph.edges h WHERE h.org_id = $1 AND h.coll = 'nodeRelations'
+                      AND h.to_coll = 'records' AND h.to_id = $2 AND h.from_coll = b.to_coll AND h.from_id = b.to_id
+                      AND h.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')) THEN 1 ELSE 2 END, b.to_id
+                    FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2
                     AND b.to_coll IN ('recordGroups', 'records', 'apps')
-                  UNION ALL SELECT 3, i.to_id FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_coll = 'records' AND i.from_id = $2
-                    AND i.to_coll = CASE WHEN $3 THEN 'apps' ELSE 'recordGroups' END) p ORDER BY pri, pid LIMIT 1""", org, node_id, is_kb)
+                  UNION ALL SELECT 3, 0, i.to_id FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_coll = 'records' AND i.from_id = $2
+                    AND i.to_coll = CASE WHEN $3 THEN 'apps' ELSE 'recordGroups' END) p ORDER BY pri, sub, pid LIMIT 1""",
+                                    org, node_id, is_kb, rec.get("recordGroupId"))
             if not pid:
                 return None
             if p := await node("records", pid):
@@ -712,8 +751,9 @@ class HubMixin(PgBase):
             return {"id": p["id"], "name": p["name"], "nodeType": "app", "subType": p.get("type")} if p and p.get("name") else None
         try:
             return await self._q(go, transaction)
-        except Exception:
-            self.logger.exception("Get knowledge hub parent node failed")
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_parent_node")
             return None
 
     async def get_knowledge_hub_root_nodes_v2(self, user_key: str, org_id: str, user_app_ids: list[str], limit: int, sort_field: str = "name", sort_dir: str = "ASC", *,
@@ -746,10 +786,10 @@ class HubMixin(PgBase):
             u = _doc(user["doc"])
             kept = [a for a in (_doc(r["doc"]) for r in apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
             kbs = [a["id"] for a in kept if a.get("type") == "KB"]
-            filled = {r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.hub_root_kb_children */ SELECT DISTINCT e.to_id FROM graph.edges e
-                JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
-                AND e.to_coll = 'apps' AND e.to_id = ANY($2::text[]) AND r.doc->>'connectorId' = e.to_id AND r.doc->>'orgId' = $1
-                AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true'""", org, kbs)} if kbs and not names_only else set()
+            filled: set[str] = set()
+            if kbs and not names_only:
+                async with seeks(tx):
+                    filled = {r["id"] for r in await tx.fetch(HUB_ROOT_KB_CHILDREN, org, kbs)}
             rows = []
             for a in kept:
                 kb = a.get("type") == "KB"

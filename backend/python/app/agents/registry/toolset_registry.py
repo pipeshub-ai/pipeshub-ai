@@ -9,7 +9,12 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetCategory
+from app.agents.registry.tool_descriptors import PARAMETER_CONSTRAINTS
+from app.connectors.core.registry.tool_builder import (
+    ToolDefinition,
+    ToolProvider,
+    ToolsetCategory,
+)
 
 AGENT_LOOP_TOOL_META_ATTR = "_agent_tool_meta"
 
@@ -84,6 +89,8 @@ def Toolset(
     tools: list[ToolDefinition] | None = None,
     internal: bool = False,  # If True, toolset is internal and not sent to frontend
     essential: bool = False,  # If True, stays visible under lazy tool disclosure (see ToolsetBuilder.as_essential)
+    *,
+    provider: ToolProvider,
 ) -> Callable[[type], type]:
     """
     Decorator to register a toolset with metadata and configuration schema.
@@ -101,6 +108,8 @@ def Toolset(
             (see `factory.py`) — declarative single source of truth for
             "essential" vs "searchable" classification, replacing a
             hardcoded pin list.
+        provider: Whose tools these are (``ToolProvider``); runs grant a connector's by its pinned instance and the
+            platform's by the run's other fields, never by the toolset's name (KN2).
 
     Returns:
         Decorator function that marks a class as a toolset
@@ -112,11 +121,14 @@ def Toolset(
             supported_auth_types=["OAUTH", "API_TOKEN"],
             description="Jira issue management tools",
             category=ToolsetCategory.APP,
-            tools=[...]
+            tools=[...],
+            provider=ToolProvider.CONNECTOR,
         )
         class JiraToolset:
             pass
     """
+    declared_provider = ToolProvider(provider)
+
     def decorator(cls: type) -> type:
         # Normalize supported auth types
         if isinstance(supported_auth_types, str):
@@ -160,6 +172,7 @@ def Toolset(
             "toolsetClass": cls,
             "isInternal": internal,
             "essential": essential,
+            "provider": declared_provider.value,
         }
 
         cls._is_toolset = True
@@ -229,6 +242,7 @@ class ToolsetRegistry:
                 'icon_path': self._extract_icon_path(metadata),
                 'isInternal': metadata.get('isInternal', False),
                 'essential': metadata.get('essential', False),
+                'provider': metadata.get('provider'),
             }
 
             logger.info(f"Registered toolset: {toolset_name} ({normalized_name}) with {len(discovered_tools)} tools")
@@ -330,6 +344,12 @@ class ToolsetRegistry:
             }
             if getattr(param, 'default', None) is not None:
                 param_dict["default"] = param.default
+            # The tool digest (run pins, the catalog) is taken over these dicts: a constraint left out here could
+            # widen without the digest moving.
+            for key, attr in PARAMETER_CONSTRAINTS.items():
+                value = getattr(param, attr, None)
+                if value is not None:
+                    param_dict[key] = value
             parameters.append(param_dict)
         return parameters
 
@@ -451,6 +471,7 @@ class ToolsetRegistry:
                 'icon_path': metadata.get('icon_path'),
                 'isInternal': metadata.get('isInternal', False),
                 'essential': metadata.get('essential', False),
+                'provider': metadata.get('provider'),
             }
 
         config = metadata.get('config', {})
@@ -473,6 +494,7 @@ class ToolsetRegistry:
             'icon_path': metadata.get('icon_path'),
             'isInternal': metadata.get('isInternal', False),
             'essential': metadata.get('essential', False),
+            'provider': metadata.get('provider'),
         }
 
     def _sanitize_config(self, config: dict[str, Any] | object) -> dict[str, Any]:

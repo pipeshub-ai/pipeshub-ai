@@ -179,7 +179,10 @@ async def test_neo4j_without_its_indexes_reads_unhinted_and_says_so_once(caplog:
     statements = [call.args[0] for call in provider.client.execute_query.await_args_list]
     assert [ROOTS_HINT in s for s in statements] == [True, False, True, False] * 2
     assert first == second == {"items": [], "total": 3}
-    assert caplog.text.count("reading the trash without them") == 1
+    fallbacks = [r for r in caplog.records if getattr(r, "step", None) == "unhinted_fallback"]
+    assert [(r.levelno, r.op, r.index) for r in fallbacks] == [
+        (logging.WARNING, "_execute_hinted", "record_connector_deleted_at and record_delete_batch"),
+    ]
 
 
 async def test_neo4j_raises_any_other_error_from_a_hinted_read() -> None:

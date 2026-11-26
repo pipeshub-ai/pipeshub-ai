@@ -106,6 +106,25 @@ class TestProcessorCleanup:
 
         assert FakeProducer.open_connections == 0
 
+    async def test_closes_the_session_a_storage_move_opened(self) -> None:
+        processor = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), MagicMock())
+        session = await processor._get_storage_cleanup()._get_session()
+
+        await processor.cleanup()
+        await processor.cleanup()
+
+        assert session.closed
+
+    async def test_closes_the_storage_session_when_the_producer_fails_to_close(self) -> None:
+        processor = DataSourceEntitiesProcessor(MagicMock(), MagicMock(), MagicMock())
+        processor.messaging_producer = MagicMock(cleanup=AsyncMock(side_effect=RuntimeError("broker gone")))
+        session = await processor._get_storage_cleanup()._get_session()
+
+        with pytest.raises(RuntimeError, match="broker gone"):
+            await processor.cleanup()
+
+        assert session.closed
+
 
 @pytest.mark.parametrize("connector_cls", [SmbConnector, CifsConnector])
 class TestNetworkShareConnectorsBuildOneProcessor:

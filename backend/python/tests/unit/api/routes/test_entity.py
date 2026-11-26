@@ -3,8 +3,8 @@
 import asyncio
 import copy
 import json
-from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Callable, Iterator
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -26,8 +26,10 @@ from app.api.routes.entity import (
     update_team,
     update_user_email,
 )
+from app.core.db.errors import SerializationConflict
 from app.core.org_context import OrgContext, bind
-from app.utils.user_messages import DATABASE_UNREACHABLE, not_found
+from app.services.graph_db.postgres.base import PgBase
+from app.utils.user_messages import DATABASE_UNREACHABLE, PEOPLE_GONE, action_failed, not_found
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +152,16 @@ class TestValidateOwnerRemoval:
         await _validate_owner_removal(gp, "team-1", ["user-owner1"], logger)
         logger.info.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_it_answers_how_many_owners_the_removal_takes(self) -> None:
+        gp = AsyncMock()
+        assert await _validate_owner_removal(gp, "team-1", [], MagicMock()) == 0
+        gp.get_team_owner_removal_info.assert_not_called()
+        gp.get_team_owner_removal_info.return_value = {"owners_being_removed": [], "total_owner_count": 1}
+        assert await _validate_owner_removal(gp, "team-1", ["reader"], MagicMock()) == 0
+        gp.get_team_owner_removal_info.return_value = {"owners_being_removed": ["o1", "o2"], "total_owner_count": 3}
+        assert await _validate_owner_removal(gp, "team-1", ["o1", "o2"], MagicMock()) == 2
+
 
 # ---------------------------------------------------------------------------
 # _validate_and_filter_owner_updates
@@ -262,6 +274,37 @@ class TestValidateAndFilterOwnerUpdates:
         )
         assert len(filtered) == 1
         assert filtered[0]["role"] == "OWNER"
+
+    @pytest.mark.asyncio
+    async def test_a_person_the_request_removes_has_no_role_left_to_change(self) -> None:
+        """Judged as the team will be after the removals: owner u1 leaves, so u1's change is no owner update."""
+        gp = AsyncMock()
+        gp.get_team_permissions_and_owner_count.return_value = {
+            "team": {"_key": "team-1"},
+            "permissions": {"u1": "OWNER", "u2": "READER"},
+            "owner_count": 2,
+        }
+        filtered, count = await _validate_and_filter_owner_updates(
+            gp, "team-1", [{"userId": "u1", "role": "READER"}, {"userId": "u2", "role": "WRITER"}], MagicMock(),
+            removing={"u1"}, owners_removed=1,
+        )
+        assert [u["userId"] for u in filtered] == ["u1", "u2"]
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_owners_a_request_removes_do_not_count_toward_the_last_owner(self) -> None:
+        gp = AsyncMock()
+        gp.get_team_permissions_and_owner_count.return_value = {
+            "team": {"_key": "team-1"},
+            "permissions": {"u1": "OWNER"},
+            "owner_count": 2,
+        }
+        with pytest.raises(HTTPException) as exc:
+            await _validate_and_filter_owner_updates(
+                gp, "team-1", [{"userId": "u1", "role": "READER"}], MagicMock(), removing={"u2"}, owners_removed=1,
+            )
+        assert exc.value.status_code == 400
+        assert "At least one owner must remain" in exc.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -994,6 +1037,7 @@ class TestUpdateTeam:
         gp.delete_team_member_edges.assert_called_once_with(
             team_id="team-1",
             user_ids=["graph-key-2", "graph-key-3"],
+            transaction=ANY,
         )
 
     @pytest.mark.asyncio
@@ -1168,6 +1212,7 @@ class TestUpdateTeam:
         gp.delete_team_member_edges.assert_called_once_with(
             team_id="team-1",
             user_ids=["graph-key-2"],
+            transaction=ANY,
         )
 
     @pytest.mark.asyncio
@@ -1187,6 +1232,7 @@ class TestUpdateTeam:
         gp.delete_team_member_edges.assert_called_once_with(
             team_id="team-1",
             user_ids=["graph-key-2"],
+            transaction=ANY,
         )
 
     @pytest.mark.asyncio
@@ -1240,6 +1286,349 @@ class TestUpdateTeam:
         with pytest.raises(HTTPException) as exc:
             await update_team(req, "team-1")
         assert exc.value.status_code == 409
+
+class _TeamUpdateGraph:
+    """One team on a store where each write lands as it runs, except inside begin_transaction(explicit=True)
+    while *honours_explicit* (NEO4J_CREATE_TRANSACTIONS): there a rollback restores what was there before.
+    *fail* names a write that raises an outage; *conflict_on* names one that collides with another writer *conflicts*
+    times, raising *conflict_error*. *between_attempts* is another edit that commits after a rolled-back attempt."""
+
+    conflict_error: type[Exception] = _Conflict
+
+    def __init__(self, perms: dict[str, str], *, fail: str | None = None, conflict_on: str | None = None,
+                 conflicts: int = 1, honours_explicit: bool = True,
+                 between_attempts: Callable[[dict[str, str]], None] | None = None) -> None:
+        self.logger = MagicMock()
+        self.team = {"_key": "team-1", "name": "Old", "orgId": "org-1"}
+        self.perms = dict(perms)
+        self.fail, self.conflict_on, self.conflicts, self.honours_explicit = fail, conflict_on, conflicts, honours_explicit
+        self.begun: list[bool | None] = []
+        self.write_txns: list[tuple[str, str | None]] = []
+        self.calls: list[tuple[str, str | None]] = []      # owner-rule reads and writes, in order, with their transaction
+        self.between_attempts = between_attempts
+        self._snapshots: dict[str, tuple[dict, dict]] = {}
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return bool(explicit and self.honours_explicit)
+
+    async def begin_transaction(self, read=None, write=None, explicit: bool | None = None) -> str:
+        self.begun.append(explicit)
+        txn = f"txn-{len(self.begun)}"
+        if self.opens_explicit_transaction(explicit):
+            self._snapshots[txn] = (copy.deepcopy(self.team), dict(self.perms))
+        return txn
+
+    async def commit_transaction(self, txn: str) -> None:
+        self._snapshots.pop(txn, None)
+
+    async def rollback_transaction(self, txn: str) -> None:
+        snapshot = self._snapshots.pop(txn, None)
+        if snapshot is not None:
+            self.team, self.perms = snapshot
+        if self.between_attempts is not None:
+            self.between_attempts(self.perms)
+            self.between_attempts = None
+
+    def is_write_conflict(self, error: BaseException) -> bool:
+        return isinstance(error, _Conflict)
+
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return False
+
+    def _write(self, name: str, transaction: str | None) -> None:
+        self.write_txns.append((name, transaction))
+        self.calls.append((name, transaction))
+        if name == self.conflict_on and self.conflicts > 0:
+            self.conflicts -= 1
+            raise self.conflict_error("DeadlockDetected")
+        if name == self.fail:
+            raise RuntimeError("connection reset")
+
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict:
+        return {"_key": user_id}
+
+    async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
+        return copy.deepcopy(self.team) if key == "team-1" else None
+
+    async def get_edge(self, from_id: str, from_coll: str, to_id: str, to_coll: str, coll: str, **_: object) -> dict | None:
+        role = self.perms.get(from_id) if to_id == "team-1" else None
+        return {"role": role} if role else None
+
+    async def find_team_by_name(self, **_: object) -> None:
+        return None
+
+    async def get_graph_user_keys_by_mongo_user_ids(self, ids: list[str], org_id=None, *, chunk_size: int) -> dict[str, str]:
+        if gone := sorted(i for i in ids if i.startswith("gone")):
+            raise ValueError(f"Users not found in graph: {gone}")
+        return {i: i for i in ids}
+
+    async def get_team_owner_removal_info(self, team_id: str, user_ids: list[str], transaction=None) -> dict:
+        self.calls.append(("get_team_owner_removal_info", transaction))
+        owners = [u for u, r in self.perms.items() if r == "OWNER"]
+        return {"owners_being_removed": [u for u in user_ids if u in owners], "total_owner_count": len(owners)}
+
+    async def get_team_permissions_and_owner_count(self, team_id: str, user_ids: list[str], transaction=None) -> dict:
+        self.calls.append(("get_team_permissions_and_owner_count", transaction))
+        return {"team": copy.deepcopy(self.team), "permissions": {u: self.perms[u] for u in user_ids if u in self.perms},
+                "owner_count": sum(r == "OWNER" for r in self.perms.values())}
+
+    async def get_team_with_users(self, team_id: str, org_id: str, user_key: str, **_: object) -> dict:
+        return {"id": team_id, "name": self.team["name"], "members": dict(self.perms)}
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction=None) -> bool:
+        self._write("update_node", transaction)
+        self.team.update(updates)
+        return True
+
+    async def delete_team_member_edges(self, team_id: str, user_ids: list[str], transaction=None) -> list[dict]:
+        self._write("delete_team_member_edges", transaction)
+        return [{"from_id": u, "role": self.perms.pop(u)} for u in user_ids if u in self.perms]
+
+    async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict], timestamp: int, transaction=None) -> list[dict]:
+        self._write("batch_update_team_member_roles", transaction)
+        done = [ur for ur in user_roles if ur["userId"] in self.perms]
+        for ur in done:
+            self.perms[ur["userId"]] = ur["role"]
+        return done
+
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction=None, **_: object) -> bool:
+        self._write("batch_create_edges", transaction)
+        for e in edges:
+            self.perms[e["from_id"]] = e["role"]
+        return True
+
+
+_OWNER_AND_READERS = {"user-1": "OWNER", "c": "READER", "d": "READER"}
+_EDIT = {"name": "New", "removeUserIds": ["d"], "updateUserRoles": [{"userId": "c", "role": "WRITER"}],
+         "addUserRoles": [{"userId": "e", "role": "READER"}]}
+_EDITED = {"user-1": "OWNER", "c": "WRITER", "e": "READER"}
+
+_REFUSALS = [
+    pytest.param({"user-1": "OWNER", "d": "READER"},
+                 {"name": "New", "removeUserIds": ["d"], "addUserRoles": [{"userId": "gone-1", "role": "READER"}]},
+                 PEOPLE_GONE, id="people_gone"),
+    pytest.param({"user-1": "OWNER", "b": "OWNER", "c": "READER", "d": "READER"},
+                 {"name": "New", "removeUserIds": ["d"],
+                  "updateUserRoles": [{"userId": "b", "role": "READER"}, {"userId": "c", "role": "WRITER"}]},
+                 "Cannot perform bulk operations on Owner permissions. Please update Owners one at a time.", id="bulk_owner"),
+    pytest.param({"user-1": "OWNER", "b": "OWNER"},
+                 {"name": "New", "removeUserIds": ["b"], "updateUserRoles": [{"userId": "user-1", "role": "READER"}]},
+                 "Cannot remove all owners from the team. At least one owner must remain.", id="last_owner_after_removal"),
+    pytest.param({"user-1": "OWNER", "d": "READER"}, {"name": "New", "removeUserIds": ["user-1"]},
+                 "Cannot remove all owners from the team. At least one owner must remain.", id="remove_the_last_owner"),
+]
+
+
+class _PostgresShapedGraph(_TeamUpdateGraph):
+    """Collides the way PostgreSQL does, and is asked about it the way PostgresGraphProvider answers."""
+
+    conflict_error = SerializationConflict
+    is_write_conflict = PgBase.is_write_conflict
+
+
+def _applied_lines(logger: MagicMock) -> list[str]:
+    return [c.args[0] for c in logger.info.call_args_list if str(c.args[0]).startswith(("Removed ", "Updated ", "Added "))]
+
+
+def _transaction_errors(logger: MagicMock) -> list[str]:
+    return [str(c.args[0]) for c in logger.error.call_args_list if "Transaction error" in str(c.args[0])]
+
+
+class TestUpdateTeamIsAllOrNothing:
+    """A request the team service refuses or fails changes nothing; an accepted one lands whole, in one transaction."""
+
+    @pytest.fixture(autouse=True)
+    def _bump(self) -> Iterator[AsyncMock]:
+        with patch("app.api.routes.entity._principals_changed", AsyncMock()) as bump:
+            yield bump
+
+    @staticmethod
+    def _request(graph: _TeamUpdateGraph, body: dict) -> MagicMock:
+        req = _make_request(body)
+        req.app.state.graph_provider = graph
+        return req
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    @pytest.mark.parametrize(("perms", "body", "detail"), _REFUSALS)
+    async def test_a_refused_update_writes_nothing_and_opens_no_transaction(
+        self, _bump: AsyncMock, perms: dict, body: dict, detail: str, honours_explicit: bool,
+    ) -> None:
+        graph = _TeamUpdateGraph(perms, honours_explicit=honours_explicit)
+        req = self._request(graph, body)
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+
+        assert (exc.value.status_code, exc.value.detail) == (400, detail)
+        assert (graph.team["name"], graph.perms) == ("Old", perms)
+        assert graph.begun == [] and graph.write_txns == []
+        _bump.assert_not_awaited()
+        logger = _logger(req)
+        assert _transaction_errors(logger) == []
+        # PEOPLE_GONE keeps main's one lookup line; no other refusal logs at ERROR.
+        expected = ["Team member lookup failed: %s"] if detail == PEOPLE_GONE else []
+        assert [c.args[0] for c in logger.error.call_args_list] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("fail", "detail"), [
+        ("update_node", "Failed to update team"),
+        ("delete_team_member_edges", "Failed to update team"),
+        ("batch_update_team_member_roles", action_failed("update these people's roles")),
+        ("batch_create_edges", "Failed to update team"),
+    ])
+    async def test_a_write_that_fails_partway_rolls_the_whole_edit_back(self, fail: str, detail: str) -> None:
+        graph = _TeamUpdateGraph(_OWNER_AND_READERS, fail=fail)
+        req = self._request(graph, _EDIT)
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(req, "team-1")
+
+        assert (exc.value.status_code, exc.value.detail) == (500, detail)
+        assert (graph.team["name"], graph.perms) == ("Old", _OWNER_AND_READERS)
+        # Logged once, by the transaction that rolled back.
+        assert len(_logger(req).error.call_args_list) == 1
+        assert len(_transaction_errors(_logger(req))) == 1
+        assert _applied_lines(_logger(req)) == []      # nothing reported as done for the attempt that rolled back
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_update_lands_whole_in_one_transaction(self, _bump: AsyncMock) -> None:
+        graph = _TeamUpdateGraph(_OWNER_AND_READERS)
+        req = self._request(graph, _EDIT)
+
+        resp = await update_team(req, "team-1")
+
+        assert resp.status_code == 200
+        assert (graph.team["name"], graph.perms) == ("New", _EDITED)
+        assert _applied_lines(_logger(req)) == [
+            "Removed 1 users from team team-1", "Updated 1 user roles in batch", "Added 1 users to team team-1",
+        ]
+        assert graph.begun == [True]
+        assert graph.write_txns == [
+            ("update_node", "txn-1"), ("delete_team_member_edges", "txn-1"),
+            ("batch_update_team_member_roles", "txn-1"), ("batch_create_edges", "txn-1"),
+        ]
+        # The early check outside it, then the same check again inside, after the team-node write that fences it.
+        assert graph.calls == [
+            ("get_team_owner_removal_info", None), ("get_team_permissions_and_owner_count", None),
+            ("update_node", "txn-1"),
+            ("get_team_owner_removal_info", "txn-1"), ("get_team_permissions_and_owner_count", "txn-1"),
+            ("delete_team_member_edges", "txn-1"), ("batch_update_team_member_roles", "txn-1"), ("batch_create_edges", "txn-1"),
+        ]
+        _bump.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("conflict_on", ["delete_team_member_edges", "batch_update_team_member_roles"])
+    async def test_a_write_conflict_reruns_the_whole_edit_once(self, monkeypatch: pytest.MonkeyPatch, conflict_on: str) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        graph = _TeamUpdateGraph(_OWNER_AND_READERS, conflict_on=conflict_on)
+        req = self._request(graph, _EDIT)
+
+        resp = await update_team(req, "team-1")
+
+        assert resp.status_code == 200
+        assert (graph.team["name"], graph.perms) == ("New", _EDITED)
+        assert graph.begun == [True, True]
+        # Reported once, for the attempt that committed, not again for the one rolled back.
+        assert _applied_lines(_logger(req)) == [
+            "Removed 1 users from team team-1", "Updated 1 user roles in batch", "Added 1 users to team team-1",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_postgresql_conflict_in_the_role_write_reruns_the_whole_edit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The route asks the provider whether the error is a conflict; PostgreSQL's answer must send it to the retry."""
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        graph = _PostgresShapedGraph(_OWNER_AND_READERS, conflict_on="batch_update_team_member_roles")
+
+        resp = await update_team(self._request(graph, _EDIT), "team-1")
+
+        assert resp.status_code == 200
+        assert (graph.team["name"], graph.perms) == ("New", _EDITED)
+        assert graph.begun == [True, True]
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_finds_a_concurrent_owner_change_refuses_and_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two owners; this edit downgrades one. Its first attempt collides, and meanwhile another edit downgrades the
+        other owner. Replaying the first decision would leave the team with no owner."""
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+
+        def other_owner_downgraded(perms: dict[str, str]) -> None:
+            perms["b"] = "READER"
+
+        graph = _TeamUpdateGraph({"user-1": "OWNER", "b": "OWNER"}, conflict_on="batch_update_team_member_roles",
+                                 between_attempts=other_owner_downgraded)
+        body = {"name": "New", "updateUserRoles": [{"userId": "user-1", "role": "READER"}]}
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(self._request(graph, body), "team-1")
+
+        assert (exc.value.status_code, exc.value.detail) == (
+            400, "Cannot remove all owners from the team. At least one owner must remain.")
+        assert graph.begun == [True, True]          # a refusal is not retried
+        assert (graph.team["name"], graph.perms) == ("Old", {"user-1": "OWNER", "b": "READER"})
+
+    @pytest.mark.asyncio
+    async def test_a_role_write_that_keeps_colliding_answers_mains_detail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        graph = _TeamUpdateGraph(_OWNER_AND_READERS, conflict_on="batch_update_team_member_roles", conflicts=100)
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(self._request(graph, _EDIT), "team-1")
+
+        assert (exc.value.status_code, exc.value.detail) == (500, action_failed("update these people's roles"))
+        assert len(graph.begun) > 1
+        assert (graph.team["name"], graph.perms) == ("Old", _OWNER_AND_READERS)
+
+    @pytest.mark.asyncio
+    async def test_the_request_is_logged_as_counts_without_names_or_ids(self) -> None:
+        graph = _TeamUpdateGraph({"user-1": "OWNER", "uid-carol": "READER", "uid-dave": "READER"})
+        body = {"name": "Mergers Taskforce", "description": "Project Falcon acquisition", "removeUserIds": ["uid-dave"],
+                "updateUserRoles": [{"userId": "uid-carol", "role": "WRITER"}],
+                "addUserRoles": [{"userId": "uid-erin", "role": "READER"}]}
+        req = self._request(graph, body)
+
+        await update_team(req, "team-1")
+
+        logger = _logger(req)
+        calls = [c for m in (logger.debug, logger.info, logger.warning, logger.error) for c in m.call_args_list]
+        printed = " ".join(str(c.args[0]) % c.args[1:] if len(c.args) > 1 else str(c.args[0]) for c in calls)
+        assert "Updating team team-1: rename=True, adding 1, removing 1, changing 1 roles" in printed
+        for private in ("Mergers Taskforce", "Project Falcon", "uid-"):
+            assert private not in printed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("perms", "body", "after"), [
+        pytest.param({"user-1": "OWNER", "b": "OWNER", "c": "READER"},
+                     {"name": "New", "removeUserIds": ["b"], "updateUserRoles": [{"userId": "c", "role": "WRITER"}],
+                      "addUserRoles": [{"userId": "e", "role": "READER"}]},
+                     {"user-1": "OWNER", "c": "WRITER", "e": "READER"}, id="remove_an_owner_of_two"),
+        # A role change for someone the same request removes is a no-op, as on main (their edge goes first).
+        pytest.param({"user-1": "OWNER", "b": "OWNER"},
+                     {"name": "New", "removeUserIds": ["b"], "updateUserRoles": [{"userId": "b", "role": "READER"}]},
+                     {"user-1": "OWNER"}, id="remove_and_rerole_the_same_person"),
+    ])
+    async def test_what_main_accepts_is_still_accepted(self, perms: dict, body: dict, after: dict) -> None:
+        graph = _TeamUpdateGraph(perms)
+
+        resp = await update_team(self._request(graph, body), "team-1")
+
+        assert resp.status_code == 200
+        assert (graph.team["name"], graph.perms) == ("New", after)
+
+    @pytest.mark.asyncio
+    async def test_with_the_kill_switch_a_failed_write_keeps_the_earlier_ones(self) -> None:
+        """NEO4J_CREATE_TRANSACTIONS=false auto-commits each statement: the documented limit, as for create_team."""
+        graph = _TeamUpdateGraph(_OWNER_AND_READERS, fail="batch_update_team_member_roles", honours_explicit=False)
+
+        with pytest.raises(HTTPException) as exc:
+            await update_team(self._request(graph, _EDIT), "team-1")
+
+        assert exc.value.status_code == 500
+        assert graph.begun == [True]
+        assert (graph.team["name"], graph.perms) == ("New", {"user-1": "OWNER", "c": "READER"})
+
 
 class TestDeleteTeam:
     def _setup(self):

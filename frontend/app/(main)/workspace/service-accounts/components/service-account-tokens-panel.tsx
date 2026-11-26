@@ -15,7 +15,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ConfirmationDialog, FormField, WorkspaceRightPanel } from '../../components';
+import { ConfirmationDialog, FormField, FormFieldTextField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceTokensApi } from '../api';
 import type {
@@ -287,7 +287,7 @@ export function ServiceAccountTokensPanel({
     >
       <Flex direction="column" gap="4">
         {account && (
-          <Text size="1" style={{ color: 'var(--slate-10)', ...CREDENTIAL_MONO }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', ...CREDENTIAL_MONO }}>
             {account.email}
           </Text>
         )}
@@ -372,7 +372,7 @@ export function ServiceAccountTokensPanel({
         )}
 
         {account?.isDisabled === true && (
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('workspace.serviceAccounts.tokens.disabledNote')}
           </Text>
         )}
@@ -388,7 +388,7 @@ export function ServiceAccountTokensPanel({
             }}
           >
             <FormField label={t('workspace.serviceAccounts.tokens.nameLabel')} required>
-              <TextField.Root
+              <FormFieldTextField
                 value={tokenName}
                 placeholder={t('workspace.serviceAccounts.tokens.namePlaceholder')}
                 onChange={(e) => setTokenName(e.target.value)}
@@ -397,7 +397,7 @@ export function ServiceAccountTokensPanel({
 
             <FormField label={t('workspace.serviceAccounts.tokens.scopesLabel')} required>
               <Flex align="start" justify="between" gap="3">
-                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.serviceAccounts.tokens.scopesHelp')}
                 </Text>
                 {availableScopes.length > 0 && (
@@ -445,7 +445,7 @@ export function ServiceAccountTokensPanel({
                               <Text
                                 as="p"
                                 size="1"
-                                style={{ color: 'var(--slate-10)', margin: 0 }}
+                                style={{ color: 'var(--slate-11)', margin: 0 }}
                               >
                                 {scope.description}
                               </Text>
@@ -507,7 +507,7 @@ export function ServiceAccountTokensPanel({
                     id={customDaysMessageId}
                     size="1"
                     role={customDaysInvalid ? 'alert' : undefined}
-                    style={{ color: customDaysInvalid ? 'var(--red-11)' : 'var(--slate-10)' }}
+                    style={{ color: customDaysInvalid ? 'var(--red-11)' : 'var(--slate-11)' }}
                   >
                     {customDaysInvalid
                       ? t('workspace.serviceAccounts.tokens.expiryCustomInvalid', {
@@ -557,13 +557,13 @@ export function ServiceAccountTokensPanel({
           </Text>
 
           {isLoading && (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.tokens.loading')}
             </Text>
           )}
 
           {!isLoading && tokens.length === 0 && (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.tokens.none')}
             </Text>
           )}
@@ -599,10 +599,10 @@ export function ServiceAccountTokensPanel({
                       </Badge>
                     )}
                   </Flex>
-                  <Text size="1" style={{ color: 'var(--slate-10)', ...CREDENTIAL_MONO }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', ...CREDENTIAL_MONO }}>
                     {asArray(token.scopes).join(', ')}
                   </Text>
-                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
                     {lastUsed
                       ? t('workspace.serviceAccounts.tokens.lastUsed', { date: lastUsed })
                       : t('workspace.serviceAccounts.tokens.neverUsed')}
@@ -636,7 +636,7 @@ export function ServiceAccountTokensPanel({
             padding: 'var(--space-3)',
           }}
         >
-          <MaterialIcon name="autorenew" size={16} color="var(--slate-10)" />
+          <MaterialIcon name="autorenew" size={16} color="var(--slate-11)" />
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('workspace.serviceAccounts.tokens.rotationHelp')}
           </Text>

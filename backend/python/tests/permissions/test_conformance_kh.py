@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 from . import gen
 from .kh_layer import (
@@ -26,6 +27,7 @@ from .kh_layer import (
     check_world,
     check_worlds,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     on_every_store,
     refused_by_cap,
@@ -48,6 +50,7 @@ from .kh_worlds import (
     HIDESEED,
     KEYCLASH,
     KH_WORLDS,
+    LEVELS,
     NESTSTUB,
     OPENGRANT,
     OPENGRANTTEAM,
@@ -75,6 +78,7 @@ from .kh_worlds import (
     XLINKBADGE,
     XSTUB,
 )
+from .layers import world_org
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
 
@@ -126,6 +130,11 @@ def _assert_each_store(results: list[tuple[GraphCheckLayer, list[KhFinding] | Ex
         raise ExceptionGroup(f"{len(problems)} stores failed", problems)
     if problems:
         raise problems[0]
+
+
+def _split(layer: object) -> bool:
+    """Whether ``layer`` browses with the split browse (docs/knowledge-hub-browse.md), which has no sample and no time budget."""
+    return getattr(layer, "name", "") == "neo4j" and Neo4jProvider.kh_browse_mode() == "split"
 
 
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
@@ -193,6 +202,20 @@ async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> Non
             await layer.release([FOLDERSTUB])
 
 
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(graph_layers) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do (they came back empty beside a total until the carried total aged out)."""
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            items, pages = await counts_from_the_second_page(layer, FOLDERSTUB, "u", "f", "folder", 4)
+            assert len(items) == 9 and len(pages) == 2, (layer.name, len(items), pages)
+            by_type = dict(Counter(i.nodeType for i in items))
+            assert all(p == (9, 9, 9, by_type) for p in pages), (layer.name, pages, by_type)
+        finally:
+            await layer.release([FOLDERSTUB])
+
+
 async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(graph_layers) -> None:
     """A seed, and a member of an App that opens everything, are admitted with no hop cap: below depth 50 each link is listed under its parent,
     with an arrow, and the layer never excuses one as the cap's (`refused_by_cap` reads the verdict, not the depth)."""
@@ -241,8 +264,60 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             ns, cursors = await layer._ns(WIDE), []
             items, _, _ = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
             assert [ns.local(i.id) for i in items] == readable, layer.name
-            assert cursors, layer.name
+            # The split browse decides every child before the page, so the forty fit one page and no cursor resumes a check.
+            assert cursors or _split(layer), layer.name
             assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
+        finally:
+            await layer.release([WIDE])
+
+
+@pytest.fixture(params=["every_child", "children_order"])
+async def wide_starts(request: pytest.FixtureRequest, graph_layers, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neo4j's split browse reads every start with a child as one wider than it holds whole (`Neo4jProvider._KH_SPLIT_START_MAX`): its children
+    with the page, in the page's order, sixteen a read, each read asked of the check. ``children_order``: the name order's windows read
+    from the children order index, its stamps written after each load (the loader writes the graph directly, as an older install holds it,
+    and the migration stamps it)."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 0)
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 16)
+    if request.param == "children_order":
+        async def ready(_self: Neo4jProvider) -> bool:
+            return True
+
+        monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+        for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+            async def load_and_stamp(nodes: list, edges: list, _load=layer._load, _layer=layer) -> None:
+                await _load(nodes, edges)
+                await _layer._provider.stamp_kh_children_order()
+
+            monkeypatch.setattr(layer, "_load", load_and_stamp)
+            await layer._provider.stamp_kh_children_order()      # the worlds an earlier test left loaded
+
+
+async def test_a_start_read_in_windows_lists_what_the_viewer_may_read(graph_layers, wide_starts) -> None:
+    """Every golden world and shape with each start read in windows: the rows, totals, counts and arrows hold to the oracle as they do with the
+    start held whole."""
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    layers = [layer for layer in graph_layers if layer.name == "neo4j"]
+    results = await on_every_store(layers, partial(check_worlds, worlds=worlds, tag="wide-start"))
+    _assert_each_store(results, "{store} golden, starts read in windows", "{store}, starts read in windows")
+
+
+async def test_a_start_read_in_windows_ends_its_page_where_the_check_was_last_asked(graph_layers, wide_starts, monkeypatch) -> None:
+    """WIDE with each start read in windows and no time to ask past the first: every page ends at the last child asked and the next resumes
+    there, the pages list all forty readable children in order, and no cursor names a child the viewer may not open."""
+    monkeypatch.setattr(IGraphDBProvider, "_KH_UNDECIDED_BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+        await layer.preload([WIDE])
+        try:
+            ns, cursors = await layer._ns(WIDE), []
+            items, totals, counted = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+            assert [ns.local(i.id) for i in items] == readable
+            # Each read ends at its window, so the pages resume (the service reads on from a short one).
+            assert len(cursors) > 1 and set(totals) == set(counted) == {len(readable)}, (len(cursors), totals, counted)
+            assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)]
         finally:
             await layer.release([WIDE])
 
@@ -291,8 +366,9 @@ async def test_a_grant_to_another_connectors_principal_lists_opens_and_passes_th
             assert await children_of(layer, XGRANT, "u", "f", "recordGroup") == {"m": False}, layer.name
             assert await children_of(layer, XGRANT, "u", "m", "record") == {}, layer.name
             assert await children_of(layer, XGRANT, "u", "n", "record") is None or not await children_of(layer, XGRANT, "u", "n", "record")
-            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("m")), layer.name
-            assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("n")) is None, layer.name
+            with world_org(ns):
+                assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("m")), layer.name
+                assert await layer._provider.check_record_access_with_details(ns.id("u"), ns.org, ns.id("n")) is None, layer.name
             bad = _bad(await check_world(layer, XGRANT, "xgrant"))
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
@@ -363,7 +439,8 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, STUBSEED, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
-            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
+            # Past the sample the legacy listing leaves the stub out; the split browse has no sample and lists it, since opening it lists k200.
+            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == ({"S": True} if _split(layer) else {}), layer.name
             assert await children_of(layer, CAPSTUB, "u", "S", "record") == {"k200": False}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name
@@ -396,6 +473,25 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             await layer.release([HIDESEED, DECLHIDE])
 
 
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(graph_layers) -> None:
+    """A Jira security level's group (LEVELS): never listed, flattened or opened, no arrow for it, and every issue under it listed once, where it
+    is filed; a record granted below it whose other parent the viewer cannot open is a chain-top of its own group, as if the level were not
+    there. The access check still reads through it."""
+    for layer in graph_layers:
+        await layer.preload([LEVELS])
+        try:
+            assert await layer.admitted(LEVELS, "u", ["s1", "t1", "s2", "L"]) == {"s1", "t1", "s2", "L"}, layer.name
+            assert await children_of(layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "u", "E", "record") == {"s1": False}, layer.name
+            assert await children_of(layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, layer.name
+            assert "L" not in (await children_of(layer, LEVELS, "u", "J", "app", flattened=True) or {}), layer.name
+            bad = _bad(await check_world(layer, LEVELS, "levels"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([LEVELS])
+
+
 async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) -> None:
     """DEPTHDEL: the flatten of the App bounded to three hops lists r, which lies three hops down through the deleted folder x, and bounded to two it does not:
     the same on every store (ArangoDB's walk of the bound stopped at a deleted node, Neo4j's does not)."""
@@ -409,8 +505,9 @@ async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) 
             service = KnowledgeHubService(logging.getLogger("kh-depth"), layer._provider, _Config())
             got = {}
             for depth in (2, 3):
-                page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50, sort_by="name",
-                                               sort_order="asc", flattened=True, depth=depth)
+                with world_org(ns):
+                    page = await service.get_nodes(user_id=ns.id("u"), org_id=ns.org, parent_id=ns.id("A"), parent_type="app", limit=50,
+                                                   sort_by="name", sort_order="asc", flattened=True, depth=depth)
                 got[depth] = {ns.local(i.id) for i in page.items} if page.success else None
             assert got == {2: {"G"}, 3: {"G", "r"}}, (layer.name, got)
         finally:
@@ -502,8 +599,9 @@ async def test_a_role_grants_on_any_gated_app_and_a_source_accounts_role_only_in
             if layer.name == "neo4j":       # the other connectors' grants a page of A reads in one list (`_kh_v3_cross`)
                 for world, want in ((XBADGE, {"x"}), (XLINKBADGE, {"y"})):
                     ns = await layer._ns(world)
-                    gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
-                    cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
+                    with world_org(ns):
+                        gate = await layer._provider.get_knowledge_hub_access_context_v2(ns.id("u"), ns.org)
+                        cross = await layer._provider._kh_v3_cross(ns.id("u"), ns.org, gate["gated_app_ids"], ns.id("A"), None)
                     assert {ns.local(i) for i in cross or []} == want, (layer.name, cross)
             bad = [f for world in (XBADGE, XLINKBADGE) for f in _bad(await check_world(layer, world, "xbadge"))]
             assert not bad, f"{layer.name}\n{_describe(bad)}"

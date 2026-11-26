@@ -2,9 +2,9 @@
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
-import sys
 import types
 from collections.abc import AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -922,6 +922,43 @@ class TestShutdownContainerResources:
 class TestLifespan:
     """Tests for lifespan() context manager."""
 
+    @pytest.mark.parametrize("exit_with", [None, RuntimeError("serving failed"), asyncio.CancelledError()])
+    async def test_loop_lag_monitor_runs_while_serving_and_always_stops(self, exit_with: BaseException | None) -> None:
+        """Started before the app serves; stopped however the lifespan exits, as its watchdog is a thread."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store(_make_graph_provider()))
+        mock_app = MagicMock()
+        registry = MagicMock()
+        registry._connectors = {}
+        toolsets = MagicMock()
+        toolsets.list_toolsets.return_value = []
+        monitor = MagicMock()
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=registry),
+            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
+            patch("app.connectors_main.get_toolset_registry", return_value=toolsets),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=MagicMock()),
+            patch("app.connectors_main.loop_lag_monitor_from_env", return_value=monitor) as from_env,
+        ):
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                async with lifespan(mock_app):
+                    monitor.start.assert_called_once()
+                    monitor.stop.assert_not_called()
+                    if exit_with is not None:
+                        raise exit_with
+
+        assert from_env.call_args.args[1] == "connector-main"
+        monitor.stop.assert_called_once()
+
     async def test_startup_and_shutdown_arangodb(self):
         """Full lifespan cycle with arangodb data store."""
         from app.connectors_main import lifespan
@@ -1160,6 +1197,41 @@ class TestLifespan:
             patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             with pytest.raises(RuntimeError, match="producer fail"):
+                async with lifespan(mock_app):
+                    pass
+
+    @pytest.mark.parametrize(("error", "refused"), [(ValueError("PG_KG_PROJECT=0 is not supported"), True), (RuntimeError("listen failed"), False)])
+    async def test_a_kg_setting_the_service_cannot_run_with_refuses_the_start_and_another_worker_failure_does_not(self, error, refused) -> None:
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        ds = _make_data_store(_make_graph_provider())
+        mock_container.data_store = AsyncMock(return_value=ds)
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry._connectors = {}
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
+            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=MagicMock()),
+            patch("app.services.graph_db.postgres.kg.worker.start_for", side_effect=error),
+        ):
+            if refused:
+                with pytest.raises(ValueError, match="PG_KG_PROJECT=0"):
+                    async with lifespan(mock_app):
+                        pass
+            else:
                 async with lifespan(mock_app):
                     pass
 
@@ -1603,6 +1675,8 @@ class TestAuthenticateRequestsThroughStarlette:
 
 # ---------------------------------------------------------------------------
 # health_check (connector)
+
+
 # ---------------------------------------------------------------------------
 class TestConnectorHealthCheck:
     """Tests for health_check() endpoint."""
@@ -1615,6 +1689,8 @@ class TestConnectorHealthCheck:
             result = await health_check()
 
         assert result.status_code == 200
+        with patch("app.connectors_main.document_conversion_available", return_value=False):
+            assert json.loads((await health_check()).body)["documentConversion"] == "unavailable"
 
     async def test_health_check_exception(self):
         """Health check returns fail status on exception."""
@@ -1820,10 +1896,10 @@ class TestExcludePaths:
         assert "/admin/webhook" in EXCLUDE_PATHS
 
     def test_exclude_paths_length(self):
-        """EXCLUDE_PATHS has exactly 6 entries."""
+        """EXCLUDE_PATHS has exactly 10 entries: six service paths and the four public connect-link routes."""
         from app.connectors_main import EXCLUDE_PATHS
 
-        assert len(EXCLUDE_PATHS) == 6
+        assert len(EXCLUDE_PATHS) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1896,30 +1972,37 @@ class TestGraphDbHealthCheck:
         assert response.status_code == 503
         assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
 
-    @pytest.mark.asyncio
-    async def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
+    def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
         """A ping stuck on a saturated pool answers 503 within the deadline instead of outlasting the caller's timeout."""
-        import time
-
         from app.connectors_main import graph_db_health_check
+        from harness_core.testing.virtual_time import run_on_virtual_time
+
+        ping_ended = asyncio.Event()
 
         async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does
-            end = time.monotonic() + 2
-            while time.monotonic() < end:
+            loop = asyncio.get_running_loop()
+            end = loop.time() + 2
+            while loop.time() < end:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(0.05)
+            ping_ended.set()
 
         request = MagicMock()
         request.app.state.graph_provider = MagicMock(ping=hang)
 
-        t0 = time.monotonic()
-        with patch("app.connectors_main.os.getenv", return_value="postgres"), \
-             patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
-            response = await graph_db_health_check(request)
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
+            with patch("app.connectors_main.os.getenv", return_value="postgres"), \
+                 patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
+                response = await graph_db_health_check(request)
 
-        assert response.status_code == 503
-        assert time.monotonic() - t0 < 1
-        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+            assert response.status_code == 503
+            assert loop.time() - t0 == pytest.approx(0.05)
+            assert not ping_ended.is_set()
+            assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+        run_on_virtual_time(main)
 
     @pytest.mark.asyncio
     async def test_graph_db_health_postgres_cancelled_handler_cancels_the_ping(self) -> None:
@@ -2241,6 +2324,98 @@ class TestVectorDbMemoryCheck:
         assert json.loads(response.body) == {"detail": "Admin access required"}
         provider.memory_report.assert_not_awaited()
 
+    @staticmethod
+    def _admin_request(provider: MagicMock) -> MagicMock:
+        from types import SimpleNamespace
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace(_vector_db_health_provider=provider)
+        request.state = SimpleNamespace(user={"role": "admin"})
+        return request
+
+    @pytest.mark.asyncio
+    async def test_report_is_reused_within_the_ttl(self) -> None:
+        """It reads every collection (about 12s loaded), so a reload does not recompute it."""
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        first = await vector_db_memory_check(request)
+        second = await vector_db_memory_check(request)
+
+        assert json.loads(first.body) == json.loads(second.body) == {"status": "unsupported"}
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_is_recomputed_after_the_ttl(self) -> None:
+        import app.connectors_main as cm
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        # Stored at 1000; the second call reads the clock past the TTL, then stores again.
+        later = 1000.0 + cm.VECTOR_DB_MEMORY_REPORT_TTL_SEC + 1
+        with patch("app.connectors_main.time.monotonic", side_effect=[1000.0, later, later]):
+            await cm.vector_db_memory_check(request)
+            await cm.vector_db_memory_check(request)
+
+        assert provider.memory_report.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failure_is_not_cached(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=[RuntimeError("qdrant busy"), None])
+        request = self._admin_request(provider)
+
+        failed = await vector_db_memory_check(request)
+        retried = await vector_db_memory_check(request)
+
+        assert failed.status_code == 503
+        assert json.loads(retried.body) == {"status": "unsupported"}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_share_one_report(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        release = asyncio.Event()
+
+        async def slow_report() -> None:
+            await release.wait()
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=slow_report)
+        request = self._admin_request(provider)
+
+        both = asyncio.gather(vector_db_memory_check(request), vector_db_memory_check(request))
+        await asyncio.sleep(0)
+        release.set()
+        first, second = await both
+
+        assert first.status_code == second.status_code == 200
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_is_refused_even_with_a_cached_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+        await vector_db_memory_check(request)
+
+        request.state = SimpleNamespace(user={"role": "member"})
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
+
 
 class TestGraphDbHealthNeo4jUnhealthy:
     @pytest.mark.asyncio
@@ -2445,20 +2620,53 @@ class TestRefreshConnectorMetrics:
         gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_logs_warning_when_gauge_refresh_fails(self):
+    async def test_counts_under_a_system_context_from_a_detached_task(self) -> None:
+        """The loop runs with no org bound; the count spans every org, so it is asked for under ``system``, and nothing stays bound after."""
         from app.connectors_main import refresh_connector_metrics
+        from app.core.org_context import peek
+
+        seen = []
+
+        async def count() -> dict:
+            seen.append(peek())
+            return {"KB": 2}
 
         gp = AsyncMock()
-        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
-        logger = MagicMock()
+        gp.count_active_apps_by_type = count
+        after = []
+
+        async def stop(_s: float) -> None:
+            after.append(peek())
+            raise asyncio.CancelledError
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
-             patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
+             patch("app.connectors_main.asyncio.sleep", side_effect=stop):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.create_task(refresh_connector_metrics(gp, MagicMock(), interval_s=60), context=contextvars.Context())
+
+        assert [(c.kind, c.source) for c in seen] == [("system", "system:connector_metrics")]
+        assert after == [None]
+        mock_set.assert_called_once_with({"KB": 2})
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_is_one_text_free_warning_and_the_loop_goes_on(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors_main import refresh_connector_metrics
+        from tests.support.log_capture import failure_line
+
+        gp = AsyncMock()
+        gp.count_active_apps_by_type = AsyncMock(side_effect=[RuntimeError("SENTINEL-graph-text"), {"KB": 1}])
+        logger = logging.getLogger("test.connector_metrics")
+        sleeps = AsyncMock(side_effect=[None, asyncio.CancelledError])
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name), \
+             patch("app.connectors_main.set_connector_active") as mock_set, \
+             patch("app.connectors_main.asyncio.sleep", sleeps):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
-        logger.warning.assert_called()
-        mock_set.assert_not_called()
+        fields = failure_line(caplog.records, "connector_metrics.refresh_failed", "internal", logging.WARNING, "SENTINEL-graph-text")
+        assert fields["error_type"] == "RuntimeError"
+        mock_set.assert_called_once_with({"KB": 1})      # the next round still publishes
 
 
 class TestCorsPolicy:

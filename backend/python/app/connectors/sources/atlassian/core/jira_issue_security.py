@@ -38,11 +38,12 @@ Center ``/rest/api/2`` where the server exposes them):
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import AccessRule
+from app.config.constants.arangodb import AccessRule, CollectionNames
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
@@ -65,12 +66,20 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
+# Browse holders that name people on each issue, so the grant goes on the issue, not the project.
+BROWSE_ISSUE_HOLDER_TYPES: tuple[str, ...] = (HOLDER_REPORTER, HOLDER_ASSIGNEE, *_FIELD_HOLDERS)
 # Holders that name the same people on every issue of a project. Reporter, assignee and
 # the field holders name people on each issue, so two issues in one level can differ.
 _SAME_ON_EVERY_ISSUE = frozenset({
     HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
     HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
 })
+# Someone Browse names may be in the level through members not known: the issue is written without them and read again.
+LEVEL_MEMBERS_UNREAD = "levelMembers"
+_ANY_READER = ("*", "*")  # stands for every reader, when a level holds ``anyone``
+def level_group_external_id(project_id: str, level_id: str) -> str:
+    """The external id of the record group that holds a level's holders (one per project and level)."""
+    return f"level:{project_id}:{level_id}"
 
 
 class SchemeKnowledge(str, Enum):
@@ -102,6 +111,11 @@ class IssueSecurityContext:
     # Browse Projects holders that name people on each issue (reporter, assignee, user or group
     # field). None when the project's permission scheme could not be read.
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+    # Level id -> its name, from the scheme read, to name the level's record group.
+    level_names: dict[str, str] = field(default_factory=dict)
+    # Level id -> the people its same-on-every-issue holders name (``level_readers``), None for a level whose members
+    # were not read. None when not tracked: then a person is matched to the level by a user holder only.
+    level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -113,19 +127,35 @@ class IssueSecurityContext:
         )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(
-        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None, *, split: bool = False,
     ) -> dict[str, str]:
         """Level id -> a digest of its holders, so a change names the levels it touched.
 
         An application-role holder is granted as that role's groups, so the groups are part
-        of its digest: a group leaving the role re-reads the level's issues.
+        of its digest: a group leaving the role re-reads the level's issues. ``split`` gives
+        ``"<same on every issue>.<per issue>"``, so a change can tell a level whose record
+        group alone changed (see ``level_group_grants``) from one whose issues did.
         """
-        return {
-            level_id: hashlib.sha256(",".join(sorted(
-                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
+        def digest(holders: list[dict[str, Any]]) -> str:
+            return hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders
             )).encode()).hexdigest()[:16]
-            for level_id, holders in self.members_by_level.items()
-        }
+
+        out: dict[str, str] = {}
+        for level_id, listed in self.members_by_level.items():
+            holders = [h for h in listed if isinstance(h, dict)]
+            if not split:
+                out[level_id] = digest(holders)
+                continue
+            static = [h for h in holders if h.get("type") in _SAME_ON_EVERY_ISSUE]
+            dynamic = digest([h for h in holders if h not in static])
+            if self.level_readers is not None and self.browse_holders:
+                # An OPEN issue grants a member Browse names on it (``_reads_alone``): one leaving the level re-reads it.
+                readers = self.level_readers.get(level_id)
+                dynamic += ":" + ("?" if readers is None else hashlib.sha256(
+                    ",".join(sorted(f"{k}={v}" for k, v in readers)).encode()).hexdigest()[:16])
+            out[level_id] = f"{digest(static)}.{dynamic}"
+        return out
 
     def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
@@ -572,11 +602,13 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email, reporter_account)
+        if not _deactivated(fields.get("reporter")):
+            add_user(reporter_email, reporter_account)
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email, assignee_account)
+        if not _deactivated(fields.get("assignee")):
+            add_user(assignee_email, assignee_account)
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -640,6 +672,23 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     return []
 
 
+def _deactivated(user: object) -> bool:
+    """A deactivated account cannot sign in to Jira, so it reads nothing there."""
+    return isinstance(user, dict) and user.get("active") is False
+
+
+def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:
+    """The per-issue Browse holders of a permission scheme's grants; a malformed grant or holder is skipped."""
+    found: list[dict[str, Any]] = []
+    for grant in permission_grants if isinstance(permission_grants, list) else []:
+        if not isinstance(grant, dict) or grant.get("permission") != "BROWSE_PROJECTS":
+            continue
+        holder = grant.get("holder")
+        if isinstance(holder, dict) and holder.get("type") in BROWSE_ISSUE_HOLDER_TYPES:
+            found.append(holder)
+    return found
+
+
 def browse_holder_grants(
     holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
     reporter_email: str | None, assignee_email: str | None,
@@ -697,6 +746,48 @@ def level_grants(
     return grants, False, skipped
 
 
+def user_grant_key(email: str | None, account: str | None) -> tuple[str, str]:
+    """The key of the grant a person gets: by email, or by account when the directory holds no email for them."""
+    return _grant_key(Permission(entity_type=EntityType.USER, email=email or None,
+                                 external_id=None if email else account, type=PermissionType.READ))
+
+
+def level_readers(
+    grants: list[Permission], group_members: dict[str, Any], role_members: dict[str, Any],
+) -> frozenset[tuple[str, str]] | None:
+    """The people a level's record group grants (``level_group_grants``), with each group and role expanded to the
+    members the sync read. None when a group or role among them was not read: no one is matched through it."""
+    keys: set[tuple[str, str]] = set()
+    for grant in grants:
+        if grant.entity_type == EntityType.USER:
+            keys.add(_grant_key(grant))
+        elif grant.entity_type == EntityType.ORG:
+            keys.add(_ANY_READER)
+        else:
+            members = (group_members if grant.entity_type == EntityType.GROUP else role_members).get(str(grant.external_id))
+            if not isinstance(members, list):
+                return None
+            keys.update(user_grant_key(getattr(u, "email", None), getattr(u, "source_user_id", None)) for u in members)
+    return frozenset(keys)
+
+
+def level_group_grants(
+    holders: list[dict[str, Any]],
+    *,
+    project_key: str,
+    user_by_id: dict[str, Any],
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> tuple[list[Permission], list[str]]:
+    """The grants a level's record group holds once: its holders that name the same people on
+    every issue. Returns ``(grants, skipped holder types)``."""
+    grants, _, skipped = level_grants(
+        [h for h in holders if isinstance(h, dict) and h.get("type") in _SAME_ON_EVERY_ISSUE],
+        project_key=project_key, fields={}, user_by_id=user_by_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=None, assignee_email=None,
+    )
+    return grants, skipped
+
+
 def apply_issue_access_settled(
     record: Record,
     fields: dict[str, Any] | None,
@@ -708,6 +799,7 @@ def apply_issue_access_settled(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
     unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
@@ -721,7 +813,26 @@ def apply_issue_access_settled(
     project is handled by the processor, which keeps the child on its own project.
     Attachments are handled separately and stay empty. ``unchanged_stored_rule`` is the
     stored record's access rule when the issue has not changed since it was stored.
+
+    With ``project_id``, a leveled issue other than a sub-task takes its access from its
+    level's record group (``level_group_external_id``), which holds the holders that name
+    the same people on every issue once (``level_group_grants``): the issue is STRICT,
+    inherits that group and nothing it is filed under, and carries as its own grants only
+    the holders it names itself (reporter, assignee, a field); OPEN when each of those is
+    someone who reads it without the project (``_reads_alone``). It stays filed where it
+    was; placement grants nothing. Every other issue names no group, so an earlier one is
+    removed. Without ``project_id`` no group is managed: a leveled issue holds a copy of
+    its level's holders, and a sub-task inherits its parent.
+
+    A leveled sub-task always holds that copy and inherits its parent, so it is read only by
+    those who read its parent too. Atlassian documents only that "Sub-tasks also inherit the
+    security level of their parent issue" (Issue security schemes,
+    https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-security-schemes/),
+    not that a sub-task's own holders read it without its parent: fail-closed until checked live.
     """
+    # None: no group is managed (or a stored one is kept); "": this issue has none. A personal
+    # account has no levels, so no group.
+    record.access_group_external_id = None if project_id is None or not context.enforce else ""
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
         # parent issue. One with no parent inherits the project, which inherits the app.
@@ -747,6 +858,8 @@ def apply_issue_access_settled(
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
+        if context.defer_checkpoint:
+            record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
         return [], [], False
@@ -755,12 +868,11 @@ def apply_issue_access_settled(
         # An issue filed under another one, or a stub, only follows it. A top-level issue is
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        # A sub-task is read only with its parent: Atlassian does not document that a sub-task's own Browse holders (its
+        # reporter, say) read it without its parent, so it gets no grant of its own until a live check shows they do.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
-        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
-        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
-        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
-        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
-        # "the project, plus its own holders".
+        # A sub-task still under its parent gets no grant here: Jira Cloud files one whose Browse holders name people on it off its
+        # parent (JSWCLOUD-25762), so only unread or empty holders leave it here; Data Center keeps it under its parent.
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
@@ -807,6 +919,9 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
+    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
+    if grouped:
+        holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
         holders,
         project_key=project_key,
@@ -820,9 +935,62 @@ def apply_issue_access_settled(
     )
     if unreadable:
         return close()
-    record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    if grouped:
+        record.access_group_external_id = level_group_external_id(project_id, level_id)
+        alone, members_unread = _reads_alone(
+            context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
+            app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
+            reporter_account=reporter_account, assignee_account=assignee_account)
+        if members_unread:
+            skipped = [*skipped, LEVEL_MEMBERS_UNREAD]
+        # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
+        # Jira shows it to without the project: Browse named on this issue, and named by its level.
+        alone_keys = {_grant_key(g) for g in alone}
+        if alone and all(_grant_key(g) in alone_keys for g in grants):
+            record.access_rule = AccessRule.OPEN
+            return alone, skipped, True
+        # Someone who reads alone beside a grant that needs the project (an assignee the level names whom Browse does not) cannot
+        # both be held: a rule is the record's, not the grant's. STRICT keeps the second exact and asks the first for the project
+        # too, an under-share (permission corpus DELTA-18); OPEN would admit the second without the project.
+        record.access_rule = AccessRule.STRICT
+        return grants, skipped, True
+    record.access_rule = AccessRule.RESTRICTED
     return grants, skipped, True
+
+
+def _grant_key(grant: Permission) -> tuple[str, str]:
+    return (str(grant.entity_type), (grant.email or "").lower() if grant.email else str(grant.external_id))
+
+
+def _reads_alone(
+    context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
+    users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
+    assignee_email: str | None, reporter_account: str | None = None, assignee_account: str | None = None,
+) -> tuple[list[Permission], bool]:
+    """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
+    reporter, say) whom the level names too, on this issue, as a user holder, or through a group, role or project lead
+    (``context.level_readers``). Jira shows it to them: Browse names them, and "these allow the visibility of individual
+    issues to be adjusted, within the bounds of the project's permissions"
+    (https://support.atlassian.com/jira/kb/jira-permissions-general-overview/). Also returns whether someone Browse names
+    may be in the level through members that were not read."""
+    if not context.browse_holders:
+        return [], False
+    # The same people the level's grants name, by account where the directory holds no email for them.
+    browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
+                                  reporter_email=reporter_email, assignee_email=assignee_email,
+                                  reporter_account=reporter_account, assignee_account=assignee_account)
+    static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
+                                   user_by_id=users, app_roles_mapping=app_roles_mapping)
+    named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
+    tracked = context.level_readers is not None
+    readers = context.level_readers.get(level_id) if tracked else None
+    if readers is not None:
+        named |= readers
+    alone = [g for g in browse if _grant_key(g) in named or (readers is not None and _ANY_READER in readers)]
+    # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
+    unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
+    return alone, unread
 
 
 def apply_issue_access(
@@ -836,6 +1004,7 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
     unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
@@ -843,7 +1012,8 @@ def apply_issue_access(
     grants, skipped, _settled = apply_issue_access_settled(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
-        reporter_email=reporter_email, assignee_email=assignee_email, unchanged_stored_rule=unchanged_stored_rule,
+        reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
+        unchanged_stored_rule=unchanged_stored_rule,
     )
     return grants, skipped
 
@@ -857,18 +1027,44 @@ def apply_attachment_access(record: Record) -> list[Permission]:
     return []
 
 
-def hold_levels_naming_unread_roles(
-    security: IssueSecurityContext, *, app_roles_unread: bool,
-) -> IssueSecurityContext:
-    """A level naming an application role is unknown, not narrower, while the role list
-    could not be read in full: its issues keep their stored grants until a sync reads it."""
-    if app_roles_unread and any(
-        isinstance(holder, dict) and holder.get("type") == HOLDER_APPLICATION_ROLE
-        for holders in security.members_by_level.values() for holder in holders
-    ):
-        security.members_readable = False
-        security.defer_checkpoint = True
-    return security
+# A sync that cannot read the application roles applies the last list read for a bounded time. The list needs
+# "Administer Jira" and a 403 is "Returned if the user is not an administrator"
+# (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/), which lasts until the
+# account is made one. 24 h, as long as other connectors trust a confirmation they cannot repeat.
+ROLE_LIST_SYNC_KEY = "application_roles"
+ROLE_LIST_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+
+async def roles_for_levels(
+    sync_point: Any,  # noqa: ANN401
+    mapping: dict[str, list[dict[str, Any]]],
+    *,
+    read: bool,
+    now_ms: int,
+    max_age_ms: int = ROLE_LIST_MAX_AGE_MS,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """The role list a sync applies to security levels, and whether to tell the owner that the last one expired.
+
+    Read in full: it is kept with its time and applied. Otherwise the last list kept is applied while it is younger
+    than ``max_age_ms``, so a level's other holders follow Jira and its role holders stay the groups the roles had.
+    Past that, or with none kept, role holders are left out: fewer readers, never more. So a group removed from a
+    role while the list cannot be read keeps its access for at most ``max_age_ms``. The expiry is told once."""
+    if read:
+        await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {"roles": json.dumps(mapping, sort_keys=True), "read_at": now_ms})
+        return mapping, False
+    kept = await sync_point.read_sync_point(ROLE_LIST_SYNC_KEY) or {}
+    read_at = kept.get("read_at")
+    if isinstance(read_at, int) and now_ms - read_at <= max_age_ms:
+        try:
+            roles = json.loads(kept.get("roles") or "{}")
+        except (TypeError, ValueError):
+            roles = None
+        if isinstance(roles, dict):
+            return roles, False
+    if read_at is None or kept.get("expired_told"):
+        return {}, False
+    await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {**kept, "expired_told": True})
+    return {}, True
 
 
 def plan_level_reread(
@@ -877,6 +1073,7 @@ def plan_level_reread(
     *,
     is_new_project: bool,
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+    split: bool = False,
 ) -> tuple[str | None, list[str] | None, dict[str, str]]:
     """Decide the second pass over already-stored issues, and the level map saved after it.
 
@@ -909,7 +1106,7 @@ def plan_level_reread(
         # Close every leveled issue once; a lasting failure does not repeat the walk.
         closed = is_new_project or marker == "unreadable"
         return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
-    current = security.level_fingerprints(app_roles_mapping)
+    current = security.level_fingerprints(app_roles_mapping, split=split)
     if is_new_project:
         return None, None, current
     if stored is None:
@@ -923,6 +1120,12 @@ def plan_level_reread(
         return "leveled", None, current
     changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
     return ("levels" if changed else None), changed or None, current
+
+
+def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:
+    """Levels whose record group was written by an earlier sync and that the scheme no longer
+    lists: their groups are written with no holder, so their issues close at once."""
+    return sorted(k for k, v in (stored or {}).items() if k != "*" and "." in v and k not in current)
 
 
 def pre_walk_marker(stored: dict[str, str] | None) -> dict[str, str]:
@@ -961,3 +1164,54 @@ def unreadable_security_notices(
             f"security level there {effect} until their levels can be read."
         )))
     return notices
+
+
+async def close_stored_issue(processor: Any, stored: Record) -> None:  # noqa: ANN401
+    """Store an issue closed: ``RESTRICTED`` with no grants of its own, so no one reads it, and no one reads its files
+    and comments, which read through it (a file inherits it, a comment needs it as well as its own grant). Its links
+    stay (``None``: not read on this write; the scan does not load them), so it opens again with its access once a sync
+    builds it: it is stored with no source time, so the next read takes it as changed even when Jira's ``updated`` has
+    not moved. An attachment is closed the same way. A placeholder has no access to close."""
+    if stored.is_placeholder:
+        return
+    stored.access_rule = AccessRule.RESTRICTED
+    stored.rewrite_permissions = True
+    stored.source_updated_at = 0
+    stored.related_external_records = None
+    await processor.on_new_records([(stored, [])])
+
+
+async def close_kept_issues(
+    processor: Any, stored: list[Record], issue_ids: set[str], logger: Any,  # noqa: ANN401
+) -> set[str]:
+    """Close (``close_stored_issue``) the records among ``stored`` named in ``issue_ids`` (issues, and attachments whose
+    record could not be built), before a full sync keeps them: their build failed, so their access was not read again
+    and may no longer be what Jira gives (an attachment may now be shown only in a restricted comment). Returns the ids
+    of those that could not be closed, which the caller must not keep: the full sync then unlinks them. A close is read
+    back, with the record's permission edges, as a write the schema refuses is skipped without an error (and a record
+    may already be stored ``RESTRICTED`` with no source time but with grants: a leveled issue whose read failed). One in
+    the trash is not written, which would bring it back: no one reads it there, and a sync that restores it builds it
+    with its access."""
+    unclosed: set[str] = set()
+    for record in stored:
+        if record.external_record_id not in issue_ids or record.is_deleted:
+            continue
+        try:
+            await close_stored_issue(processor, record)
+            if not record.is_placeholder:
+                written = await processor.get_record_by_external_id(record.connector_id, record.external_record_id)
+                if written is None or written.access_rule != AccessRule.RESTRICTED or written.source_updated_at != 0:
+                    raise RuntimeError("the close was not stored")
+                async with processor.data_store_provider.transaction() as tx_store:
+                    if await tx_store.get_edges_to_node(
+                        f"{CollectionNames.RECORDS.value}/{written.id}", CollectionNames.PERMISSION.value,
+                        raise_on_error=True,
+                    ):
+                        raise RuntimeError("the close was not stored: the record still has grants")
+        except Exception as e:
+            logger.error(
+                "Could not close stored record %s, whose build failed; the full sync unlinks it instead: %s",
+                record.external_record_id, e,
+            )
+            unclosed.add(record.external_record_id)
+    return unclosed

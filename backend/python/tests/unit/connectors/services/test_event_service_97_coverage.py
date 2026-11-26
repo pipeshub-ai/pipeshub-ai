@@ -317,6 +317,27 @@ class TestReindexBatchPaging:
         assert mock_conn.reindex_records.await_count == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("force", [True, False])
+    async def test_a_users_force_is_set_for_the_length_of_the_walk_and_no_longer(self, service, force) -> None:
+        """D-180: the reindex events a walk publishes carry ``refreshPaidOutputs`` only for a user's Force reindex."""
+        from app.connectors.services.reindex_force import user_forced_reindex
+
+        seen: list[bool] = []
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock(side_effect=lambda records: seen.append(user_forced_reindex()))
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=self._batch(3))
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="gmail", connector_id="c1",
+            org_id="org1", record_id=None, record_group_id=None, depth=0,
+            user_key=None, status_filters=["FAILED"], force=force,
+        )
+
+        assert seen == [force]
+        assert user_forced_reindex() is False
+
+    @pytest.mark.asyncio
     async def test_cursor_advances_past_processed_records(self, service):
         """Each batch must resume after the previous batch's last id.
 

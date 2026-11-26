@@ -62,7 +62,7 @@ describe('MongoDocumentRepository write state (queries)', () => {
     expect(prune.update).to.deep.equal({ $pull: { writers: { until: { $lt: 1_000_000 } } } });
     expect(begin.filter).to.deep.equal({ _id: id, orgId: org, 'writers.63': { $exists: false } });
     expect(begin.update).to.deep.equal({ $inc: { writeSeq: 1 }, $push: { writers: { t: 'tok', until: 1_300_000 } } });
-    expect(begin.options).to.deep.include({ new: true, timestamps: false });
+    expect(begin.options).to.deep.include({ returnDocument: 'after', timestamps: false });
     expect(begin.select, 'select:false fields are not returned unless asked').to.equal('+writeSeq');
     expect(begin.maxTimeMS).to.equal(1000);
     expect(prune.options).to.deep.include({ timestamps: false });
@@ -121,7 +121,7 @@ describe('MongoDocumentRepository write state (queries)', () => {
     expect(out?.writeSeq).to.equal(4);
     expect(out?.row).to.not.have.property('writeSeq');
     expect(at(0).update).to.deep.equal({ $set: { documentPath: 'p', awaitingDirectUpload: true, s3: { url: 'u' } }, $inc: { writeSeq: 1 } });
-    expect(at(0).options).to.deep.include({ new: true });
+    expect(at(0).options).to.deep.include({ returnDocument: 'after' });
     expect(at(0).select).to.equal('+writeSeq');
   });
 

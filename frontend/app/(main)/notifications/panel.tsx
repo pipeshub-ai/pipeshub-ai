@@ -16,6 +16,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
 import { NotificationRow, chatConversationIdFromHref, type NotificationRowAction } from './notification-row';
+import { CONNECT_DIALOG_ATTR } from '@/app/(main)/workspace/connectors/components/user-access/connect-account';
 import { useChatStore } from '@/chat/store';
 import {
   NotificationFilterMenu,
@@ -296,7 +297,9 @@ export function NotificationsPanel() {
         // Filter menu is portaled outside the panel; keep panel open while using it.
         if (
           target.closest('[data-ph-notifications-filter-menu]') ||
-          target.closest('.rt-DropdownMenuContent')
+          target.closest('.rt-DropdownMenuContent') ||
+          // The connect-account token dialog opened from a row.
+          target.closest(`.rt-BaseDialogOverlay:has([${CONNECT_DIALOG_ATTR}])`)
         ) {
           return;
         }
@@ -421,6 +424,9 @@ export function NotificationsPanel() {
         .rt-TooltipContent.${NOTIFICATIONS_PANEL_TOOLTIP_CLASS} {
           z-index: 9200 !important;
           pointer-events: none;
+        }
+        .rt-BaseDialogOverlay:has([${CONNECT_DIALOG_ATTR}]) {
+          z-index: 9200;
         }
         [data-ph-notifications-header-actions] > * {
           position: relative;
@@ -689,7 +695,7 @@ export function NotificationsPanel() {
               gap="2"
               style={{ paddingTop: 'var(--space-8)' }}
             >
-              <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
+              <MaterialIcon name="inbox" size={40} color="var(--slate-11)" />
               <Text size="2" color="gray">
                 {listFilter === 'unread'
                   ? t('notifications.emptyUnread')

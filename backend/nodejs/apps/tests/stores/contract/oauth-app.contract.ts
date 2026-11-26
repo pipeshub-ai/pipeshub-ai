@@ -5,6 +5,8 @@
 import { expect } from 'chai';
 import { UniqueConstraintError } from '../../../src/libs/repositories/errors';
 import {
+  APP_OWNER_FORMAT,
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type NewOAuthApp,
@@ -18,6 +20,8 @@ export interface OAuthAppFixture {
   rawKeys(id: string): Promise<string[]>;
   /** Makes a row older, so ordering does not depend on the clock. */
   setCreatedAt(id: string, at: Date): Promise<void>;
+  /** Makes a row look stored by an older release (no owner format). */
+  clearOwnerFormat(id: string): Promise<void>;
 }
 
 export function describeOAuthAppContract(fx: OAuthAppFixture): void {
@@ -48,6 +52,8 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
     expect(dto.orgId).to.equal(org);
     expect(dto.createdBy).to.equal(user);
     expect(dto.status).to.equal(OAuthAppStatus.ACTIVE);
+    // Every app this code stores says so; the repair looks only at apps without it.
+    expect(dto.ownerFormat).to.equal(APP_OWNER_FORMAT);
     expect(dto).to.include({
       isDeleted: false,
       accessTokenLifetime: 3600,
@@ -114,6 +120,41 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       expect((await repo.listOwned(org, me, { skip: 0, limit: 10 })).total).to.equal(0);
     });
 
+    it('stores an app no person created and finds it by client id, in nobody\'s list', async () => {
+      const org = fx.newId();
+      const app = await repo.create(mk(org, NO_APP_CREATOR, { isDynamic: true }));
+      expect(app.createdBy).to.equal(NO_APP_CREATOR);
+      expect((await repo.findLiveByClientId(app.clientId))?.createdBy).to.equal(NO_APP_CREATOR);
+      expect(await repo.findInOrg(org, app._id)).to.equal(null);
+      expect((await repo.listInOrg(org, { skip: 0, limit: 10 })).total).to.equal(0);
+    });
+
+    it('disownInstanceApps: only instance apps an older release stored lose their creator, once', async () => {
+      const org = fx.newId();
+      const other = fx.newId();
+      const borrowed = fx.newId();
+      // The first-party device app's client id is one per store on MongoDB: each store's own suite covers it.
+      const legacy = await repo.create(mk(org, borrowed, { isDynamic: true }));
+      const second = await repo.create(mk(org, borrowed, { isDynamic: true, isConfidential: false }));
+      const own = await repo.create(mk(org, borrowed));
+      const elsewhere = await repo.create(mk(other, borrowed, { isDynamic: true }));
+      for (const a of [legacy, second, own, elsewhere]) await fx.clearOwnerFormat(a._id);
+      // Stored by this release: a metadata client keeps the person who consented, whenever the repair runs.
+      const consented = await repo.create(mk(org, borrowed, { isDynamic: true }));
+      expect(consented.ownerFormat).to.equal(APP_OWNER_FORMAT);
+
+      expect(await repo.disownInstanceApps(org, org)).to.equal(2);
+
+      for (const a of [legacy, second]) {
+        const stored = await repo.findByClientId(a.clientId);
+        expect(stored, a.clientId).to.include({ createdBy: NO_APP_CREATOR, orgId: org, ownerFormat: APP_OWNER_FORMAT });
+      }
+      expect((await repo.findByClientId(own.clientId))?.createdBy).to.equal(borrowed);
+      expect((await repo.findByClientId(elsewhere.clientId))?.createdBy).to.equal(borrowed);
+      expect((await repo.findByClientId(consented.clientId))?.createdBy).to.equal(borrowed);
+      expect(await repo.disownInstanceApps(org, org)).to.equal(0);
+    });
+
     it('listOwned: newest first, skip and limit, total, status filter, search', async () => {
       const org = fx.newId();
       const me = fx.newId();
@@ -126,7 +167,7 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
         made.push(a);
       }
       await repo.create(mk(org, fx.newId(), { name: 'Not mine' }));
-      await repo.updateOwned(org, me, made[1]._id, { status: OAuthAppStatus.SUSPENDED });
+      await repo.updateOwned(org, me, made[1]!._id, { status: OAuthAppStatus.SUSPENDED });
 
       const all = await repo.listOwned(org, me, { skip: 0, limit: 10 });
       expect(all.total).to.equal(3);
@@ -360,6 +401,39 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       const onlyA = await repo.listInOrg(org, { skip: 0, limit: 10, createdBy: a });
       expect(onlyA.rows.map((r) => r.name)).to.deep.equal(['A']);
       expect((await repo.listInOrg(org, { skip: 0, limit: 10, search: 'b' })).total).to.equal(1);
+    });
+  });
+
+  describe('stored client secrets (the SECRET_KEY rotation, ADR-KEY-01)', () => {
+    it('listClientSecrets lists every app of the org, deleted ones too, and no other org\'s', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const live = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-live' }));
+      const gone = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-gone' }));
+      await repo.updateOwned(org, me, gone._id, { isDeleted: true });
+      await repo.create(mk(fx.newId(), me, { clientSecretEncrypted: 'enc-elsewhere' }));
+      const listed = await repo.listClientSecrets(org);
+      expect([...listed].sort((a, b) => a.id.localeCompare(b.id))).to.deep.equal(
+        [
+          { id: live._id, clientSecretEncrypted: 'enc-live' },
+          { id: gone._id, clientSecretEncrypted: 'enc-gone' },
+        ].sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(await repo.listClientSecrets(fx.newId())).to.deep.equal([]);
+    });
+
+    it('replaceClientSecret swaps only while the stored secret is the expected one, and only in its org', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const app = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-old' }));
+      expect(await repo.replaceClientSecret(fx.newId(), app._id, 'enc-old', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-stale', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, fx.newId(), 'enc-old', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, 'not-an-id', 'enc-old', 'enc-new')).to.equal(false);
+      expect((await repo.findByClientId(app.clientId))?.clientSecretEncrypted).to.equal('enc-old');
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-old', 'enc-new')).to.equal(true);
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-old', 'enc-other')).to.equal(false);
+      expect((await repo.findByClientId(app.clientId))?.clientSecretEncrypted).to.equal('enc-new');
     });
   });
 }

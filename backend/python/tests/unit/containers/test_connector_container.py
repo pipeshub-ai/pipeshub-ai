@@ -267,6 +267,48 @@ class TestInitializeContainerFailures:
         with pytest.raises(Exception, match="Failed to initialize data store"):
             await initialize_container(container)
 
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.record_service_activity")
+    @patch("app.containers.connector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_a_schema_that_could_not_be_ensured_is_retried_then_reported_and_the_start_goes_on(
+        self, _sleep, counted, mock_migration, mock_all_team, mock_health,
+    ) -> None:
+        """OAuth, configuration and the dashboard's endpoints do not need the schema; the syncs it stops say so on their connectors."""
+        container, logger, _ = _make_mock_container()
+        mock_migration.return_value = {"success": True, "skipped": True}
+        mock_all_team.return_value = {"success": True, "skipped": True}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema = AsyncMock(return_value=False)
+
+        assert await initialize_container(container) is True
+        assert ensure_schema.await_count == 3
+        mock_all_team.assert_awaited_once()
+        errors = [c for c in logger.error.call_args_list if "graph schema could not be ensured" in c.args[0]]
+        assert len(errors) == 1 and "update collection properties" in errors[0].args[0]
+        counted.assert_called_once_with("connector_service", "graph_schema_not_ensured", status="failed")
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.record_service_activity")
+    @patch("app.containers.connector.asyncio.sleep", new_callable=AsyncMock)
+    async def test_a_schema_ensured_on_a_retry_is_not_reported(
+        self, _sleep, counted, mock_migration, mock_all_team, mock_health,
+    ) -> None:
+        container, logger, _ = _make_mock_container()
+        mock_migration.return_value = {"success": True, "skipped": True}
+        mock_all_team.return_value = {"success": True, "skipped": True}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema = AsyncMock(side_effect=[False, True])
+
+        assert await initialize_container(container) is True
+        assert ensure_schema.await_count == 2
+        counted.assert_not_called()
+
 
 # ===========================================================================
 # initialize_container — deployment config edge cases
@@ -413,6 +455,7 @@ _BACKGROUND = {
     "hierarchy": "run_hierarchy_backfill_migration",
     "redundant": "run_redundant_group_edges_migration",
     "listing": "run_kh_listing_state_migration",
+    "order": "run_kh_children_order_migration",
 }
 _DONE = {"success": True, "skipped": True}
 
@@ -443,7 +486,7 @@ class TestBackgroundGraphMigrations:
 
         assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
 
-        assert migrations["tried"] == ["links", "folders", "hierarchy", "redundant", "listing"]
+        assert migrations["tried"] == ["links", "folders", "hierarchy", "redundant", "listing", "order"]
         migrations["sleep"].assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -458,7 +501,7 @@ class TestBackgroundGraphMigrations:
 
         assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
 
-        assert migrations["tried"] == ["links", "folders", "links", "hierarchy", "redundant", "listing"]
+        assert migrations["tried"] == ["links", "folders", "links", "hierarchy", "redundant", "listing", "order"]
         migrations["sleep"].assert_awaited_once_with(KH_MIGRATION_RETRY_SECONDS)
 
     @pytest.mark.asyncio

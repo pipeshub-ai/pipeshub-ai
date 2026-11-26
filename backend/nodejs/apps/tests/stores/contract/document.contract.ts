@@ -287,7 +287,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const deleted = rows.find((r) => r._id === gone._id);
       expect(deleted?.isDeleted).to.equal(true);
       expect(Object.keys(rows[0]).sort()).to.deep.equal(
-        ['_id', 'documentName', 'documentPath', 'extension', 'isVersionedFile', 'versionHistory', 'isDeleted'].filter((k) => k in rows[0]).sort(),
+        ['_id', 'documentName', 'documentPath', 'extension', 'isVersionedFile', 'versionHistory', 'isDeleted'].filter((k) => k in rows[0]!).sort(),
       );
     });
 
@@ -385,6 +385,49 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect((await repo.listArtifactSets(org, 'v1')).map((r) => r._id)).to.deep.equal([a._id]);
     });
 
+    it('createArtifactSetOnce of one revision from many presigns at once gives every caller the one row, never a delete conflict', async () => {
+      const org = fx.newId()
+      for (let round = 0; round < 8; round++) {
+        const vrid = `v-${fx.newId()}`
+        const set = (): NewDocument =>
+          mk(org, {
+            documentName: 'revision_r9',
+            artifactSet: { virtualRecordId: vrid, rev: 'r9', root: `${org}/PipesHub/record-revisions/${vrid}/r9` },
+          })
+        const rows = await Promise.all(Array.from({ length: 12 }, () => repo.createArtifactSetOnce(set(), fence(Date.now()))))
+        expect(new Set(rows.map((r) => r._id)).size).to.equal(1)
+      }
+    })
+
+    it('a touch of a revision always moves its write stamp forward, however late it runs, so a purge that listed it sees the touch', async () => {
+      const org = fx.newId()
+      const base = Date.now() + 1_000_000_000_000
+      const set = (): NewDocument =>
+        mk(org, {
+          documentName: 'revision_r7',
+          artifactSet: { virtualRecordId: 'v7', rev: 'r7', root: `${org}/PipesHub/record-revisions/v7/r7` },
+        })
+      await repo.createArtifactSetOnce(set(), fence(base))
+      const later = await repo.createArtifactSetOnce(set(), fence(base + 1000))
+      const listed = Number(later.updatedAt)
+      expect(listed).to.equal(base + 1000)
+      // A control: nothing touched it since the listing, so a purge that listed that stamp claims the revision.
+      const control = await repo.claimArtifactSetForDelete(org, later._id, { now: base + 2000, staleMs: STALE, ifUnchangedSince: listed })
+      expect(control).to.not.equal('changed')
+      expect(control).to.not.equal(null)
+      // A second revision: the same, then a touch read at an earlier instant lands after the listing.
+      const other = (): NewDocument =>
+        mk(org, {
+          documentName: 'revision_r8',
+          artifactSet: { virtualRecordId: 'v7', rev: 'r8', root: `${org}/PipesHub/record-revisions/v7/r8` },
+        })
+      await repo.createArtifactSetOnce(other(), fence(base))
+      const second = await repo.createArtifactSetOnce(other(), fence(base + 1000))
+      const stale = await repo.createArtifactSetOnce(other(), fence(base))
+      expect(Number(stale.updatedAt)).to.be.greaterThan(Number(second.updatedAt))
+      expect(await repo.claimArtifactSetForDelete(org, second._id, { now: base + 2000, staleMs: STALE, ifUnchangedSince: Number(second.updatedAt) })).to.equal('changed')
+    })
+
     it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {
       const org = fx.newId();
       const W1 = 'a'.repeat(32);
@@ -415,14 +458,15 @@ export function describeDocumentContract(fx: DocumentFixture): void {
     });
 
     describe('the delete fence of a content revision', () => {
-      const T0 = 1_000_000_000_000;
+      // Ahead of the real clock that stamps a first insert: a touch only moves a stamp forward.
+      const T0 = Date.now() + 1_000_000_000_000;
       const revision = async (org: string, rev = 'r1', at = T0): Promise<string> => {
         const input = mk(org, {
           documentName: `revision_${rev}`,
           artifactSet: { virtualRecordId: 'v1', rev, root: `${org}/PipesHub/record-revisions/v1/${rev}` },
         });
         await repo.createArtifactSetOnce(input, fence(at));
-        // The first call stamps the row with the real clock; a second one moves the stamp to `at`.
+        // The first call stamps the row with the real clock; a second one moves the stamp to `at`, which lies ahead of it.
         return (await repo.createArtifactSetOnce(input, fence(at)))._id;
       };
       const stamp = async (org: string, id: string): Promise<number | undefined> => (await repo.get(org, id))?.updatedAt;
@@ -523,9 +567,9 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         const id = await revision(org);
         await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE });
         const [listed] = await repo.listArtifactSets(org, 'v1');
-        expect(listed._id).to.equal(id);
-        expect(listed.artifactSet?.retiringAt).to.equal(T0 + 1000);
-        expect(listed.updatedAt).to.equal(T0);
+        expect(listed!._id).to.equal(id);
+        expect(listed!.artifactSet?.retiringAt).to.equal(T0 + 1000);
+        expect(listed!.updatedAt).to.equal(T0);
       });
     });
 
@@ -598,7 +642,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       await repo.create(mk(fx.newId(), { documentName: 'record_v1', documentPath: `${prefix}v1` }));
       const first = await repo.pageFlatEnvelopes(org, prefix, undefined, 1);
       expect(first.map((r) => r._id)).to.deep.equal([a._id]);
-      const next = await repo.pageFlatEnvelopes(org, prefix, first[0]._id, 10);
+      const next = await repo.pageFlatEnvelopes(org, prefix, first[0]!._id, 10);
       expect(next.map((r) => r._id)).to.deep.equal([b._id]);
     });
 
@@ -1022,7 +1066,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         const page = await repo.pageByConnector(org, sc, after, 2);
         seen.push(...page.map((p) => p._id));
         if (page.length < 2) break;
-        after = page[page.length - 1]._id;
+        after = page[page.length - 1]!._id;
       }
       expect(seen).to.deep.equal(want);
       expect(Object.keys((await repo.pageByConnector(org, sc, undefined, 1))[0]).sort()).to.deep.equal(['_id', 'documentName', 'documentPath']);

@@ -22,6 +22,7 @@ from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
     CollectionNotFoundError,
     OrgRequired,
+    SearchBusy,
     SpaceMismatch,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
@@ -137,6 +138,23 @@ async def test_the_all_connectors_check_answers_beside_the_search_within_its_own
     assert lower.endswith("ms") and int(lower[:-2]) <= 40                                   # a unit's own lower limit is kept
 
 
+async def test_a_search_that_gets_no_connection_in_time_is_busy_not_an_empty_answer(store) -> None:
+    """Every pooled connection held elsewhere: the dense leg's tier and its degraded path both time out waiting for one. The search
+    used to answer an empty list, which reads as "nothing matched"; it is busy, and answers once a connection is free."""
+    await store.upsert_points("records", [point(A, n) for n in (1, 2, 3)])
+    [warm] = await store.query_nearest_points("records", [req(A, limit=3)])          # the catalog and the sizing are cached now
+    pool = store._db._pool
+    held = [await pool.acquire() for _ in range(pool.get_max_size())]
+    try:
+        with pytest.raises(SearchBusy):                                               # without payload no later read fails instead
+            await store.query_nearest_points("records", [req(A, limit=3, with_payload=False)])
+    finally:
+        for con in held:
+            await pool.release(con)
+    [again] = await store.query_nearest_points("records", [req(A, limit=3)])
+    assert [h.id for h in warm] == [h.id for h in again] == [pid(A, n) for n in (1, 2, 3)]
+
+
 async def test_deleted_points_are_not_found_and_the_refusals(store) -> None:
     await store.upsert_points("records", [point(A, n) for n in (1, 2, 3)])
     await store.delete_points("records", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A), FieldCondition(key="metadata.virtualRecordId", value="r1")]))
@@ -168,6 +186,71 @@ async def test_every_tier_answers_the_same_nearest_points(store) -> None:
     store._sizer = dense.Sizer(store._db, search)
     [indexed] = await store.query_nearest_points("records", [req(A, limit=5)])
     assert [h.id for h in indexed] == [h.id for h in exact] == [pid(A, n) for n in range(1, 6)]
+
+
+async def test_the_vector_index_tests_membership_on_the_point_row_with_the_answers_of_the_membership_rows(store) -> None:
+    """The index tier tests a candidate's membership by the keys its row carries: no membership read per candidate (the probe's subplan
+    never runs), the same answers as the exact tier and as the probe, through a membership change and for a row whose keys are unknown."""
+    pts = [point(A, n, conn=[f"c{n % 3}"]) for n in range(1, 31)]
+    await store.upsert_points("records", pts)
+    member = {"connectorIds": ["c1"], "recordGroupIds": ["nothing"]}
+    [exact] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in exact] == [pid(A, n) for n in range(1, 31) if n % 3 == 1][:8]
+    search = dataclasses.replace(store._cfg.search, n_e0=2, n_own=1)                                       # the vector-index tier from here on
+    store._cfg = dataclasses.replace(store._cfg, search=search)
+    store._sizer = dense.Sizer(store._db, search)
+    [indexed] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in indexed] == [h.id for h in exact]
+    admin = await store.env.admin()
+    try:
+        space = await admin.fetchval("SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1 AND role = 'active'", A)
+        from app.services.vector_db.pgvector.visibility import scope_of
+        q = dense.Query(A, 1, space, 4, "cosine", "[1,0,0,0]", scope_of(req(A, should=member).filter), 16)
+
+        async def plan() -> str:
+            await admin.execute(f"SET app.org_id = '{A}'")
+            return "\n".join(r[0] for r in await admin.fetch("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + dense.index_sql(q), *q.args(16, 800)))
+        def probes(shown: str) -> list[str]:
+            return [line for line in shown.splitlines() if "Scan" in line and "group_members" in line]
+        shown = await plan()
+        assert probes(shown) and all("never executed" in line for line in probes(shown)), shown            # the per-candidate probe never runs
+        moved = dataclasses.replace(pts[0], payload={**pts[0].payload, "connectorIds": ["c2"]})              # point 1 leaves c1
+        await store.upsert_points("records", [moved])
+        await admin.execute("UPDATE retrieval.points SET member_keys = NULL WHERE org_id = $1 AND point_id = $2", A, pid(A, 4))   # keys unknown
+        shown = await plan()
+        assert probes(shown) and not any("never executed" in line for line in probes(shown)), shown       # that row is probed
+    finally:
+        await admin.close()
+    [after] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in after] == [pid(A, n) for n in range(2, 31) if n % 3 == 1][:8]
+
+
+async def test_a_narrowing_list_bounds_the_candidate_count_by_its_own_groups(store) -> None:
+    """A scope that admits 300 groups narrowed to one record: the count reads that record's group only (no membership row of the 300
+    admitted ones), and counts what the admitted-groups form counts, with and without the narrowing."""
+    from app.services.vector_db.pgvector.visibility import scope_of
+
+    await store.upsert_points("records", [point(A, n, conn=["c0"]) for n in range(1, 301)])
+    admin = await store.env.admin()
+    try:
+        space = await admin.fetchval("SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1 AND role = 'active'", A)
+        await admin.execute(f"SET app.org_id = '{A}'")
+
+        def query(must: list[str] | None) -> dense.Query:
+            flt = FilterExpression(must=[FieldCondition(key="metadata.orgId", value=A),
+                                         *([FieldCondition(key="metadata.virtualRecordId", values=must)] if must else [])],
+                                   should=[FieldCondition(key="connectorIds", values=["c0"])])
+            return dense.Query(A, 1, space, 4, "cosine", "[1,0,0,0]", scope_of(flt), 16)
+
+        narrowed = query(["r7", "r9", "nowhere"])
+        assert await admin.fetchval(dense.count_sql(narrowed), *narrowed.args(1000)) == 2
+        assert await admin.fetchval(dense.count_sql(query(None)), *query(None).args(1000)) == 300
+        shown = "\n".join(r[0] for r in await admin.fetch("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + dense.count_sql(narrowed),
+                                                       *narrowed.args(1000)))
+        read = [line for line in shown.splitlines() if "Scan" in line and "group_members" in line and "never executed" not in line]
+        assert read == [], shown                                         # no membership row read: the narrowing's groups, tested on the row
+    finally:
+        await admin.close()
 
 
 async def test_the_quantisation_check_stores_a_verdict_for_the_orgs_space(store) -> None:

@@ -1,0 +1,624 @@
+{
+ "scenario": "agent_ask_user_question",
+ "query": "Build me the sales report",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "Build me the sales report",
+      "userMessage": "Build me the sales report",
+      "interpretation": null,
+      "attachmentText": "",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "Build me the sales report"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:QnVpbGQgbWUgdGhlIHNhbGVzIHJlcG9ydA==",
+     "hash": "sha256:52ef666296357dcfe1fae0385e602f3ff41be9e3e50ff107fa90335968d67a17",
+     "size": 25
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "session.toolLists": {
+      "react": {
+       "ref": {
+        "ref": "sealed:memory/1",
+        "hash": "sha256:afe54c734813dbad51cf200c6baef9b3d02a494dab19f516fc821e69808ced2a",
+        "size": 18409
+       },
+       "digest": "sha256:de666827205e38714f6db5a57b3884450e3d4ed485907dd32ba34fe27f107170",
+       "count": 15
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "prompt.shown": {
+      "stableDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "stableChars": 0,
+      "sources": [
+       {
+        "label": "Live service tools (Knowledgegraph)",
+        "via": []
+       }
+      ]
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:079af104313f4aca7778d74266bfd577cbe26ce017f5c303fffa4c5999f3bf2b",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InF1ZXN0aW9ucyI6W3sibXVsdGlTZWxlY3QiOmZhbHNlLCJvcHRpb25zIjpbeyJsYWJlbCI6Ik5vcnRoIEFtZXJpY2EifSx7ImxhYmVsIjoiRXVyb3BlIn0seyJsYWJlbCI6IkFzaWEgUGFjaWZpYyJ9LHsiaXNVc2VySW5wdXQiOnRydWUsImxhYmVsIjoiRW50ZXIgYSByZWdpb24ifV0sInF1ZXN0aW9uIjoiV2hpY2ggcmVnaW9uIHNob3VsZCB0aGUgcmVwb3J0IGNvdmVyPyJ9XSwidXNlcl9pbnRlbnQiOiJUaGUgdXNlciB3YW50cyBhIHJlcG9ydCBidXQgZGlkIG5vdCBzYXkgd2hpY2ggcmVnaW9uLiJ9LCJpZCI6ImNhbGwtYXNrIiwibmFtZSI6ImludGVybmFsdG9vbHNfX2Fza191c2VyX3F1ZXN0aW9uIn1dfQ==",
+     "hash": "sha256:a6aafa8771ed39caf225f7f8625a9029261f8fcded1a80fcd6e84c3c2c3c5592",
+     "size": 379
+    },
+    "toolCalls": [
+     {
+      "callId": "call-ask",
+      "modelName": "internaltools__ask_user_question",
+      "argsDigest": "sha256:f0117aea347917795b9a04fe7031fe0ab5e6419943b698f75750bb5740ab14ca"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1hc2siLCJuYW1lIjoiaW50ZXJuYWx0b29sc19fYXNrX3VzZXJfcXVlc3Rpb24iLCJhcmd1bWVudHMiOnsidXNlcl9pbnRlbnQiOiJUaGUgdXNlciB3YW50cyBhIHJlcG9ydCBidXQgZGlkIG5vdCBzYXkgd2hpY2ggcmVnaW9uLiIsInF1ZXN0aW9ucyI6W3sicXVlc3Rpb24iOiJXaGljaCByZWdpb24gc2hvdWxkIHRoZSByZXBvcnQgY292ZXI_Iiwib3B0aW9ucyI6W3sibGFiZWwiOiJOb3J0aCBBbWVyaWNhIn0seyJsYWJlbCI6IkV1cm9wZSJ9LHsibGFiZWwiOiJBc2lhIFBhY2lmaWMifSx7ImxhYmVsIjoiRW50ZXIgYSByZWdpb24iLCJpc1VzZXJJbnB1dCI6dHJ1ZX1dLCJtdWx0aVNlbGVjdCI6ZmFsc2V9XX19XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:1a7ed11edfbad52512d87dd3d6afad4b7222a1085103ecb79a93880bf47d1d12",
+     "size": 425
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-ask",
+    "toolName": "internaltools__ask_user_question",
+    "argsJson": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+    "argsSummary": "Ask User Question — user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@internaltools/ask_user_question",
+    "argsDigest": "sha256:f0117aea347917795b9a04fe7031fe0ab5e6419943b698f75750bb5740ab14ca",
+    "effect": "read",
+    "sink": {
+     "egress": "self",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wibmFtZVwiOiBcImFza191c2VyX3F1ZXN0aW9uXCIsIFwidXNlckludGVudFwiOiBcIlRoZSB1c2VyIHdhbnRzIGEgcmVwb3J0IGJ1dCBkaWQgbm90IHNheSB3aGljaCByZWdpb24uXCIsIFwicXVlc3Rpb25zXCI6IFt7XCJ1dWlkXCI6IFwiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxXCIsIFwicXVlc3Rpb25cIjogXCJXaGljaCByZWdpb24gc2hvdWxkIHRoZSByZXBvcnQgY292ZXI_XCIsIFwib3B0aW9uc1wiOiBbe1wiaWRcIjogXCJvcHRfbm9ydGhfYW1lcmljYVwiLCBcImxhYmVsXCI6IFwiTm9ydGggQW1lcmljYVwiLCBcImlzVXNlcklucHV0XCI6IGZhbHNlfSwge1wiaWRcIjogXCJvcHRfZXVyb3BlXCIsIFwibGFiZWxcIjogXCJFdXJvcGVcIiwgXCJpc1VzZXJJbnB1dFwiOiBmYWxzZX0sIHtcImlkXCI6IFwib3B0X2FzaWFfcGFjaWZpY1wiLCBcImxhYmVsXCI6IFwiQXNpYSBQYWNpZmljXCIsIFwiaXNVc2VySW5wdXRcIjogZmFsc2V9LCB7XCJpZFwiOiBcIm9wdF9lbnRlcl9hX3JlZ2lvblwiLCBcImxhYmVsXCI6IFwiRW50ZXIgYSByZWdpb25cIiwgXCJpc1VzZXJJbnB1dFwiOiB0cnVlfV0sIFwibXVsdGlTZWxlY3RcIjogZmFsc2V9XX0iLCJpc0Vycm9yIjpmYWxzZX0=",
+     "hash": "sha256:ff93ec8e7f5f856e2cfde8c4fac0ff7b5b22761559a6637d560776b7a9276c76",
+     "size": 638
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-ask",
+    "status": "completed",
+    "content": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"00000000-0000-0000-0000-000000000001\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "x.pipeshub.question.asked",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-ask",
+    "status": "success",
+    "toolData": {
+     "name": "ask_user_question",
+     "userIntent": "The user wants a report but did not say which region.",
+     "questions": [
+      {
+       "uuid": "00000000-0000-0000-0000-000000000001",
+       "question": "Which region should the report cover?",
+       "options": [
+        {
+         "id": "opt_north_america",
+         "label": "North America",
+         "isUserInput": false
+        },
+        {
+         "id": "opt_europe",
+         "label": "Europe",
+         "isUserInput": false
+        },
+        {
+         "id": "opt_asia_pacific",
+         "label": "Asia Pacific",
+         "isUserInput": false
+        },
+        {
+         "id": "opt_enter_a_region",
+         "label": "Enter a region",
+         "isUserInput": true
+        }
+       ],
+       "multiSelect": false
+      }
+     ],
+     "expiresAt": "2026-01-02T00:00:00Z"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@internaltools/ask_user_question",
+    "rule": "no_content",
+    "provenance": {
+     "readers": "public",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "needs_input",
+    "answer": "",
+    "partTexts": [
+     ""
+    ],
+    "citations": [],
+    "confidence": null,
+    "label": {
+     "complete": true,
+     "sources": [],
+     "integrity": "first_party"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "needs_input"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": [
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  }
+ ]
+}

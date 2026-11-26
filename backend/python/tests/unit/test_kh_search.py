@@ -8,6 +8,7 @@ between pages.
 """
 
 import asyncio
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,7 +19,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
     KnowledgeHubListingTooLarge,
 )
-from app.utils.kh_cursor import CursorError
+from app.utils.kh_cursor import Boundary, CursorError, KnowledgeHubCursor
 
 if TYPE_CHECKING:
     from app.connectors.sources.localKB.handlers.kh_search import SearchPage
@@ -228,6 +229,96 @@ def test_a_later_page_reuses_the_carried_total_and_refetches_no_ids() -> None:
     assert not any(call["include_total"] for call in provider.calls), "the total was recounted"
 
 
+class BoundaryCountingProvider(FakeProvider):
+    """The real queries count what they select: with a boundary, only the rows past it."""
+
+    async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+        page = await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+        if kwargs.get("after") is not None and page["total"] is not None:
+            descending = kwargs["sort_dir"].upper() == "DESC"
+            edge = key_for(kwargs["after"], descending=descending)
+            past = [r for r in self.rows_by_connector.get(app_id, []) if key_for(r, descending=descending) > edge]
+            page = {**page, "total": len(past), "counts": dict(Counter(r["nodeType"] for r in past))}
+        return page
+
+
+def _clock(monkeypatch, start_ms: int = 1_000_000_000_000) -> list[int]:
+    import app.utils.kh_cursor as kh_cursor
+    from app.connectors.sources.localKB.handlers import kh_search
+
+    clock = [start_ms]
+    monkeypatch.setattr(kh_cursor.time, "time", lambda: clock[0] / 1000)
+    monkeypatch.setattr(kh_search.time, "time", lambda: clock[0] / 1000)
+    return clock
+
+
+def test_a_carried_total_is_counted_again_after_five_minutes_so_lost_access_leaves_it(monkeypatch) -> None:
+    clock = _clock(monkeypatch)
+    provider = FakeProvider({"rg-1": [row("a1", "apple"), row("a3", "cherry")], "kb-1": [row("a2", "banana")]})
+    first = asyncio.run(_search(provider, limit=2))
+    assert first.total == 3
+    provider.rows_by_connector["kb-1"] = []          # the viewer lost the banana
+
+    clock[0] += 299_000
+    provider.calls.clear()
+    fresh = asyncio.run(_search(provider, limit=2, cursor_token=first.next_cursor))
+    assert fresh.total == 3 and not any(c["include_total"] for c in provider.calls), "a recent total is reused"
+
+    clock[0] += 2_000
+    stale = asyncio.run(_search(provider, limit=2, cursor_token=fresh.prev_cursor))
+    assert (stale.total, stale.counts_by_type) == (2, {"record": 2})
+
+
+def test_a_recount_in_the_middle_of_a_walk_is_the_total_of_the_whole_listing(monkeypatch) -> None:
+    """Not the rows past the page boundary, and over every connector, also one that ran out before the boundary."""
+    clock = _clock(monkeypatch)
+    provider = BoundaryCountingProvider({
+        "rg-1": [row("a1", "apple"), row("a3", "cherry"), row("a4", "date", node_type="folder")], "kb-1": [row("a2", "banana")],
+    })
+    first = asyncio.run(_search(provider, limit=2))
+    assert first.total == 4
+    clock[0] += 301_000
+    second = asyncio.run(_search(provider, limit=2, cursor_token=first.next_cursor))
+    assert ids(second) == ["a3", "a4"]
+    assert (second.total, second.counts_by_type) == (4, {"record": 3, "folder": 1})
+
+
+def test_a_connector_not_ready_when_the_total_is_counted_again_refuses_the_cursor(monkeypatch) -> None:
+    """The recount reads every connector, also one the page skips because it ran out: counted as 0 there, it would carry an understated total for five more minutes."""
+    from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
+
+    class NotReadyWhenCounted(FakeProvider):
+        preparing: set[str] = set()
+
+        async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+            if app_id in self.preparing and kwargs.get("include_total"):
+                raise KnowledgeHubListingNotReady
+            return await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+
+    clock = _clock(monkeypatch)
+    provider = NotReadyWhenCounted({"rg-1": [row("a1", "apple"), row("a3", "cherry"), row("a4", "date")], "kb-1": [row("a2", "banana")]})
+    first = asyncio.run(_search(provider, limit=2))
+    second = asyncio.run(_search(provider, limit=2, cursor_token=first.next_cursor))
+    assert ids(second) == ["a3", "a4"]          # kb-1 ran out on the first page: later pages do not read it
+    provider.preparing = {"kb-1"}
+    clock[0] += 301_000
+    with pytest.raises(CursorError):
+        asyncio.run(_search(provider, limit=2, cursor_token=second.prev_cursor))
+
+
+@pytest.mark.parametrize("ca", [None, 0, -1, "soon", 1.5, True, [1], {"a": 1}])
+def test_a_count_time_that_is_missing_or_not_a_time_is_an_unknown_age_and_the_total_is_counted_again(ca) -> None:
+    wire = KnowledgeHubCursor(boundary=Boundary(0, "a", "a1"), total=5, counts_by_type={"record": 5}, counted_at_ms=1_000).to_wire()
+    wire.pop("ca")
+    if ca is not None:
+        wire["ca"] = ca
+    cursor = KnowledgeHubCursor.from_wire(wire)
+    assert cursor.with_fresh_counts().total is None
+    recent = KnowledgeHubCursor(boundary=Boundary(0, "a", "a1"), total=5, counted_at_ms=1_000)
+    assert recent.with_fresh_counts(now_ms=1_000 + 300_000).total == 5
+    assert recent.with_fresh_counts(now_ms=1_000 + 300_001).total is None
+
+
 def test_a_failed_partition_fails_the_request() -> None:
     """A page of the partitions that answered is indistinguishable from a
     complete one, and the rows it drops look exactly like rows the user may not
@@ -267,6 +358,64 @@ def test_partition_queries_are_capped_by_default() -> None:
     assert len(page.rows) == 30
     assert DEFAULT_MAX_CONCURRENCY == 8
     assert 1 < provider.peak_in_flight <= DEFAULT_MAX_CONCURRENCY, provider.peak_in_flight
+
+
+def test_searches_at_once_share_the_process_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each search keeps under its own cap; together they keep under the process's."""
+    from app.connectors.sources.localKB.handlers import kh_search
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 5)
+    provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
+                             for index in range(30)})
+
+    async def both() -> list:
+        return await asyncio.gather(_search(provider, limit=50), _search(provider, limit=50))
+
+    pages = asyncio.run(both())
+    assert [len(page.rows) for page in pages] == [30, 30]
+    assert 1 < provider.peak_in_flight <= 5, provider.peak_in_flight
+
+
+def test_a_search_with_no_turn_before_its_deadline_is_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.connectors.sources.localKB.handlers import kh_search
+    from app.utils.request_deadline import deadline_after
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 1)
+
+    class Held(FakeProvider):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.release = asyncio.Event()
+
+        async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+            if app_id == "rg-held":
+                await self.release.wait()
+            return await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+
+    async def scenario() -> None:
+        holder = Held({"rg-held": [row("h1", "held")]})
+        first = asyncio.ensure_future(_search(holder, limit=10))
+        await asyncio.sleep(0.01)
+        waiting = Held({"rg-1": [row("a1", "apple")]})
+        with deadline_after(0.05), pytest.raises(KnowledgeHubListingBusy) as busy:
+            await _search(waiting, limit=10)
+        assert busy.value.timed_out
+        assert waiting.calls == [], "the waiting search never reached the graph"
+        holder.release.set()
+        assert ids(await first) == ["h1"]
+
+    asyncio.run(scenario())
+
+
+def test_no_process_cap_when_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.connectors.sources.localKB.handlers import kh_search
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 0)
+    provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
+                             for index in range(30)})
+    page = asyncio.run(_search(provider, limit=50, max_concurrency=None))
+    assert len(page.rows) == 30
+    assert provider.peak_in_flight == 30
 
 
 def test_an_exhausted_partition_is_not_queried_again() -> None:

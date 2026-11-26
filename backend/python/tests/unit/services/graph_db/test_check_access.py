@@ -287,3 +287,123 @@ class TestAFailedCheckIsNotReportedAsAbsence:
     async def test_linked_records(self, backend) -> None:
         with pytest.raises(PermissionVerificationUnavailableError):
             await _failing(backend).get_linked_records("r1", "org-1", "u", ["BLOCKS"])
+
+
+class TestNeo4jDecidesSiblingsByParent:
+    """Neo4j first admits what the walks above each asked node's parent admit (one statement), and asks the full statement only about
+    the rest; the real-store proof that the two together equal the full statement alone is
+    `tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py`."""
+
+    ACCESS = {"grantee_ids": ["u"], "gated_app_ids": ["a"], "by_connector": {"a": ["g1"]}}
+
+    @staticmethod
+    def _provider(by_parent: set[str]) -> tuple[Neo4jProvider, list]:
+        provider = Neo4jProvider.__new__(Neo4jProvider)
+        provider.logger = MagicMock()
+        sent: list = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            pre = "kh_kids" in query
+            sent.append(("by_parent" if pre else "full", list(parameters["kh_ids"]), list(parameters.get("kh_vrids") or [])))
+            ids = [i for i in parameters["kh_ids"] if (i in by_parent) == pre]
+            return [{"items": [{"id": i} for i in ids]}]
+
+        provider._kh_query = kh_query
+        return provider, sent
+
+    @pytest.mark.asyncio
+    async def test_only_the_nodes_no_parent_admits_are_asked_of_the_full_statement(self) -> None:
+        provider, sent = self._provider({"a1", "a2"})
+        rows = await provider._kh_v3_accessible_rows("u", "o", ["a1", "b1", "a2"], ["v1"], access=self.ACCESS, transaction=None)
+        assert sent == [("by_parent", ["a1", "b1", "a2"], []), ("full", ["b1"], ["v1"])]
+        assert sorted(r["id"] for r in rows) == ["a1", "a2", "b1"]
+
+    @pytest.mark.asyncio
+    async def test_the_full_statement_is_skipped_when_every_node_is_admitted_and_no_vrid_is_asked(self) -> None:
+        provider, sent = self._provider({"a1", "a2"})
+        rows = await provider._kh_v3_accessible_rows("u", "o", ["a1", "a2"], [], access=self.ACCESS, transaction=None)
+        assert [s[0] for s in sent] == ["by_parent"] and sorted(r["id"] for r in rows) == ["a1", "a2"]
+
+    @pytest.mark.asyncio
+    async def test_one_node_is_asked_of_the_full_statement_alone(self) -> None:
+        provider, sent = self._provider({"a1"})
+        await provider._kh_v3_accessible_rows("u", "o", ["a1"], [], access=self.ACCESS, transaction=None)
+        assert sent == [("full", ["a1"], [])]
+
+    @pytest.mark.asyncio
+    async def test_the_by_parent_statement_walks_at_most_49_hops_from_the_parent(self) -> None:
+        """Both walks start at the parent (0 hops: the parent itself) and go at most 49, so with the node's own hop a route stays within
+        the full statement's 50; in the probe form no grant is read from a list."""
+        provider, _ = self._provider(set())
+        texts: list[str] = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            texts.append(query)
+            return [{"items": []}]
+
+        provider._kh_query = kh_query
+        for access in (self.ACCESS, {**self.ACCESS, "probe": {"connector_id": "a", "grantees": ["u"]}}):
+            texts.clear()
+            await provider._kh_v3_accessible_rows("u", "o", ["n1", "n2"], [], access=access, transaction=None)
+            by_parent, full = texts
+            # Each walk reads the parent itself and 1 to 49 levels above it.
+            assert "kh_kids" in by_parent and by_parent.count("range(1, 49)") == 2
+            assert "kh_q = app OR app IN reduce(" in by_parent and "UNWIND [kh_q] + reduce(" in by_parent
+            assert "range(1, 49)" not in full
+            assert ("$grantedIds" in by_parent) is not bool(access.get("probe"))
+
+
+class TestNeo4jWalksStartWhereTheyAreBound:
+    """A walk whose end the statement tests (the App, a seed, a declared group) can be planned from that end: for each target, from
+    every node of the App. A plan chosen while an App is small stays cached for every App until the statistics change several-fold
+    (`dbms.cypher.min_replan_interval`, `dbms.cypher.statistics_divergence_threshold`), so the batch check must leave the planner no
+    such choice. A walk whose hop reads an edge between its two nodes (inheritance) is read a level at a time, with no path match at
+    all: as a path match it enumerates every route, exponential where nodes have two parents at many levels. A path match is left only
+    where the hop reads one step's own properties (a pruning BFS), and it ends in an unlabelled node nothing tests before its ends are
+    collected. The same holds for the split browse's hop admission, which reads the check's walk from the App above the start, and for the
+    check's by-parent statement."""
+
+    @staticmethod
+    async def _statements() -> list[tuple[str, int, int]]:
+        """Each statement with the number of walks read a level at a time and of path matches it holds."""
+        provider = Neo4jProvider.__new__(Neo4jProvider)
+        provider.logger = MagicMock()
+        texts: list[str] = []
+
+        async def kh_query(query, parameters=None, txn_id=None) -> list:
+            texts.append(query)
+            return [{"items": []}]
+
+        provider._kh_query = kh_query
+        access = {"grantee_ids": ["u"], "gated_app_ids": ["a"], "by_connector": {"a": ["g1"]}}
+        out: list[tuple[str, int, int]] = []
+        for form in (access, {**access, "probe": {"connector_id": "a", "grantees": ["u"]}}):
+            await provider._kh_v3_accessible_rows("u", "o", ["n1"], ["v1"], access=form, transaction=None)
+            # The walks from the App (the target's, a declared group's, a seed's and that seed's declared group's) and below a seed;
+            # the declared walks are path matches.
+            out.append((texts[-1], 5, 2))
+            await provider._kh_split_admitted_by_hop("s", ["n1"], app_id="a", org_id="o", access=form, transaction=None)
+            out.append((texts[-1], 1, 0))
+            texts.clear()
+            await provider._kh_v3_accessible_rows("u", "o", ["n1", "n2"], [], access=form, transaction=None)
+            # The by-parent statement: the walks from the parent to the App and below a seed, and the seed's own walk from the App and
+            # declared walk (with its declared group's walk from the App).
+            out.append((next(t for t in texts if "kh_kids" in t), 4, 1))
+        return out
+
+    @pytest.mark.asyncio
+    async def test_every_walk_starts_where_it_is_bound_and_none_enumerates_routes(self) -> None:
+        import re
+
+        for text, levelled, matched in await self._statements():
+            assert text.count("reduce(kh_w") == levelled, text.count("reduce(kh_w")
+            walks = list(re.finditer(r"MATCH \((\w+)\) (\(\(.*?\)\)\{\d+,\d+\}) \(([^)]*)\)", text, re.S))
+            assert len(walks) == matched, len(walks)
+            for walk in walks:
+                assert "EXISTS" not in walk.group(2), "a path match whose hop reads an edge enumerates every route"
+                end = walk.group(3)
+                assert re.fullmatch(r"\w+", end), f"the walk's end carries a label or property: ({end})"
+                rest = text[walk.end():]
+                collected = re.search(rf"WITH (?:\w+, )*collect\((?:DISTINCT )?{end}\) AS \w+", rest)
+                assert collected, f"the ends of the walk to ({end}) are not collected"
+                assert not re.search(rf"\b{end}\b", rest[:collected.start()]), f"({end}) is tested before its walk's ends are collected"

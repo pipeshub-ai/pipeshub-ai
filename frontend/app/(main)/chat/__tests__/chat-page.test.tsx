@@ -28,7 +28,9 @@ vi.mock('@assistant-ui/react', async (importOriginal) => ({
 
 vi.mock('../components', async () => {
   const { useChatStore } = await import('../store');
+  const { forkMode } = await vi.importActual<typeof import('../components/continue-privately')>('../components/continue-privately');
   return {
+    forkMode,
     // Stands in for the real list: shows the text of each message in the open thread.
     MessageList: ({ composer }: { composer?: React.ReactNode }) => {
       const messages = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.messages : undefined));
@@ -49,6 +51,16 @@ vi.mock('../components', async () => {
     },
     ChatInputWrapper: () => <textarea aria-label="Message composer" />,
     SearchResultsView: () => <div>Search results</div>,
+    ContinuePrivately: ({ onContinued, isOwner, mode, agentKey }: { onContinued: (id: string) => void; isOwner: boolean; mode?: string; agentKey?: string | null }) =>
+      mode === 'own' ? (
+        <button type="button" data-testid="own-fork" data-agent={agentKey ?? ''} onClick={() => onContinued('conv-copy')}>
+          Fork
+        </button>
+      ) : (
+        <button type="button" data-owner={String(isOwner)} onClick={() => onContinued('conv-copy')}>
+          Continue privately
+        </button>
+      ),
     DemoSuggestions: ({ onPick }: { onPick: (s: { id: string; text: string }) => void }) => (
       <button type="button" onClick={() => onPick({ id: 'demo-1', text: 'What is our refund policy?' })}>
         What is our refund policy?
@@ -215,7 +227,13 @@ function conversationDetail({
   isOwner = true,
   messages,
   sharedWith = [],
-}: { isOwner?: boolean; messages?: ConversationMessage[]; sharedWith?: { userId: string; accessLevel: string; _id: string }[] } = {}) {
+  isShared = sharedWith.length > 0,
+}: {
+  isOwner?: boolean;
+  messages?: ConversationMessage[];
+  sharedWith?: { userId: string; accessLevel: string; _id: string }[];
+  isShared?: boolean;
+} = {}) {
   const msgs = messages ?? [
     apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
     apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
@@ -228,7 +246,7 @@ function conversationDetail({
       messages: msgs,
       status: 'complete',
       modelInfo: undefined,
-      isShared: sharedWith.length > 0,
+      isShared,
       sharedWith,
       access: { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
     },
@@ -272,7 +290,7 @@ beforeEach(() => {
   useChatStore.getState().reset();
   useUserStore.setState({ profile: null });
   usePendingChatStore.setState({ pending: null });
-  useFeatureFlagsStore.setState({ flags: {} } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+  useFeatureFlagsStore.setState({ flags: {}, continuePrivately: false } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
   useServicesHealthStore.setState({ apiServerReachable: true });
   demoDataActive = false;
   demoDataStatus = null;
@@ -422,6 +440,18 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.getByText('You get 25 days a year.')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+  });
+
+  it('UX3 PS-2: a project conversation opened without ?projectId keeps its project, so a follow-up is project-scoped', async () => {
+    const detail = conversationDetail();
+    fetchConversation.mockResolvedValueOnce({
+      ...detail,
+      conversation: { ...detail.conversation, projectId: 'proj-7' },
+    });
+    renderPage('conversationId=conv-1');
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    const slots = Object.values(useChatStore.getState().slots);
+    expect(slots.find((slot) => slot.convId === 'conv-1')?.projectId).toBe('proj-7');
   });
 
   it('loads the open conversation again when it is invalidated, as a notification about it does', async () => {
@@ -618,6 +648,57 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.getByRole('dialog', { name: 'Share conversation' })).toBeTruthy();
   });
 
+  it('PR1-DK-1: no "Continue privately" while the server says the deployment cannot serve it', async () => {
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: false, isShared: true }));
+    renderPage('conversationId=conv-1');
+    await screen.findByText('You get 25 days a year.');
+    expect(screen.queryByRole('button', { name: 'Continue privately' })).toBeNull();
+  });
+
+  it('UI-1: a participant who does not own a shared conversation can continue it privately', async () => {
+    useFeatureFlagsStore.setState({ continuePrivately: true } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: false, isShared: true }));
+    renderPage('conversationId=conv-1');
+
+    const button = await screen.findByRole('button', { name: 'Continue privately' });
+    expect(button.getAttribute('data-owner')).toBe('false');
+  });
+
+  it('UI-1: the owner of a shared conversation can too; a personal conversation offers nothing', async () => {
+    useFeatureFlagsStore.setState({ continuePrivately: true } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true, isShared: true }));
+    renderPage('conversationId=conv-1');
+    expect((await screen.findByRole('button', { name: 'Continue privately' })).getAttribute('data-owner')).toBe('true');
+    cleanup();
+    useChatStore.getState().reset();
+
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true, isShared: false }));
+    renderPage('conversationId=conv-1');
+    await screen.findByText('You get 25 days a year.');
+    expect(screen.queryByRole('button', { name: 'Continue privately' })).toBeNull();
+  });
+
+  it('QAFIX-4: the owner’s own conversation mounts the /fork confirmation, with no header button', async () => {
+    useFeatureFlagsStore.setState({ continuePrivately: true } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true, isShared: false }));
+    renderPage('conversationId=conv-1');
+    await screen.findByText('You get 25 days a year.');
+    expect(screen.getByTestId('own-fork').getAttribute('data-agent')).toBe('');
+    expect(screen.queryByRole('button', { name: 'Continue privately' })).toBeNull();
+  });
+
+  it('UI-3: continuing privately opens the copy and refreshes the conversation list', async () => {
+    useFeatureFlagsStore.setState({ continuePrivately: true } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    fetchConversation.mockResolvedValue(conversationDetail({ isOwner: false, isShared: true }));
+    renderPage('conversationId=conv-1');
+    const versionBefore = useChatStore.getState().conversationsVersion;
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue privately' }));
+
+    expect(routerPush).toHaveBeenCalledWith('/chat/?conversationId=conv-copy');
+    expect(useChatStore.getState().conversationsVersion).toBe(versionBefore + 1);
+  });
+
   it('keeps who the conversation is shared with on its slot', async () => {
     const sharedWith = [{ userId: 'u2', accessLevel: 'read', _id: 's1' }];
     fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true, sharedWith }));
@@ -790,6 +871,36 @@ describe('Chat page — keyboard shortcuts and the address bar', () => {
     ctrl('n');
 
     expect(routerReplace).toHaveBeenLastCalledWith('/chat/?agentId=agent-7');
+  });
+
+  it('FIX-RAIL1: a New chat link leaves a first turn still answering running, and coming back shows it whole', async () => {
+    let slotId = '';
+    act(() => {
+      const store = useChatStore.getState();
+      slotId = store.createSlot(null);
+      store.updateSlot(slotId, {
+        isStreaming: true,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Still answering' }] }],
+      });
+      store.setActiveSlot(slotId);
+      store.connectNewConversation(slotId, 'conv-live', 'Live chat');
+    });
+    const view = renderPage('conversationId=conv-live');
+    expect(screen.getByText('Still answering')).toBeTruthy();
+
+    // The new interface's New chat is a plain link to /chat/: no newChat command runs.
+    searchParams = new URLSearchParams('');
+    view.rerender(<Theme><ChatPage /></Theme>);
+
+    expect(await screen.findByText('What do you want to explore today?')).toBeTruthy();
+    expect(useChatStore.getState().activeSlotId).toBeNull();
+    expect(useChatStore.getState().slots[slotId]).toMatchObject({ isStreaming: true, convId: 'conv-live' });
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toContain('conv-live');
+
+    searchParams = new URLSearchParams('conversationId=conv-live');
+    view.rerender(<Theme><ChatPage /></Theme>);
+    expect(await screen.findByText('Still answering')).toBeTruthy();
+    expect(useChatStore.getState().activeSlotId).toBe(slotId);
   });
 
   it('puts the new conversation id in the address bar once the server assigns it', async () => {
@@ -1127,6 +1238,19 @@ describe('Chat page — agent chats', () => {
 
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
     expect(screen.getByLabelText('Agent header').getAttribute('data-read-only')).toBe('false');
+  });
+
+  it('QAFIX-4: /fork on the owner\'s own agent conversation forks through the agent and opens the copy under it', async () => {
+    useFeatureFlagsStore.setState({ continuePrivately: true } as Partial<ReturnType<typeof useFeatureFlagsStore.getState>>);
+    getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+    renderPage('agentId=agent-7&conversationId=conv-1');
+    await screen.findByText('You get 25 days a year.');
+
+    const fork = screen.getByTestId('own-fork');
+    expect(fork.getAttribute('data-agent')).toBe('agent-7');
+    fireEvent.click(fork);
+    expect(routerPush).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=conv-copy');
   });
 
   it('still opens the chat when the agent cannot be loaded', async () => {

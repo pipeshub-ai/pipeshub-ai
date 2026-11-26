@@ -1,6 +1,11 @@
 import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
-import { BrokerTopic, IMessageAdmin, TopicDefinition } from '../types/messaging.types';
+import {
+  BrokerTopic,
+  IdleGroupSweepResult,
+  IMessageAdmin,
+  TopicDefinition,
+} from '../types/messaging.types';
 import {
   ENV_KAFKA_TOPIC_PARTITIONS,
   KAFKA_ADMIN_CLIENT_ID,
@@ -247,6 +252,11 @@ export class KafkaAdminService implements IMessageAdmin {
     } finally {
       await this.admin.disconnect();
     }
+  }
+
+  /** The broker removes a group itself once it is empty and its offsets expire (`offsets.retention.minutes`). */
+  removeIdleGroups(): Promise<IdleGroupSweepResult> {
+    return Promise.resolve({ removed: [], left: [] });
   }
 
   /**

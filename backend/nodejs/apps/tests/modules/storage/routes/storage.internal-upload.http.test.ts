@@ -26,6 +26,7 @@ import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/ser
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
 import { useInertWriteState } from '../../../support/inert-write-state'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'storage-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'storage-http-test-scoped-secret'
@@ -88,6 +89,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // so a test can tell which one a URL was built from.
     defaultEndpoint = backend.url
     const byName = backend.url.replace('127.0.0.1', 'localhost')
+    registerUpstreams({ nodejs: [defaultEndpoint, byName] })
 
     kv = new FakeKeyValueStore()
     kv.values.set(storageEtcdPaths, JSON.stringify({ storageType: 'local' }))
@@ -136,6 +138,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // Other suites in this worker expect the controller's cache to start empty.
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })
@@ -231,4 +234,58 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     expect(filesOnDisk()).to.have.length(4)
   })
 
+  // J26-N1, J26-N2 (WP-69): with the harness on, the worker stores a run's inputs here as workspace objects, so the
+  // route takes the larger of the platform's upload cap and the deployment's HARNESS_INPUT_MAX_MB (100 MiB by default).
+  // With it off the route keeps the platform's cap alone.
+  const harnessObject = async (bytes: number): Promise<number> => {
+    const form = new FormData()
+    form.append('file', new Blob([Buffer.alloc(bytes, 0x30)], { type: 'application/octet-stream' }), 'object.bin')
+    form.append('documentPath', 'attachments/agent-harness-object-0')
+    form.append('isVersionedFile', 'false')
+    form.append('documentName', 'object')
+    form.append('extension', 'bin')
+    const res = await fetch(`${baseUrl}/internal/upload`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${scopedStorageServiceJwtGenerator(ORG_ID, SCOPED_JWT_SECRET, USER_ID)}` },
+      body: form,
+    })
+    await res.text()
+    return res.status
+  }
+
+  const withEnv = async (vars: Record<string, string | undefined>, body: () => Promise<void>): Promise<void> => {
+    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]))
+    const put = (values: Record<string, string | undefined>): void => {
+      for (const [k, v] of Object.entries(values)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+    put(vars)
+    try {
+      await body()
+    } finally {
+      put(saved)
+    }
+  }
+
+  it("J26-N1: a 40 MB run input is stored past the platform's 30 MB upload cap", async () => {
+    await withEnv({ AGENT_HARNESS_WORKER_ENABLED: 'true', HARNESS_INPUT_MAX_MB: undefined }, async () => {
+      expect(await harnessObject(40 * 1000 * 1000)).to.equal(200)
+    })
+  })
+
+  it('J26-N2: past both caps an upload is still refused, and nothing is stored', async () => {
+    await withEnv({ AGENT_HARNESS_WORKER_ENABLED: 'true', HARNESS_INPUT_MAX_MB: '20' }, async () => {
+      expect(await harnessObject(40 * 1000 * 1000)).to.not.equal(200)
+      expect(filesOnDisk()).to.have.length(0)
+    })
+  })
+
+  it("J26-N4: with the harness off the platform's 30 MB cap holds, and nothing is stored", async () => {
+    await withEnv({ AGENT_HARNESS_WORKER_ENABLED: 'false', HARNESS_INPUT_MAX_MB: undefined }, async () => {
+      expect(await harnessObject(40 * 1000 * 1000)).to.equal(400)
+      expect(filesOnDisk()).to.have.length(0)
+    })
+  })
 })

@@ -5,9 +5,10 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
-from app.exceptions.indexing_exceptions import IndexingError
+from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
 from app.models.blocks import BlocksContainer
 from app.services.base_client import (
+    TRANSIENT_STATUS_CODES,
     BaseServiceClient,
     ServiceAuthRefusedError,
     ServiceBackpressureError,
@@ -15,7 +16,9 @@ from app.services.base_client import (
     ServiceUnavailableError,
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.utils.env_config import env_int
+from app.utils.error_class import classify_error, mark_error
 
 if TYPE_CHECKING:
     import contextlib
@@ -27,7 +30,6 @@ from docling_core.types.doc.document import DoclingDocument
 from app.config.constants.http_status_code import HttpStatusCode
 from app.utils.logger import create_logger
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
-from app.utils.request_context import inject_request_headers
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
 # Milliseconds a small conversion may wait for its turn at the Docling service (PARSE_ADMISSION=classes).
@@ -35,15 +37,52 @@ PARSE_DEADLINE_HEADER = "X-Parse-Deadline-Ms"
 
 
 class DoclingUnavailableError(IndexingError):
-    """Docling could not be asked: it is down, refused this service, or is shedding load.
+    """Docling was not serving: it is down, refused this service, is shedding load,
+    or failed outside the conversion (a 5xx, a connection dropped mid-answer).
 
     An ``IndexingError`` so that the record is retried later. Read as a failed
     parse, it sent every PDF to the per-page OCR fallback while Docling was down.
     """
 
+    reason = "unavailable"
 
-# A 500 is most often Docling failing on this file; these say it is not serving.
-_UNAVAILABLE_STATUSES = frozenset({502, 503, 504})
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class DoclingNotServing(DoclingUnavailableError, RequeueWithoutAttempt):
+    """Docling never received the file (a refused or timed-out connection, an open circuit, load shed before any work).
+
+    The record waits for Docling: the consumer hands it back every ``HANDBACK_DELAY_S`` without counting an attempt,
+    until the delivery backstop gives up on it. A failure after the file reached Docling stays a counted
+    ``DoclingUnavailableError``, since the file may have caused it (a PDF that brings Docling down).
+    """
+
+    counts_toward_backstop = True
+    pauses_consumer = False  # one record's wait; records that do not need Docling keep flowing
+    give_up_label = "Docling stayed unavailable"
+    HANDBACK_DELAY_S = 60.0
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message, status_code=status_code)
+        # Set after super(): through the MRO, IndexingError's init runs RequeueWithoutAttempt's, which resets both.
+        self.delay_s = self.HANDBACK_DELAY_S
+        # The outage is already reported by the client at WARNING; each waiting record's hand-back is routine.
+        self.log_level = logging.INFO
+
+
+class DoclingParseError(DocumentProcessingError):
+    """Docling gave no document for this PDF; the caller reads it another way.
+
+    ``status_code`` is Docling's HTTP status (None when it gave no answer) and
+    ``reason`` Docling's ``errorCode`` in lower case, or why nothing was sent.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.reason = reason
 
 
 def within_docling_size_limit(size_bytes: int) -> bool:
@@ -81,20 +120,46 @@ def docling_takes(size_bytes: int, page_count: int | None) -> bool:
     return page_count is None or page_count <= docling_max_pages()
 
 
+def _refusal(status: int, code: object) -> DoclingParseError:
+    """Docling's verdict on the file is its ``errorCode``, or any 2xx (only Docling
+    itself answers 2xx; before #3270 a failed parse was a 200 without a code). A
+    non-2xx answer without a code means the two services disagree on the API
+    (version skew, a wrong URL): our fault, not the file's."""
+    has_code = isinstance(code, str) and bool(code)
+    if has_code or 200 <= status < 300:
+        verdict = f"{code}, status {status}" if has_code else f"status {status}"
+        exc = DoclingParseError(
+            f"Docling could not parse the document ({verdict})",
+            status_code=status, reason=code.lower() if has_code else None,
+        )
+        mark_error(exc, "bad_request")
+        return exc
+    exc = DoclingParseError(f"Docling refused the request (status {status})", status_code=status)
+    mark_error(exc, "misconfigured")
+    return exc
+
+
 def _docling_unavailable(exc: ServiceCallError) -> bool:
+    """Docling answers a file it cannot parse with a 422 and its errorCode. A status the base client retried and gave
+    up on (a 5xx, a 429 without Retry-After) or a connection dropped mid-answer means it was not serving."""
     return (
         isinstance(exc, (ServiceUnavailableError, ServiceAuthRefusedError, ServiceBackpressureError))
-        or exc.status_code in _UNAVAILABLE_STATUSES
+        or exc.status_code in TRANSIENT_STATUS_CODES
+        or isinstance(exc.__cause__, (httpx.ReadError, httpx.RemoteProtocolError))
     )
+
+
+def _docling_never_saw_it(exc: ServiceCallError) -> bool:
+    """No attempt of the call reached Docling: it refused, timed out connecting, or shed the load from the first answer."""
+    return isinstance(exc, (ServiceUnavailableError, ServiceBackpressureError)) and not exc.delivered
 
 
 class DoclingClient(BaseServiceClient):
     """Client for communicating with the Docling processing service.
 
     Extends :class:`BaseServiceClient` for its retry/circuit-breaker/429
-    handling; failures are swallowed here (logged, ``None`` returned) so the
-    ``Optional[...]`` contract callers (e.g. ``DoclingServiceParser``) already
-    depend on is unchanged.
+    handling. Every failure is raised, :class:`DoclingUnavailableError` or
+    :class:`DoclingParseError`, and logged by the caller that falls back.
     """
 
     def __init__(
@@ -135,92 +200,11 @@ class DoclingClient(BaseServiceClient):
             self._limiter = shared_docling_engine()
             self.on_backpressure = self._limiter.on_throttled
 
-    def _validate_pdf_binary(self, pdf_binary: bytes) -> bool:
+    def _validate_pdf_binary(self, pdf_binary: bytes) -> None:
         if not isinstance(pdf_binary, bytes):
-            self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
-            return False
-
+            raise DoclingParseError(f"pdf_binary is {type(pdf_binary).__name__}, not bytes", reason="invalid_input")
         if not within_docling_size_limit(len(pdf_binary)):
-            self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: {MAX_PDF_BYTES} bytes)")
-            return False
-
-        return True
-
-    async def _sleep_before_retry(self, attempt: int) -> bool:
-        """Back off before the next attempt; returns False once retries are exhausted."""
-        if attempt >= self.max_retries - 1:
-            return False
-
-        delay = self.retry_delay * (2 ** attempt)
-        self.logger.info(f"🔄 Retrying in {delay} seconds...")
-        await asyncio.sleep(delay)
-        return True
-
-    async def _post_with_retry(
-        self,
-        path: str,
-        description: str,
-        *,
-        json_body: dict | None = None,
-        data: dict | None = None,
-        files: dict | None = None,
-        write_timeout: float = 30.0,
-    ) -> dict | None:
-        """POST to the Docling service with exponential backoff and return the decoded JSON body.
-
-        Transport errors and non-2xx responses are retried; an HTTP 200 carrying an
-        application-level failure is handed back to the caller to interpret.
-        """
-        timeout_config = httpx.Timeout(
-            connect=30.0,
-            read=self.timeout,
-            write=write_timeout,
-            pool=30.0
-        )
-
-        limits = httpx.Limits(
-            max_keepalive_connections=5,
-            max_connections=10,
-            keepalive_expiry=30.0
-        )
-
-        headers = inject_request_headers({
-            "Connection": "keep-alive",
-            "Keep-Alive": "timeout=30"
-        })
-        if json_body is not None:
-            headers["Content-Type"] = "application/json"
-
-        async with httpx.AsyncClient(
-            timeout=timeout_config,
-            limits=limits,
-            http2=True
-        ) as client:
-            for attempt in range(self.max_retries):
-                self.logger.info(f"🚀 {description} (attempt {attempt + 1}/{self.max_retries})")
-                try:
-                    response = await client.post(
-                        f"{self.service_url}{path}",
-                        json=json_body,
-                        data=data,
-                        files=files,
-                        headers=headers,
-                    )
-                except Exception as e:
-                    self.logger.error(f"❌ {description} failed (attempt {attempt + 1}): {str(e)}")
-                    if not await self._sleep_before_retry(attempt):
-                        break
-                    continue
-
-                if response.status_code == HttpStatusCode.SUCCESS.value:
-                    return await asyncio.to_thread(response.json)
-
-                self.logger.error(f"❌ {description} returned HTTP {response.status_code}: {response.text}")
-                if not await self._sleep_before_retry(attempt):
-                    break
-
-        self.logger.error(f"❌ {description} failed after {self.max_retries} attempts")
-        return None
+            raise DoclingParseError(f"PDF of {len(pdf_binary)} bytes is over {MAX_PDF_BYTES}", reason="too_large")
 
     def _class_headers(self) -> dict[str, str]:
         """``X-Parse-Class`` and, for a small file, ``X-Parse-Deadline-Ms`` (the service reserves the conversion
@@ -249,7 +233,7 @@ class DoclingClient(BaseServiceClient):
             "/parse-pdf",
             files={"file": (record_name, pdf_binary, "application/pdf")},
             data=form_data,
-            operation=f"parse_pdf({record_name})",
+            operation="parse_pdf",  # no name: this text rides on the cause of every failure
             extra_headers=self._class_headers() if self._limiter is not None else None,
         )
         if self._limiter is not None:
@@ -261,7 +245,7 @@ class DoclingClient(BaseServiceClient):
         record_name: str,
         pdf_binary: bytes,
         page_range: tuple[int, int] | None = None,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Parse PDF using the external Docling service (phase 1 - no block creation).
 
@@ -271,10 +255,14 @@ class DoclingClient(BaseServiceClient):
             page_range: Optional 1-based inclusive (start, end) page range.
 
         Returns:
-            Serialized parse result (JSON-encoded document) if successful, None if failed
+            Serialized parse result (JSON-encoded document).
+
+        Raises:
+            DoclingUnavailableError: Docling was not serving (down, refused this service, shedding load,
+                failed outside the conversion).
+            DoclingParseError: Docling gave no document for this PDF.
         """
-        if not self._validate_pdf_binary(pdf_binary):
-            return None
+        self._validate_pdf_binary(pdf_binary)
 
         form_data: dict = {"record_name": record_name}
         if page_range is not None:
@@ -284,51 +272,61 @@ class DoclingClient(BaseServiceClient):
         try:
             response = await self._call_parse_pdf(record_name, pdf_binary, form_data)
         except ServiceCallError as exc:
+            if _docling_never_saw_it(exc):
+                raise DoclingNotServing("Docling is not serving", status_code=exc.status_code) from exc
             if _docling_unavailable(exc):
-                raise DoclingUnavailableError(f"Docling could not parse {record_name}: {exc}") from exc
-            self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
-            return None
+                raise DoclingUnavailableError(
+                    "Docling is not serving", status_code=exc.status_code,
+                ) from exc
+            failed = DoclingParseError(
+                "Docling request failed" if exc.status_code is None else f"Docling failed with status {exc.status_code}",
+                status_code=exc.status_code,
+            )
+            # Only a client-side request error is left (a wrong URL scheme, a bad header): ours, not the file's.
+            mark_error(failed, classify_error(exc))
+            raise failed from exc
 
         try:
             result = await asyncio.to_thread(response.json)
-        except ValueError:
-            self.logger.error(
-                f"❌ Docling service returned non-JSON body for {record_name} (status {response.status_code})"
+        except ValueError as exc:
+            not_json = DoclingParseError(
+                f"Docling's answer was not JSON (status {response.status_code})", status_code=response.status_code,
             )
-            return None
+            # Docling always answers JSON: this came from a proxy or a wrong URL, whatever the status.
+            mark_error(not_json, "misconfigured")
+            raise not_json from exc
         if not result.get("success"):
-            self.logger.error(
-                f"❌ Docling service returned error for {record_name} "
-                f"({result.get('errorCode', 'UNKNOWN')}, status {response.status_code}): "
-                f"{result.get('error', 'Unknown error')}"
-            )
-            return None
+            raise _refusal(response.status_code, result.get("errorCode"))
 
-        return result["parse_result"]
+        parse_result = result.get("parse_result")
+        if not isinstance(parse_result, str):
+            # Docling sends its document as a string on success: anything else is API skew, not this file.
+            skew = DoclingParseError(
+                f"Docling's answer had no document (status {response.status_code})", status_code=response.status_code,
+            )
+            mark_error(skew, "misconfigured")
+            raise skew
+        return parse_result
 
     async def parse_pdf_batched(
         self, record_name: str, pdf_binary: bytes, batch_size: int = PAGE_BATCH_SIZE
-    ) -> Optional[DoclingDocument]:
+    ) -> DoclingDocument:
         """Parse a PDF via the Docling service, splitting it into page-range batches
         to cap Docling's peak memory usage, then concatenate the results into a
         single DoclingDocument.
 
-        Returns:
-            DoclingDocument if successful, None if failed
+        Raises what :meth:`parse_pdf` raises; a PDF whose pages cannot be
+        counted is a :class:`DoclingParseError`.
         """
-        if not self._validate_pdf_binary(pdf_binary):
-            return None
+        self._validate_pdf_binary(pdf_binary)
 
         try:
             page_count = await asyncio.to_thread(get_pdf_page_count, pdf_binary)
         except Exception as e:
-            self.logger.error(f"❌ Failed to read page count for {record_name}: {str(e)}")
-            return None
+            raise DoclingParseError("Could not count the PDF's pages", reason="unreadable") from e
 
         if page_count <= batch_size:
             serialized = await self.parse_pdf(record_name, pdf_binary)
-            if serialized is None:
-                return None
             return await asyncio.to_thread(DoclingDocument.model_validate_json, serialized)
 
         self.logger.info(
@@ -338,8 +336,6 @@ class DoclingClient(BaseServiceClient):
         for start in range(1, page_count + 1, batch_size):
             end = min(start + batch_size - 1, page_count)
             serialized = await self.parse_pdf(record_name, pdf_binary, page_range=(start, end))
-            if serialized is None:
-                return None
             docs.append(await asyncio.to_thread(DoclingDocument.model_validate_json, serialized))
             self.logger.info(f"Parsed pages {start}-{end} of {page_count} for '{record_name}'")
 

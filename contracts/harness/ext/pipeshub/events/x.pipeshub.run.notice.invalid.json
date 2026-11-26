@@ -1,0 +1,106 @@
+[
+  {
+    "description": "an unknown notice code",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "something_else"
+      }
+    }
+  },
+  {
+    "description": "a notice naming an item of an unknown kind",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "credential_missing",
+        "item": "Jira",
+        "kind": "connector"
+      }
+    }
+  },
+  {
+    "description": "an MCP notice with a reason this schema does not know",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_unavailable",
+        "item": "Atlassian Rovo",
+        "reason": "forgot"
+      }
+    }
+  },
+  {
+    "description": "an MCP notice whose instance is no id (a URL)",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_unavailable",
+        "item": "Atlassian Rovo",
+        "reason": "sign_in",
+        "instance": "https://mcp.example/oauth?code=x"
+      }
+    }
+  },
+  {
+    "description": "a held-tools notice with no tool named",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.run.notice",
+      "data": {
+        "code": "mcp_tool_held",
+        "item": "Atlassian Rovo",
+        "tools": []
+      }
+    }
+  }
+]

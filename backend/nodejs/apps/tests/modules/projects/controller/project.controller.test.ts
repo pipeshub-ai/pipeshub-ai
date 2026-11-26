@@ -23,6 +23,7 @@ import { ProjectKnowledgeBaseService } from '../../../../src/modules/projects/se
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { classifyError } from '../../../../src/libs/utils/error-class'
 
 const VALID_OID = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 const VALID_OID2 = 'bbbbbbbbbbbbbbbbbbbbbbbb'
@@ -956,8 +957,9 @@ describe('project.controller', () => {
       expect(lookupStub.calledOnceWith(VALID_OID2, [VALID_OID2])).to.be.true
     })
 
-    it('rejects a team member when the team lookup itself throws, without upserting', async () => {
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('connect ECONNREFUSED'))
+    it('passes an unreachable team service on as itself, not as "Team not found", without upserting', async () => {
+      const refused = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(refused)
       const upsertStub = sinon.stub(ProjectService, 'upsertMembers')
 
       const req = createMockRequest({
@@ -969,10 +971,47 @@ describe('project.controller', () => {
 
       await upsertProjectMembers(createMockAppConfig())(req, res, next)
 
+      // the error middleware maps it to a 503 `unavailable`
       const forwarded = next.firstCall.args[0]
+      expect(forwarded).to.equal(refused)
+      expect(classifyError(forwarded)).to.equal('unavailable')
+      expect(upsertStub.called).to.be.false
+    })
+
+    const teamCheck = async (answer: () => Promise<unknown>) => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(answer as any)
+      const upsertStub = sinon.stub(ProjectService, 'upsertMembers')
+      const req = createMockRequest({
+        params: { projectId: PROJECT_ID },
+        body: { members: [{ principalId: VALID_OID2, principalType: 'team', role: 'viewer' }] },
+      })
+      const next = createMockNext()
+      await upsertProjectMembers(createMockAppConfig())(req, createMockResponse(), next)
+      expect(upsertStub.called).to.be.false
+      return next.firstCall.args[0]
+    }
+
+    it('keeps "Team not found" (400) for a 403 from the team service, as before', async () => {
+      const forwarded = await teamCheck(async () => ({ statusCode: 403, data: { detail: 'Missing scope team:read' } }))
       expect(forwarded).to.be.instanceOf(BadRequestError)
       expect(forwarded.message).to.equal(`Team not found: ${VALID_OID2}`)
-      expect(upsertStub.called).to.be.false
+    })
+
+    it('answers a team service 5xx as the outage it is (upstream_5xx), not "Team not found"', async () => {
+      const forwarded = await teamCheck(async () => ({ statusCode: 500, data: { detail: 'graph down' } }))
+      // mapped like every upstream 5xx: our 500, classed by its { status } cause
+      expect(forwarded.statusCode).to.equal(500)
+      expect(classifyError(forwarded)).to.equal('upstream_5xx')
+      expect(forwarded.message).to.not.include('Team not found')
+    })
+
+    it('answers a non-JSON body (a proxy error page) as 502, never 500, without quoting it', async () => {
+      const forwarded = await teamCheck(async () => {
+        throw new SyntaxError('Unexpected token \'<\', "<html><h1>502 Bad Gateway" is not valid JSON')
+      })
+      expect(forwarded.statusCode).to.equal(502)
+      expect(classifyError(forwarded)).to.equal('upstream_5xx')
+      expect(JSON.stringify({ message: forwarded.message, cause: forwarded.cause })).to.not.include('<html>')
     })
 
     it('upserts nobody when one member of a mixed batch fails validation', async () => {

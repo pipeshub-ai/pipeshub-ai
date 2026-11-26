@@ -26,9 +26,11 @@ from app.connectors.core.registry.folder_filter_action_item import (
 )
 from app.connectors.core.registry.folder_scope import clean_up_scope
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
-from app.connectors.sources.network_share.errors import NetworkShareAuthError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    NetworkShareAuthError,
+)
 from app.connectors.sources.network_share.filters import share_folder_scope
-from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
     is_on_disk,
@@ -42,7 +44,10 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import (
+    create_stream_record_response,
+    stream_with_eager_first_chunk,
+)
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -64,19 +69,12 @@ async def create_share_groups(
     processor: DataSourceEntitiesProcessor,
     connector_name: Connectors,
     connector_id: str,
-    scope: str,
-    created_by: str,
-    creator_email: str | None,
+    permissions: list[Permission] | None,
     description_prefix: str,
 ) -> None:
+    """``permissions`` None keeps each share's stored grants."""
     if not share_names:
         return
-    permissions = app_level_permissions(
-        scope=scope,
-        org_id=processor.org_id,
-        creator_email=creator_email,
-        created_by=created_by,
-    )
     groups = [
         (
             RecordGroup(
@@ -353,6 +351,7 @@ async def stream_file(
     data_source: INetworkShareDataSource | None,
     record: Record,
     display_name: str,
+    logger: Logger,
 ) -> StreamingResponse:
     if isinstance(record, FileRecord) and not record.is_file:
         raise HTTPException(
@@ -369,22 +368,33 @@ async def stream_file(
         )
     share_name, file_path = path_info
     try:
-        # read_file opens the file on its first chunk, after this function has
-        # returned, where a missing file becomes a generic 500.
         if await data_source.stat(share_name, file_path) is None:
             raise not_found_at_source(display_name)
+        # read_file opens the file on its first chunk. Pulled after this function returned,
+        # a file the account may not read would become a generic 500, retried by indexing.
+        content = await stream_with_eager_first_chunk(data_source.read_file(share_name, file_path))
         return create_stream_record_response(
-            data_source.read_file(share_name, file_path),
+            content,
             filename=record.record_name,
             mime_type=record.mime_type or "application/octet-stream",
             fallback_filename=f"record_{record.id}",
         )
     except HTTPException:
         raise
-    except NetworkShareAuthError as exc:
-        # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
-        raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
+    except (NetworkShareAuthError, AccessDeniedError, FileNotFoundError) as exc:
+        # An expected refusal: the server's own error (the NT status the client translated), no traceback.
+        logger.warning(
+            "Streaming record %s from %s was refused: %s", record.id, display_name, exc.__cause__ or exc
+        )
+        if isinstance(exc, NetworkShareAuthError):
+            # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
+            raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
+        if isinstance(exc, AccessDeniedError):
+            raise map_source_status(HttpStatusCode.FORBIDDEN.value, connector=display_name) from exc
+        raise not_found_at_source(display_name) from exc
     except Exception as exc:
+        # The router logs only failures that reach it unmapped, and an open failure no longer does.
+        logger.error("Error streaming record %s from %s: %s", record.id, display_name, exc, exc_info=True)
         raise to_stream_error(exc, connector=display_name) from exc
 
 

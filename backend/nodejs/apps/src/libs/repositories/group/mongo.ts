@@ -5,7 +5,8 @@ import {
 } from '../../../modules/user_management/schema/userGroup.schema';
 import { asQueryFilter } from '../../utils/mongo-filter';
 import { escapeRegExp } from '../../../utils/escape-regexp';
-import { mapMongoError } from '../mongo';
+import { mapMongoError, sessionOf } from '../mongo';
+import type { Tx } from '../uow';
 import { toPlain } from '../plain';
 import type {
   GroupDto,
@@ -62,6 +63,26 @@ export class MongoGroupRepository implements GroupRepository {
       .lean()
       .exec();
     return row ? dto(row) : null;
+  }
+
+  async listLiveByIds(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<GroupSummaryDto[]> {
+    const valid = [...new Set(ids)].filter((id) =>
+      mongoose.isValidObjectId(id),
+    );
+    if (valid.length === 0 || !mongoose.isValidObjectId(orgId)) return [];
+    const rows = await UserGroups.find({
+      _id: { $in: valid },
+      orgId,
+      isDeleted: false,
+    })
+      .select('_id name type')
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return rows.map((r) => toPlain<GroupSummaryDto>(r));
   }
 
   async nameTaken(
@@ -194,6 +215,28 @@ export class MongoGroupRepository implements GroupRepository {
       { orgId, ...(opts?.everyGroup ? {} : { users: userId }) },
       { $pull: { users: userId } },
     );
+  }
+
+  async holdLiveMembership(
+    orgId: string,
+    groupIds: readonly string[],
+    userId: string,
+    tx?: Tx,
+  ): Promise<boolean> {
+    const groups = groupIds.filter((id) => mongoose.isValidObjectId(id));
+    if (
+      groups.length === 0 ||
+      !mongoose.isValidObjectId(orgId) ||
+      !mongoose.isValidObjectId(userId)
+    )
+      return false;
+    // A write in the transaction: a concurrent removal from the same group document conflicts with it.
+    const fenced = await UserGroups.updateOne(
+      { _id: { $in: groups }, orgId, isDeleted: { $ne: true }, users: userId },
+      { $inc: { approvalDecisionFence: 1 } },
+      { session: sessionOf(tx), strict: false },
+    ).exec();
+    return fenced.matchedCount > 0;
   }
 
   async groupsOfUser(

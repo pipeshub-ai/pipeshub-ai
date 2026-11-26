@@ -22,6 +22,7 @@ import {
   ServiceUnavailableError,
 } from '../errors/http.errors';
 import { ValidationError } from '../errors/validation.error';
+import { withCause } from '../errors/base.error';
 import {
   ConflictError,
   DocStoreFencedError,
@@ -87,7 +88,8 @@ export function mapPgStoreError(error: unknown): unknown {
     e instanceof PoolTimeout ||
     e instanceof DbOverloaded
   )
-    return new ServiceUnavailableError('Database is unavailable');
+    // the cause says which: a queue consumer gives back the attempt only when nothing could have committed
+    return withCause(new ServiceUnavailableError('Database is unavailable'), e);
   return e;
 }
 

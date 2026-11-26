@@ -21,6 +21,8 @@ const MIN_SYNCED_PAGES = 5;
 type ConnectorSummary = { _key: string; name: string; isActive?: boolean };
 
 test.describe('Connect a data source (Web connector)', () => {
+  // The stand-in lives in the integration stack's `web-fixtures` service, which only that stack runs (CI sets this).
+  test.skip(!process.env.WEB_FIXTURES_CONNECTOR_URL, "needs the integration stack's web-fixtures service (WEB_FIXTURES_CONNECTOR_URL unset)");
   let connectorId: string | undefined;
 
   test.afterEach(async ({ apiContext }) => {

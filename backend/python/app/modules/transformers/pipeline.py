@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
@@ -22,6 +23,7 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VirtualRecordBusy
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.paid_cache.orphan import ensure_record_alive
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
@@ -70,7 +72,29 @@ class IndexingPipeline:
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
 
-            if prev_vrid and prev_vrid == record.virtual_record_id:
+            from app.services.paid_cache.run import current_run
+
+            scope = current_run()
+            if prev_vrid and prev_vrid == record.virtual_record_id and scope is not None and scope.refresh:
+                # A user's Force reindex (a refresh run) re-embeds every block: no diff keeps an unchanged block's
+                # point, and no re-key moves one. The record's old points go first, as on a first reconciliation pass.
+                # The points go before the blocks are embedded again: if indexing then fails, the record has no vectors
+                # until its retry (its status is FAILED, never COMPLETED, so the retry runs).
+                logger.warning(
+                    f"Forced reindex of {record.virtual_record_id}: purging its vectors, then indexing every block; "
+                    f"the record has no vectors until this indexing completes"
+                )
+                try:
+                    await sink_orchestrator.vector_store.purge_record_vectors(
+                        record.org_id, record.virtual_record_id, record
+                    )
+                except VirtualRecordBusy:
+                    raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over old points
+                except Exception as e:
+                    # Not purged: an unchanged block would be indexed twice, so the failure is the delivery's.
+                    logger.warning(f"Failed to purge vectors for a forced reindex of {record.virtual_record_id}: {e}")
+                    raise
+            elif prev_vrid and prev_vrid == record.virtual_record_id:
                 # 1:1 case: same vrid, do diff-based reconciliation
                 old_metadata_dict = await sink_orchestrator.blob_storage.get_reconciliation_metadata(
                     record.virtual_record_id, record.org_id
@@ -160,6 +184,8 @@ class IndexingPipeline:
         try:
             store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
+            # A record deleted while its run was in flight is not embedded or written (see paid_cache/orphan.py).
+            await ensure_record_alive(record.org_id, record.id, "embed")
             block_containers = record.block_containers
 
             if block_containers is not None:
@@ -237,11 +263,18 @@ class IndexingPipeline:
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
                 }
-                success = await self.document_extraction.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    shape_status_write(status_fields),
-                )
+                swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+                if swap_run is not None:
+                    # The new copy is empty: the record moves to it and the old copy is released after the commit.
+                    success = await self.sink_orchestrator.swap.commit(ctx, swap_run, shape_status_write(status_fields))
+                    if success:
+                        await self.sink_orchestrator.swap.finish(ctx, swap_run)
+                else:
+                    success = await self.document_extraction.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        shape_status_write(status_fields),
+                    )
                 if not success:
                     self.logger.warning(
                         "⚠️ Failed to update indexing status for record %s - record may not exist",

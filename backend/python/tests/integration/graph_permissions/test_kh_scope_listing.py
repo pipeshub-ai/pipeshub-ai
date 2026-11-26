@@ -76,6 +76,8 @@ def _graph() -> tuple[list, list]:
         r("r-seed", "Seed"), r("r-seed-1", "Below the seed"), r("r-seed-strict", "Strict below the seed",
                                                                rule="STRICT"),
         r("r-seed-null", None),
+        # A group that carries access only (its records are listed where they are filed): never a row.
+        rg("g-level", "Access only", rule="RESTRICTED", accessOnly=True, **group),
         # PARENT_AND_GRANT: a gate that inherits (opens with its own grant), and below the seed a record that
         # inherits and is granted (listed, with its OPEN child) and one that inherits without a grant (not listed).
         rg("g-pag", "Parent and grant site", rule="PARENT_AND_GRANT", **group),
@@ -104,6 +106,7 @@ def _graph() -> tuple[list, list]:
         nr("g-block", "r-seed"), nr("r-seed", "r-seed-1"), ip("r-seed-1", "r-seed"),
         nr("r-seed", "r-seed-strict"), ip("r-seed-strict", "r-seed"),
         nr("g-block", "r-seed-null"),
+        nr(APP, "g-level"), ip("g-level", APP), perm(USER_U, "g-level"),
         nr(APP, "g-pag"), ip("g-pag", APP), nr("g-pag", "r-pag-1"), ip("r-pag-1", "g-pag"),
         nr("r-seed", "r-seed-pag"), ip("r-seed-pag", "r-seed"), nr("r-seed-pag", "r-seed-pag-1"),
         ip("r-seed-pag-1", "r-seed-pag"), nr("r-seed", "r-seed-pag-no"), ip("r-seed-pag-no", "r-seed"),
@@ -230,6 +233,14 @@ async def test_the_walk_stops_at_fifty_hops(scope_graph, neo4j_provider, monkeyp
     deep = sorted(r[0] for r in rows if r[0].startswith("deep-"))
     # The App is hop 0, the site hop 1: deep-0 is hop 2, so hops 2..50 are deep-0..deep-48.
     assert deep == sorted(f"deep-{i}" for i in range(49))
+
+
+async def test_an_access_only_group_is_not_listed_or_counted(scope_graph, neo4j_provider, monkeypatch,
+                                                              scope_counter) -> None:
+    on, off = await _pair(neo4j_provider, monkeypatch, USER_U, APP, 500)
+    assert scope_counter["served"] > 0
+    assert on == off
+    assert "g-level" not in [r[0] for r in on[0][0]]
 
 
 @pytest.mark.parametrize("mode", ["on", "off"])
@@ -385,7 +396,7 @@ async def test_an_old_stamp_version_is_not_read(scope_graph, neo4j_provider, neo
     await _cypher(neo4j_settings, "MATCH (m:KhScopeMeta {connectorId: $c}) SET m.version = 1", c=SMALL)
     await _page(neo4j_provider, USER_V, SMALL)
     assert scope_counter["served"] == 0
-    assert SMALL in await kh_scope.stale_connectors(neo4j_provider.client)
+    assert SMALL in await kh_scope.stale_connectors(neo4j_provider.client, ORG)
     assert (await neo4j_provider.kh_scope_stamp(SMALL))["stamped"]
 
 

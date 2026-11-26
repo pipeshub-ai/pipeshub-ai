@@ -17,8 +17,8 @@ the parser makes of a worksheet (``cell``, ``iter_rows``, merged cells, the
 extent of the data), so table finding and its LLM steps run in the parent on it
 unchanged.
 
-Keep this module's imports to the standard library and openpyxl: the worker
-imports it by name and must not pay for the service's own modules.
+Keep this module's imports to the standard library, openpyxl and the light parse-worker helpers
+(``parse_worker``): the worker imports it by name and must not pay for the rest of the service.
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ import contextlib
 import gc
 import io
 import pickle
-import signal
 import threading
 import zipfile
 import zlib
@@ -41,7 +40,9 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.cell_range import CellRange
 
+from app.modules.parsers import parse_worker
 from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
+from harness_core.archive_reader import zip_declared_entries
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -468,19 +469,33 @@ class _GrowthWatcher:
     reasons, when openpyxl turned the MemoryError into another error. It is sampled here
     because the kernel's own peak marks (VmHWM) cover the whole life of a long-lived worker
     and cannot be reset by a non-dumpable process.
+
+    A load at its cap does not always fail (R47POLISH-FU-2): openpyxl can go on at a crawl, or
+    sit inside one C call, with memory flat at the cap. The parse pool stops that worker from
+    outside (``parse_pool._AT_DATA_LIMIT_SECONDS``): nothing is raised into the load from a
+    signal handler, for the reason ``_cpu_limited`` gives.
     """
 
     _INTERVAL_SECONDS = 0.02
 
     def __init__(self) -> None:
-        self._start_kb = _status_kb("VmData")
-        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._start_kb = 0
+        self._start_vm_size_kb = 0
+        self._start_vm_peak_kb = 0
         self.peak_kb = 0
+        self._ready = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="excel-growth-watch", daemon=True)
 
     def __enter__(self) -> _GrowthWatcher:
+        # Entered before the growth cap is set: started under it, the thread's stack (8 MB of
+        # VmData) was charged to the file's allowance, and a thread that could not get one left
+        # start() waiting forever. The baseline is taken after the stack exists, as the cap's is.
         self._thread.start()
+        self._start_kb = _status_kb("VmData")
+        self._start_vm_size_kb = _status_kb("VmSize")
+        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._ready.set()
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -488,8 +503,11 @@ class _GrowthWatcher:
         self._thread.join(timeout=1)
 
     def _run(self) -> None:
+        self._ready.wait()
         while not self._stop.wait(self._INTERVAL_SECONDS):
-            self.sample()
+            # A MemoryError escaping here would end this thread: reading /proc allocates.
+            with contextlib.suppress(MemoryError):
+                self.sample()
 
     def sample(self) -> int:
         self.peak_kb = max(self.peak_kb, _status_kb("VmData") - self._start_kb)
@@ -501,9 +519,13 @@ class _GrowthWatcher:
         A peak allocated and freed between two samples is still in VmPeak (the kernel's
         high-water mark of address space, readable by a non-dumpable process), but only when
         it went past every earlier peak of this worker: a spike under an earlier, larger job
-        is not seen, which can only misname the file's own error, never admit more.
+        is not seen, which can only misname the file's own error, never admit more. A new peak
+        is measured from the size at the start, not the old peak: starting this watcher's thread
+        alone raises VmPeak by its stack and a malloc arena (about 136 MB, briefly).
         """
-        return max(self.sample(), _status_kb("VmPeak") - self._start_vm_peak_kb)
+        vm_peak = _status_kb("VmPeak")
+        new_peak = vm_peak - self._start_vm_size_kb if vm_peak > self._start_vm_peak_kb else 0
+        return max(self.sample(), new_peak)
 
 
 def max_merged_positions(max_text_bytes: int) -> int:
@@ -578,6 +600,10 @@ def _declared_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget:
     return total
 
 
+# A workbook is a few parts per sheet; ten thousand entries is far past any real one.
+MAX_ZIP_ENTRIES = 10_000
+
+
 class _StopScan(Exception):
     pass
 
@@ -587,6 +613,11 @@ def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = N
     total of decompressed bytes over the cap, and declared merged ranges that add up to more than
     *max_merged* positions. Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
     (the loader reads only what it needs), and never trusts the sizes the zip declares."""
+    # ZipFile parses the whole central directory, memory per entry, so its declared count is checked first
+    # (SEC-C-19): 300 000 empty entries in 25 MiB took seconds and 160 MiB before.
+    declared = zip_declared_entries(file_binary)
+    if declared is not None and declared > MAX_ZIP_ENTRIES:
+        raise WorkbookRefused("too_large", f"{declared} zip entries")
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
         entries = [info for info in archive.infolist() if not info.is_dir()]
@@ -727,56 +758,41 @@ def _portable_failure(exc: Exception) -> Exception:
     return exc
 
 
-class _CpuLimit(BaseException):
-    """Raised by the SIGXCPU handler; a BaseException so no ``except Exception`` in openpyxl or
-    lxml callers swallows it."""
-
-
 # The in-worker CPU limit sits this many seconds above the parent's wall-clock limit, so the
 # parent's timeout is the normal stop and RLIMIT_CPU the backstop inside the worker.
 _CPU_SLACK_SECONDS = 2
 
 
 @contextlib.contextmanager
-def _cpu_limited(max_seconds: float | None) -> Iterator[threading.Event]:
-    """Refuse the load as too large once the worker has used *max_seconds* of CPU, however little
-    memory it holds: SIGXCPU from ``RLIMIT_CPU`` (counted from this process's CPU time now, since a
-    pool worker lives across jobs) raises ``_CpuLimit`` in the main thread. The soft limit is put
-    back afterwards; the hard limit is never touched. Where it cannot be set, only the parent's
-    timeout bounds the load. Yields an event set when the limit fired: openpyxl has bare ``except:``
-    clauses (``descriptors.base._convert``) that turn even a BaseException into a TypeError."""
-    fired = threading.Event()
-    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU"):
-        yield fired
-        return
-    if threading.current_thread() is not threading.main_thread():
-        yield fired
+def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
+    """End this parse worker once it has used *max_seconds* of CPU, however little memory it holds.
+
+    ``RLIMIT_CPU`` (counted from this process's CPU time now, since a pool worker lives across jobs)
+    sends SIGXCPU, whose default action ends the process; the pool reports the job as timed out, as
+    for its own timeout, and the parser refuses the workbook as too large. Nothing is raised here: an
+    exception from a signal handler can land between a lock's acquire and its release (coverage's
+    tracer, logging, ``threading.Condition``) and leave this reused worker hung on a later job. Only
+    in a parse worker, the one process that may be ended. The soft limit is put back afterwards; the
+    hard limit is never touched. Where it cannot be set, only the parent's timeout bounds the load.
+    """
+    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU") or not parse_worker.in_worker():
+        yield
         return
     soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
     used = resource.getrusage(resource.RUSAGE_SELF)
     target = int(used.ru_utime + used.ru_stime) + int(max_seconds) + _CPU_SLACK_SECONDS
     if hard != resource.RLIM_INFINITY:
         target = min(target, hard)
-
-    def on_cpu_limit(_signum: int, _frame: object) -> None:
-        fired.set()
-        raise _CpuLimit
-
     try:
-        previous = signal.signal(signal.SIGXCPU, on_cpu_limit)
         resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
     except (ValueError, OSError):
-        yield fired
+        yield
         return
     try:
-        yield fired
+        yield
     finally:
-        # Both must be undone for the worker's next job, even if one of them fails.
-        try:
-            with contextlib.suppress(ValueError, OSError, MemoryError):
-                resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
-        finally:
-            signal.signal(signal.SIGXCPU, previous)
+        with contextlib.suppress(ValueError, OSError, MemoryError):
+            resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
 
 
 def load_workbook_model(
@@ -792,18 +808,17 @@ def load_workbook_model(
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
     shared string counted, in UTF-8 bytes) passed *max_text_bytes*, the merged ranges
-    declare more positions than ``max_merged_positions(max_text_bytes)``, or the load used more than
-    *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that overlap,
-    hyperlinks on merged cells, anything not yet known); ``unreadable`` for a DOCTYPE or
+    declare more positions than ``max_merged_positions(max_text_bytes)``); ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
-    cannot read, as the caller would have seen it before.
+    cannot read, as the caller would have seen it before. In a parse worker, a load that uses more
+    than *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that
+    overlap, hyperlinks on merged cells, anything not yet known) ends the worker (``_cpu_limited``).
     """
-    restore, cap = _enforce_growth_limit(limit_bytes)
     over = False
-    cpu_fired = threading.Event()
     with _GrowthWatcher() as growth:
+        restore, cap = _enforce_growth_limit(limit_bytes)
         try:
-            with _cpu_limited(max_seconds) as cpu_fired:
+            with _cpu_limited(max_seconds):
                 try:
                     _precheck(
                         file_binary,
@@ -817,20 +832,14 @@ def load_workbook_model(
                     if restore is not None:
                         restore()
                         restore = None
-            if cpu_fired.is_set():  # the interrupt was swallowed and the model may be half built
-                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU")
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
-        except _CpuLimit:
-            raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
         except MemoryError:
             over = True
         except WorkbookRefused:
             raise
         except Exception as exc:
-            if cpu_fired.is_set():  # openpyxl swallowed the interrupt and raised its own error
-                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
             # openpyxl catches MemoryError in places and re-raises it as another error (a
             # TypeError from a half-built range); a load that came near the allowance died of it.
             if cap is not None and growth.peak_growth_kb() * 1024 >= limit_bytes * _NEAR_LIMIT:

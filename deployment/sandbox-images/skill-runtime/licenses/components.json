@@ -1,0 +1,11 @@
+{
+ "_comment": "Components the SK1 skill-runtime test layer adds to the opencode tools image: the wheels of skills.lock, each with the licence it ships under. scan.sh passes it to scripts/engines/licence_scan.py with --manifest. `markers` declares licence texts a component is known to carry.",
+ "components": [
+  {
+   "name": "defusedxml",
+   "version": "0.7.1",
+   "licence": "PSF-2.0",
+   "ecosystem": "pypi"
+  }
+ ]
+}

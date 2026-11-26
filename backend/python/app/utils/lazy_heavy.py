@@ -102,8 +102,10 @@ def _start_or_join() -> Future[None]:
     with _guard:
         if _state.inflight is None:
             future: Future[None] = Future()
-            _state.inflight = future
+            # Published only once the thread runs: a start refused for want of threads or memory would otherwise
+            # leave every later caller waiting on an import that never began.
             threading.Thread(target=_run_import, args=(future,), name="docling-import", daemon=True).start()
+            _state.inflight = future
         return _state.inflight
 
 

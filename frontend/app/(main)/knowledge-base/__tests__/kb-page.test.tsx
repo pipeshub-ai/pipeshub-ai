@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
@@ -111,14 +111,56 @@ vi.mock('../api', async () => {
 });
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+// @/config imports the collection views itself, so views loaded while the partial mock below
+// resolves bind to the real permission hook; mock the collection hook they read it through.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({
+    canEdit: !permissions.denied.has('editCollection'),
+    canDelete: !permissions.denied.has('deleteCollection'),
+    canManageSync: !permissions.denied.has('manageConnectorSync'),
+  }),
+}));
+// Records what the page hands to the extension slots, so the tests can check the wiring.
+const slots = vi.hoisted(() => ({
+  hookArgs: [] as Array<string | null>,
+  extras: {
+    panel: null as unknown,
+    onUploadStart: undefined as undefined | (() => void),
+    onFileSucceeded: undefined as undefined | ((recordId: string) => void),
+    onUploadEnd: undefined as undefined | (() => void),
+  },
+  selection: { props: null as null | { selectedItems: Array<{ id: string }>; onChanged?: () => void } },
+}));
+// Hooks the page renders outside its own api (speech capabilities, web search and
+// connector lookups) import the live client from @/lib/api. With no server it fails,
+// the client toasts "Connection error", and the tests that forbid an error toast
+// fail whenever that lands first. Their requests stay pending here, as on a slow network.
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>();
+  const pending = () => new Promise<never>(() => {});
+  const offline = { get: pending, post: pending, put: pending, patch: pending, delete: pending, request: pending };
+  return { ...actual, apiClient: offline, apiClientDefault: offline };
+});
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // The page reaches the extension slots through this module, so they are replaced here.
+    useKbUploadExtras: (kbId: string | null) => {
+      slots.hookArgs.push(kbId);
+      return slots.extras;
+    },
+    SelectionActionBar: (props: React.ComponentProps<typeof actual.SelectionActionBar>) => {
+      slots.selection.props =
+        props.selectedCount > 0 ? { selectedItems: (props.selectedItems ?? []) as Array<{ id: string }>, onChanged: props.onChanged } : null;
+      return <actual.SelectionActionBar {...props} />;
+    },
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // The store is state, not the auth client; chat state reads the signed-in user through it.
+    useAuthStore: (await import('@/lib/store/auth-store')).useAuthStore,
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,
@@ -170,6 +212,11 @@ vi.mock('@/app/components/share', () => ({
   ShareSidebar: ({ open }: { open: boolean }) => (open ? <aside aria-label="Share collection" /> : null),
 }));
 
+vi.mock('../publications/publications-panel', () => ({
+  PublicationsPanel: ({ open, kbId }: { open: boolean; kbId: string }) =>
+    open ? <aside aria-label={`Publications of ${kbId}`} /> : null,
+}));
+
 const share = vi.hoisted(() => ({ getSharedMembers: vi.fn() }));
 vi.mock('../share-adapter', () => ({
   createKBShareAdapter: () => ({ getSharedMembers: share.getSharedMembers }),
@@ -219,6 +266,9 @@ let replaceState: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   installBrowserShims();
+  slots.hookArgs.length = 0;
+  slots.extras = { panel: null, onUploadStart: undefined, onFileSucceeded: undefined, onUploadEnd: undefined };
+  slots.selection.props = null;
   usePendingChatStore.setState({ pending: null });
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
@@ -399,6 +449,22 @@ describe('Knowledge base page — collections list', () => {
     await waitFor(() =>
       expect(toastTexts()).toContain('Failed to load Collections — Could not load collections. Please refresh the page.'),
     );
+  });
+});
+
+describe('Knowledge base page — the list to assistive tech (QAFINAL-FU-AXE)', () => {
+  it('KBAXE-1: is a table of rows of cells under named column headers, with every control named', async () => {
+    await openEngineering();
+    const table = screen.getByRole('table');
+    expect(within(table).getAllByRole('columnheader').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getAllByRole('cell').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getByRole('checkbox', { name: 'Select spec.pdf' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: 'Select all' })).toBeTruthy();
+    // The rules the UX captures' axe pass found broken here; colour contrast needs a browser, so the captures keep it.
+    const result = await axe.run(document.body, {
+      runOnly: { type: 'rule', values: ['aria-required-children', 'aria-required-parent', 'button-name', 'label', 'nested-interactive'] },
+    });
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => `${n.html.slice(0, 120)} ${n.failureSummary}`).join(' | ')}`)).toEqual([]);
   });
 });
 
@@ -1347,7 +1413,36 @@ describe('Knowledge base page — working with files', () => {
     expect(api.kb.reindexItem).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined));
+    // A Force reindex says so: the server re-parses and re-indexes, and bypasses every stored result.
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined, true));
+  });
+
+  it('a retry of a failed file is not a force reindex', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockResolvedValue({});
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalled());
+    expect(api.kb.reindexItem.mock.calls[0]).toEqual(['rec-notes', 0, undefined]);
+  });
+
+  it('keeps the success when only the list refresh after a reindex fails, and offers no retry that would resend it', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockImplementation(async () => {
+      // The request is accepted; the refresh of the page that follows it then fails.
+      for (const [name, fn] of Object.entries(api.kb)) {
+        if (name !== 'reindexItem' && vi.isMockFunction(fn)) fn.mockRejectedValue(new Error('refresh failed'));
+      }
+      return {};
+    });
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.variant === 'success')).toBe(true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(useToastStore.getState().toasts.some((t) => t.variant === 'error')).toBe(false);
+    expect(api.kb.reindexItem).toHaveBeenCalledTimes(1);
   });
 
   it('offers to try again when reindexing could not start', async () => {
@@ -1464,6 +1559,85 @@ describe('Knowledge base page — working with files', () => {
     expect(api.hub.loadFolderData).toHaveBeenLastCalledWith(
       'app', 'kb-eng', expect.objectContaining({ cursor: pageCursor(2) }), expect.anything(),
     );
+  });
+});
+
+describe('Knowledge base page — extension slots', () => {
+  it('hands the ticked rows and the list refresh to the selection bar', async () => {
+    await openEngineering();
+    fireEvent.click(within(row('spec.pdf')).getByRole('checkbox'));
+    await waitFor(() => expect(slots.selection.props).not.toBeNull());
+
+    expect(slots.selection.props?.selectedItems.map((i) => i.id)).toEqual(['rec-spec']);
+    api.hub.loadFolderData.mockClear();
+    await act(async () => slots.selection.props?.onChanged?.());
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
+  });
+
+  it('asks the upload hook about the open collection and calls its callbacks around an upload', async () => {
+    await openEngineering();
+    expect(slots.hookArgs).toContain('kb-eng');
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onFileSucceeded = (id) => order.push(`ok:${id}`);
+    slots.extras.onUploadEnd = () => order.push('end');
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt', recordId: 'rec-new' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'ok:rec-new', 'end']));
+  });
+
+  it('calls the end callback when every picked file is over the size limit and nothing is sent', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    const huge = new File(['x'], 'dump.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(huge, 'size', { value: 50 * 1024 * 1024 });
+    upload.items = [{ id: 'u1', name: huge.name, size: huge.size, type: 'file', file: huge }];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+    expect(api.kb.streamUpload).not.toHaveBeenCalled();
+  });
+
+  it('calls the end callback when there are no files to upload', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    upload.items = [];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+  });
+
+  it('uploads normally when the hook provides no callbacks', async () => {
+    await openEngineering();
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -1748,6 +1922,24 @@ describe('Knowledge base page — folders and sharing', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Share' }));
 
     expect(await screen.findByRole('complementary', { name: 'Share collection' })).toBeTruthy();
+  });
+
+  it('U4 KP-1: with the Labs flag off, an owner sees no Publish', async () => {
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+  });
+
+  it('U4 KP-1: with the Labs flag on, the owner opens the publications panel', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_KNOWLEDGE_PUBLICATIONS: true }, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }));
+    expect(await screen.findByRole('complementary', { name: 'Publications of kb-eng' })).toBeTruthy();
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
   });
 
   it('shows sharing as locked for an owner without sharing permission', async () => {

@@ -12,7 +12,7 @@ Recall comes from placement and tiering, not from a probe of each answer:
 
 The membership filter is :mod:`visibility`'s, shared with the lexical leg; the SQL of the exact tiers asks for the groups first, the
 vector index asks per row. Parameters are fixed: ``$1`` org, ``$2`` collection, ``$3`` space, ``$4`` query, ``$5``-``$9`` the scope,
-``$10`` the number of rows, ``$11`` the rerank depth, then the scope's extra conditions.
+``$10`` the number of rows, ``$11`` the rerank depth, ``$12`` the arms as membership keys, then the scope's extra conditions.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from app.core.db import DbError, DbTimeout, PoolTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout, LockTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.telemetry.modules import pgvector_search_metrics as telemetry
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 ADMISSION_CLASS = 7370           # advisory-lock class of the admission slots (registered in kernel.lock_keys by retrieval_0001)
 _OPERATORS = {"cosine": "OPERATOR(ext.<=>)", "dot": "OPERATOR(ext.<#>)", "l2": "OPERATOR(ext.<->)"}
-_SCOPE_TYPES = "_s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)"      # types every parameter, used or not
+_SCOPE_TYPES = "_s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int, $12::text[])"      # types every parameter, used or not
 # Two forms of "not tombstoned". The hashed subplan is built once per statement and is the cheaper one (the per-row probe cost 29 % of an
 # exact scan when there are no tombstones), but PostgreSQL hashes it only while the set fits work_mem; past that it becomes a list scan
 # per candidate row (minutes). So: the hashed form only up to ``tombstone_hash_max`` tombstones, with work_mem raised for it; above that,
@@ -71,6 +71,7 @@ class Sizing:
     own_leaf: bool
     leaf_rows: int
     tombstones: int = 0          # the org's tombstones, counted up to tombstone_hash_max + 1
+    assumed: bool = False        # not counted: the count ran out of its budget, so n_hat is the cap it could not reach
 
     @property
     def share(self) -> float:
@@ -145,8 +146,9 @@ class Query:
         return _ALIVE_ANTI if self.anti else _ALIVE_HASHED
 
     def args(self, rows: int, depth: int = 0) -> tuple[object, ...]:
-        """The parameters ``$1`` to ``$11`` and the scope's extra conditions after them."""
-        return (self.org, self.collection_id, self.space_id, self.vector, *self.scope.args(), rows, depth, *self.scope.extra_sql()[1])
+        """The parameters ``$1`` to ``$12`` and the scope's extra conditions after them."""
+        return (self.org, self.collection_id, self.space_id, self.vector, *self.scope.args(), rows, depth, self.scope.keys(),
+                *self.scope.extra_sql()[1])
 
 
 @dataclass(frozen=True)
@@ -206,9 +208,22 @@ def bounded_sql(q: Query, *, narrow: bool) -> str:
 
 
 def count_sql(q: Query) -> str:
+    """The candidates, counted up to ``$10``. With arms, group by group through the index of the points by group (OFFSET 0 keeps it a
+    loop that stops at the cap): hashed against the org's leaf instead, the planner's choice for a broad filter, the count read 2.3 M of a
+    5 M-point leaf's rows to reach 40,001."""
+    if q.scope.must_vrids is not None:
+        # a narrowing list bounds the work by its own groups, each point tested on the row as the vector index does (the admitted groups
+        # of a broad scope can be millions; read first, every one of them was probed for a list that names one record)
+        rows = (f"SELECT 1 FROM (SELECT DISTINCT unnest($9::text[]) AS group_key) g CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p "
+                f"WHERE {_BASE} AND p.group_key = g.group_key{q.scope.probe()} OFFSET 0) x")
+    elif q.scope.whole_org:
+        rows = f"SELECT 1 FROM retrieval.points p WHERE {_BASE}{q.scope.tail()}"
+    else:
+        rows = (f"SELECT 1 FROM ({q.scope.admitted()}) g CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p "
+                f"WHERE {_BASE} AND p.group_key = g.group_key{q.scope.tail()} OFFSET 0) x")
     return f"""/* pipeshub:pgvector.dense_count */
         WITH {_SCOPE_TYPES}
-        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE {_BASE}{q.scope.candidates()} LIMIT $10) c"""
+        SELECT count(*) FROM ({rows} LIMIT $10) c"""
 
 
 _TOMBSTONES = """/* pipeshub:pgvector.tombstone_count */
@@ -289,7 +304,7 @@ class Sizer:
 
     def __init__(self, db: KernelDB, t: Tuning) -> None:
         self._db, self._t = db, t
-        self._counts: dict[tuple, tuple[float, int, bool, int]] = {}
+        self._counts: dict[tuple, tuple[float, int, bool, int, bool]] = {}
         self._leaves: dict[tuple, tuple[float, bool, int]] = {}
         self._connectors: dict[tuple, tuple[float, frozenset[str] | None]] = {}
         self._inflight: dict[tuple, asyncio.Future] = {}
@@ -309,7 +324,7 @@ class Sizer:
                 if leaf is None or count is None:
                     raise
                 telemetry.TIMEOUT.inc("sizing", "stale")
-        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3])
+        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3], count[4])
 
     async def _shared_measure(self, q: Query, lkey: tuple, ckey: tuple, now: float) -> tuple[tuple, tuple]:
         task = self._inflight.get(ckey)
@@ -334,12 +349,27 @@ class Sizer:
             tomb = await tx.fetchval(_TOMBSTONES, q.org, self._t.tombstone_hash_max + 1)
             return leaf, n, n >= cap, tomb
 
-        leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
         if len(self._counts) > 4096:
             self._counts.clear()
+        try:
+            leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
+        except (PoolTimeout, LockTimeout):
+            raise                       # busy, not big: nothing is learnt about the filter
+        except DbTimeout:
+            # The count could not reach its cap within its budget: too many candidates to count, so far too many for an exact scan,
+            # which reads each of them. Remembered as capped, so the index serves the filter and the next queries of the minute do not
+            # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known, and
+            # the count's deadline: an expired one would send the next query back to the count.
+            telemetry.TIMEOUT.inc("sizing", "assumed")
+            old = self._leaves.get(lkey)
+            leaf = self._leaves[lkey] = (now + self._t.estimate_ttl_s, *(old[1:] if old else (False, 0)))
+            known = leaf if leaf[2] > 0 else None
+            count = self._counts[ckey] = (now + self._t.estimate_ttl_s, count_cap(self._t, known and (known[1], known[2])), True,
+                                          self._t.tombstone_hash_max + 1, True)
+            return leaf, count
         leaf = self._leaves[lkey] = (now + self._t.leaf_ttl_s, bool(leaf_row and leaf_row[0].startswith("points_o_")),
                                      leaf_row[1] if leaf_row else 0)
-        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb)
+        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb, False)
         return leaf, count
 
     async def connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
@@ -380,8 +410,8 @@ class Sizer:
         ttl = self._t.connector_ttl_s
         try:
             value = await self._db.run(read, custom_plan=True)
-        except PoolTimeout:
-            value = None                                       # busy, not big: ask again after connector_ttl_s, the arms apply meanwhile
+        except (PoolTimeout, ConnectionLost):
+            value = None                                       # busy or restarting, not big: ask again after connector_ttl_s, the arms apply meanwhile
         except DbError:
             # Too big to check inside the budget: keep the arms applied and do not look again soon, so a large org never pays for a
             # scan of its points every connector_ttl_s.
@@ -393,29 +423,45 @@ class Sizer:
 async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool = True) -> tuple[Leg, Sizing]:
     """The dense leg. Never returns a silent shortfall: a leg that could not run in its tier (no slot, a timeout, a sizing that
     could not be read) is answered by the bounded exact path, flagged on the leg (``degraded``) and counted; only when that fails too
-    is it empty, which is counted as well."""
+    is it empty, which is counted as well. A database that cannot be reached (``ConnectionLost``) raises."""
     band = telemetry.leg_band(q.leg)
+    started = time.monotonic()
     narrow = False
     try:
         sz = await sizer.of(q)
+    except ConnectionLost:
+        raise                   # the database is out, not busy: the search retry answers it as unavailable
     except DbError:
         sz = Sizing(0, False, False, 0, t.tombstone_hash_max + 1)
         plan = Plan(Tier.E0, 0, t.degraded_timeout_ms, None, "unknown")
         telemetry.TIER.inc(plan.tier.value, band)
-        return await _degrade(db, q, t, plan, sz, "sizing", narrow=False, band=band), sz
+        leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=False, band=band)
+        telemetry.observe_leg("degraded", q.leg, started)
+        return leg, sz
     plan = choose(sz, q.leg, t, bq_ok=bq_ok)
     q = dataclasses.replace(q, anti=sz.tombstones > t.tombstone_hash_max)
     telemetry.TIER.inc(plan.tier.value, band)
     narrow = sz.n_hat <= t.n_e0 and not sz.capped
     try:
         rows = await db.run(lambda tx: _run(tx, q, plan, t), timeout_ms=plan.timeout_ms, custom_plan=True)
+        if sz.assumed and len(rows) < q.leg:
+            # An index answer short of the leg means few rows pass the filter: the count was slow for another reason (many admitted
+            # groups holding few points). The exact path by groups reads just those candidates.
+            leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True, band=band)
+            if leg.degraded == "overload":
+                leg = Leg(rows, plan, "overload")       # the exact read could not run: the index's rows stand, flagged
+            telemetry.observe_leg("degraded", q.leg, started)
+            return leg, sz
+        telemetry.observe_leg(plan.tier.value, q.leg, started)
         return Leg(rows, plan, plan.flag), sz
     except Rejected:
         reason = "admission"
     except DbTimeout:
         reason = "timeout"
         telemetry.TIMEOUT.inc("dense", plan.tier.value)
-    return await _degrade(db, q, t, plan, sz, reason, narrow=narrow, band=band), sz
+    leg = await _degrade(db, q, t, plan, sz, reason, narrow=narrow, band=band)
+    telemetry.observe_leg("degraded", q.leg, started)
+    return leg, sz
 
 
 async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, reason: str, *, narrow: bool, band: str) -> Leg:
@@ -426,6 +472,8 @@ async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, re
     try:
         rows = await db.run(lambda tx: _bounded(tx, q, t, narrow=narrow), timeout_ms=t.degraded_timeout_ms, custom_plan=True)
         return Leg(rows, plan, reason)
+    except ConnectionLost:
+        raise
     except DbError:
         telemetry.DEGRADED.inc("overload", plan.tier.value, band)
         telemetry.EMPTY_LEG.inc(plan.tier.value)

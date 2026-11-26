@@ -195,6 +195,27 @@ async def test_detector_counterexample_an_inline_import_is_caught(fake_heavy: tu
         _assert_no_import_on(loop_thread, imported_on)
 
 
+async def test_an_import_thread_that_cannot_start_does_not_leave_later_callers_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process out of threads (or address space) refuses one start; the next caller must try again, not join an
+    import that never began. Before, it waited forever: the unit shard hung on the docling parser test after this."""
+    monkeypatch.setattr(lazy_heavy, "_import_docling", lambda: None)
+    real_start = threading.Thread.start
+    refusals = [RuntimeError("can't start new thread")]
+
+    def start(self: threading.Thread) -> None:
+        if self.name == "docling-import" and refusals:
+            raise refusals.pop()
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        await lazy_heavy.ensure_docling()
+    await asyncio.wait_for(lazy_heavy.ensure_docling(), 5)
+    assert lazy_heavy._state.done
+
+
 def test_the_guard_is_usable_from_two_event_loops_in_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
     monkeypatch.setattr(lazy_heavy, "_import_docling", lambda: calls.append(1))

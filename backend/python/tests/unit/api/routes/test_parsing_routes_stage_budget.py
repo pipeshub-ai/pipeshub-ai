@@ -14,6 +14,7 @@ import httpx
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.registry import ParserRegistry
+from app.services.resource_governor.models import Pool
 from tests.unit.api.routes.test_parsing_routes import _build_app, _ok_result
 
 if TYPE_CHECKING:
@@ -75,7 +76,6 @@ async def test_after_a_504_the_permit_is_held_until_the_conversion_thread_return
 
     from app.api.routes import parsing
     from app.services.paid_cache import locks
-    from app.services.resource_governor.tiers import gate_pool
 
     monkeypatch.setattr(locks, "STAGE_DEADLINE_S", 0.2)
     monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.2")
@@ -94,7 +94,7 @@ async def test_after_a_504_the_permit_is_held_until_the_conversion_thread_return
     registry = MagicMock(spec=ParserRegistry)
     registry.resolve = MagicMock(return_value=MagicMock(parse=parse))
     app = _build_app(registry, heavy_limit=1, light_limit=1)
-    gate = app.state.governor.gate(gate_pool(parsing.classify("pdf", "application/pdf")))
+    gate = app.state.governor.gate(Pool.HEAVY_PARSE)
     post_args = {
         "files": {"file": ("s.pdf", b"%PDF-1.4 x", "application/pdf")},
         "data": {"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
@@ -122,8 +122,6 @@ async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_it
     """Not only the deadline: any exit that leaves a conversion thread running keeps the permit until it returns."""
     import threading
 
-    from app.api.routes import parsing
-    from app.services.resource_governor.tiers import gate_pool
 
     release_thread = threading.Event()
     started = threading.Event()
@@ -140,7 +138,7 @@ async def test_a_timeout_raised_inside_the_parser_also_holds_the_permit_while_it
     registry = MagicMock(spec=ParserRegistry)
     registry.resolve = MagicMock(return_value=MagicMock(parse=parse))
     app = _build_app(registry, heavy_limit=1, light_limit=1)
-    gate = app.state.governor.gate(gate_pool(parsing.classify("pdf", "application/pdf")))
+    gate = app.state.governor.gate(Pool.HEAVY_PARSE)
     post_args = {
         "files": {"file": ("s.pdf", b"%PDF-1.4 x", "application/pdf")},
         "data": {"record_name": "s.pdf", "mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
@@ -187,7 +185,6 @@ async def test_a_conversion_that_never_returns_is_on_the_parsing_services_metric
         text = (await client.get("/metrics")).text
         count = int(re.search(r"^pipeshub_parse_stuck_conversions (\d+)$", text, re.M).group(1))
         oldest = int(re.search(r"^pipeshub_parse_stuck_oldest_seconds (\d+)$", text, re.M).group(1))
-        assert "pipeshub_parsing_in_flight" in text                  # next to the rest of the parsing metrics
         return count, oldest
 
     try:

@@ -1,6 +1,12 @@
 """Cloudflare MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -28,6 +34,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Cloudflare account.",
         ),
         tags=["cloudflare", "dns", "workers", "cdn", "security"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Change DNS records",
+            "Deploy and inspect Workers",
+            "Check traffic analytics",
+            "Review security settings",
+        ],
     )
 )
 class CloudflareMCPServer:

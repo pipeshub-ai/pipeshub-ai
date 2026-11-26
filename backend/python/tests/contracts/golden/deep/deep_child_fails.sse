@@ -1,0 +1,105 @@
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-6", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-6", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-plan", "toolCallName": "create_plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-plan", "delta": "{\"steps\": [{\"id\": \"ticket\", \"description\": \"Look up support ticket T-42.\", \"domain\": \"goldendocs\", \"tool_names\": [\"goldendocs\"]}]}", "runId": "uuid-1", "argsSummary": "Creating a plan with 1 step", "argsPreview": "{\"steps\": [{\"id\": \"ticket\", \"description\": \"Look up support ticket T-42.\", \"domain\": \"goldendocs\", \"tool_names\": [\"goldendocs\"]}]}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-plan", "content": "{\"plan\": \"1. **ticket** \u2014 Look up support ticket T-42. [tools: goldendocs]\", \"confidence\": \"medium\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Plan created"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-7", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-7", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-critique", "toolCallName": "critique_plan", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-critique", "delta": "{\"plan\": \"ticket\"}", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"ticket\"", "argsPreview": "{\"plan\": \"ticket\"}"}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-critique", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-critique", "content": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "spawning_agent", "current_turn": 2, "current_tool": "spawn_agent", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STEP_STARTED
+data: {"type": "STEP_STARTED", "stepName": "sub_agent:pipeshub-subagent-goldendocs", "runId": "uuid-1"}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-4", "parentRunId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-goldendocs", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nWhat is the status of ticket T-42?\n\n## Your delegated task\n\nLook up support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-goldendocs", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nWhat is the status of ticket T-42?\n\n## Your delegated task\n\nLook up support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-8", "role": "assistant", "runId": "uuid-4"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-8", "runId": "uuid-4"}
+
+event: CUSTOM
+data: {"type": "CUSTOM", "name": "message_discarded", "value": {"messageId": "msg-8"}, "runId": "uuid-4"}
+
+event: RUN_ERROR
+data: {"type": "RUN_ERROR", "runId": "uuid-4", "parentRunId": "uuid-1", "message": "LLM call failed: internal (RuntimeError)", "code": "agent_error"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-4", "snapshot": {"run_id": "uuid-4", "agent_id": "uuid-5", "trace_id": "uuid-3", "parent_run_id": "uuid-1", "role_name": "pipeshub-subagent-goldendocs", "status": "failed", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "## The user's request (verbatim, for context: work only on your delegated task)\n\nWhat is the status of ticket T-42?\n\n## Your delegated task\n\nLook up support ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-9", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-9", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Report the status of ticket T-42.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "I could not look the ticket up: the sub-agent failed."}, {"op": "replace", "path": "/rawLength", "value": 53}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-plan", "toolName": "create_plan", "args": "{\"steps\": [{\"id\": \"ticket\", \"description\": \"Look up support ticket T-42.\", \"domain\": \"goldendocs\", \"tool_names\": [\"goldendocs\"]}]}", "status": "completed", "runId": "uuid-1", "argsSummary": "Creating a plan with 1 step", "resultPreview": "{\"plan\": \"1. **ticket** \u2014 Look up support ticket T-42. [tools: goldendocs]\", \"confidence\": \"medium\"}", "resultSummary": "Plan created"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-critique", "toolName": "critique_plan", "args": "{\"plan\": \"ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"ticket\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "sub_agent", "runId": "uuid-4", "roleName": "pipeshub-subagent-goldendocs", "parts": []}, {"type": "text", "content": "I could not look the ticket up: the sub-agent failed.", "runId": "uuid-1", "isFinal": true}], "answer": "I could not look the ticket up: the sub-agent failed.", "citations": [], "confidence": null, "succeeded_tool_names": ["create_plan", "critique_plan"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-1", "threadId": "conv-golden", "result": {"parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-plan", "toolName": "create_plan", "args": "{\"steps\": [{\"id\": \"ticket\", \"description\": \"Look up support ticket T-42.\", \"domain\": \"goldendocs\", \"tool_names\": [\"goldendocs\"]}]}", "status": "completed", "runId": "uuid-1", "argsSummary": "Creating a plan with 1 step", "resultPreview": "{\"plan\": \"1. **ticket** \u2014 Look up support ticket T-42. [tools: goldendocs]\", \"confidence\": \"medium\"}", "resultSummary": "Plan created"}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-critique", "toolName": "critique_plan", "args": "{\"plan\": \"ticket\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Critique Plan \u2014 plan: \"ticket\"", "resultPreview": "{\"passed\": true, \"confidence\": \"high\", \"issues\": [], \"summary\": \"Sound.\"}", "resultSummary": "Completed successfully"}, {"type": "sub_agent", "runId": "uuid-4", "roleName": "pipeshub-subagent-goldendocs", "parts": []}, {"type": "text", "content": "I could not look the ticket up: the sub-agent failed.", "runId": "uuid-1", "isFinal": true}], "answer": "I could not look the ticket up: the sub-agent failed.", "citations": [], "confidence": null, "succeeded_tool_names": ["create_plan", "critique_plan"], "failed_tool_names": [], "label": {"complete": true, "sources": []}}}
+

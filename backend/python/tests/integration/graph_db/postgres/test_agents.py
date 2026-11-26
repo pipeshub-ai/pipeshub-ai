@@ -71,11 +71,14 @@ async def test_the_agents_of_a_web_search_provider_follow_the_same_rule(w: World
     assert await p.get_agents_by_web_search_provider(w.org, "none") == [] and await p.get_agents_by_web_search_provider(_org(), "serper") == []
 
 
-async def test_a_failed_agent_list_is_empty_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failed_agent_list_raises_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await agent_world(w)
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
-    assert await w.p.get_agents_by_model_key(w.org, "gpt-4") == [] and await w.p.get_agents_by_web_search_provider(w.org, "serper") == []
+    with pytest.raises(RuntimeError):                       # a delete is refused on this answer: a failed read is never "no agents"
+        await w.p.get_agents_by_model_key(w.org, "gpt-4")
+    with pytest.raises(RuntimeError):
+        await w.p.get_agents_by_web_search_provider(w.org, "serper")
     monkeypatch.setattr(w.p, "_q", real)
     assert len(await w.p.get_agents_by_model_key(w.org, "gpt-4")) == 2
 
@@ -203,6 +206,32 @@ async def test_a_failed_agent_read_is_none_and_comes_back(w: World, monkeypatch:
     assert await w.p.get_agent("ag", w.org) is None
     monkeypatch.setattr(w.p, "_q", real)
     assert (await w.p.get_agent("ag", w.org))["name"] == "Full"
+
+
+async def test_a_save_writes_the_harness_agent_fields_and_a_read_decodes_them(w: World) -> None:
+    """WP-114: the harness settings an agent save carries (engine profile, model account, owner team, role models, gates, environment) are stored as
+    the other backends store them (the JSON ones as text) and read back as JSON; models are normalised; a user who may not edit changes nothing."""
+    await agent_world(w)
+    p = w.p
+    saved = await p.update_agent("a1", {
+        "name": "Alpha 2", "engineProfile": {"engine": "claude-code", "narrow": {"tools": ["git"]}}, "modelAccountId": "acct-1", "ownerTeam": "team-1",
+        "roleModels": {"reviewer": "m1"}, "gates": {"planApproval": True}, "environment": {"vars": {"A": "1"}},
+        "models": [{"modelKey": "gpt-4", "modelName": "turbo"}, "gpt-4_turbo", "claude"], "notAField": "dropped",
+    }, "boss", w.org)
+    assert saved is True
+    a = await p.get_agent("a1", w.org)
+    assert a["name"] == "Alpha 2" and a["updatedBy"] == "boss" and "notAField" not in a
+    assert a["engineProfile"] == {"engine": "claude-code", "narrow": {"tools": ["git"]}} and a["modelAccountId"] == "acct-1" and a["ownerTeam"] == "team-1"
+    assert a["roleModels"] == {"reviewer": "m1"} and a["gates"] == {"planApproval": True} and a["environment"] == {"vars": {"A": "1"}}
+    assert a["models"] == ["gpt-4_turbo", "claude"]
+    stored = await p.get_document("a1", "agentInstances")
+    assert isinstance(stored["engineProfile"], str) and isinstance(stored["gates"], str)                          # JSON text, as on Neo4j and Arango
+    assert await p.update_agent("a1", {"gates": {}}, "boss", w.org) is True
+    assert (await p.get_agent("a1", w.org))["gates"] == {}                                                         # a save that drops every gate drops them
+    assert await p.update_agent("gtype", {"name": "nope"}, "boss", w.org) is False                               # a group grant is not the user's own: no edit right
+    assert await p.update_agent("a1", {"name": "x"}, "outsider", w.org) is False                                 # no grant in this org: nothing written
+    assert (await p.get_agent("a1", w.org))["name"] == "Alpha 2"
+    assert await p.update_agent("a1", {"name": "x"}, "boss", _org()) is False                                    # another org: nothing written
 
 
 # ---- the agent list, edit and delete ----------------------------------------------------------------------------------------------------------

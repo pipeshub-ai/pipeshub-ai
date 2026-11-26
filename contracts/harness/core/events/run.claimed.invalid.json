@@ -1,0 +1,89 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "attempt": 1,
+        "fence": 1,
+        "leaseMs": 30000
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only node writes run.claimed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.claimed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "attempt": 1,
+        "fence": 1,
+        "leaseMs": 30000
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.claimed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "attempt": 1,
+        "fence": 1,
+        "leaseMs": 30000,
+        "unexpected": true
+      }
+    }
+  },
+  {
+    "description": "fence starts at 1",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.claimed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "attempt": 1,
+        "fence": 0,
+        "leaseMs": 30000
+      }
+    }
+  }
+]

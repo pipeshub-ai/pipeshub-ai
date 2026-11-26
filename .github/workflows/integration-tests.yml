@@ -336,15 +336,18 @@ jobs:
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      # Azure OpenAI is where the credits are, and TEST_AI_MODEL_PROVIDER names
-      # it outright: the helper falls back to the next provider on a health
-      # check failure, so without this an Azure problem retries against the
-      # OpenAI key and reports that instead.
-      TEST_AI_MODEL_PROVIDER: azureOpenAI
-      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
-      # needs key, endpoint and deployment together — miss one and Azure is dropped
-      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+      # (openAI, azureOpenAI or openAICompatible; openAI when unset). Every provider's
+      # settings are always passed, so switching provider is that one variable. The model setup,
+      # the live provider specs, the demo judge and the Playwright tests all use
+      # only the named provider; the other's key may belong to an unfunded account.
+      TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      # gpt-5.6-luna unless the repository variable says otherwise: on the helper's
+      # gpt-5.4-nano default the agent tests' model skipped tools (no docx skill,
+      # no knowledge search). The same default is in every workflow that sets it.
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
+      TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
       # secrets || vars so the non-secret names work from either store.
       TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
       TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
@@ -354,8 +357,14 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
-      # The demo test's answer judge uses the Azure settings above. Without it,
-      # facts a question lists for the judge would go unchecked yet pass.
+      # For openAICompatible (a gateway such as Bifrost): base URL with /v1. The models are the
+      # gateway's ids (Bifrost names them provider/model); the variables override the defaults.
+      TEST_OPENAI_COMPATIBLE_API_KEY: ${{ secrets.TEST_OPENAI_COMPATIBLE_API_KEY }}
+      TEST_OPENAI_COMPATIBLE_ENDPOINT: ${{ secrets.TEST_OPENAI_COMPATIBLE_ENDPOINT || vars.TEST_OPENAI_COMPATIBLE_ENDPOINT }}
+      TEST_OPENAI_COMPATIBLE_LLM_MODEL: ${{ vars.TEST_OPENAI_COMPATIBLE_LLM_MODEL || 'openai/gpt-5.6-luna' }}
+      TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL || 'openai/text-embedding-3-small' }}
+      # The demo test's answer judge follows TEST_AI_MODEL_PROVIDER too. Required:
+      # without it, facts a question lists for the judge would go unchecked yet pass.
       PIPESHUB_REQUIRE_JUDGE: '1'
       # Confluence and Jira sync from the confluence-sim and jira-sim services
       # (atlassian-sim profile), Notion from notion-sim (notion-sim profile); their
@@ -498,6 +507,8 @@ jobs:
       GOOGLE_DRIVE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_TEST_USER_EMAIL }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
 
+      # A stack made for this run: specs tagged @disposable run on it (WP-71).
+      E2E_DISPOSABLE_STACK: '1'
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
@@ -577,6 +588,11 @@ jobs:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
 
+      # Stop before the stack build when the chosen provider's key is missing.
+      - name: Check the AI model provider
+        id: ai-provider
+        run: .github/scripts/check_ai_model_provider.sh
+
       # The runner shares ~15.7 GB with the Docker stack. If the kernel's out-of-memory
       # killer picks the runner, the job ends with no steps, no log and no reports. This
       # shields Runner.Listener and Runner.Worker only: actions/runner resets every step
@@ -606,7 +622,7 @@ jobs:
         if: env.RUN_PLAYWRIGHT == 'true'
         working-directory: frontend
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npx playwright install chromium --with-deps
 
       # Spot runners share addresses, so anonymous pulls run into Docker Hub's
@@ -716,8 +732,8 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: |
-          (cd backend/nodejs/apps && npm ci --no-audit --no-fund)
-          [ -d frontend/node_modules ] || (cd frontend && npm ci --no-audit --no-fund)
+          (cd backend/nodejs/apps && npm ci --ignore-scripts --no-audit --no-fund)
+          [ -d frontend/node_modules ] || (cd frontend && npm ci --ignore-scripts --no-audit --no-fund)
           echo "LOCAL_FS_DESKTOP_AGENT=$GITHUB_WORKSPACE/connectors-simulator-localfs/harness/local_fs/node/desktop_agent.ts" >> "$GITHUB_ENV"
 
       - name: Check out the BookStack simulator
@@ -811,8 +827,9 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml build
 
       - name: Build ArangoDB stack images
-        # Run even if the Neo4j pass failed, but stop if the run was cancelled.
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        # Run even if the Neo4j pass failed, but stop if the run was cancelled or
+        # the AI model provider check failed.
+        if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml build
 
@@ -839,8 +856,7 @@ jobs:
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       # client_credentials grant: a fresh token every run, nothing rotates or is written back.
       # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
@@ -1067,7 +1083,7 @@ jobs:
 
       - name: 'ArangoDB: Start services'
         id: arango-start
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
 
@@ -1685,8 +1701,7 @@ jobs:
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       - name: Run helper unit tests
         working-directory: integration-tests

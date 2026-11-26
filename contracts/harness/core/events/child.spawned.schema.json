@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/child.spawned.schema.json",
+  "title": "ChildSpawnedEvent",
+  "description": "Child run spawned; Node admits it in the same transaction, idempotent on the parent run and invocationId.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "child.spawned"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/ChildSpawnedData"
+    }
+  },
+  "$defs": {
+    "ChildSpawnedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "childRunId",
+        "grantDigest"
+      ],
+      "properties": {
+        "childRunId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "invocationId": {
+          "description": "The parent's tool invocation that asked for the child (its idempotency key with the parent run).",
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "taskId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "grantDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest"
+        },
+        "model": {
+          "$ref": "#/$defs/ChildModel"
+        }
+      }
+    },
+    "ChildModel": {
+      "description": "The model a sub-agent role set for the child (MA1). Absent: the child calls its parent's model.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "role"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "role": {
+          "description": "The role key whose setting chose the model.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "child.spawned",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "childRunId": "run_c1",
+        "invocationId": "t1.0",
+        "taskId": "t1",
+        "grantDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "child.spawned",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "childRunId": "run_c2",
+        "invocationId": "t2.0",
+        "taskId": "t2",
+        "grantDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "model": {
+          "provider": "anthropic",
+          "model": "claude-haiku-4-5",
+          "role": "researcher"
+        }
+      }
+    }
+  ]
+}

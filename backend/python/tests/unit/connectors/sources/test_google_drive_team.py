@@ -127,6 +127,7 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.extraction_status = extraction_status
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
+    r.mime_type = "text/plain"
     return r
 
 
@@ -1961,6 +1962,7 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.extraction_status = extraction_status
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
+    r.mime_type = "text/plain"
     return r
 
 
@@ -3497,6 +3499,7 @@ class TestSharedWithMeFromSharedDrive:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
         meta["driveId"] = "sd-1"
+        meta["capabilities"] = {"canShare": True}  # a reader who can list its sharing
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
 
         result = await connector._process_drive_item(
@@ -3563,6 +3566,7 @@ class TestSharedWithMeFromSharedDrive:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         meta = _make_file_metadata()
         meta["driveId"] = "sd-1"
+        meta["capabilities"] = {"canShare": True}  # a reader who can list its sharing
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
 
         result = await connector._process_drive_item(
@@ -4245,6 +4249,7 @@ class TestInheritedFileGrants:
         ]})
         meta = _make_file_metadata(parents=["sd-unsynced"])
         meta["driveId"] = "sd-unsynced"
+        meta["capabilities"] = {"canShare": True}  # a reader who can list its sharing
 
         result = await connector._process_drive_item(
             meta, "uid", "direct@t.com", "root-1", force_shared_with_me=True
@@ -4267,6 +4272,7 @@ class TestInheritedFileGrants:
         ]})
         meta = _make_file_metadata(parents=["sd-1"])
         meta["driveId"] = "sd-1"
+        meta["capabilities"] = {"canShare": True}  # a reader who can list its sharing
 
         result = await connector._process_drive_item(meta, "uid", "direct@t.com", "sd-1", is_shared_drive=True)
 
@@ -4326,8 +4332,11 @@ class TestAnyoneLinkKeepsTheReadList:
             {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
         ]})
         connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+        # u@t.com is not a member of sd-1, so the link share gives them a grant of their own.
+        connector._drive_member_email_list = AsyncMock(return_value=[])
         meta = _make_file_metadata()
         meta["driveId"] = "sd-1"
+        meta["capabilities"] = {"canShare": True}  # a reader who can list its sharing
 
         result = await connector._process_drive_item(meta, "", "u@t.com", "sd-1", is_shared_drive=True)
 

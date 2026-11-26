@@ -6,9 +6,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.agent_loop_lib import composition
+from app.agent_loop_lib.commands.render import is_reserved, parse_arguments
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.modules.providers.skills.base import Skill
-from app.utils.env_config import env_int
 
 """Deterministic, stateless spec enforcement for skills — extracted from the
 original loader.py so both the loader (reading) and the store/manager
@@ -31,12 +32,9 @@ MAX_RESOURCE_PATH_LENGTH = 255
 # `agentSkills.resourceContents` is a graph-doc string field (see graph_store.py),
 # not a blob store, so these stay small; env-overridable for deployments that
 # need more headroom before the blob-storage follow-up lands.
-MAX_RESOURCE_FILE_BYTES = max(
-    1, env_int("PIPESHUB_SKILLS_MAX_RESOURCE_FILE_BYTES", 1024 * 1024)
-)
-MAX_SKILL_RESOURCE_BYTES = max(
-    1, env_int("PIPESHUB_SKILLS_MAX_RESOURCE_BYTES", 5 * 1024 * 1024)
-)
+_RESOURCE_FILE_LIMIT, _SKILL_RESOURCE_LIMIT = composition.skills_resource_limits()
+MAX_RESOURCE_FILE_BYTES = max(1, _RESOURCE_FILE_LIMIT)
+MAX_SKILL_RESOURCE_BYTES = max(1, _SKILL_RESOURCE_LIMIT)
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _CATEGORY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -160,6 +158,27 @@ class SkillValidator:
         is even constructed."""
         self.validate_name(data.get("name"))
         self.validate_description(data.get("description"))
+        self.validate_command(data)
+
+    def validate_command(self, data: dict[str, Any]) -> None:
+        """The /command fields (SLASH1): well-formed arguments, and no engine word as a command name."""
+        from app.agent_loop_lib.modules.providers.skills.base import (
+            AGENT_LOOP_NAMESPACE,
+        )
+
+        metadata = data.get("metadata")
+        ext = metadata.get(AGENT_LOOP_NAMESPACE) if isinstance(metadata, dict) else None
+        if not isinstance(ext, dict):
+            return
+        invocation = ext.get("invocation")
+        if invocation is not None and not isinstance(invocation, dict):
+            raise SkillFormatError("'invocation' must be a mapping with 'user' and 'model'")
+        try:
+            parse_arguments(ext.get("arguments"))
+        except ValueError as e:
+            raise SkillFormatError(f"Invalid command arguments: {e}") from e
+        if isinstance(invocation, dict) and invocation.get("user") is True and is_reserved(str(data.get("name"))):
+            raise SkillFormatError(f"{data.get('name')!r} is an engine command name and cannot be a /command")
 
     def validate_skill(self, skill: Skill, *, expected_name: str | None = None) -> None:
         """Full validation of an assembled `Skill` — called by the store

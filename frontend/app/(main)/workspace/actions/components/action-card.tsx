@@ -254,6 +254,7 @@ function ToolsetInstanceSummaryBar({
       </Flex>
       {showAdd ? (
         <button
+          aria-label={t('workspace.actions.cta.add')}
           type="button"
           onClick={onAdd}
           onMouseEnter={() => setIsAddHovered(true)}

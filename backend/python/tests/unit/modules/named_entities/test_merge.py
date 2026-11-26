@@ -1,5 +1,4 @@
 import random
-import time
 
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.graph_writer import edge_payload
@@ -12,6 +11,7 @@ from app.modules.named_entities.merge import (
     resolve_overlaps,
 )
 from app.modules.named_entities.normalizers.dates import NormalizationContext
+from tests.support.cpu_budget import thread_cpu
 from tests.unit.modules.named_entities.test_identity_golden import CTX, GOLDEN
 
 _EXTRACTORS = ["pattern", "value", "agent", "single_call"]
@@ -51,9 +51,11 @@ def test_the_same_span_in_another_block_is_kept() -> None:
 
 def test_many_mentions_resolve_quickly() -> None:
     mentions = [_mention(index % 50, (index // 50) * 3, (index // 50) * 3 + 2, "value") for index in range(50_000)]
-    started = time.perf_counter()
-    assert len(resolve_overlaps(mentions)) == 50_000
-    assert time.perf_counter() - started < 5
+    with thread_cpu() as cpu:
+        kept = resolve_overlaps(mentions)
+    assert len(kept) == 50_000
+    # tens of ms alone; a pairwise check over kept spans is about 25 s here
+    assert cpu.seconds < 1
 
 
 

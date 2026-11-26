@@ -1,7 +1,7 @@
 import { execFileSync } from 'child_process';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
-import type { Page, Response } from '@playwright/test';
+import type { Page, Request, Response } from '@playwright/test';
 
 /**
  * Counts what the browser asked of the record stream route, and what the server converted.
@@ -25,6 +25,8 @@ export interface StreamCall {
 
 export interface StreamLog {
   calls: StreamCall[];
+  /** Record ids of the stream requests the page sent, answered or not. */
+  requests: string[];
   /** Waits for every response seen so far to finish reading its body. */
   settled(): Promise<void>;
   forRecord(recordId: string): StreamCall[];
@@ -35,7 +37,14 @@ export interface StreamLog {
 
 export function recordStreamLog(page: Page): StreamLog {
   const calls: StreamCall[] = [];
+  const requests: string[] = [];
   const pending: Promise<void>[] = [];
+
+  const onRequest = (request: Request) => {
+    const match = STREAM_RE.exec(new URL(request.url()).pathname);
+    if (match && request.method() === 'GET') requests.push(decodeURIComponent(match[1]));
+  };
+  page.on('request', onRequest);
 
   const onResponse = (response: Response) => {
     const url = new URL(response.url());
@@ -69,6 +78,7 @@ export function recordStreamLog(page: Page): StreamLog {
 
   return {
     calls,
+    requests,
     async settled() {
       await Promise.all(pending.splice(0));
     },
@@ -76,6 +86,7 @@ export function recordStreamLog(page: Page): StreamLog {
     bodies: (id) => calls.filter((c) => (c.status === 200 || c.status === 206) && c.bytes > 0 && (!id || c.recordId === id)),
     reset() {
       calls.length = 0;
+      requests.length = 0;
     },
   };
 }

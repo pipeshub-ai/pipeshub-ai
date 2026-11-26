@@ -18,11 +18,14 @@ from app.api.routes.extraction import router as extraction_router
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
     semantic_metadata_from_classification,
 )
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error, with_cause
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -583,6 +586,7 @@ def test_classify_without_a_configured_llm_returns_422_with_error_code() -> None
     [
         (LLMUnavailableError("connection refused"), "LLM_UNAVAILABLE"),
         (ExtractionLLMError("no usable output"), "LLM_FAILED"),
+        (ExtractionContentFilteredError(), "LLM_CONTENT_FILTERED"),
     ],
 )
 def test_model_failures_answer_424_with_a_code(error: Exception, code: str) -> None:
@@ -657,7 +661,7 @@ def test_an_open_breaker_refusal_is_not_a_warning(caplog: pytest.LogCaptureFixtu
         TestClient(_build_app(mock_extraction)).post(
             "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
         )
-    levels = [r.levelno for r in caplog.records if "Model provider unavailable" in r.getMessage()]
+    levels = [r.levelno for r in caplog.records if r.getMessage() == "document_classify.failed"]
     assert levels == [logging.DEBUG, logging.WARNING, logging.WARNING]
 
 
@@ -761,3 +765,30 @@ def test_a_model_failure_answer_carries_what_the_request_spent() -> None:
     )
     assert response.status_code == 424
     assert response.json()["usage"]["failed"] == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(400)), "bad_request",
+         logging.WARNING),
+        (lambda: with_cause(LLMUnavailableError(f"p could not serve the call: {MARK}"), openai_error(429)),
+         "rate_limited", logging.WARNING),
+        (lambda: ExtractionLLMError("Document classification and the fallback summary both failed"), "bad_request",
+         logging.WARNING),
+    ],
+    ids=["model-400", "outage-429", "both-failed"],
+)
+def test_a_model_failure_is_one_text_free_line_with_the_org(caplog, error, error_class, level) -> None:
+    caplog.set_level(logging.DEBUG)
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error())
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    )
+
+    assert response.status_code == 424
+    fields = failure_line(caplog.records, "document_classify.failed", error_class, level, *SENTINELS)
+    assert fields["org_id"] == "org-123"
+    assert_text_free(caplog.records, *SENTINELS)

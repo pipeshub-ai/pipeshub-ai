@@ -225,7 +225,7 @@ export interface DocumentRepository {
    * The row standing for one content revision of a virtual record, created on first use.
    * Racing callers settle on one row (unique per org, virtual record and revision).
    *
-   * Every call moves the row's write stamp (`updatedAt`) to `now`, so a delete that listed the
+   * Every call moves the row's write stamp (`updatedAt`) strictly forward, to `now` or one millisecond past the stored stamp if that is later, so a delete that listed the
    * revision earlier sees this write. A revision a delete claimed (`artifactSet.retiringAt`) less
    * than `staleMs` ago is refused with a `ConflictError`: its files may already be going. An older
    * claim is from a delete that died and is cleared by this write.

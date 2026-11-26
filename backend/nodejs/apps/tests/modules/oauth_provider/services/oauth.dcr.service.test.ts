@@ -9,11 +9,14 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { BadRequestError, ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { setUserRepository } from '../../../../src/libs/repositories/user'
 import { setIdentityPort } from '../../../../src/libs/repositories/identity'
-import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
-import { createMockLogger } from '../../../helpers/mock-logger'
-import { setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
+import { NO_APP_CREATOR, setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
 import { setClientMetadataGetter } from '../../../../src/modules/oauth_provider/services/client_metadata_document'
 import { InvalidClientError } from '../../../../src/libs/errors/oauth.errors'
+import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { mcpDiscoveryScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
+
+const CONSENTER = { orgId: 'org-2', userId: 'user-2' }
 
 describe('OAuthDcrService', () => {
   let service: OAuthDcrService
@@ -21,6 +24,15 @@ describe('OAuthDcrService', () => {
   let mockScopeValidatorService: any
   const orgId = new Types.ObjectId()
   const userId = new Types.ObjectId()
+  // Every logger a test builds, for the snake_case check after it.
+  const madeLoggers: MockLogger[] = []
+  const newLogger = (): MockLogger => {
+    const logger = createMockLogger()
+    madeLoggers.push(logger)
+    return logger
+  }
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DCR
@@ -48,7 +60,7 @@ describe('OAuthDcrService', () => {
       ]),
     }
     service = new OAuthDcrService(
-      createMockLogger(),
+      newLogger(),
       mockOAuthAppService,
       mockScopeValidatorService,
       {
@@ -75,29 +87,50 @@ describe('OAuthDcrService', () => {
     sinon.stub(Users, 'findOne').returns(userQuery)
   })
 
-  afterEach(() => {
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0))
     sinon.restore()
     setUserRepository()
     setIdentityPort()
     delete process.env.PIPESHUB_ENABLE_DCR
   })
 
-  // The endpoint has no session, so the owner is read in the install's organisation, which PostgreSQL needs bound.
-  it('reads the owner in the install organisation', async () => {
+  // Anyone may register (RFC 7591), so no person registered the client: it names none, and no user is read for it.
+  it('stores a registered client in the instance organisation with no person as its creator', async () => {
     process.env.PIPESHUB_ENABLE_DCR = 'true'
     setIdentityPort({ oldestOrgId: async () => 'org-1' } as any)
-    let bound: string | undefined
     setUserRepository({
       getOldestId: async () => {
-        bound = getCurrentOrgId()
-        return 'user-1'
+        throw new Error('no user is borrowed for a registered client')
       },
     } as any)
 
     await service.register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'], scope: 'user:read' })
 
-    expect(bound).to.equal('org-1')
-    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].orgId).to.equal('org-1')
+    const created = mockOAuthAppService.createDynamicClient.firstCall.args[0]
+    expect(created.orgId).to.equal('org-1')
+    expect(created.createdBy).to.equal(NO_APP_CREATOR)
+  })
+
+  it('stores a registered client in the organisation it is given, and refuses before the instance has one', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    const placed = new OAuthDcrService(
+      newLogger(), mockOAuthAppService, mockScopeValidatorService,
+      { mcpScopes: ['user:read'] } as any,
+      async () => 'org-9',
+    )
+    await placed.register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'], scope: 'user:read' })
+    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].orgId).to.equal('org-9')
+
+    const empty = new OAuthDcrService(
+      newLogger(), mockOAuthAppService, mockScopeValidatorService,
+      { mcpScopes: ['user:read'] } as any,
+      async () => null,
+    )
+    const error = await empty
+      .register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'], scope: 'user:read' })
+      .catch((e: unknown) => e)
+    expect(error).to.be.instanceOf(BadRequestError)
   })
 
   it('should register a public client without returning a secret', async () => {
@@ -135,6 +168,46 @@ describe('OAuthDcrService', () => {
     } catch (e) {
       expect((e as Error).message).to.contain('not in MCP_SCOPES')
     }
+  })
+
+  // The MCP_SCOPES that backend/env.template and the Compose files ship.
+  const shippedMcpScopes = 'openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete'.split(',')
+
+  // Cursor registers with no scope and then asks /authorize for everything in scopes_supported.
+  it('gives a client that names no scope every scope discovery advertises, so its /authorize request is refused nothing and it can refresh', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    const realScopes = new ScopeValidatorService()
+    mockScopeValidatorService.getAllowedScopeNamesForRole.callsFake((isAdmin: boolean) => realScopes.getAllowedScopeNamesForRole(isAdmin))
+    ;(service as any).appConfig.mcpScopes = shippedMcpScopes
+
+    await service.register({ client_name: 'Cursor', redirect_uris: ['http://localhost:8787/callback'] })
+
+    const allowed: string[] = mockOAuthAppService.createDynamicClient.firstCall.args[0].allowedScopes
+    expect(allowed).to.include('offline_access')
+    const scopesSupported = mcpDiscoveryScopes(shippedMcpScopes)
+    expect(allowed).to.include.members(scopesSupported)
+    const { notGranted } = realScopes.resolveGrantedScopes(scopesSupported, allowed)
+    expect(notGranted).to.deep.equal([])
+  })
+
+  it('keeps a client that names no scope inside MCP_SCOPES, leaving out offline_access when the operator has not enabled it', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    mockScopeValidatorService.getAllowedScopeNamesForRole.returns(['offline_access', 'kb:read', 'agent:read'])
+    ;(service as any).appConfig.mcpScopes = ['kb:read', 'agent:read']
+
+    await service.register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'] })
+
+    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].allowedScopes).to.have.members(['kb:read', 'agent:read'])
+  })
+
+  it('leaves out of the no-scope default a scope a member may not hold instead of refusing the registration', async () => {
+    process.env.PIPESHUB_ENABLE_DCR = 'true'
+    mockScopeValidatorService.getAllowedScopeNamesForRole.returns(['offline_access', 'kb:read'])
+    ;(service as any).appConfig.mcpScopes = ['offline_access', 'kb:read', 'config:read']
+
+    await service.register({ client_name: 'Cursor', redirect_uris: ['http://127.0.0.1/cb'] })
+
+    expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].allowedScopes).to.have.members(['offline_access', 'kb:read'])
   })
 
   it('should omit response_types code when authorization_code is not granted', async () => {
@@ -272,16 +345,42 @@ describe('OAuthDcrService', () => {
       expect(app.allowedScopes).to.deep.equal(['user:read', 'kb:read'])
       expect(mockOAuthAppService.validateDcrRedirectUris.calledWith(doc.redirect_uris)).to.be.true
 
-      await store()
+      await store(CONSENTER)
       const created = mockOAuthAppService.createDynamicClient.firstCall.args[0]
       expect(created.clientId).to.equal(CID)
       expect(created.isConfidential).to.be.false
-      expect(created.orgId).to.equal('org-1')
+      // The person who consented brought the client in: it is theirs and their organisation's, not a borrowed user's.
+      expect(created.orgId).to.equal(CONSENTER.orgId)
+      expect(created.createdBy).to.equal(CONSENTER.userId)
       expect(created.allowedGrantTypes).to.deep.equal([
         OAuthGrantType.AUTHORIZATION_CODE,
         OAuthGrantType.REFRESH_TOKEN,
       ])
       expect(created.allowedScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it('stores a metadata document client in the organisation it is given for the person who consented', async () => {
+      const asked: unknown[] = []
+      const logger = newLogger()
+      const placed = new OAuthDcrService(
+        logger, mockOAuthAppService, mockScopeValidatorService,
+        (service as any).appConfig,
+        async (consenter?: unknown) => {
+          asked.push(consenter)
+          return 'org-shared'
+        },
+      )
+      const { store } = await placed.resolveAuthorizeClient(CID)
+      await store(CONSENTER)
+
+      expect(asked).to.deep.equal([CONSENTER])
+      const created = mockOAuthAppService.createDynamicClient.firstCall.args[0]
+      expect(created.orgId).to.equal('org-shared')
+      expect(created.createdBy).to.equal(CONSENTER.userId)
+      expect(logger.info.args).to.deep.include([
+        'Stored client from its metadata document',
+        { client_id: CID },
+      ])
     })
 
     it('allows refresh_token when the document names no grant types', async () => {
@@ -339,7 +438,7 @@ describe('OAuthDcrService', () => {
         throw new Error('Duplicate key')
       })
       const { store } = await service.resolveAuthorizeClient(CID)
-      const app = await store()
+      const app = await store(CONSENTER)
       expect(app.clientId).to.equal(CID)
     })
 
@@ -357,7 +456,7 @@ describe('OAuthDcrService', () => {
       mockOAuthAppService.createDynamicClient = sinon.stub().rejects(new Error('db down'))
       const { store } = await service.resolveAuthorizeClient(CID)
       try {
-        await store()
+        await store(CONSENTER)
         expect.fail('should have thrown')
       } catch (e) {
         expect((e as Error).message).to.equal('db down')
@@ -395,7 +494,7 @@ describe('OAuthDcrService', () => {
       mockOAuthAppService.getAppByClientId = sinon.stub().resolves({ clientId: 'abc' })
       const { app, store } = await service.resolveAuthorizeClient('abc')
       expect(app.clientId).to.equal('abc')
-      expect(await store()).to.equal(app)
+      expect(await store(CONSENTER)).to.equal(app)
     })
   })
 })

@@ -1,0 +1,609 @@
+{
+  "description": "WP-113 FLOWGRANT: the 14 asks of a recorded conversation's Claude Code child run, as journaled: every external call of a run that read a private record asked the flow rule, and every one was allowed once because the card on a child's ask never offered the conversation. Kept: the interaction events (worker reason, request, the person's decision), the record id replaced. Replays: Python ConversationGrants (test_wp113_flowgrant.py), Node conversation-grants (wp113-flowgrant.test.ts), the chat's grouping (wp113-flowgrant-card.test.tsx).",
+  "sessionId": "6aef1a04e448c1d5034200e6",
+  "childRunId": "056d8938-3150-db36-3c22-3afd35a6f4c6",
+  "events": [
+    {
+      "seq": 27,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k0c6990479575da1d910cdd1f50e7de83e9dea4ab",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:aa92cac6f694d791e9c7b63eae078ccd343bdb2292daae1a8634ff909be7849d",
+          "label": "github.com/onyx-dot-app/onyx (public, read-only, about 68 MB)"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 28,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k0c6990479575da1d910cdd1f50e7de83e9dea4ab",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 29,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k0c6990479575da1d910cdd1f50e7de83e9dea4ab",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 43,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k220efd9442cee9c9a90e6d79fc6ea894376f4147",
+        "toolId": "pipeshub@git/repository_fetch",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:6f8832c776a8a368b6e0255e2a5eea2b29da1b7412b640a4ac91408e1002f06e",
+          "label": "github.com/pipeshub-ai/pipeshub-ai (public, read-only, about 42 MB)"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 44,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k220efd9442cee9c9a90e6d79fc6ea894376f4147",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 45,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k220efd9442cee9c9a90e6d79fc6ea894376f4147",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 54,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k13a8028ce55c08b38571e73737341b4f062a0bb4",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+          "label": "onyx.app"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 55,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k13a8028ce55c08b38571e73737341b4f062a0bb4",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 56,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k13a8028ce55c08b38571e73737341b4f062a0bb4",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 64,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k90f7a637900dce358406afec7934dde9e5ee76cb",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e50a24657b577a620ef914bb453c46e4e282f380a38c19026372cd82626c16cb",
+          "label": "pipeshub.com"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 65,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k90f7a637900dce358406afec7934dde9e5ee76cb",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 66,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k90f7a637900dce358406afec7934dde9e5ee76cb",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 74,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.kf46881f642df2275925874fccf9f30d716781dc9",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 75,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.kf46881f642df2275925874fccf9f30d716781dc9",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 76,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.kf46881f642df2275925874fccf9f30d716781dc9",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 83,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k1aab9f1db64c9665d51ee6ccba329e944a4072bf",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 84,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k1aab9f1db64c9665d51ee6ccba329e944a4072bf",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 85,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k1aab9f1db64c9665d51ee6ccba329e944a4072bf",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 102,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k6196597636d02636bddb4971890d9f3fc4439f2c",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 103,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k6196597636d02636bddb4971890d9f3fc4439f2c",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 104,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k6196597636d02636bddb4971890d9f3fc4439f2c",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 111,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k958cfb7f903b0173cd43f7ce6f018379ffc6739e",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 112,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k958cfb7f903b0173cd43f7ce6f018379ffc6739e",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 113,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k958cfb7f903b0173cd43f7ce6f018379ffc6739e",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 120,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k13f3c7056807f3a06378848d62e65d35a4c6d43f",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+          "label": "onyx.app"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 121,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k13f3c7056807f3a06378848d62e65d35a4c6d43f",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 122,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k13f3c7056807f3a06378848d62e65d35a4c6d43f",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 130,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k9f76c69857505541a6583dea1f16259fb32c1dbd",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e50a24657b577a620ef914bb453c46e4e282f380a38c19026372cd82626c16cb",
+          "label": "pipeshub.com"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 131,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k9f76c69857505541a6583dea1f16259fb32c1dbd",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 132,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k9f76c69857505541a6583dea1f16259fb32c1dbd",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 159,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k487b79a994969a98f4f9851a510998bbc40385ad",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+          "label": "onyx.app"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 160,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k487b79a994969a98f4f9851a510998bbc40385ad",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 161,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k487b79a994969a98f4f9851a510998bbc40385ad",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 169,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.ke183b36c021d7632976faf431c0891b4e8c15ef3",
+        "toolId": "web@searxng/fetch_url",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e50a24657b577a620ef914bb453c46e4e282f380a38c19026372cd82626c16cb",
+          "label": "pipeshub.com"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 170,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.ke183b36c021d7632976faf431c0891b4e8c15ef3",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 171,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.ke183b36c021d7632976faf431c0891b4e8c15ef3",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 179,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k6bdf618e58ceb90b1eb6b8e5966fa9cdaee7aeb4",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 180,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.k6bdf618e58ceb90b1eb6b8e5966fa9cdaee7aeb4",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 181,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.k6bdf618e58ceb90b1eb6b8e5966fa9cdaee7aeb4",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    },
+    {
+      "seq": 188,
+      "type": "interaction.explained",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.kd8b07336176111991d19b5e4ff11caf44c99f47a",
+        "toolId": "web@searxng/web_search",
+        "rule": "flow_external_write",
+        "layer": "flow",
+        "conversationGrant": true,
+        "sensitivity": "private",
+        "destination": {
+          "key": "sha256:e40fa94ef4c5f2cbd1892427d3c8a73bbd8dc2a3c7c43e621a9929a436415731",
+          "label": "SearXNG"
+        },
+        "moreSources": 0,
+        "sources": [
+          {
+            "recordId": "rec_private_1"
+          }
+        ]
+      }
+    },
+    {
+      "seq": 189,
+      "type": "interaction.requested",
+      "writer": "worker",
+      "data": {
+        "interactionId": "ix.approve.kd8b07336176111991d19b5e4ff11caf44c99f47a",
+        "kind": "approval"
+      }
+    },
+    {
+      "seq": 190,
+      "type": "interaction.resolved",
+      "writer": "node",
+      "data": {
+        "interactionId": "ix.approve.kd8b07336176111991d19b5e4ff11caf44c99f47a",
+        "decision": "approved",
+        "channel": "web",
+        "by": "p_owner"
+      }
+    }
+  ]
+}

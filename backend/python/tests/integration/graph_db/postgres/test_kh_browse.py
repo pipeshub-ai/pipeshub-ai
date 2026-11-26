@@ -9,13 +9,14 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
+from app.services.graph_db.postgres.kg import grant_marks, net
 from app.services.graph_db.postgres.kg import listing as kgl
-from app.services.graph_db.postgres.kg import net
 from tests.support import plan_gate
 
 from .pg_support import new_org
@@ -30,6 +31,9 @@ from .test_kh_listing_flat import (
     prov,
     seed_folder,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -228,6 +232,75 @@ async def test_an_arrow_counts_hierarchy_children_only_and_a_child_whose_class_k
     await _admin("UPDATE kg.records SET leaf = NULL WHERE org_id = $1 AND coll = 3 AND id = 'f'", org)      # k's class names f: kg can no longer vouch for it
     rows = {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted, start_type="recordGroup"))["rows"]}
     assert rows["f"] is True and [r["id"] for r in (await browse(p, org, "f", granted, start_type="record"))["rows"]] == ["k"]
+
+
+def _statements(monkeypatch) -> list[tuple[str, tuple]]:
+    """The tag and the arguments of every statement read from here on."""
+    from app.core.db.uow import Tx
+    seen: list[tuple[str, tuple]] = []
+    for name in ("fetch", "fetchrow", "fetchval"):
+        real = getattr(Tx, name)
+
+        async def traced(self, sql, *args, real=real) -> object:
+            m = re.search(r"pipeshub:([\w.]+)", sql)
+            seen.append((m.group(1) if m else "", args))
+            return await real(self, sql, *args)
+        monkeypatch.setattr(Tx, name, traced)
+    return seen
+
+
+async def test_a_browse_decides_by_the_classes_of_the_rows_it_reads_not_by_every_class_of_the_connector(pg_db, monkeypatch) -> None:
+    """A node held whole is decided by the classes of its children, of the start and its ancestors, and of its page's children (what their arrows read): the literals of the
+    connector's other classes are not read. Here m, under k, inherits from k: browsing top reads f and k, and the class that names k is not decided; browsing f is, and lights k."""
+    p, org = prov(pg_db), new_org()
+    await _group_with_a_folder(p, pg_db, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "m", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "recordName": "M"}], "records")
+        await p.batch_create_edges([edge("k", "records", "m", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("m", "records", "k", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge("m", "records", "top", "recordGroups")], "belongsTo")
+        await p.batch_create_edges([edge("u1", "users", "m", "records", type="USER", role="READER")], "permission")
+    await flip(pg_db, org)
+    granted = ["top", "side", "f", "k", "m"]
+    from asyncpg import connect
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        k_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'k'", org)
+        assert k_sk in {x for r in await con.fetch("SELECT clauses::text AS c FROM kg.scope_classes WHERE org_id = $1", org) for c in json.loads(r["c"]) for x in c}      # k is a literal
+    finally:
+        await con.close()
+    seen = _statements(monkeypatch)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted, start_type="recordGroup"))["rows"]} == {"f": True, "side": False}
+    literals = {sk for tag, args in seen if tag == "kg.read_literals" for sk in args[1]}
+    assert "kg.listing_classes" not in {t for t, _ in seen} and literals and k_sk not in literals, (literals, k_sk)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "f", granted, start_type="record"))["rows"]} == {"k": True}
+    assert [r["id"] for r in (await browse(p, org, "k", granted, start_type="record"))["rows"]] == ["m"]
+    monkeypatch.setattr(kh_listing, "CLASS_COVER", 0)      # the page's rows have more children than it reads the classes of: every class of the connector decides them
+    seen.clear()
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "top", granted, start_type="recordGroup"))["rows"]} == {"f": True, "side": False}
+    assert "kg.listing_classes" in {t for t, _ in seen}
+
+
+async def test_a_placeholders_walk_below_the_rows_a_browse_decides_by_class_asks_the_check(pg_db) -> None:
+    """fold -> S1 (stub) -> S2 (stub) -> L, L inheriting from S2: the browse of fold decides by the classes of fold, S1 and S2 only, so L's class (which names S2) is the
+    check's, which admits L when S2 is granted. S1 is listed (it leads to L) exactly then."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        recs = [{"_key": "fold", "recordName": "Folder", "mimeType": "application/vnd.folder"}, {"_key": "S1", "recordName": "S1", "isPlaceholder": True}, {"_key": "S2", "recordName": "S2", "isPlaceholder": True}, {"_key": "L", "recordName": "Leaf"}]
+        await p.batch_upsert_nodes([{**r, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for r in recs], "records")
+        await p.batch_create_edges([edge("fold", "records", "S1", "records", relationshipType="PARENT_CHILD"), edge("S1", "records", "S2", "records", relationshipType="PARENT_CHILD"),
+                                    edge("S2", "records", "L", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("L", "records", "S2", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge(r["_key"], "records", "g1", "recordGroups") for r in recs], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", i, "records", type="USER", role="READER") for i in ("fold", "S1", "S2")], "permission")
+    await flip(pg_db, org)
+    assert {r["id"]: r["hasChildren"] for r in (await browse(p, org, "fold", ["fold", "S1", "S2"]))["rows"]} == {"S1": True}
+    assert [r["id"] for r in (await browse(p, org, "S2", ["fold", "S1", "S2"], start_type="record"))["rows"]] == ["L"]
+    assert (await browse(p, org, "fold", ["fold", "S1"]))["rows"] == []      # S2 not granted: neither it nor L is readable, and S1 leads nowhere
 
 
 async def test_a_browse_reads_the_viewers_grants_in_the_connector_with_those_of_the_source_accounts_they_authenticated_as(pg_db) -> None:
@@ -434,11 +507,14 @@ async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lis
 
 
 # the statements checked for the plan of their values only (the page's snapshot plans each for its values): the windows of a wide node and its total
-CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
+CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ", "once ")
 
 
 # an index condition that names the node (or nodes) the statement asks about: a parent, a key, a child, an id (not merely the org, a kind or a class); ``>=`` is a seek's
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*>?=")
+
+
+KG_TABLES = ("kg.records", "kg.links", "kg.node_keys")
 
 
 def run_kg_analyze() -> None:
@@ -452,11 +528,30 @@ def run_kg_analyze() -> None:
     assert ran.returncode == 0, ran.stdout + ran.stderr
 
 
+@pytest.fixture
+async def kg_statistics_held() -> AsyncIterator[None]:
+    """The statistics of the kg tables change only when the test says so. The tables autoanalyze after 200 rows and 2 % of their
+    size, so the rows this test adds could be analyzed by the server at any moment between the insert and the plan check: the
+    ``after_first_load`` case then planned from statistics it had not been told about, and ``after_analyze`` from a second pass."""
+    from asyncpg import connect
+
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        for table in KG_TABLES:
+            await con.execute(f"ALTER TABLE {table} SET (autovacuum_enabled = false)")
+        yield
+    finally:
+        for table in KG_TABLES:
+            await con.execute(f"ALTER TABLE {table} RESET (autovacuum_enabled)")
+        await con.close()
+
+
 # after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
 # Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
 # the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
-async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
+async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, kg_statistics_held, analyzed) -> None:
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 400, readable_kids=[])
     for _ in range(2):
@@ -473,7 +568,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
     con = await connect(os.environ["PG_ADMIN_URL"])
     try:
         if analyzed:
-            await con.execute("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys")
+            await con.execute("; ".join(f"ANALYZE {t}" for t in KG_TABLES))
         sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'fold'", org)
         app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
         g1 = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 2 AND id = 'g1'", org)
@@ -503,15 +598,23 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
+                    one, _, one_links = params(204)
+                    branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
+                    sql = kgl.browse_once_sql("name", "ASC", "next", where, branches, one_links, (one.add([3]), one.add(app_sk), one.add(201)),
+                                              (one.add([1]), one.add([2]), one.add(["x"]), one.add([3]), one.add(app_sk), one.add(10_001)))
+                    statements.append((f"once {at} {'after' if boundary else 'first'}", sql, one.values))
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
         statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("children_of_bounded", kgl.children_of_sql(total=True), [org, [sk, g1], 1000, hide, 5000]),
                        ("held", kgl.HELD, [org, [g1], ["c0001", "fold"]]), ("chain_granted", kgl.CHAIN_GRANTED, [org, ["c0001", "fold"], "app1"]),
                        ("chain_rows", kgl.CHAIN_ROWS, [org, ["c0001", "fold"]]), ("chain_by_sk", kgl.CHAIN_BY_SK, [org, [sk, g1]]), ("app_key", kgl.APP_KEY, [org, "app1"]),
+                       ("root_chain", grant_marks.ROOT_CHAIN, [org, [sk, *hide], app_sk]), ("keys_of", kgl.KEYS_OF, [org, [sk, *hide]]),
                        ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),
+                       ("classes_of", kgl.CLASSES_OF, [org, app_sk, [1, 2, 3]]), ("child_classes", kgl.CHILD_CLASSES, [org, [sk, g1], 20_001, hide]),
                        ("links", kh_listing.LINKS, [org, [sk]]), ("keys", kh_listing.KEYS, [org, [sk]]), ("docs", kh_listing.DOCS, [org, ["records"], ["fold"]]),
                        ("files", kh_listing.FILES, [org, ["fold"]])]
         for name, sql, args in statements:
@@ -574,6 +677,7 @@ async def test_a_browse_in_a_callers_transaction_asks_the_check_and_never_admits
         calls.append(True)
         return await real(*a, **kw)
     monkeypatch.setattr(kh_listing, "class_sets", spy)
+    monkeypatch.setattr(kh_browse, "class_sets", spy)
     with ctx(org):
         tid = await p.begin_transaction([], [])
         try:
@@ -709,6 +813,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organisation_is_estimated_at(pg_db) -> None:
     """The page of a group whose 400 children are linked to it (``wide linked``): the linked children are read by their keys, one primary-key probe each, and the
     primary ones by the parent's range of a children index, however the planner estimates the organisation. Here the organisation is outside the most common values
@@ -750,6 +855,7 @@ async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organ
         await con.close()
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_statistics(pg_db) -> None:
     """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan) while the
     statistics know only two small orgs whose graph nodes share its partition, after ANALYZE, and with two more orgs of its size in that partition. In every state each graph node is
@@ -1155,3 +1261,43 @@ async def test_a_sidebar_page_reads_each_records_children_once_and_within_the_re
     listed = [r["id"] for r in page["rows"]]
     assert listed and listed == recs[:len(listed)] and all(r["hasChildren"] for r in page["rows"]) and page["hasMore"], listed
     assert max(reads.values()) <= 200 and sum(reads.values()) <= 1000 + 200, reads
+
+
+async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count_keeps_the_bounded_paths(pg_db, monkeypatch) -> None:
+    """A folder too wide to hold whose undecided children (here: copied without their stamp, as mid-sync) are more than the classes count: its page and total are the walk's
+    (the total of a sample, capped), and the one read of the children stops at the undecided ones the limit takes: no count and no window of the whole folder."""
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", 3)
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(30)]
+    await seed_folder(p, pg_db, org, 30, readable_kids=kids)
+    await _admin("UPDATE kg.records SET path = NULL WHERE org_id = $1 AND id = ANY($2::text[])", org, kids[:20])      # 20 undecided: the fourth is within any 14 read
+
+    def shown(page: dict) -> tuple:
+        return [(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")
+    got = shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4))
+    monkeypatch.setenv("PG_KG_READ", "0")
+    assert shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4)) == got
+    monkeypatch.delenv("PG_KG_READ")
+    assert got[1] is not None and len(got[0]) == 4
+
+    from asyncpg import connect
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'fold'", org)
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        base, where = kh_listing.where_of(org, app_sk, {}, {}, [], browse=True)
+        base.values[1], base.values[2] = sk, 20
+        sql = kgl.browse_once_sql("name", "ASC", "next", where, None, None, (base.add([]), base.add(app_sk), base.add(4)),
+                                  (base.add([]), base.add([]), base.add([]), base.add([]), base.add(app_sk), base.add(10_001)))
+        await con.execute("SELECT set_config('app.org_id', $1, false)", org)
+        plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
+        assert len((await con.fetch(sql, *base.values))[0]["undecided"]) == 4
+    finally:
+        await con.close()
+    # the children the CTE's own read produced (its body: what was read of the folder, before any scan of it filters), and every scan of it with the rows its filter removed:
+    # all stop by the fourth undecided child (at most 14 read, whatever the order), not at the folder's 30
+    body = [n for n in _nodes(plan) if n.get("Subplan Name") == "CTE r"]
+    assert len(body) == 1 and body[0].get("Actual Rows", 0) * max(1, body[0].get("Actual Loops", 1)) <= 14, body
+    read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
+    assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read

@@ -956,6 +956,16 @@ class TestCandidateQueueFilesystemFallback:
         assert await manager.get_pending_candidates() == []
         assert await store.exists("skill-one") is False
 
+    async def test_reject_unknown_candidate_raises_registry_error_and_removes_nothing(self, tmp_path) -> None:
+        store = FakeCandidateStore()
+        manager = _manager(store, config=SkillManagerConfig(skills_dir=str(tmp_path)))
+        await store.queue_candidate(_candidate("cand-1", "skill-one"))
+
+        with pytest.raises(RegistryError, match="not found"):
+            await manager.reject_candidate("nonexistent")
+
+        assert [c.candidate_id for c in await store.get_pending_candidates()] == ["cand-1"]
+
     async def test_approve_candidate_creates_skill_and_removes_from_queue(self, tmp_path) -> None:
         store = FakeStore()
         governor = FakeGovernor()

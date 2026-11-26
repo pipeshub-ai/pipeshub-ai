@@ -1,28 +1,164 @@
-{{- if .Values.networkPolicy.enabled -}}
+{{- if include "pipeshub-ai.networkPolicyEnabled" . }}
+{{- $root := . }}
+{{- $fullname := include "pipeshub-ai.fullname" . }}
+{{- $cluster := .Values.networkPolicy.clusterCidrs }}
+{{- $stores := include "pipeshub-ai.np.stores" . | fromYaml }}
+# ADR-OPS-04 (SEC-D-09): nothing moves unless a policy below names both ends.
+# Policies add up, so every allow is written for one component pair and none
+# selects "any pod" or "any namespace".
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "pipeshub-ai.fullname" . }}
+  name: {{ $fullname }}-default-deny
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+spec:
+  {{- if include "pipeshub-ai.followsHardened" (dict "value" .Values.networkPolicy.namespaceDefaultDeny "root" .) }}
+  podSelector: {}
+  {{- else }}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  {{- end }}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The application pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}
   labels:
     {{- include "pipeshub-ai.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels:
-      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+    {{- include "pipeshub-ai.np.component" (dict "root" . "component" "main") | nindent 4 }}
   policyTypes:
     - Ingress
     - Egress
-  {{- with .Values.networkPolicy.ingress }}
   ingress:
+    # Replicas call each other's services through the shared Service.
+    - from:
+        - podSelector:
+            {{- include "pipeshub-ai.np.component" (dict "root" . "component" "main") | nindent 12 }}
+    {{- with .Values.networkPolicy.ingressControllers }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 3001
+        - protocol: TCP
+          port: 8088
+    {{- end }}
+    {{- with .Values.networkPolicy.ingress }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- if or .Values.networkPolicy.egress .Values.networkPolicy.extraEgress }}
+    {{- end }}
   egress:
+    {{- include "pipeshub-ai.np.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            {{- include "pipeshub-ai.np.component" (dict "root" . "component" "main") | nindent 12 }}
+    {{- include "pipeshub-ai.np.storeEgress" (dict "root" . "component" "main") | nindent 4 }}
+    {{- if eq (include "pipeshub-ai.sandboxMode" .) "broker" }}
+    - to:
+        - podSelector:
+            {{- include "pipeshub-ai.np.component" (dict "root" . "component" "sandbox-broker") | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 8095
+    {{- end }}
+    {{- with .Values.networkPolicy.appExternalEgress }}
+    {{- if .enabled }}
+    # Model APIs, connectors and e2b: any address but link-local (cloud
+    # metadata, the node's agents) and networkPolicy.clusterCidrs.
+    - to:
+        {{- include "pipeshub-ai.np.ipBlocks" (dict "blocks" .blocks "cluster" $cluster) | nindent 8 }}
+      {{- with .ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.metrics.harness.enabled }}
+    {{- with .Values.metrics.harness.remoteWrite.peers }}
+    # The pods' metrics agent to the Prometheus it remote-writes to (R41SUPPLY-FU-13).
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.metrics.harness.remoteWrite.port }}
+    {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.egress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- end }}
+{{- range $name, $store := $stores }}
+{{- range $i, $selector := $store.selectors }}
+---
+# {{ $name }}: its clients on {{ $store.ports | join ", " }}, and its own pods on any port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-{{ $name }}{{ if $i }}-{{ $i }}{{ end }}
+  labels:
+    {{- include "pipeshub-ai.labels" $root | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $selector | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $selector | nindent 14 }}
+    - from:
+        {{- range $store.clients }}
+        - podSelector:
+            {{- include "pipeshub-ai.np.component" (dict "root" $root "component" .) | nindent 12 }}
+        {{- end }}
+      ports:
+        {{- range $store.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+  egress:
+    {{- include "pipeshub-ai.np.dnsEgress" $root | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $selector | nindent 14 }}
+    {{- include "pipeshub-ai.np.storeEgress" (dict "root" $root "component" $name) | nindent 4 }}
+    {{- with $root.Values.networkPolicy.storeExtraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- if $stores.mongodb }}
+{{- if $root.Values.mongodb.builtin.enabled }}
+---
+# The replica-set initiate Job: DNS and MongoDB only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-mongodb-initiate
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    {{- include "pipeshub-ai.np.component" (dict "root" . "component" "mongodb-initiate") | nindent 4 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    {{- include "pipeshub-ai.np.dnsEgress" . | nindent 4 }}
+    {{- include "pipeshub-ai.np.storeEgress" (dict "root" . "component" "mongodb-initiate") | nindent 4 }}
+{{- end }}
+{{- end }}
 {{- end }}

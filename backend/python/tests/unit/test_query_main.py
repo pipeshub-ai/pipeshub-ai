@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -407,11 +407,19 @@ class TestLifespan:
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            async with lifespan(mock_app):
-                # Inside lifespan — app should have container set
-                assert mock_app.container is mock_container
-                # Chat attachment PDFs parse in killable worker processes.
-                assert parse_pool.parse_pool_workers() > 0
+            with (
+                patch("app.sandbox.artifact_cleanup.start_cleanup_task") as start_cleanup,
+                patch("app.sandbox.artifact_cleanup.stop_cleanup_task") as stop_cleanup,
+            ):
+                async with lifespan(mock_app):
+                    # Inside lifespan — app should have container set
+                    assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
+                    # CLEANUP-2: the sandbox temp-folder sweeper runs while the service does.
+                    start_cleanup.assert_called_once_with()
+                    stop_cleanup.assert_not_called()
+                stop_cleanup.assert_called_once_with()
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
@@ -482,8 +490,9 @@ class TestLifespan:
             async with lifespan(MagicMock()):
                 assert org_context.peek() is None
 
-        assert len(seen) == 1 and seen[0] is not None
-        assert (seen[0].kind, seen[0].source) == ("system", "system:query_startup")
+        assert all(ctx is not None and ctx.kind == "system" for ctx in seen)
+        # The view sweep lists the orgs too, in the background.
+        assert {"system:query_startup"} <= {ctx.source for ctx in seen} <= {"system:query_startup", "system:orphan_view_sweep"}
 
     async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
         """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""
@@ -521,6 +530,54 @@ class TestLifespan:
                 await app.state.skills_seed_task
 
         assert seen == [None]
+
+    async def test_sandbox_alert_loop_starts_and_is_cancelled_on_shutdown(self) -> None:
+        from types import SimpleNamespace
+
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider(orgs=[])
+        mock_container.retrieval_service = AsyncMock(return_value=AsyncMock())
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        started = asyncio.Event()
+        cancelled: list[bool] = []
+
+        org_lists: list[list[str]] = []
+
+        async def _loop(config_service: object, _logger: object, *, org_ids: Callable[[], Awaitable[list[str]]]) -> None:
+            assert config_service is mock_config_service
+            org_lists.append(await org_ids())       # the recipients of a signed alert: the graph's orgs
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        app = MagicMock()
+        app.state = SimpleNamespace()
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _loop),
+            # The attribute the lifespan reads, not a module swapped in sys.modules: the lifespan imports modules of its own while
+            # it runs, and replacing sys.modules around that drops them again (the guard fails a test that does).
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
+        ):
+            async with lifespan(app):
+                await asyncio.wait_for(started.wait(), 5)
+                task = app.state.sandbox_alert_task
+
+        assert task.done()
+        assert cancelled == [True]
+        assert org_lists == [[]]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""
@@ -634,114 +691,152 @@ class TestLifespan:
 
 
 # ===========================================================================
-# authenticate_requests middleware
+# AuthenticateRequests middleware
 # ===========================================================================
 
 
+def _http_scope(path: str = "/api/v1/search") -> dict:
+    return dict(request_with_host(path).scope)
+
+
+async def _run_asgi(middleware, scope: dict) -> list[dict]:
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await middleware(scope, receive, send)
+    return sent
+
+
+def _status_and_json(sent: list[dict]) -> tuple[int, dict]:
+    import json
+
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return sent[0]["status"], json.loads(body)
+
+
+class _InnerApp:
+    """Stands in for the routes below the middleware; records what it saw."""
+
+    def __init__(self, fail: BaseException | None = None, fail_after_start: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.fail = fail
+        self.fail_after_start = fail_after_start
+
+    async def __call__(self, scope, receive, send) -> None:
+        from starlette.requests import Request
+
+        self.calls.append(scope)
+        if self.fail is not None and not self.fail_after_start:
+            raise self.fail
+        user = getattr(Request(scope).state, "user", None)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"chunk", "more_body": True})
+        if self.fail is not None:
+            raise self.fail
+        await send({"type": "http.response.body", "body": repr(user).encode(), "more_body": False})
+
+
 class TestAuthenticateRequests:
-    """Tests for the authenticate_requests HTTP middleware."""
+    """Tests for the AuthenticateRequests ASGI middleware."""
 
-    async def test_excluded_path_skips_auth(self):
+    def _middleware(self, inner: object) -> object:
+        from app.query_main import AuthenticateRequests
+
+        return AuthenticateRequests(inner)
+
+    async def test_excluded_path_skips_auth(self) -> None:
         """Requests to /health bypass authentication entirely."""
-        from app.query_main import authenticate_requests
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            sent = await _run_asgi(self._middleware(inner), _http_scope("/health"))
+        auth.assert_not_awaited()
+        assert len(inner.calls) == 1 and sent[0]["status"] == 200
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/health"
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+    async def test_authenticated_request_reaches_the_route_with_its_state(self) -> None:
+        """The route sees request.state.user as set by authMiddleware."""
+        inner = _InnerApp()
 
-        result = await authenticate_requests(mock_request, call_next)
-        assert result is mock_response
-        call_next.assert_awaited_once_with(mock_request)
+        async def _auth(request: object) -> object:
+            request.state.user = {"orgId": "org-1"}
+            return request
 
-    async def test_authenticated_request_succeeds(self):
-        """Successful authMiddleware passes request to call_next."""
-        from app.query_main import authenticate_requests
+        with patch("app.query_main.authMiddleware", side_effect=_auth):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        authed_request = MagicMock()
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+        assert sent[0]["status"] == 200
+        assert sent[-1]["body"] == repr({"orgId": "org-1"}).encode()
 
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=authed_request):
-            result = await authenticate_requests(mock_request, call_next)
+    async def test_streamed_chunks_pass_through_unchanged(self) -> None:
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
+        assert [m["type"] for m in sent] == [
+            "http.response.start", "http.response.body", "http.response.body",
+        ]
+        assert sent[1] == {"type": "http.response.body", "body": b"chunk", "more_body": True}
 
-        assert result is mock_response
-        call_next.assert_awaited_once_with(authed_request)
-
-    async def test_http_exception_returns_error_json(self):
-        """HTTPException from authMiddleware returns proper JSON error."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
+    async def test_http_exception_returns_error_json(self) -> None:
+        """HTTPException from authMiddleware returns proper JSON error and marks the request's failure."""
+        inner = _InnerApp()
         refusal = HTTPException(status_code=401, detail="Unauthorized")
         with (
             patch("app.query_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal),
             patch("app.query_main.mark_request_failure") as hand_over,
         ):
-            result = await authenticate_requests(mock_request, call_next)
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 401
-        hand_over.assert_called_once_with(mock_request, refusal)
-        call_next.assert_not_awaited()
+        assert _status_and_json(sent) == (401, {"detail": "Unauthorized"})
+        hand_over.assert_called_once()
+        assert hand_over.call_args.args[1] is refusal
+        assert inner.calls == [], "the route never runs"
 
     async def test_unexpected_exception_propagates_to_the_request_line(self) -> None:
         """Not caught here: the request's http.request.end logs it once and answers the 500."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
         with patch(
             "app.query_main.authMiddleware",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
-        ):
-            with pytest.raises(RuntimeError, match="boom"):
-                await authenticate_requests(mock_request, call_next)
+        ), pytest.raises(RuntimeError, match="boom"):
+            await _run_asgi(self._middleware(_InnerApp()), _http_scope())
 
     async def test_route_exception_propagates_to_the_request_line(self) -> None:
-        from app.query_main import authenticate_requests
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock),              pytest.raises(RuntimeError, match="route exploded"):
+            await _run_asgi(self._middleware(_InnerApp(fail=RuntimeError("route exploded"))), _http_scope())
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock(side_effect=RuntimeError("route exploded"))
+    async def test_route_exception_after_the_response_started_propagates(self) -> None:
+        """Nothing can replace a response already on the wire; the server
+        closes the connection, as it did under BaseHTTPMiddleware."""
+        inner = _InnerApp(fail=RuntimeError("mid-stream"), fail_after_start=True)
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock),              pytest.raises(RuntimeError, match="mid-stream"):
+            await _run_asgi(self._middleware(inner), _http_scope())
 
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=mock_request):
-            with pytest.raises(RuntimeError, match="route exploded"):
-                await authenticate_requests(mock_request, call_next)
+    async def test_non_http_scopes_pass_through(self) -> None:
+        inner = AsyncMock()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            await self._middleware(inner)({"type": "lifespan"}, AsyncMock(), AsyncMock())
+        auth.assert_not_awaited()
+        inner.assert_awaited_once()
+
+    async def test_registered_on_the_app(self) -> None:
+        from app.query_main import AuthenticateRequests, app
+
+        assert AuthenticateRequests in [m.cls for m in app.user_middleware]
 
     @pytest.mark.parametrize("host", POISONED_HOSTS)
-    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+    async def test_poisoned_host_header_does_not_skip_auth(self, host) -> None:
         """A Host header naming an excluded path does not replace the request path."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/api/v1/x", host)
-        call_next = AsyncMock()
-
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=request) as auth:
-            await authenticate_requests(request, call_next)
-
-        auth.assert_awaited_once_with(request)
-
-    async def test_health_path_of_a_real_request_skips_auth(self):
-        """The exclusion still applies to a real request for /health."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/health")
-        call_next = AsyncMock()
+        scope = dict(request_with_host("/api/v1/x", host).scope)
 
         with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
-            await authenticate_requests(request, call_next)
+            await _run_asgi(self._middleware(_InnerApp()), scope)
 
-        auth.assert_not_awaited()
-        call_next.assert_awaited_once_with(request)
+        auth.assert_awaited_once()
+        assert auth.await_args.args[0].url.path == "/api/v1/x"
 
 
 # ===========================================================================
@@ -1309,7 +1404,7 @@ class TestRequestLogging:
         from app.api.middlewares.request_log import install_request_logging
 
         mini = FastAPI()
-        mini.middleware("http")(qm.authenticate_requests)
+        mini.add_middleware(qm.AuthenticateRequests)
         install_request_logging(mini)  # same order as query_main
 
         @mini.get("/api/v1/kb/{kb_id}")

@@ -1,14 +1,25 @@
+"""Unit-test defaults for the whole tree."""
+
+from __future__ import annotations
+
 import contextlib
 import gc
 import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 
+from app.sandbox.roots import SANDBOX_ROOT_ENV
 from tests.support.edition_defaults import unit_test_fixtures
+from tests.support.mock_config_epoch import (
+    _epoch_of_a_collection_whose_config_is_a_mock,  # noqa: F401  (autouse)
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +30,13 @@ def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _paid_cache_writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The paid-result cache stores nothing unless ``PAID_CACHE_WRITE`` is on (its default for the release that
+    first ships it is off). The cache's own tests run with writes on; the off behaviour deletes the variable."""
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+
+
+@pytest.fixture(autouse=True)
 def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch) -> None:
     """The delete handlers purge a record's (or org's) stored model outputs through the storage service; a unit
     test of them must not open a connection. Tests of the purge itself bind their own cache over the same name."""
@@ -26,6 +44,15 @@ def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch
     from app.services.paid_cache.cache import NullPaidResultCache
 
     monkeypatch.setattr(access, "paid_cache_for", lambda *_a, **_k: NullPaidResultCache())
+
+
+@pytest.fixture(autouse=True)
+def _no_neo4j_restart_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A knowledge-hub listing on Neo4j first reads the server's start time (`_kh_server_restarted`); unit tests script
+    and count the statements a client is sent, so the read is off unless a test turns it on."""
+    neo4j_provider = sys.modules.get("app.services.graph_db.neo4j.neo4j_provider")
+    if neo4j_provider is not None:
+        monkeypatch.setattr(neo4j_provider.Neo4jProvider, "_KH_SERVER_CHECK_S", 0)
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +130,16 @@ def _private_temp_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]
     # AF_UNIX socket paths that tests build below it keep their headroom (107 chars).
     private = tempfile.mkdtemp(prefix="pt")
     tempfile.tempdir = private
+    # run_code's executors keep a lasting ``pipeshub_sandbox*`` root under the temp folder by design (R13-ROOT);
+    # an operator root keeps those out of the leak check without hiding what a run leaves in them.
+    sandbox_root_set = SANDBOX_ROOT_ENV in os.environ
+    if not sandbox_root_set:
+        os.environ[SANDBOX_ROOT_ENV] = os.path.join(private, "sandbox-roots")
     try:
         yield private
     finally:
+        if not sandbox_root_set:
+            os.environ.pop(SANDBOX_ROOT_ENV, None)
         tempfile.tempdir = previous
         shutil.rmtree(private, ignore_errors=True)
 

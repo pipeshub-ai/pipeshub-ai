@@ -84,6 +84,8 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-cov-1"
     dep.on_new_app_users = AsyncMock()
+    dep.open_app_to_org_team = AsyncMock()
+    dep.withdraw_team_app_edge = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -122,6 +124,9 @@ def _make_connector():
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
     # No issue security scheme: unsecured issues are unchanged
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector
 
 
@@ -747,6 +752,60 @@ class TestRunSync:
         await connector._keep_stored_records("proj-id-1")
 
         processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-live", "r-deleted"])
+
+    @pytest.mark.asyncio
+    async def test_keeping_a_whole_project_reads_no_comment_files(self) -> None:
+        """A comment's files are in the project's record group, so keeping the whole project already covers them."""
+        connector = _make_connector()
+        comment = MagicMock(id="r-comment", external_record_id="c1", record_type=RecordType.COMMENT)
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[comment])
+        processor.get_records_by_parent = AsyncMock(return_value=[])
+
+        await connector._keep_stored_records("proj-id-1")
+
+        processor.get_records_by_parent.assert_not_awaited()
+        processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-comment"])
+
+    @pytest.mark.asyncio
+    async def test_keeping_some_issues_keeps_them_their_files_and_comments_only(self) -> None:
+        connector = _make_connector()
+
+        def stored(rid: str, ext: str, kind: RecordType, parent: str | None = None) -> MagicMock:
+            return MagicMock(id=rid, external_record_id=ext, record_type=kind, parent_external_record_id=parent)
+
+        rows = [stored(f"r{n:04d}", f"x{n}", RecordType.TICKET) for n in range(1500)]
+        rows[5] = stored("r0005", "attachment_1", RecordType.FILE, "1")
+        rows[6] = stored("r0006", "2", RecordType.TICKET, "1")
+        rows[7] = stored("r0007", "attachment_3", RecordType.FILE, "3")
+        rows[1200] = stored("r1200", "1", RecordType.TICKET)
+        rows[1300] = stored("r1300", "c1", RecordType.COMMENT, "1")
+        rows[1499] = stored("r1499", "attachment_9", RecordType.FILE, "1")
+        after_keys: list[str | None] = []
+
+        async def scan(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE) -> list[MagicMock]:
+            after_keys.append(after_key)
+            return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+        processor.get_records_in_record_group = scan
+        processor.get_records_by_parent = AsyncMock(return_value=[MagicMock(id="r-comment-file")])
+
+        await connector._keep_stored_records("proj", {"1"})
+
+        assert after_keys == [None, "r0999"]
+        kept = {rid for c in processor.note_kept_records.call_args_list for rid in c.args[1]}
+        assert kept == {"r0005", "r1200", "r1300", "r1499", "r-comment-file"}, (
+            "a sub-task is written when still in Jira; other issues' files are not kept"
+        )
+        processor.get_records_by_parent.assert_awaited_once_with(
+            connector.connector_id, "c1", RecordType.FILE.value, visibility=RecordVisibility.ALL,
+        )  # a soft-deleted file under a kept comment is kept with it
+        processor.note_kept_record_group.assert_awaited_once_with(connector.connector_id, "proj")
 
     @pytest.mark.asyncio
     async def test_run_sync_error_raises(self):
@@ -1474,6 +1533,28 @@ class TestFetchUsersPhases:
             await connector._fetch_users()
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_user_read(self) -> None:
+        """The PipesHub users are the emails a hidden-email account is looked up by; read as none after a failure,
+        those accounts would go unresolved as if no one could match them. The read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
     async def test_a_short_page_is_not_the_end_of_the_user_list(self) -> None:
         """/users/search answers a bare array with no end marker: a page shorter than asked for may be followed by
         more, so only an empty page ends the list, and the next page starts after the rows returned."""
@@ -2134,6 +2215,25 @@ class TestFetchIssuesBatchedCoverage:
             batches.append((batch, has_more, ts))
 
         assert len(batches) >= 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result", [{"success": False, "deleted_records": []}, {"failed_count": 1}],
+                             ids=["not_a_success", "a_failed_record"])
+    async def test_a_delete_cascade_that_failed_fails_the_batch_so_the_issues_are_read_again(self, result: dict) -> None:
+        """Records an issue no longer holds (a removed file, a stale restricted comment) that could not be deleted are
+        not left behind: the batch fails before its records are written, so the project's issues are read again."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = None
+        mock_ds = MagicMock()
+        mock_ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            return_value=_make_mock_response(200, {"issues": [_make_issue()], "nextPageToken": None}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._build_issue_records = AsyncMock(return_value=([], ["stale-comment-rec"]))
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value=result)
+        with pytest.raises(Exception, match="could not be deleted"):
+            async for _ in connector._fetch_issues_batched("PROJ", "p1", []):
+                pass
 
     @pytest.mark.asyncio
     async def test_with_modified_filter(self):

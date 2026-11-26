@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.services.graph_db.postgres.kg import drainer
+from app.services.graph_db.postgres.kg import drainer, restamp
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
@@ -253,6 +253,28 @@ async def test_a_row_with_no_path_or_of_another_connector_or_a_connector_not_ser
     assert tally.c[("by_parent", "not_served")] and tally.c[("depths", "not_served")] and not any(_served(tally, w) for w in WHATS), dict(tally.c)
 
 
+async def test_a_row_a_restamp_job_hides_takes_the_walk_while_the_rest_of_the_connector_is_served(pg_provider, pg_db, tally) -> None:
+    """A rows job leaves its connector served: a read that passes the row it marks (whose path is the job's to rewrite) is the walk's, a read that does not is kg's."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    walk, _ = await _walk_and_kg(pg_provider, org)
+
+    async def mark(tx) -> int:
+        return await restamp.enqueue_rows(tx, org, {("records", "b")}, "reach", org_wide=True)
+    with ctx(org):
+        assert await pg_db.run(mark, write=True) == 1
+    tally.c.clear()
+    assert (await _walk_and_kg(pg_provider, org))[1] == walk
+    assert tally.c[("by_parent", "reach")] and tally.c[("depths", "reach")] and not tally.c[("by_parent", "not_served")], dict(tally.c)
+    tally.c.clear()
+    below_c = await _both(org, lambda: _p(pg_provider.get_records_by_parent_record("c", "app1", org, -1)))
+    assert below_c[0] == below_c[1] and _served(tally, "by_parent"), dict(tally.c)     # c's subtree does not pass b
+    await restamp.run_jobs(pg_db, org, "w1")
+    tally.c.clear()
+    assert (await _walk_and_kg(pg_provider, org))[1] == walk
+    assert all(_served(tally, w) for w in WHATS), dict(tally.c)
+
+
 async def test_with_the_switch_off_or_in_a_callers_transaction_kg_is_not_read(pg_provider, pg_db, tally) -> None:
     org = new_org()
     await _tree(pg_provider, pg_db, org)
@@ -372,6 +394,7 @@ async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_bac
 N = 12_000
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: on a connector of 12,000 records (a chain under f, a wide group), never analysed and then analysed, no statement scans a kg or graph table whole."""
     org = new_org()

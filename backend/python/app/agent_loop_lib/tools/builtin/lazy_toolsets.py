@@ -8,15 +8,22 @@ from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.events.base import EventType
 from app.agent_loop_lib.tools.base import (
     ParameterType,
+    Tag,
     Tool,
     ToolOutput,
     ToolParameter,
 )
-from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.global_fallback import GlobalCatalogFallback
 from app.agent_loop_lib.tools.index import KeywordToolIndex, ToolIndex
 from app.agent_loop_lib.tools.registry import ToolDeferral, ToolRegistry
 from app.agent_loop_lib.tools.special_route import RouteContext
+from app.agent_loop_lib.tools.tags import TAG_EFFECT_READ
+from harness_core.tools.call_tool import (
+    CALL_TOOL,
+    CALL_TOOL_DESCRIPTION,
+    CALL_TOOL_INPUT_SCHEMA,
+    unwrap_call,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -29,6 +36,24 @@ def _grant_set(spec: "AgentSpec") -> set[str] | None:
     must never grow `agent.visible_tools` beyond, regardless of
     `tool_disclosure` — see `AgentSpec.tool_disclosure`'s docstring."""
     return set(spec.tool_names) if spec.tool_names else None
+
+
+def how_to_call(registry: ToolRegistry, grant: set[str] | None) -> str | None:
+    """What a result that answers tools tells the model about calling them: through ``call_tool`` when the agent
+    has it (its tool list is fixed for the chat, R4), else nothing (every tool it may call is already listed)."""
+    if not registry.has(CALL_TOOL) or (grant is not None and CALL_TOOL not in grant):
+        return None
+    return (
+        "Your tool list stays the same for this chat. Call any tool above with call_tool, passing its exact name "
+        "and arguments that match its inputSchema."
+    )
+
+
+SEARCH_LIMIT = 5
+
+
+def _limit(value: Any) -> int:
+    return int(value or SEARCH_LIMIT)
 
 
 def _withheld(registry: ToolRegistry, grant: set[str], denied: list[str]) -> dict[str, Any]:
@@ -90,6 +115,10 @@ class ListToolsetsTool(Tool):
         return "/toolsets/builtin/list_toolsets"
 
     @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(
@@ -115,14 +144,9 @@ class ListToolsetsTool(Tool):
 
 
 class FetchToolsTool(Tool):
-    """Meta-tool: loads the real tool schemas for one toolset into the
-    result (for the model to read) — `handle()` below additionally makes
-    those tools *callable* from the next turn onward, by growing
-    `agent.visible_tools` (mirroring how spawn_agent/clarify are
-    special-cased). Calling `execute()` directly outside the agent loop
-    (e.g. in a unit test) just returns the schemas; it has no other side
-    effects on its own.
-    """
+    """Meta-tool: answers the real tool schemas of one toolset (for the model
+    to read). It never changes the agent's tool list, which is fixed for the
+    chat (R4): the model calls an answered tool through ``call_tool``."""
 
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
@@ -133,19 +157,23 @@ class FetchToolsTool(Tool):
 
     @property
     def short_description(self) -> str:
-        return "Load the tool schemas for a toolset, making its tools callable."
+        return "Get the tool schemas of a toolset; call its tools with call_tool."
 
     @property
     def description(self) -> str:
         return (
-            "Load the tool schemas for a toolset named by list_toolsets, "
-            "making those tools callable on subsequent turns. To narrow by "
-            "intent instead of a known toolset name, use search_tools."
+            "Get the tool schemas of a toolset named by list_toolsets. Call a "
+            "tool it answers with call_tool. To narrow by intent instead of a "
+            "known toolset name, use search_tools."
         )
 
     @property
     def path(self) -> str:
         return "/toolsets/builtin/fetch_tools"
+
+    @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -160,52 +188,28 @@ class FetchToolsTool(Tool):
 
     async def handle(self, call: ToolCall, ctx: RouteContext) -> CoreToolResult:
         agent = ctx.agent
-        toolset_name = call.arguments.get("toolset", "")
-        names = self._registry.tools_in_toolset(toolset_name)
-        grant = _grant_set(ctx.spec)
-        allowed = [n for n in names if grant is None or n in grant]
-        denied = [n for n in names if grant is not None and n not in grant]
         await obs.write_state(agent, ctx.goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="fetch_tools")
         await obs.append_timeline(agent, "tool_call", "Calling tool: fetch_tools", "running_tool", {"tool": "fetch_tools", "args": call.arguments})
-        visible = agent.visible_tools or set()
-        if len(visible | set(allowed)) > MAX_TOOLS_PER_REQUEST:
-            # Past the limit the provider refuses the whole request; search_tools loads a few.
-            return CoreToolResult(
-                tool_call_id=call.id, name=call.name, is_error=True,
-                content=(
-                    f"Not loaded: {toolset_name} has {len(allowed)} tools, and with the {len(visible)} already "
-                    f"loaded that is over the {MAX_TOOLS_PER_REQUEST} tools one request can carry. Load only "
-                    "the tools you need: search_tools with the action and the app (for example "
-                    "'create issue linear') makes just the matching tools callable."
-                ),
-            )
-        # `execute()` materializes every tool in the toolset (see below) —
-        # run it BEFORE growing `agent.visible_tools`, since the turn loop
-        # resolves a visible tool's schema synchronously next turn and has
-        # no opportunity to await materialization at that point.
-        result = await self.execute(**call.arguments)
-        if allowed:
-            # `|=` (grow in place) rather than `= stale_snapshot | allowed`
-            # — a concurrent `search_tools`/`fetch_tools` call in the same
-            # gathered turn could otherwise read `agent.visible_tools`
-            # before this one's write lands and overwrite it, losing that
-            # call's own additions.
-            agent.visible_tools = agent.visible_tools or set()
-            agent.visible_tools |= set(allowed)
+        return await self.resolve(call, grant=_grant_set(ctx.spec))
 
+    async def resolve(self, call: ToolCall, *, grant: set[str] | None) -> CoreToolResult:
+        """The call within ``grant``: schemas of tools outside it are withheld. The durable harness calls this
+        as its route."""
+        toolset_name = call.arguments.get("toolset", "")
+        names = self._registry.tools_in_toolset(toolset_name)
+        allowed = [n for n in names if grant is None or n in grant]
+        denied = [n for n in names if grant is not None and n not in grant]
+        result = await self.execute(**call.arguments)
         data = result.data
-        if result.success and denied and isinstance(data, dict) and "tools" in data:
-            # Ceiling enforcement: schemas for tools this agent was never
-            # granted are dropped from the response — never surfaced as
-            # callable, and never counted toward `agent.visible_tools`
-            # above — with a `denied` pointer so the model (and, via SSE,
-            # the user) understands WHY they're missing rather than
-            # silently getting fewer tools than the toolset advertised.
-            data = {
-                **data,
-                "tools": [t for t in data["tools"] if t.get("name") in allowed],
-                **_withheld(self._registry, grant or set(), denied),
-            }
+        if result.success and isinstance(data, dict) and "tools" in data:
+            # Ceiling enforcement: schemas for tools this agent was never granted are dropped, with a pointer
+            # saying why, rather than silently answering fewer tools than the toolset has.
+            data = {**data, "tools": [t for t in data["tools"] if t.get("name") in allowed]}
+            if denied:
+                data.update(_withheld(self._registry, grant or set(), denied))
+            note = how_to_call(self._registry, grant) if data["tools"] else None
+            if note:
+                data["how_to_call"] = note
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
             content=data if result.success else (result.error or "fetch_tools failed"),
@@ -217,12 +221,8 @@ class FetchToolsTool(Tool):
         names = self._registry.tools_in_toolset(toolset)
         if not names:
             return ToolOutput(success=True, data={"error": f"Unknown toolset: {toolset}", "tools": []})
-        # No-op for already-materialized/plain tools; builds the real Tool
-        # for any provider-backed (e.g. future MCP) name in this toolset —
-        # see tools/provider.py. Materializes every name in the toolset,
-        # not just the eventually-granted ones (handle() doesn't know the
-        # grant until after this returns) — an acceptable trade-off since
-        # provider-backed toolsets are the exception, not the common case.
+        # Builds the real Tool for any provider-backed name in this toolset (tools/provider.py), so a
+        # call_tool of one resolves; every name, granted or not, since execute() does not know the grant.
         await self._registry.materialize_many(names)
         schemas = [schema.model_dump(exclude_none=True) for schema in self._registry.schemas(names)]
         return ToolOutput(success=True, data={"toolset": toolset, "tools": schemas})
@@ -232,14 +232,13 @@ class SearchToolsTool(Tool):
     """Meta-tool: intent-driven complement to `fetch_tools` — searches EVERY
     registered tool (not just members of a toolset the caller already knows
     the name of) by matching a free-text query against each tool's
-    name/short_description/tags, ranks by relevance, and (by default) grows
-    `agent.visible_tools` for the matches — the same visibility side effect
-    `fetch_tools` applies, so a matched tool is callable on the very next
-    turn without a separate fetch_tools(toolset) round-trip.
+    name/short_description/tags, ranks by relevance, and answers each match
+    with its input schema. It never changes the agent's tool list, which is
+    fixed for the chat (R4): the model calls a match through ``call_tool``.
 
     Ranking itself lives in `tools/index.py::ToolIndex` (default
     `KeywordToolIndex`) — this class is purely the meta-tool's orchestration
-    (visibility side effects, grant enforcement, SSE-facing shape), never
+    (grant enforcement, schemas, SSE-facing shape), never
     the scoring algorithm, so a different `ToolIndex` (e.g. embedding-backed)
     swaps in via the constructor without touching this file. The same index
     instance should be shared with `hooks/middleware/builtin/tool_preloading.py`
@@ -280,14 +279,18 @@ class SearchToolsTool(Tool):
             "'send slack message', 'search the web'. Do NOT include the user's "
             "question, entity names, or dates, and do not prefix it with phrases like "
             "'use the ... tool to find'; every extra word lowers relevance. Results "
-            "are ranked by relevance and, by default, made callable immediately — no "
-            "separate fetch_tools call needed. Use this when you don't know which "
-            "toolset (see list_toolsets) has what you need."
+            "are ranked by relevance and carry each tool's input schema; call one "
+            "that is not in your tool list with call_tool. Use this when you don't "
+            "know which toolset (see list_toolsets) has what you need."
         )
 
     @property
     def path(self) -> str:
         return "/toolsets/builtin/search_tools"
+
+    @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -306,74 +309,74 @@ class SearchToolsTool(Tool):
                 type=ParameterType.INTEGER,
                 description="Max number of results to return",
                 required=False,
-                default=5,
-            ),
-            ToolParameter(
-                name="make_visible",
-                type=ParameterType.BOOLEAN,
-                description="Whether matched tools become callable immediately",
-                required=False,
-                default=True,
+                default=SEARCH_LIMIT,
             ),
         ]
 
     async def handle(self, call: ToolCall, ctx: RouteContext) -> CoreToolResult:
         agent = ctx.agent
-        make_visible = call.arguments.get("make_visible", True)
-        grant = _grant_set(ctx.spec)
         await obs.write_state(agent, ctx.goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="search_tools")
         await obs.append_timeline(agent, "tool_call", "Calling tool: search_tools", "running_tool", {"tool": "search_tools", "args": call.arguments})
-        result = await self.execute(**call.arguments)
+        tr, unavailable = await self.resolve(call, grant=_grant_set(ctx.spec))
+        for hit in unavailable:
+            await agent.emit(EventType.TOOL_UNAVAILABLE, {
+                "tool": hit["name"], "toolset": hit["toolset"],
+                "reason": hit["reason"], "message": hit["description"],
+            })
+        return tr
 
-        made_visible: list[str] = []
+    async def resolve(
+        self, call: ToolCall, *, grant: set[str] | None,
+    ) -> tuple[CoreToolResult, list[dict[str, Any]]]:
+        """The call within ``grant``: matches outside it are withheld. Returns the result and the unavailable hits
+        the caller reports. The durable harness calls this as its route."""
+        limit = _limit(call.arguments.get("limit"))
+        # Ranked whole: a match outside the grant, or one its source refuses to build, never takes the place of one
+        # that can run (DOCK-R26-FU-1).
+        result = await self.execute(**{**call.arguments, "limit": max(limit, len(self._registry.discover()))})
+        unavailable_hits: list[dict[str, Any]] = []
         denied: list[str] = []
+        held: dict[str, str] = {}
         content: Any = result.error or "search_tools failed"
         if result.success:
-            matches = result.data["matches"]
-            if grant is not None:
-                denied = [m["name"] for m in matches if m["name"] not in grant]
-                matches = [m for m in matches if m["name"] in grant]
-            not_loaded: list[str] = []
-            if make_visible and matches:
-                visible = agent.visible_tools or set()
-                fresh = [m["name"] for m in matches if m["name"] not in visible]
-                room = max(0, MAX_TOOLS_PER_REQUEST - len(visible))
-                fresh, not_loaded = fresh[:room], fresh[room:]
-                # Same ordering requirement as fetch_tools.handle: any
-                # provider-backed match must be materialized before it's
-                # added to visible_tools, since the next turn resolves
-                # schemas synchronously.
-                await self._registry.materialize_many(fresh)
-                # Same `|=`-not-stale-snapshot rationale as `FetchToolsTool.
-                # handle()` above.
-                agent.visible_tools = agent.visible_tools or set()
-                made_visible = [n for n in fresh if n not in agent.visible_tools]
-                agent.visible_tools |= set(fresh)
-            content = {**result.data, "matches": matches, "made_visible": made_visible}
-            if not_loaded:
-                content["not_loaded"] = {
-                    "tools": not_loaded,
-                    "reason": f"over the {MAX_TOOLS_PER_REQUEST} tools one request can carry",
-                }
+            matches: list[dict[str, Any]] = []
+            for match in result.data["matches"]:
+                if len(matches) >= limit:
+                    break
+                if grant is not None and match["name"] not in grant:
+                    denied.append(match["name"])
+                    continue
+                # A provider-backed match is built before its schema is read, so a call_tool of it resolves.
+                await self._registry.materialize_many([match["name"]])
+                refused = self._registry.refusal(match["name"])
+                if refused is not None:
+                    held[match["name"]] = refused.message
+                    continue
+                matches.append(match)
+            names = [m["name"] for m in matches]
+            schemas = {schema.name: schema.input_schema for schema in self._registry.schemas(names)}
+            matches = [{**m, "inputSchema": schemas[m["name"]]} for m in matches if m["name"] in schemas]
+            content = {**result.data, "matches": matches}
+            note = how_to_call(self._registry, grant) if matches else None
+            if note:
+                content["how_to_call"] = note
             if denied:
                 content.update(_withheld(self._registry, grant or set(), denied))
+            if held:
+                content["held"] = [{"tool": name, "message": why} for name, why in held.items()]
             unavailable = result.data.get("unavailable")
             if unavailable:
                 content["unavailable"] = unavailable
-                for hit in unavailable:
-                    await agent.emit(EventType.TOOL_UNAVAILABLE, {
-                        "tool": hit["name"], "toolset": hit["toolset"],
-                        "reason": hit["reason"], "message": hit["description"],
-                    })
+                unavailable_hits = list(unavailable)
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
             content=content,
             is_error=not result.success,
-        )
+        ), unavailable_hits
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
         query: str = kwargs["query"]
-        limit: int = int(kwargs.get("limit") or 5)
+        limit = _limit(kwargs.get("limit"))
         matches = await self._index.search(self._registry, query, limit)
         if not matches:
             unavailable = await self._search_global_fallback(query, limit)
@@ -411,3 +414,48 @@ class SearchToolsTool(Tool):
             {"name": h.name, "toolset": h.toolset, "description": h.description, "reason": h.reason}
             for h in hits
         ]
+
+
+class CallToolTool(Tool):
+    """Meta-tool: calls a tool that is not in the agent's tool list (R4: the list is fixed for the chat). Every
+    executor unwraps it into the named tool's own call before anything runs (``harness_core.tools.call_tool``),
+    so grant, validation, approval and journal are that tool's; ``execute`` answers only a malformed call."""
+
+    @property
+    def name(self) -> str:
+        return CALL_TOOL
+
+    @property
+    def short_description(self) -> str:
+        return "Call a tool search_tools or fetch_tools answered, by name."
+
+    @property
+    def description(self) -> str:
+        return CALL_TOOL_DESCRIPTION
+
+    @property
+    def path(self) -> str:
+        return "/toolsets/builtin/call_tool"
+
+    @property
+    def tags(self) -> list[Tag]:
+        return [TAG_EFFECT_READ]
+
+    @property
+    def parameters(self) -> list[ToolParameter]:
+        return [
+            ToolParameter(name="name", type=ParameterType.STRING, description="The tool's exact name.", required=True),
+            ToolParameter(
+                name="arguments", type=ParameterType.OBJECT, description="The tool's arguments.", required=False,
+            ),
+        ]
+
+    @property
+    def raw_input_schema(self) -> dict[str, Any] | None:
+        return dict(CALL_TOOL_INPUT_SCHEMA)
+
+    async def execute(self, **kwargs: Any) -> ToolOutput:
+        target = unwrap_call(kwargs)
+        if isinstance(target, str):
+            return ToolOutput(success=False, error=target)
+        return ToolOutput(success=False, error=f"{target[0]} could not be called here; call it by its own name.")

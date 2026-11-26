@@ -281,7 +281,6 @@ class TestCreateEtcdStoreUrlParsing:
             patch("app.config.providers.encrypted_store.os.getenv") as mock_getenv,
             patch("app.config.providers.encrypted_store.EncryptionService.get_instance") as mock_enc,
             patch("app.config.providers.encrypted_store.KeyValueStoreFactory.create_store") as mock_factory,
-            patch("app.config.providers.encrypted_store.StoreConfig") as mock_config,
         ):
             mock_getenv.side_effect = lambda key, default=None: {
                 "SECRET_KEY": _TEST_SECRET_KEY,
@@ -296,8 +295,7 @@ class TestCreateEtcdStoreUrlParsing:
             from app.config.providers.encrypted_store import EncryptedKeyValueStore
             ekv = EncryptedKeyValueStore(logger=logging.getLogger("test-etcd-url"))
 
-            # Verify StoreConfig was called with protocol-stripped host
-            mock_config.assert_called_once()
-            call_kwargs = mock_config.call_args[1]
-            assert call_kwargs["host"] == "myhost"
-            assert call_kwargs["port"] == 2379
+            # The store is built from the protocol-stripped host (etcd_env.etcd_store_config parses it).
+            config = mock_factory.call_args.kwargs["config"]
+            assert config.host == "myhost"
+            assert config.port == 2379

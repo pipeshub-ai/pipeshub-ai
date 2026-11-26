@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.utils.error_class import log_failure
 from app.utils.llm import get_llm_for_role
 from app.utils.record_reader import read_record
 
@@ -193,7 +194,7 @@ async def extract_record(
         raise
     except Exception as exc:  # any other failure falls back to the plain read
         if logger is not None:
-            logger.warning("Record extract failed for %s, returning the plain read: %s", record.get("id"), exc)
+            log_failure(logger, "record_extract.failed", exc, include_error_text=False, record_id=record.get("id"))
         return await plain_read(type(exc).__name__)
 
     reply = _text(message)

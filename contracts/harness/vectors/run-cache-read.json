@@ -1,0 +1,33 @@
+{
+  "description": "C5.05 (SLO #11, MG-13, PF-10): one durable run's cache-read share, from the usage a provider reports on each model call to the metric its end records. Python drives the Model Gateway with a scripted provider that reports each call's `usage` ({input, output, cacheRead, cacheWrite}; input counts every prompt token, the cache's read and write are parts of it, C37) and checks the run's ledger `used` and the body it sends Node's ledger; Node commits the same usage on its ledger, closes the run, records the closed account and checks the histogram sample: `ratio` is used.cacheRead / used.input, observed once per run in the bucket whose bound is `bucket` (the first of the histogram's bounds at or above it). `belowFloor` says whether that run alone sits under the 70% floor HarnessCacheReadShareLow alarms on.",
+  "runs": [
+    {
+      "name": "an engine resending its history: the cache serves all but the turn it appends",
+      "calls": [
+        {"input": 2000, "output": 120, "cacheRead": 0, "cacheWrite": 1900},
+        {"input": 2400, "output": 90, "cacheRead": 2000, "cacheWrite": 400},
+        {"input": 2800, "output": 60, "cacheRead": 2400, "cacheWrite": 400},
+        {"input": 3200, "output": 40, "cacheRead": 2800, "cacheWrite": 400}
+      ],
+      "used": {"input": 10400, "output": 310, "cacheRead": 7200, "cacheWrite": 3100},
+      "ratio": 0.6923,
+      "bucket": 0.7,
+      "belowFloor": true
+    },
+    {
+      "name": "a long run past its first call: the first call's cold prompt matters less with every call",
+      "calls": [
+        {"input": 2000, "output": 100, "cacheRead": 0, "cacheWrite": 1900},
+        {"input": 2200, "output": 100, "cacheRead": 2000, "cacheWrite": 200},
+        {"input": 2400, "output": 100, "cacheRead": 2200, "cacheWrite": 200},
+        {"input": 2600, "output": 100, "cacheRead": 2400, "cacheWrite": 200},
+        {"input": 2800, "output": 100, "cacheRead": 2600, "cacheWrite": 200},
+        {"input": 3000, "output": 100, "cacheRead": 2800, "cacheWrite": 200}
+      ],
+      "used": {"input": 15000, "output": 600, "cacheRead": 12000, "cacheWrite": 2900},
+      "ratio": 0.8,
+      "bucket": 0.8,
+      "belowFloor": false
+    }
+  ]
+}

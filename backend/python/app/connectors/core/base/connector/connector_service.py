@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -32,6 +32,8 @@ from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
+from app.services.rate_budget import AccountBudget, account_budget, family_for_connector
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.resilience import ResiliencePolicy
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -130,6 +132,22 @@ class IncompleteSyncError(RuntimeError):
 _SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
+# Strong references to the tasks request_sync starts: the loop keeps only weak ones.
+_SYNC_REQUESTS: "set[asyncio.Task[None]]" = set()
+
+# Syncs started per connector in this process. A reindex compares it, so a sync it overlapped is seen even when the
+# sync's status writes to the store failed.
+_SYNCS_STARTED: dict[str, int] = {}
+
+
+def note_sync_started(connector_id: str) -> None:
+    _SYNCS_STARTED[connector_id] = _SYNCS_STARTED.get(connector_id, 0) + 1
+
+
+def syncs_started(connector_id: str) -> int:
+    return _SYNCS_STARTED.get(connector_id, 0)
+
+
 def connector_sync_lock(connector_id: str) -> asyncio.Lock:
     lock = _SYNC_LOCKS.get(connector_id)
     if lock is None:
@@ -225,6 +243,8 @@ class BaseConnector(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         self._resilience: Optional[ResiliencePolicy] = None
         self._resilience_loaded = False
+        self._rate_budget: AccountBudget | None = None
+        self._rate_budget_loaded = False
         self._thread_pool_lease: ThreadPoolLease | None = None
         self.instance_name: Optional[str] = None
 
@@ -247,8 +267,37 @@ class BaseConnector(ABC):
                 name=str(self.connector_name),
                 logger=self.logger,
             )
+            if self._resilience is not None:
+                self._resilience.shared = self.rate_budget
             self._resilience_loaded = True
         return self._resilience
+
+    @property
+    def rate_budget(self) -> AccountBudget | None:
+        """The org's budget for this connector's vendor, which its agent toolsets spend too (G-31); None when the
+        vendor has none. Cached for the same reason as ``resilience``."""
+        # Read with defaults: Slack reads this in its own __init__, which a subclass may run without this one's.
+        if not getattr(self, "_rate_budget_loaded", False):
+            org_id = getattr(getattr(self, "data_entities_processor", None), "org_id", None)
+            self._rate_budget = account_budget(
+                org_id if isinstance(org_id, str) else None,
+                family_for_connector(getattr(self, "connector_name", None)),
+            )
+            self._rate_budget_loaded = True
+        return self._rate_budget
+
+    def pace_http_client(self, http_client: object) -> None:
+        """Put ``resilience`` under an ``HTTPClient`` a builder shared with the agent toolsets made without one,
+        so this sync is paced by the vendor's shared budget (G-31). Before the client's first request."""
+        if not isinstance(http_client, HTTPClient) or self.resilience is None:
+            return
+        own = getattr(http_client, "resilience", None)
+        if own is None:
+            http_client.use_resilience(self.resilience)
+        elif own.shared is None:
+            # The builder gave the client its own policy (Confluence's quota-aware retries, main #4553): keep it,
+            # and let it spend the same shared budget.
+            own.shared = self.resilience.shared
 
     def _thread_lease(self, max_concurrency: int) -> ThreadPoolLease:
         """This connector's capped share of the shared connector thread pool.
@@ -413,6 +462,61 @@ class BaseConnector(ABC):
     def handle_webhook_notification(self, notification: Dict) -> None:
         raise NotImplementedError("This method is not supported")
 
+    def request_sync(self) -> "asyncio.Task[None]":
+        """Ask for a sync of this connector the way a schedule does, for a connector that learns of a change itself
+        (a webhook). Never call ``run_sync`` directly for that: only the sync start path takes the connector's lease and
+        lock and writes the status and start time a running reindex checks before it writes."""
+        from app.core.org_context import spawn_in_request
+
+        task = spawn_in_request(self._request_sync(), name=f"request_sync_{self.connector_id}")
+        _SYNC_REQUESTS.add(task)
+        task.add_done_callback(_SYNC_REQUESTS.discard)
+        return task
+
+    async def _request_sync(self) -> None:
+        from app.connectors.core.constants import ConnectorStateKeys
+        from app.connectors.core.sync.sync_dispatcher import (
+            SubmitResult,
+            SyncSpec,
+            get_dispatcher,
+        )
+        from app.core.org_context import (
+            MissingOrgContext,
+            SystemContextNotAllowed,
+            current,
+        )
+
+        dispatcher = get_dispatcher()
+        if dispatcher is None:
+            self.logger.warning(f"No sync dispatcher configured; cannot request a sync of {self.connector_id}")
+            return
+        org_id = self.data_entities_processor.org_id
+        if not org_id:
+            try:
+                org_id = current().org_id
+            except (MissingOrgContext, SystemContextNotAllowed):
+                org_id = None
+        if not org_id:
+            # The start handler refuses an event without an org, and its redelivery would hold the partition.
+            self.logger.error(f"No org for connector {self.connector_id}; its sync request is left to the next sync")
+            await self.data_store_provider.graph_provider.update_node(
+                self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+            )
+            return
+        spec = SyncSpec(connector_id=self.connector_id, connector_name=self.connector_name.value, org_id=org_id)
+        result = await dispatcher.submit(spec)
+        if result is SubmitResult.DECLINED_RUNNING:
+            # The running sync may have read the source before this change; its finalizer re-issues the request.
+            await self.data_store_provider.graph_provider.update_node(
+                self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+            )
+            # The finalizer reads the flag after it releases the lease: if that sync ended before the flag landed,
+            # nothing re-issues it, so ask again.
+            if not await dispatcher.is_running(self.connector_id):
+                result = await dispatcher.submit(spec)
+        if result is SubmitResult.FAILED:
+            self.logger.error(f"Could not request a sync of {self.connector_id}")
+
     # Names of the zero-argument steps of this connector's own sync that create the user,
     # group and app edges. Empty: the connector is not linked after a user is added (see
     # EntityEventService._link_user_to_connectors).
@@ -521,21 +625,26 @@ class BaseConnector(ABC):
     def get_connector_id(self) -> str:
         return self.connector_id
 
-    async def _load_creator_email(self) -> None:
+    async def _load_creator_email(self, *, raise_on_error: bool = False) -> None:
         """
         Load and cache the creator's email for personal scope connectors.
 
         This is useful for connectors that need to create permissions for the creator.
         Call this in init() if needed (typically for personal scope connectors).
+
+        ``raise_on_error`` raises a failed lookup instead of logging it, so a caller
+        can tell a creator it could not read from one who is gone.
         """
         if self.scope == ConnectorScope.PERSONAL.value and self.created_by:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_user_id(self.created_by)
+                    user = await tx_store.get_user_by_user_id(self.created_by, raise_on_error=raise_on_error)
                     if user and user.get("email"):
                         self.creator_email = user.get("email")
                         self.logger.debug(f"Cached creator email: {self.creator_email}")
             except Exception as e:
+                if raise_on_error:
+                    raise
                 self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
     def _connector_group_external_id(self) -> str:
