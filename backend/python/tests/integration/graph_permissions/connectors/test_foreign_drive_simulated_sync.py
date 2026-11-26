@@ -141,6 +141,7 @@ class Sim:
         self.connector: GoogleDriveTeamConnector | None = None
         self.user_ids = {e: f"u{i}{uuid.uuid4().hex[:8]}" for i, e in enumerate(PEOPLE)}
         self.incomplete = False
+        self.config: dict = {}
 
     async def seed(self) -> None:
         await _seed_app(self, self.connector_id, name="Drive Workspace",
@@ -164,8 +165,8 @@ class Sim:
                 serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
             account = {"type": "service_account", "project_id": "sim", "private_key_id": "k", "private_key": key,
                        "client_email": "sync@sim.iam.gserviceaccount.com", "client_id": "1", "token_uri": fakes.TOKEN_URI}
-            config = fakes.FakeConfigService(
-                self.connector_id, {"auth": {"serviceAccountJson": json.dumps(account), "adminEmail": ADMIN}})
+            self.config["auth"] = {"serviceAccountJson": json.dumps(account), "adminEmail": ADMIN}
+            config = fakes.FakeConfigService(self.connector_id, self.config)
             self.connector = GoogleDriveTeamConnector(
                 logging.getLogger("drive-sim"), self.processor, self.processor.data_store_provider, config,
                 self.connector_id, "team", "admin-user")
@@ -193,6 +194,9 @@ class Sim:
                     self.connector, self.connector_id, self.provider, logging.getLogger("drive-sim"), seen)
         finally:
             self.processor.end_full_sync_run(self.connector_id, seen)
+
+    def filters(self, **sync_values: object) -> None:
+        self.config["filters"] = {"sync": {"values": sync_values}}
 
     async def record(self, file_id: str) -> object:
         return await self.processor.get_record_by_external_id(
@@ -468,6 +472,12 @@ async def test_the_last_member_leaves_before_a_full_resync(sim: Sim) -> None:
     sim.world.drives[FOREIGN]["members"].clear()
     await sim.full_resync()
     assert await sim.wrong() == []
+    # Nobody opens them, and they are still there: a member who comes back reads them through the drive.
+    group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+    for file_id in ("f0", "f1"):
+        record = await sim.record(file_id)
+        assert record is not None
+        assert group.id in await sim.targets(f"records/{record.id}", CollectionNames.BELONGS_TO.value)
     await sim.sync()
     assert await sim.wrong() == []
 
@@ -613,4 +623,77 @@ async def test_the_simulated_drive_hides_a_parent_the_reader_cannot_open_everywh
     got = await source.files_get(fileId="child", supportsAllDrives=True, fields="id, parents")
     assert "child" in listed and not listed["child"] and "inner" not in listed
     assert not got.get("parents")
+    assert await sim.wrong() == []
+
+
+@pytest.mark.parametrize("then", ["sync", "full_resync"])
+async def test_a_foreign_drive_the_sync_filter_leaves_out_is_removed(sim: Sim, then: str) -> None:
+    foreign(sim, {ALICE: "reader", BOB: "reader"}, files=2)
+    await sim.sync()
+    sim.filters(drive_ids={"operator": "not_in", "type": "list", "value": [FOREIGN]})
+    await (sim.sync() if then == "sync" else sim.full_resync())
+    for _ in range(2):
+        for file_id in ("f0", "f1"):
+            assert await sim.record(file_id) is None
+        await sim.sync()
+
+
+async def test_a_new_item_below_a_hidden_folder_while_the_drives_standing_is_unknown(
+    sim: Sim, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bob is cut out by the limited folder: the item Alice reads the sharing of is not hung off the drive's group he
+    belongs to."""
+    foreign(sim, {ALICE: "writer", BOB: "reader"})
+    sim.world.folder("limited", "limited", parent=FOREIGN)
+    sim.world.folder("inner", "inner", parent="limited")
+    sim.world.limit("limited")
+    await sim.sync()
+    await sim.sync()
+    sim.world.add_item("child", "child.txt", parent="inner", perms=[{"type": "user", "role": "writer", "emailAddress": ALICE}])
+    with monkeypatch.context() as m:
+        async def unknown(*_a: object) -> None:
+            return None
+        m.setattr(GoogleDriveTeamConnector, "_shared_drive_exists", unknown)
+        await sim.sync()
+    assert [w for w in await sim.wrong() if w.startswith("LEAK")] == []
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+@pytest.mark.parametrize("description", [FOREIGN_SHARED_DRIVE_DESCRIPTION, None], ids=["written", "stub"])
+async def test_the_only_member_left_before_their_membership_was_ever_stored(sim: Sim, description: str | None) -> None:
+    """An upgrade where nobody lists the drive any more: who held grants on its files is found from the graph."""
+    foreign(sim, {ALICE: "reader"}, files=2)
+    sim.world.add_item("mine", "mine.txt", parent=sim.world.users[BOB].root_id, owner=BOB)
+    await sim.sync()
+    sim.world.drives[FOREIGN]["members"].clear()
+    await sim.connector.drive_delta_sync_point.delete_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY)
+    group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+    await sim.provider.update_node(group.id, CollectionNames.RECORD_GROUPS.value, {"description": description})
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+async def test_a_leavers_cleanup_goes_on_past_a_file_whose_check_fails(sim: Sim, monkeypatch: pytest.MonkeyPatch) -> None:
+    foreign(sim, {ALICE: "reader", BOB: "reader"}, files=3)
+    await sim.sync()
+    del sim.world.drives[FOREIGN]["members"][BOB]
+    real = GoogleDriveTeamConnector._leaver_still_opens
+    stuck: list[str] = []
+
+    async def first_fails(self: GoogleDriveTeamConnector, record: object, *args: object) -> bool:
+        if not stuck:
+            stuck.append(record.external_record_id)
+        if record.external_record_id == stuck[0]:
+            raise RuntimeError("Google did not answer")
+        return await real(self, record, *args)
+
+    with monkeypatch.context() as m:
+        m.setattr(GoogleDriveTeamConnector, "_leaver_still_opens", first_fails)
+        await sim.sync()
+        assert sim.incomplete
+        assert await sim.wrong() == [f"LEAK bob {stuck[0]}"]
+        await sim.sync()
+        assert await sim.wrong() == [f"LEAK bob {stuck[0]}"]
+    await sim.sync()
     assert await sim.wrong() == []

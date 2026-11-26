@@ -8,7 +8,7 @@ user must come out as org B wrote them.
 """
 
 import uuid
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -86,6 +86,7 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
             # The leaver is no longer synced, so nobody is asked whether they open a file: their grants go.
             synced_users=[],
         )
+        connector_a._drop_leaver_grant = MethodType(GoogleDriveTeamConnector._drop_leaver_grant, connector_a)
         await GoogleDriveTeamConnector._write_foreign_drive(connector_a, drive_id, {"name": "Partner drive", "members": [shared]})
         file_a = _file(ORG, conn_a, drive_id, file_id, shared_with=[SourcePerson(email=shared), SourcePerson(email=only_b)])
         # A file its reader holds a grant of their own on, as a Viewer's fallback grant was stored; trashed below.

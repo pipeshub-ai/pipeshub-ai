@@ -702,6 +702,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
+        # And the other organizations' drives this deployment tracks, which that listing never has.
+        self._foreign_drive_ids_filtered: set[str] = set()
         self._shared_drives_listed = False
         self._kept_drives_noted: set[str] = set()
 
@@ -4184,7 +4186,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         known = json.loads(raw) if isinstance(raw, str) else {}
         kept = 0
         for drive_id, entry in sorted(known.items()):
-            if entry.get("members"):
+            # One the sync filter leaves out is not kept: the filter cleanup removes its records.
+            if entry.get("members") or not self._pass_drive_ids_filter(drive_id):
                 continue
             group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
             if group is None or not getattr(group, "id", None):
@@ -5167,7 +5170,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         stands in for it.
         """
         group_id = record.external_record_group_id
-        if group_id in self._listed_shared_drive_ids and not self._pass_drive_ids_filter(group_id):
+        is_shared_drive = group_id in self._listed_shared_drive_ids or group_id in self._foreign_drive_ids_filtered
+        if is_shared_drive and not self._pass_drive_ids_filter(group_id):
             return False
         parent = record.parent_external_record_id or group_id
         # A stored folder is text/directory; the filters know a folder by Google's type.
@@ -5223,6 +5227,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         removed = failed = 0
         excluded_folders: list[Record] = []
         try:
+            self._foreign_drive_ids_filtered = await self._tracked_foreign_drive_ids()
             after_key: str | None = None
             while True:
                 # Trash included: a trashed file the filters now leave out is removed too.
@@ -5858,11 +5863,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if (
                         file_record.inherit_permissions and item_drive_id and not in_scope
                         and not metadata.get("parents") and not file_record.parent_external_record_id
-                        and await self._is_foreign_drive(item_drive_id)
                     ):
                         # Its folder is hidden from this reader and not known: hung off the drive's group it could
                         # skip a limited folder above. They open it through a grant on the item itself, stored here.
-                        file_record.inherit_permissions = False
+                        # Whose drive it is decides that, so an item whose drive is not known yet is not written.
+                        seen_by_admin = await self._admin_sees_drive(item_drive_id)
+                        if seen_by_admin is None:
+                            raise _ItemReadFailed(f"the standing of shared drive {item_drive_id} is not known")
+                        if seen_by_admin is False:
+                            file_record.inherit_permissions = False
                     if existing_record:
                         is_updated = True
 
@@ -7540,14 +7549,29 @@ class GoogleDriveTeamConnector(BaseConnector):
         return {"name": name, "members": sorted(members), "leavers": [], "unchecked": True}
 
     async def _foreign_drives_in_graph(self) -> dict[str, dict]:
-        """The drives written as another organization's that the admin listing does not have, as the graph has them."""
+        """The drives written as another organization's that the admin listing does not have, as the graph has them.
+
+        So is a group with no description: an earlier version stored only a stub of a foreign drive, as its files named
+        it. Whose drive each is gets asked of the admin (`_reconcile_foreign_drives`) before anything is written.
+        """
         groups = await self.data_entities_processor.get_record_groups_of_type(self.connector_id, RecordGroupType.DRIVE)
         found = {
             g["externalGroupId"]: g.get("groupName") or g["externalGroupId"] for g in groups
-            if g.get("externalGroupId") and g.get("description") == FOREIGN_SHARED_DRIVE_DESCRIPTION
+            if g.get("externalGroupId") and g.get("description") in (FOREIGN_SHARED_DRIVE_DESCRIPTION, None, "")
             and g["externalGroupId"] not in self._listed_shared_drive_ids
         }
         return {drive_id: await self._foreign_drive_in_graph(drive_id, name) for drive_id, name in found.items()}
+
+    async def _tracked_foreign_drive_ids(self) -> set[str]:
+        """The other organizations' drives this deployment tracks: stored, or written as one. A failed read raises."""
+        stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
+        raw = stored.get("drives")
+        tracked = set(json.loads(raw)) if isinstance(raw, str) else set()
+        groups = await self.data_entities_processor.get_record_groups_of_type(self.connector_id, RecordGroupType.DRIVE)
+        return tracked | {
+            g["externalGroupId"] for g in groups
+            if g.get("externalGroupId") and g.get("description") == FOREIGN_SHARED_DRIVE_DESCRIPTION
+        }
 
     async def _foreign_drive_grant_holders(self, drive_id: str) -> set[str]:
         """Everyone who holds a grant of their own on a file of the drive."""
@@ -7605,6 +7629,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # A cleanup that failed partway resumes after the last page it finished (``cursors``, stored with the drive).
         cursors = {} if cursors is None else cursors
         after_key: str | None = cursors.get(email)
+        # A file whose check fails does not hold back the rest: they are all checked, and the cursor stays before the
+        # first page with a failure, so the next run checks that file again.
+        failure: Exception | None = None
         while True:
             # Trashed ones too: restored, they would come back still granting the leaver.
             page = await processor.get_records_by_status(
@@ -7614,21 +7641,35 @@ class GoogleDriveTeamConnector(BaseConnector):
             if not isinstance(page, list):
                 raise RuntimeError(f"The records of shared drive {drive_id} could not be listed")
             for record in page:
-                if shared_with_me is not None and await processor.record_in_group(record.id, shared_with_me.id):
-                    continue
-                if email not in (await processor.get_roles_on_record(record.id))[0]:
-                    # No grant of theirs on it: nothing to remove, and nothing to ask Google.
-                    continue
-                if leaver is not None and await self._leaver_still_opens(record, leaver, sources):
-                    continue
-                await processor.delete_permission_from_record(record.id, email, self.connector_id)
+                try:
+                    await self._drop_leaver_grant(record, email, leaver, shared_with_me, sources)
+                except Exception as e:
+                    failure = failure or e
             if len(page) < FOREIGN_DRIVE_PAGE_SIZE:
+                if failure is not None:
+                    raise RuntimeError(f"A grant of a leaver on shared drive {drive_id} was not checked") from failure
                 cursors.pop(email, None)
                 return
             after_key = getattr(page[-1], "id", None)
             if not after_key:
                 raise RuntimeError(f"The records of shared drive {drive_id} could not be paged")
-            cursors[email] = after_key
+            if failure is None:
+                cursors[email] = after_key
+
+    async def _drop_leaver_grant(
+        self, record: Record, email: str, leaver: AppUser | None, shared_with_me: RecordGroup | None,
+        sources: dict[str, GoogleDriveDataSource],
+    ) -> None:
+        """Remove a leaver's own grant from one file of the drive they left, unless Google says they still open it."""
+        processor = self.data_entities_processor
+        if shared_with_me is not None and await processor.record_in_group(record.id, shared_with_me.id):
+            return
+        if email not in (await processor.get_roles_on_record(record.id))[0]:
+            # No grant of theirs on it: nothing to remove, and nothing to ask Google.
+            return
+        if leaver is not None and await self._leaver_still_opens(record, leaver, sources):
+            return
+        await processor.delete_permission_from_record(record.id, email, self.connector_id)
 
     async def _leaver_still_opens(
         self, record: Record, user: AppUser, sources: dict[str, GoogleDriveDataSource]
