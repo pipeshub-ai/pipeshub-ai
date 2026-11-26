@@ -177,6 +177,8 @@ async def await_or_503[T](op: Awaitable[T]) -> T:
     except Exception as e:
         raise_if_unavailable(e)
         raise
+
+
 async def read_or_503[T](read: Awaitable[T]) -> T:
     """The answer of a graph read none of the helpers above makes (an access check that also weighs chat content,
     say), with a failed read a 503 as theirs is."""
