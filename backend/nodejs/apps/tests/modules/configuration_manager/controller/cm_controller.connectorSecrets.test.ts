@@ -89,7 +89,7 @@ describe('connector credential secrets on the admin config routes', () => {
 
   it('masks them when the server never set HIDE_SECRET_CONFIG', async () => {
     const res = response();
-    await getOneDriveCredentials(store(ONEDRIVE))(request(), res, sinon.stub());
+    await getOneDriveCredentials(store(ONEDRIVE))(request(), res, sinon.stub<unknown[]>());
     expect(res.json.firstCall.args[0]).to.deep.equal({
       clientId: CONFIG_SECRET_PLACEHOLDER,
       clientSecret: CONFIG_SECRET_PLACEHOLDER,
@@ -104,7 +104,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await getAtlassianOauthConfig(store(ATLASSIAN))(
       request(),
       res,
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(res.json.firstCall.args[0]).to.deep.equal(ATLASSIAN);
   });
@@ -114,7 +114,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await getAtlassianOauthConfig(store(ATLASSIAN))(
       request({ reveal: 'true' }),
       res,
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(res.json.firstCall.args[0]).to.deep.equal(ATLASSIAN);
   });
@@ -124,7 +124,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await getAtlassianOauthConfig(store(ATLASSIAN))(
       request({ reveal: 'true' }, {}, { isOAuth: true }),
       res,
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(res.json.firstCall.args[0].clientSecret).to.equal(
       CONFIG_SECRET_PLACEHOLDER,
@@ -136,7 +136,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await getAtlassianOauthConfig(store(ATLASSIAN), false)(
       request(),
       res,
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(res.json.firstCall.args[0]).to.deep.equal(ATLASSIAN);
   });
@@ -149,7 +149,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await getGoogleWorkspaceCredentials(store(SERVICE_ACCOUNT), 'u1', 'o1')(
       request(),
       admin,
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(admin.json.firstCall.args[0]).to.deep.equal({
       client_email: 'sa@x.iam',
@@ -163,7 +163,7 @@ describe('connector credential secrets on the admin config routes', () => {
       'u1',
       'o1',
       false,
-    )(request(), internal, sinon.stub());
+    )(request(), internal, sinon.stub<unknown[]>());
     expect(internal.json.firstCall.args[0]).to.deep.equal(SERVICE_ACCOUNT);
   });
 
@@ -177,7 +177,7 @@ describe('connector credential secrets on the admin config routes', () => {
     await setOneDriveCredentials(kvs)(
       request({}, body),
       response(),
-      sinon.stub(),
+      sinon.stub<unknown[]>(),
     );
     expect(
       JSON.parse(String(kvs.set.firstCall.args[1]).replace('encrypted:', '')),

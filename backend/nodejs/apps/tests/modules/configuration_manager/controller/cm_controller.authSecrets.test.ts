@@ -104,7 +104,7 @@ describe('sign-in provider secrets', () => {
     it('masks them when the server never set the flag', async () => {
       delete process.env.HIDE_SECRET_CONFIG
       const res = response()
-      await getGoogleAuthConfig(store({ clientId: 'g-id' }))(request(), res, sinon.stub())
+      await getGoogleAuthConfig(store({ clientId: 'g-id' }))(request(), res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
     })
   })
