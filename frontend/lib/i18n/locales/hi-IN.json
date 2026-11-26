@@ -1878,6 +1878,7 @@
   "workspaceMenu": {
     "appearance": "अपियरेंस",
     "language": "भाषा",
+    "personalSettings": "व्यक्तिगत सेटिंग्स",
     "workspaceSettings": "वर्कस्पेस सेटिंग्स",
     "logOut": "लॉग आउट",
     "system": "सिस्टम",
@@ -2830,6 +2831,9 @@
       "sections": {
         "overview": "सारांश",
         "workspace": "वर्कस्पेस",
+        "ai": "एआई",
+        "integrations": "इंटीग्रेशन",
+        "system": "सिस्टम",
         "usageAndCredits": "उपयोग और बिलिंग",
         "security": "सुरक्षा",
         "personal": "व्यक्तिगत",

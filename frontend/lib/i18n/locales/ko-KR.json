@@ -1957,6 +1957,7 @@
   "workspaceMenu": {
     "appearance": "화면 모드",
     "language": "언어",
+    "personalSettings": "개인 설정",
     "workspaceSettings": "워크스페이스 설정",
     "logOut": "로그아웃",
     "system": "시스템",
@@ -2991,6 +2992,9 @@
       "sections": {
         "overview": "개요",
         "workspace": "워크스페이스",
+        "ai": "AI",
+        "integrations": "통합",
+        "system": "시스템",
         "usageAndCredits": "사용량 및 결제",
         "security": "보안",
         "personal": "개인",

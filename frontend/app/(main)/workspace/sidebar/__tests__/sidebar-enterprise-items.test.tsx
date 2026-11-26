@@ -5,8 +5,9 @@ import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
 
+let pathname = '/workspace/general';
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/workspace/general',
+  usePathname: () => pathname,
 }));
 
 // jsdom has no matchMedia; these tests cover the desktop sidebar.
@@ -74,6 +75,7 @@ afterEach(() => {
   cleanup();
   userState = { profile: { isAdmin: true } };
   flagsState = { flags: {} };
+  pathname = '/workspace/general';
 });
 
 function renderSidebar() {
@@ -108,19 +110,24 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     expect(before(linkTo(NAV.tenants), linkTo(NAV.scim))).toBe(true);
   });
 
-  it('lists SCIM under Groups, then the Usage & billing section after Workspace, then Audit logs under Security', () => {
+  it('lists Groups, Tenants and SCIM under Overview, Audit logs last under Security, and Usage & billing before Developer settings', () => {
     renderSidebar();
 
-    const workspace = screen.getByText(SECTIONS.workspace);
     // The section and its one item share a name; the header is the one outside a link.
-    const usageSection = screen.getAllByText(SECTIONS.usageAndCredits).find((el) => !el.closest('a'));
-    const security = screen.getByText(SECTIONS.security);
-    const developer = screen.getByText(SECTIONS.developerSettings);
-    expect(usageSection).toBeTruthy();
-    expect(before(linkTo(NAV.groups), linkTo(NAV.scim)) && before(linkTo(NAV.scim), workspace)).toBe(true);
-    expect(before(linkTo(NAV.webSearch), usageSection!) && before(usageSection!, linkTo(NAV.usage))).toBe(true);
-    expect(before(linkTo(NAV.usage), security) && before(security, linkTo(NAV.auditLogs))).toBe(true);
-    expect(before(linkTo(NAV.auditLogs), developer)).toBe(true);
+    const usageSection = screen.getAllByText(SECTIONS.usageAndCredits).find((el) => !el.closest('a'))!;
+    const header = (title: string) => screen.getByText(title);
+    const inOrder = [
+      header(SECTIONS.overview), linkTo(NAV.groups), linkTo(NAV.tenants), linkTo(NAV.scim),
+      header(SECTIONS.ai), linkTo(NAV.aiModels), linkTo(NAV.prompts), linkTo(NAV.webSearch),
+      header(SECTIONS.integrations), linkTo(NAV.connectors), linkTo(NAV.actions), linkTo(NAV.mcpServers), linkTo(NAV.bots),
+      header(SECTIONS.security), linkTo(NAV.authentication), linkTo(NAV.serviceAccounts), linkTo(NAV.mcpAccess), linkTo(NAV.auditLogs),
+      header(SECTIONS.system), linkTo(NAV.mail), linkTo(NAV.services),
+      usageSection, linkTo(NAV.usage),
+      header(SECTIONS.developerSettings),
+    ];
+    for (let i = 1; i < inOrder.length; i++) {
+      expect(before(inOrder[i - 1], inOrder[i]), inOrder[i].textContent ?? '').toBe(true);
+    }
     // One item for usage, credits, billing and credit settings.
     expect(screen.queryByText('Credits')).toBeNull();
     expect(screen.queryByText('Billing')).toBeNull();
@@ -149,5 +156,45 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     renderSidebar();
 
     for (const { label } of LOCKED) expect(linkTo(label)).toBeTruthy();
+  });
+});
+
+describe('WorkspaceSidebar: personal and workspace settings', () => {
+  it('shows an admin only workspace items on a workspace page, with a way to the personal ones', () => {
+    renderSidebar();
+    expect(screen.queryByText(SECTIONS.personal)).toBeNull();
+    expect(screen.queryByText(NAV.personalAccessTokens)).toBeNull();
+    expect(linkTo(NAV.oauth2)).toBeTruthy();
+    expect(linkTo(en.workspaceMenu.personalSettings).getAttribute('href')).toBe('/workspace/profile');
+  });
+
+  it('shows an admin only their own items on a personal page', () => {
+    pathname = '/workspace/profile/';
+    renderSidebar();
+    expect(linkTo(NAV.profile) && linkTo(NAV.yourConnectors) && linkTo(NAV.personalAccessTokens)).toBeTruthy();
+    for (const label of [NAV.general, NAV.aiModels, NAV.authentication, NAV.oauth2, NAV.usage, NAV.scim]) {
+      expect(screen.queryByText(label), label).toBeNull();
+    }
+    expect(linkTo(en.workspaceMenu.workspaceSettings).getAttribute('href')).toBe('/workspace/general');
+  });
+
+  it('keeps the Enterprise Edition pages and card out of an admin\'s personal settings', () => {
+    pathname = '/workspace/profile/';
+    renderSidebar();
+    for (const { label } of LOCKED) expect(screen.queryByText(label), label).toBeNull();
+    expect(screen.queryByTestId('enterprise-sidebar-card')).toBeNull();
+  });
+
+  it.each(['/workspace/profile', '/workspace/general'])('lists every page a member can open on %s, and no workspace settings', (path) => {
+    userState = { profile: { isAdmin: false } };
+    pathname = path;
+    renderSidebar();
+    for (const label of [NAV.profile, NAV.yourConnectors, NAV.archivedChats, NAV.general, NAV.personalAccessTokens, NAV.oauth2]) {
+      expect(linkTo(label), label).toBeTruthy();
+    }
+    expect(screen.getByText(SECTIONS.people)).toBeTruthy();
+    for (const label of [en.workspaceMenu.workspaceSettings, en.workspaceMenu.personalSettings, NAV.aiModels, NAV.authentication, NAV.mail]) {
+      expect(screen.queryByText(label), label).toBeNull();
+    }
   });
 });

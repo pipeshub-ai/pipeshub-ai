@@ -1878,6 +1878,7 @@
   "workspaceMenu": {
     "appearance": "Appearance",
     "language": "Language",
+    "personalSettings": "Personal settings",
     "workspaceSettings": "Workspace settings",
     "logOut": "Log out",
     "system": "System",
@@ -2830,6 +2831,9 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
+        "ai": "AI",
+        "integrations": "Integrations",
+        "system": "System",
         "usageAndCredits": "Usage & billing",
         "security": "Security",
         "personal": "Personal",

@@ -1957,6 +1957,7 @@
   "workspaceMenu": {
     "appearance": "外观",
     "language": "语言",
+    "personalSettings": "个人设置",
     "workspaceSettings": "工作区设置",
     "logOut": "注销",
     "system": "系统",
@@ -2991,6 +2992,9 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
+        "ai": "AI",
+        "integrations": "集成",
+        "system": "系统",
         "usageAndCredits": "用量和账单",
         "security": "安全",
         "personal": "个人",

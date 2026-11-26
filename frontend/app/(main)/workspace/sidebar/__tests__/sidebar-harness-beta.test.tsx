@@ -9,8 +9,12 @@ import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
 
+// An admin sees their own pages in Personal settings and the org's in Workspace settings.
+const WORKSPACE_PATH = '/workspace/general';
+const PERSONAL_PATH = '/workspace/profile';
+let currentPath = WORKSPACE_PATH;
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/workspace/general',
+  usePathname: () => currentPath,
 }));
 
 vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
@@ -54,37 +58,52 @@ vi.mock('react-i18next', async (importOriginal) => ({
 
 import WorkspaceSidebar from '../index';
 
-const HARNESS_ENTRIES = [
-  en.workspace.sidebar.nav.aiSettings,
-  en.workspace.sidebar.nav.aiAccounts,
-  en.workspace.sidebar.nav.schedules,
-  en.workspace.sidebar.nav.memories,
+/** Each entry with the settings it is listed in for an admin. */
+const HARNESS_ENTRIES: [label: string, path: string][] = [
+  [en.workspace.sidebar.nav.aiSettings, WORKSPACE_PATH],
+  [en.workspace.sidebar.nav.aiAccounts, PERSONAL_PATH],
+  [en.workspace.sidebar.nav.schedules, PERSONAL_PATH],
+  [en.workspace.sidebar.nav.memories, PERSONAL_PATH],
 ];
 
 afterEach(() => {
   cleanup();
   harnessOn = true;
+  currentPath = WORKSPACE_PATH;
 });
 
 const renderSidebar = () => render(<Theme><WorkspaceSidebar /></Theme>);
 const entry = (label: string) => screen.getByText(label).closest('a') as HTMLElement;
 
 describe('WorkspaceSidebar — the agent harness entries are Beta', () => {
-  it.each(HARNESS_ENTRIES)('"%s" carries the Beta badge', (label) => {
+  it.each(HARNESS_ENTRIES)('"%s" carries the Beta badge', (label, path) => {
+    currentPath = path;
     renderSidebar();
     expect(within(entry(label)).getByText(en.common.beta.label)).toBeTruthy();
   });
 
   it('marks no other workspace entry', () => {
-    renderSidebar();
-    expect(screen.getAllByText(en.common.beta.label)).toHaveLength(HARNESS_ENTRIES.length);
-    expect(within(entry(en.workspace.sidebar.nav.aiModels)).queryByText(en.common.beta.label)).toBeNull();
+    let badges = 0;
+    for (const path of [WORKSPACE_PATH, PERSONAL_PATH]) {
+      currentPath = path;
+      renderSidebar();
+      badges += screen.queryAllByText(en.common.beta.label).length;
+      if (path === WORKSPACE_PATH) {
+        expect(within(entry(en.workspace.sidebar.nav.aiModels)).queryByText(en.common.beta.label)).toBeNull();
+      }
+      cleanup();
+    }
+    expect(badges).toBe(HARNESS_ENTRIES.length);
   });
 
   it('shows no harness entry and no badge for it while the harness is off', () => {
     harnessOn = false;
-    renderSidebar();
-    for (const label of HARNESS_ENTRIES) expect(screen.queryByText(label)).toBeNull();
-    expect(screen.queryByText(en.common.beta.label)).toBeNull();
+    for (const path of [WORKSPACE_PATH, PERSONAL_PATH]) {
+      currentPath = path;
+      renderSidebar();
+      for (const [label] of HARNESS_ENTRIES) expect(screen.queryByText(label)).toBeNull();
+      expect(screen.queryByText(en.common.beta.label)).toBeNull();
+      cleanup();
+    }
   });
 });
