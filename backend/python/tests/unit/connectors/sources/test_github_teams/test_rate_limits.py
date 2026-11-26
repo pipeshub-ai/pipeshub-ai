@@ -484,6 +484,28 @@ class TestDsCallWaitsOutShortLimits:
         [wait] = [call.args[0] for call in no_sleep.await_args_list]
         assert 61 <= wait <= 67
 
+    async def test_a_transient_retry_does_not_lengthen_the_first_secondary_wait(self, no_sleep: AsyncMock) -> None:
+        """A 5xx retry before a secondary limit without Retry-After used to count towards its
+        exponent: 120s, over the 90s cap, so the call gave up instead of waiting the minute."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(500, json={"message": "Server Error"})
+            if calls["n"] == 2:
+                return httpx.Response(403, json={"message": SECONDARY_MESSAGE})
+            return httpx.Response(200, json={"number": 7})
+
+        ds = _data_source(handler)
+        _c, runtime = _runtime_over(ds)
+        res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.success is True
+        assert calls["n"] == 3
+        _transient, secondary = [call.args[0] for call in no_sleep.await_args_list]
+        assert 61 <= secondary <= 67
+
     async def test_a_distant_reset_returns_at_once_with_the_reset_time(self, no_sleep: AsyncMock) -> None:
         calls = {"n": 0}
 

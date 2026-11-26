@@ -407,7 +407,9 @@ class IssuesSync:
             # With the watermark. A failed check leaves the old watermark, so the next
             # sync reads on from the saved place and checks again, not from page 1.
             new_checkpoint.update(resume_fields_to_clear({**checkpoint, **saved_place}))
-        if new_checkpoint != checkpoint:
+        # Also when nothing else moved: a store that keeps null fields (ArangoDB) already holds the
+        # cleared place in ``checkpoint``, so the equality alone would leave this run's place behind.
+        if new_checkpoint != checkpoint or (ok and saved_place):
             await self._write_checkpoint(group_id, new_checkpoint)
         return ok
 

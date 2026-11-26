@@ -129,7 +129,7 @@ class RuntimeHelper:
         return response is not None and response.is_rate_limited is True
 
     @staticmethod
-    def _rate_limit_wait_seconds(response: GitHubResponse, attempt: int) -> float | None:
+    def _rate_limit_wait_seconds(response: GitHubResponse, limited: int) -> float | None:
         """How long to wait out a rate limit in-process, or None if too long.
 
         Bounded because a stream request is itself on the indexing service's
@@ -137,11 +137,11 @@ class RuntimeHelper:
         run has no caller waiting on it, so it waits for the reset itself.
         """
         seconds = response.retry_after_seconds
-        if seconds is None or (seconds == 0 and attempt > 1):
+        if seconds is None or (seconds == 0 and limited > 1):
             # No Retry-After (a secondary limit), or a reset our clock has passed while
             # GitHub still refuses (clock skew): at least a minute, doubling each time,
             # never a hot loop. docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
-            seconds = _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS * 2 ** (attempt - 1)
+            seconds = _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS * 2 ** (limited - 1)
         cap = (
             _GITHUB_SYNC_RATE_LIMIT_MAX_WAIT_SECONDS if get_run_sync_id() is not None
             else _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS
@@ -390,6 +390,7 @@ class RuntimeHelper:
             return await method(*args, **kwargs)
 
         refreshed = False
+        limited = 0  # rate limits met so far; only they lengthen the next rate-limit wait
         response = await self._execute_github_op(op, timeout=_github_timeout, op_label=label)
 
         for attempt in range(1, _GITHUB_MAX_RETRIES + 1):
@@ -405,7 +406,8 @@ class RuntimeHelper:
                     return response
                 refreshed = True
             elif self._is_rate_limited(response):
-                wait = self._rate_limit_wait_seconds(response, attempt)
+                limited += 1
+                wait = self._rate_limit_wait_seconds(response, limited)
                 reason = response.api_message or response.exception_type
                 resets_at = self._resets_at(response)
                 # Returned as a 429, not waited out: a sync aborts with its

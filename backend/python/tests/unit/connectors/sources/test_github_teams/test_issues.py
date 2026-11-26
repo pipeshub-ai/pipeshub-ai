@@ -429,6 +429,23 @@ class TestResumeInterruptedListing:
             "listing_resume_window": None,
         })
 
+    async def test_a_completed_listing_clears_its_place_where_nulls_are_kept(self) -> None:
+        """ArangoDB keeps a field written as null (UPDATE without keepNull: false), so the start
+        checkpoint can already hold the cleared place. A run that kept a place per page and then
+        finished with the watermark and total unchanged must still write the clear, or the next
+        sync reads on from the last page this one reached."""
+        c = make_mock_connector()
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, ok_response([_issue(number=500)])])
+        watermark = epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc))
+        sync = self._sync(c, {"last_sync_time": watermark, "issue_total": 5, **dict.fromkeys(_RESUME)})
+
+        assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is True
+
+        (_group, written), _ = sync._write_checkpoint.await_args
+        assert all(written[k] is None for k in _RESUME), written
+
     async def test_the_next_sync_reads_on_from_the_saved_place(self) -> None:
         c = make_mock_connector()
         c.runtime.ds_call = AsyncMock(return_value=ok_response([_issue(number=500)]))
