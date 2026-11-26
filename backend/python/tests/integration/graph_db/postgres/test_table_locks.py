@@ -52,31 +52,36 @@ def _self_attrs(node: ast.AST) -> set[str]:
 def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) -> list[str]:
     """``module::test`` (``module::Class::test`` for a method) of each test in ``modules`` (module name: source) that does something database-wide
     (``DATABASE_WIDE``) itself, or through a function, fixture, class, method or constant it uses, and is not marked ``pg_table_lock`` (on the function, its class
-    or the module's ``pytestmark``). A name is looked up as pytest finds a fixture: in the test's module (or what it imports from the folder), then in
-    ``conftests``, nearest first; ``self.x`` and ``cls.x`` in a method are the class's own ``x`` or a folder base class's. "Uses" is reachability: every node that
-    reaches a database-wide statement, found from those statements backwards, so a cycle or the order of the modules cannot change the answer."""
-    defs: dict[tuple[str, str], tuple[ast.AST, str | None]] = {}       # (module, name or Class.method): the node and its class
+    or the module's ``pytestmark``).
+
+    A name is looked up as pytest finds a fixture: in the module (or what it imports from the folder), then in ``conftests``, nearest first. A method is analysed
+    for each class it runs on (its receiver): ``self.x`` and ``cls.x`` are ``x`` as that class's MRO among the folder's classes finds it, so a helper a base class
+    defines reaches the override of the test's class. "Uses" is reachability: every node that reaches a database-wide statement, found from those statements
+    backwards, so a cycle or the order of the modules cannot change the answer.
+
+    shortcut: a static check of the folder's own code. It follows names, fixtures and ``self``/``cls`` attributes through the class MRO, not other dynamic
+    dispatch (``getattr``, a callable passed as a value or stored in a container, code outside the folder); extend it if a test starts to depend on those."""
+    defs: dict[tuple[str, str], ast.AST] = {}                  # (module, name): a module-level function, class or constant
     imports: dict[tuple[str, str], tuple[str, str]] = {}
-    tests: list[tuple[str, str, tuple[str, str], bool]] = []
+    tests: list[tuple[str, str, tuple, bool]] = []
     for mod, source in modules.items():
         tree = ast.parse(source)
         module_marked = any(isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "pytestmark" for t in n.targets) and _marked(n.value) for n in tree.body)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defs[(mod, node.name)] = (node, None)
-                if isinstance(node, ast.ClassDef):
+                defs[(mod, node.name)] = node
+                if mod in conftests:
+                    continue
+                if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
                     class_marked = module_marked or any(_marked(d) for d in node.decorator_list)
-                    for m in node.body:
-                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            defs[(mod, f"{node.name}.{m.name}")] = (m, node.name)
-                            if mod not in conftests and node.name.startswith("Test") and m.name.startswith("test_"):
-                                tests.append((mod, f"{node.name}::{m.name}", (mod, f"{node.name}.{m.name}"), class_marked or any(_marked(d) for d in m.decorator_list)))
-                elif mod not in conftests and node.name.startswith("test_"):
-                    tests.append((mod, node.name, (mod, node.name), module_marked or any(_marked(d) for d in node.decorator_list)))
+                    tests += [(mod, f"{node.name}::{m.name}", ("method", (mod, node.name), m.name), class_marked or any(_marked(d) for d in m.decorator_list))
+                              for m in node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test_")]
+                elif not isinstance(node, ast.ClassDef) and node.name.startswith("test_"):
+                    tests.append((mod, node.name, ("def", (mod, node.name)), module_marked or any(_marked(d) for d in node.decorator_list)))
             elif isinstance(node, ast.Assign):
                 for t in node.targets:
                     if isinstance(t, ast.Name):
-                        defs[(mod, t.id)] = (node, None)
+                        defs[(mod, t.id)] = node
             elif isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
                     imports[(mod, a.asname or a.name)] = (node.module, a.name)
@@ -87,33 +92,52 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                 return key
         return None
 
-    def member(cls: tuple[str, str], attr: str, seen: frozenset = frozenset()) -> tuple[str, str] | None:
-        """``attr`` of the class ``cls`` or of the first folder base class that has it."""
-        if (key := (cls[0], f"{cls[1]}.{attr}")) in defs:
-            return key
-        for base in defs[cls][0].bases:
-            if (isinstance(base, ast.Name) and (b := resolve(cls[0], base.id)) and b not in seen and isinstance(defs[b][0], ast.ClassDef)
-                    and (found := member(b, attr, seen | {cls}))):
-                return found
-        return None
+    def mro(cls: tuple[str, str]) -> list[tuple[str, str]]:
+        """The class and its folder base classes, depth first and left to right, each once: C3 for single inheritance (shortcut: not for a diamond, which the folder does not have)."""
+        out: list[tuple[str, str]] = []
+        todo = [cls]
+        while todo:
+            c = todo.pop(0)
+            if c in out:
+                continue
+            out.append(c)
+            todo[:0] = [b for base in defs[c].bases if isinstance(base, ast.Name) and (b := resolve(c[0], base.id)) and isinstance(defs[b], ast.ClassDef)]
+        return out
 
-    callers: dict[tuple[str, str], set[tuple[str, str]]] = {}
-    hits = []
-    for key, (node, cls) in defs.items():
+    def methods(cls: tuple[str, str]) -> dict[str, tuple[str, ast.AST]]:
+        """Each method the class has, as its MRO finds it: name: (the defining module, the function)."""
+        out: dict[str, tuple[str, ast.AST]] = {}
+        for c in mro(cls):
+            for m in defs[c].body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    out.setdefault(m.name, (c[0], m))
+        return out
+
+    # nodes: ("def", key) for a module-level definition, ("method", receiver class, name) for a method run on that class
+    callers: dict[tuple, set[tuple]] = {}
+    hits: list[tuple] = []
+
+    def add(node_id: tuple, node: ast.AST, mod: str, uses: set) -> None:
         if any(DATABASE_WIDE.search(x) for x in _strings(node)):
-            hits.append(key)
-        uses = {resolve(key[0], n) for n in _names(node)}
-        if cls is not None:
-            uses |= {member((key[0], cls), a) for a in _self_attrs(node)}
-        for used in uses - {None}:
-            callers.setdefault(used, set()).add(key)
+            hits.append(node_id)
+        for used in uses | {("def", k) for n in _names(node) if (k := resolve(mod, n))}:
+            callers.setdefault(used, set()).add(node_id)
+    for key, node in defs.items():
+        if isinstance(node, ast.ClassDef):
+            own = methods(key)
+            for name, (dmod, fn) in own.items():
+                add(("method", key, name), fn, dmod, {("method", key, a) for a in _self_attrs(fn) if a in own})
+            body = ast.Module(body=[n for n in node.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))], type_ignores=[])
+            add(("def", key), body, key[0], {("method", key, name) for name in own})       # a class used is a class whose methods may run
+        else:
+            add(("def", key), node, key[0], set())
     wide, todo = set(hits), list(hits)
     while todo:
         for caller in callers.get(todo.pop(), ()):
             if caller not in wide:
                 wide.add(caller)
                 todo.append(caller)
-    return [f"{mod}::{name}" for mod, name, key, marked in tests if not marked and key in wide]
+    return [f"{mod}::{name}" for mod, name, node_id, marked in tests if not marked and node_id in wide]
 
 
 def _folder() -> tuple[dict[str, str], list[str]]:
@@ -151,6 +175,14 @@ def test_the_guard_follows_self_attributes_to_the_class_and_its_bases() -> None:
     modules = {"test_a": 'class Base:\n    def analyze(self):\n        run("ANALYZE kg.records")\n'
                          'class TestPlans(Base):\n    def prepare(self):\n        self.analyze()\n    def test_one(self):\n        self.prepare()\n'
                          '    def test_two(self):\n        self.other()\n    def other(self):\n        pass\n'}
+    assert unmarked_database_wide_tests(modules, []) == ["test_a::TestPlans::test_one"]
+
+
+def test_the_guard_resolves_self_against_the_test_class_that_runs_an_inherited_helper() -> None:
+    """Base.prepare calls self.analyze: on TestPlans it runs TestPlans.analyze, which analyses; on TestQuiet it runs Base.analyze, which does not."""
+    modules = {"test_a": 'class Base:\n    def prepare(self):\n        self.analyze()\n    def analyze(self):\n        pass\n'
+                         'class TestPlans(Base):\n    def analyze(self):\n        run("ANALYZE kg.records")\n    def test_one(self):\n        self.prepare()\n'
+                         'class TestQuiet(Base):\n    def test_two(self):\n        self.prepare()\n'}
     assert unmarked_database_wide_tests(modules, []) == ["test_a::TestPlans::test_one"]
 
 
