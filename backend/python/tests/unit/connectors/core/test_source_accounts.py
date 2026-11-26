@@ -1106,3 +1106,14 @@ async def test_a_marker_save_that_failed_after_the_bucket_save_is_published_by_t
     now[0] += module.STATE_MAX_AGE_SECONDS + 1
     await worker.ensure_loaded()
     assert not worker.may_grant("ana@x.com", "old-oid") and worker.may_grant("ana@x.com", "new-oid")
+
+
+@pytest.mark.asyncio
+async def test_a_connector_that_never_saved_its_state_reads_as_empty(world) -> None:
+    """A store answers None for a key never saved: the first run of a new connector loads nothing and admits its users."""
+    directory, accounts, config = world
+    assert config.saved == {}
+    await accounts.ensure_loaded()
+    assert accounts.loaded and accounts.reused == {}
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    assert directory.calls == [("link", ["ana-oid"])]
