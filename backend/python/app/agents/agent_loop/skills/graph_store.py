@@ -444,11 +444,36 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         self._origins = origins
         self._own_skills = own_skills
         self._account_id = account_id
-        # (name, generation) of each skill this store created.
-        self._created: set[tuple[str, str]] = set()
+        # (name, when it was created) of each skill this store created.
+        self._created: set[tuple[Any, Any]] = set()
 
     def _key(self, name: str) -> str:
         return f"{self._org_id}_{name}"
+
+    @staticmethod
+    def _creation(doc: Mapping[str, Any]) -> tuple[Any, Any] | None:
+        """What tells one creation of a skill's name from a later one: when it was created."""
+        created_at = doc.get("createdAtTimestamp")
+        return None if created_at is None else (doc.get("name"), created_at)
+
+    def _created_here(self, doc: Mapping[str, Any]) -> bool:
+        creation = self._creation(doc)
+        return creation is not None and creation in self._created
+
+    def _origin(self, doc: Mapping[str, Any]) -> SkillOrigin:
+        if doc.get("source") == SkillSource.BUILTIN.value:
+            return SkillOrigin.BUILTIN
+        if self._created_here(doc):
+            return SkillOrigin.RUN
+        if doc.get("name") in self._also_visible:
+            return SkillOrigin.AGENT
+        return SkillOrigin.PERSON
+
+    def _seen(self, doc: Mapping[str, Any]) -> None:
+        """Tells the run's ledger where a skill it reads came from, for the answer's label."""
+        name = doc.get("name")
+        if self._origins is not None and isinstance(name, str) and name:
+            self._origins.record(name, self._origin(doc))
 
     def _sees(self, doc: Mapping[str, Any]) -> bool:
         """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands)."""
@@ -867,7 +892,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             doc["approvedBy"] = approved_by
             doc["approvedAtTimestamp"] = now
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
-        self._created.add((name, doc["generation"]))
+        if (creation := self._creation(doc)) is not None:
+            self._created.add(creation)
         self._seen(doc)
         await self._create_owner_permission_edge(name, now)
         await self._sync_relation_edges(name, skill.metadata, now)
