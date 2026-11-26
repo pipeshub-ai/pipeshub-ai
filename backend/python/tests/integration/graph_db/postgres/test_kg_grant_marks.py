@@ -367,4 +367,4 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
         assert n > 0, f"{state}: the read found nothing, so the gate judged no probe"
         assert not (bad := _not_seeks(chain)), f"{state} root chain: not a seek per key: {bad}"
         members = [b for node in plan_gate.scans(cands, ("scope_members",)) for b in plan_gate.bounds(node)]
-        assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk = " in c for i, c in members), f"{state} candidates: {members}"
+        assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk >= " in c and "app_sk = " in c for i, c in members), f"{state} candidates: {members}"

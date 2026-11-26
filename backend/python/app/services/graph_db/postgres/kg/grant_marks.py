@@ -69,11 +69,14 @@ CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM unnest($2:
 HELD = "/* pipeshub:kg.grant_marks_held */ SELECT sk, kind, app_sk, group_sk, deleted, placeholder, alien, rule FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 MARKED = ("kind", "app_sk", "group_sk", "deleted", "placeholder", "alien", "rule")
 # The viewer's grants of the connector $3 that may be chain-tops (no parent the same principal holds covers them), with each node's group and parent marks: the grants of every principal
-# the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs).
+# the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs). Each
+# principal's range of scope_members_tops, in its order (as kg.hierarchy profiles it, sorts off): with no statistics the planner read the connector's grants by
+# scope_members_by_app once per principal.
 CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT m.node_sk, m.node_group, m.node_parent FROM kg.node_keys u
     JOIN kg.principal_closure c ON c.org_id = u.org_id AND c.user_sk = u.sk AND c.app_sk IN (0, $3)
-    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.app_sk = $3
-        AND NOT m.parent_held AND m.gtype <> '@uar' OFFSET 0) m
+    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1
+        AND m.principal_sk >= c.principal_sk AND m.principal_sk <= c.principal_sk AND m.app_sk = $3 AND NOT m.parent_held AND m.gtype <> '@uar'
+        ORDER BY m.principal_sk, m.app_sk, m.node_sk OFFSET 0) m
     WHERE u.org_id = $1 AND u.coll = 4 AND u.id = $2"""
 # The granted rows of the connector ``$3`` among ids ``$2`` that a browse may list as chain-tops (``kg.listing.CHAIN_GRANTED``), for a connector kg serves: kg's copy of the
 # rule is then the graph's (a row written without its rule takes the connector off the readers), so no graph row is read.
@@ -89,7 +92,7 @@ ROOT_CHAIN = """/* pipeshub:kg.root_chain */ WITH c AS MATERIALIZED (SELECT r.sk
       FROM unnest($2::bigint[]) AS q(sk)
       CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk >= q.sk ORDER BY x.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r
       CROSS JOIN LATERAL (SELECT coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 1), '{}') AS hier, coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 2), '{}') AS grp
-          FROM (SELECT k.parent_sk, k.kind FROM kg.links k WHERE k.org_id = $1 AND (k.child_sk, k.kind) >= (r.sk, 1) AND (k.child_sk, k.kind) <= (r.sk, 2)
+          FROM (SELECT k.parent_sk, k.kind FROM kg.links k WHERE k.org_id = $1 AND k.child_sk >= r.sk AND k.child_sk <= r.sk AND k.kind IN (1, 2)
               ORDER BY k.child_sk, k.kind) k) l
       WHERE r.app_sk = $3 AND r.coll = ANY('{2,3}'::smallint[]) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'),
     e AS MATERIALIZED (SELECT c.sk, x.ref, x.parent FROM c CROSS JOIN LATERAL (SELECT h, true FROM unnest(c.parent_sk || c.hier) AS h
