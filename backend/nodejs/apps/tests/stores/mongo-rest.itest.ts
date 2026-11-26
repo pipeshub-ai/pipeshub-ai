@@ -132,22 +132,26 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     });
 
     // The driver can reject a write the server still applies later, after the cleanup ran: that write must not make the
-    // organisation live without its administrator. `done()` is the late write's own result, so a test waits for it and a
+    // organisation live without its administrator. The write is held until `release()`, which a test calls once the create
+    // (and its cleanup) has settled, so the order never depends on timing; `release()` is the write's own result, and a
     // database error in it fails the test.
     const lateWrite = () => {
-      let done: Promise<unknown> = Promise.resolve();
+      let held: (() => Promise<unknown>) | undefined;
       return {
         fake: (real: () => Promise<unknown>): Promise<never> => {
-          done = new Promise((r) => setTimeout(r, 300))
-            .then(real)
-            .catch((e: Error) => {
-              // In a transaction that was aborted the server never applies it; anything else is a real failure.
-              if (rsAvailable && e.name === 'MongoExpiredSessionError') return { matchedCount: 0 };
-              throw e;
-            });
+          held = real;
           return Promise.reject(new Error('reply lost'));
         },
-        done: () => done,
+        release: async (): Promise<unknown> => {
+          if (!held) throw new Error('no write was held');
+          try {
+            return await held();
+          } catch (e) {
+            // In a transaction that was aborted the server never applies it; anything else is a real failure.
+            if (rsAvailable && (e as Error).name === 'MongoExpiredSessionError') return { matchedCount: 0 };
+            throw e;
+          }
+        },
       };
     };
     /** Org.updateOne whose first call (the activation) goes through `first`; later calls are the real ones. */
@@ -169,7 +173,7 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       const ids = orgs.allocateIds();
       let message = '';
       await create(ids).catch((e: Error) => (message = e.message));
-      await late.done();
+      await late.release();
       expect(message).to.equal('reply lost');
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       expect({ ...(await leftOf(ids)), orgs: 0 }).to.deep.equal(none);
@@ -185,7 +189,7 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       });
       const ids = orgs.allocateIds();
       await create(ids).catch(() => undefined);
-      await late.done();
+      await late.release();
       sinon.restore();
       expect(await Org.countDocuments({ _id: ids.orgId }), 'the late insert left its hidden row').to.equal(1);
       expect(await orgs.count(), 'setup and signup count no organisation for it').to.equal(before.count);
@@ -204,7 +208,7 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       const ids = orgs.allocateIds();
       let message = '';
       await create(ids).catch((e: Error) => (message = e.message));
-      const applied = (await late.done()) as { matchedCount: number };
+      const applied = (await late.release()) as { matchedCount: number };
       expect(message).to.equal('reply lost');
       expect(applied.matchedCount, 'the late activation found no organisation to make live').to.equal(0);
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
@@ -236,7 +240,7 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       orgDeleteFails();
       const ids = orgs.allocateIds();
       await create(ids).catch(() => undefined);
-      const applied = (await late.done()) as { matchedCount: number };
+      const applied = (await late.release()) as { matchedCount: number };
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       if (!rsAvailable) expect(applied.matchedCount, 'the cleanup moved the row on, so the late activation matches nothing').to.equal(0);
     });
