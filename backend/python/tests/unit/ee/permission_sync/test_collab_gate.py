@@ -134,6 +134,8 @@ async def test_licensed_slack_public_channel_grants_the_workspace_role() -> None
     connector = _connector(SlackWorkspacePermissionsMixin, gated=False)
     connector._fetch_channel_members = AsyncMock(return_value=[])
     connector._guest_user_ids = set()
+    # The connector's own helper the licensed path ends with; no authenticator grant is set, so it adds none.
+    connector._with_authenticator = SlackConnector._with_authenticator.__get__(connector)
 
     grants = await connector._channel_permissions({"id": "C2"})
 
