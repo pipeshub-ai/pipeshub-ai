@@ -2,6 +2,7 @@
 graph's connection pool filled and every other query failed."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -34,6 +35,29 @@ async def test_a_thousand_sharing_records_cost_a_few_queries() -> None:
     assert len(await own_record_keys(graph, "v1", "org-1")) == 1200
     assert graph.get_nodes_by_field_in.await_count == 3
     graph.get_document.assert_not_awaited()
+
+
+async def test_the_batches_are_read_one_after_another() -> None:
+    # A few queries at once per delete is still the burst that filled the pool once a few deletes overlap:
+    # counting the reads does not tell sequential batches from gathered ones, so the overlap is measured.
+    graph = _graph({f"r{i}": "org-1" for i in range(3 * membership.OWNER_READ_BATCH)})
+    inner = graph.get_nodes_by_field_in.side_effect
+    in_flight = peak = 0
+
+    async def counted(*args: object, **kwargs: object) -> list[dict]:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0)
+            return await inner(*args, **kwargs)
+        finally:
+            in_flight -= 1
+
+    graph.get_nodes_by_field_in.side_effect = counted
+    await own_record_keys(graph, "v1", "org-1")
+    assert graph.get_nodes_by_field_in.await_count == 3
+    assert peak == 1
 
 
 async def test_only_records_of_another_org_are_left_out() -> None:
