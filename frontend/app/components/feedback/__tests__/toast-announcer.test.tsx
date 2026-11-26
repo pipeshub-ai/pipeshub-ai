@@ -48,4 +48,49 @@ describe('toast announcer', () => {
     });
     expect(announcer().textContent).toBe('Sync is on for Wiki');
   });
+
+  it('announces the newest toast when an older one is still open', () => {
+    render(<ToastContainer />);
+    let newer = '';
+    act(() => {
+      useToastStore.getState().addToast({ variant: 'loading', title: 'Turning on sync for Wiki' });
+      newer = useToastStore.getState().addToast({ variant: 'loading', title: 'Turning on sync for Docs' });
+    });
+    act(() => {
+      useToastStore.getState().updateToast(newer, { variant: 'error', title: "Couldn't change sync for Docs" });
+    });
+    expect(announcer().textContent).toBe("Couldn't change sync for Docs");
+  });
+
+  it('announces a second toast with the same text by clearing the region first', async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToastContainer />);
+      const seen: string[] = [];
+      const observer = new MutationObserver(() => seen.push(announcer().textContent ?? ''));
+      observer.observe(announcer(), { childList: true, characterData: true, subtree: true });
+
+      act(() => {
+        useToastStore.getState().addToast({ variant: 'success', title: 'Saved', duration: null });
+      });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      act(() => {
+        useToastStore.getState().addToast({ variant: 'success', title: 'Saved', duration: null });
+      });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      observer.disconnect();
+
+      expect(announcer().textContent).toBe('Saved');
+      // Saved, then cleared, then Saved again: the second toast is a change a screen reader hears.
+      expect(seen.filter((t) => t === 'Saved').length).toBeGreaterThanOrEqual(2);
+      expect(seen.indexOf('', seen.indexOf('Saved'))).toBeGreaterThan(seen.indexOf('Saved'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+

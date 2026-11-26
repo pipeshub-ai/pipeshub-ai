@@ -20,6 +20,7 @@ import { loadInstanceConfigs } from '../utils/load-instance-configs';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
   startConnectorSync,
+  toggleConnectorSyncOff,
   toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
@@ -438,14 +439,12 @@ function TeamConnectorsPageContent() {
         direction: instance.isActive ? 'off' : 'on',
         t,
         action: async () => {
-          if (!instance.isActive) {
-            const outcome = await toggleConnectorSyncOn(connectorId, instance.type);
-            if (outcome.kind === 'requires-desktop') {
-              addToast(localFsDesktopToast(outcome));
-              return 'handled';
-            }
-          } else {
-            await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
+          const outcome = instance.isActive
+            ? await toggleConnectorSyncOff(connectorId, instance.type)
+            : await toggleConnectorSyncOn(connectorId, instance.type);
+          if (outcome.kind === 'requires-desktop') {
+            addToast(localFsDesktopToast(outcome));
+            return 'handled';
           }
           // The switch flips with the success toast, not after it.
           await refreshConnectorRowQuiet(connectorId);

@@ -227,6 +227,26 @@ export async function toggleConnectorSyncOn(
 }
 
 /**
+ * Turn sync off. Node can refuse a Local FS disable for the same desktop
+ * reasons as an enable, and the API client shows no toast for those, so it is
+ * reported as `requires-desktop` instead of thrown, like `toggleConnectorSyncOn`.
+ */
+export async function toggleConnectorSyncOff(
+  connectorId: string,
+  connectorType?: string
+): Promise<ResyncOutcome> {
+  try {
+    await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
+  } catch (error) {
+    const refusal =
+      connectorType && isLocalFsConnectorType(connectorType) ? readDesktopRefusal(error) : null;
+    if (refusal) return { kind: 'requires-desktop', ...refusal };
+    throw error;
+  }
+  return { kind: 'backend' };
+}
+
+/**
  * Single entry point for "make this instance sync now".
  * Re-fetches the instance so `isActive` is never read from stale client state.
  * - Inactive → toggle sync ON; backend publishes `appEnabled` with `syncAction:"immediate"`.

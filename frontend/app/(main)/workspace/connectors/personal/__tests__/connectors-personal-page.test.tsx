@@ -234,3 +234,31 @@ describe('Personal connectors page', () => {
     });
   });
 });
+
+describe('Personal connectors page: turning sync off on a Local FS connector the desktop refuses', () => {
+  it('says why instead of flipping the switch back without a word', async () => {
+    const { LOCAL_FS_DESKTOP_OFFLINE } = await import('../../constants');
+    const instance = makeInstance({ type: 'LOCAL_FS', name: 'Notes', isActive: true, scope: 'personal' });
+    nav.params = new URLSearchParams('connectorType=LOCAL_FS');
+    api.getActiveConnectors.mockResolvedValue({ connectors: [instance] });
+    api.getConnectorInstance.mockResolvedValue(instance);
+    // The API client shows no toast for this refusal; the page must.
+    api.toggleConnector.mockRejectedValue({
+      type: 'CONFLICT',
+      message: 'The desktop app is not connected.',
+      statusCode: 409,
+      details: { code: LOCAL_FS_DESKTOP_OFFLINE, ownerDeviceName: 'Studio Mac' },
+    });
+    renderInTheme(<PersonalConnectorsPage />);
+    const toggle = await screen.findByRole('switch');
+    await waitFor(() => expect(toggle.hasAttribute('aria-disabled')).toBe(false));
+
+    fireEvent.click(toggle);
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disable sync' }));
+
+    await waitFor(() => expect(toasts().map((t) => t.variant)).toContain('info'));
+    expect(toasts().map((t) => t.variant)).not.toContain('error');
+  });
+});
+

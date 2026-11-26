@@ -12,6 +12,7 @@ import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
   startConnectorSync,
+  toggleConnectorSyncOff,
   toggleConnectorSyncOn,
 } from '../utils/connector-sync-actions';
 import { runSyncToggleWithFeedback } from '../utils/sync-toggle-feedback';
@@ -464,14 +465,12 @@ function PersonalConnectorsPageContent() {
         direction: instance.isActive ? 'off' : 'on',
         t,
         action: async () => {
-          if (!instance.isActive) {
-            const outcome = await toggleConnectorSyncOn(connectorId, instance.type);
-            if (outcome.kind === 'requires-desktop') {
-              addToast(localFsDesktopToast(outcome));
-              return 'handled';
-            }
-          } else {
-            await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
+          const outcome = instance.isActive
+            ? await toggleConnectorSyncOff(connectorId, instance.type)
+            : await toggleConnectorSyncOn(connectorId, instance.type);
+          if (outcome.kind === 'requires-desktop') {
+            addToast(localFsDesktopToast(outcome));
+            return 'handled';
           }
           // The switch flips with the success toast, not after it.
           if (isLocalFsConnectorType(instance.type)) {

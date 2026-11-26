@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { Box, Text, Theme, VisuallyHidden } from '@radix-ui/themes';
 import {
@@ -8,6 +8,7 @@ import {
   selectToasts,
   selectIsHovered,
   type ToastPlacement,
+  type Toast as ToastData,
 } from '@/lib/store/toast-store';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -114,6 +115,44 @@ function ToastStack({
   );
 }
 
+/** How long the region stays empty before the same words are put back, so they are heard again. */
+const REPEAT_ANNOUNCEMENT_GAP_MS = 100;
+
+/**
+ * Screen readers hear toasts through this region, which stays mounted with or without toasts:
+ * a live region inserted together with its text is often not read at all. It carries the newest
+ * toast, so a progress toast updated in place is heard again with its result.
+ */
+function ToastAnnouncer({ toast }: { toast?: ToastData }) {
+  const [text, setText] = useState('');
+  const shown = useRef<{ id: string; text: string }>({ id: '', text: '' });
+  const id = toast?.id ?? '';
+  const next = toast ? [toast.title, toast.description].filter(Boolean).join('. ') : '';
+
+  useEffect(() => {
+    const previous = shown.current;
+    if (previous.id === id && previous.text === next) return undefined;
+    shown.current = { id, text: next };
+    if (!next || next !== previous.text) {
+      setText(next);
+      return undefined;
+    }
+    // A different toast with the same words leaves the region unchanged, which is not announced.
+    // Empty it, then put the words back in a later task; a newer toast cancels the restore.
+    setText('');
+    const restore = setTimeout(() => setText(next), REPEAT_ANNOUNCEMENT_GAP_MS);
+    return () => clearTimeout(restore);
+  }, [id, next]);
+
+  return (
+    <VisuallyHidden>
+      <div role="status" aria-live="polite" aria-atomic="true" data-ph-toast-announcer="">
+        {text}
+      </div>
+    </VisuallyHidden>
+  );
+}
+
 export function ToastContainer() {
   const toasts = useToastStore(selectToasts);
   const isHovered = useToastStore(selectIsHovered);
@@ -126,17 +165,8 @@ export function ToastContainer() {
     setMounted(true);
   }, []);
 
-  // Toasts are announced through this region, which stays mounted with or without toasts:
-  // a live region inserted together with its text is often not read at all. It carries the
-  // newest toast, so a progress toast updated in place is heard again with its result.
-  const newest = toasts.filter((t) => !t.isExiting).at(-1);
-  const announcer = (
-    <VisuallyHidden>
-      <div role="status" aria-live="polite" aria-atomic="true" data-ph-toast-announcer="">
-        {newest ? [newest.title, newest.description].filter(Boolean).join('. ') : ''}
-      </div>
-    </VisuallyHidden>
-  );
+  // New toasts are added first, so the newest one still on screen is the first that is not leaving.
+  const announcer = <ToastAnnouncer toast={toasts.find((t) => !t.isExiting)} />;
 
   if (toasts.length === 0 || !mounted) {
     return announcer;
