@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import AccessRule
+from app.config.constants.arangodb import AccessRule, CollectionNames
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
@@ -1169,3 +1169,54 @@ def unreadable_security_notices(
             f"security level there {effect} until their levels can be read."
         )))
     return notices
+
+
+async def close_stored_issue(processor: Any, stored: Record) -> None:  # noqa: ANN401
+    """Store an issue closed: ``RESTRICTED`` with no grants of its own, so no one reads it, and no one reads its files
+    and comments, which read through it (a file inherits it, a comment needs it as well as its own grant). Its links
+    stay (``None``: not read on this write; the scan does not load them), so it opens again with its access once a sync
+    builds it: it is stored with no source time, so the next read takes it as changed even when Jira's ``updated`` has
+    not moved. An attachment is closed the same way. A placeholder has no access to close."""
+    if stored.is_placeholder:
+        return
+    stored.access_rule = AccessRule.RESTRICTED
+    stored.rewrite_permissions = True
+    stored.source_updated_at = 0
+    stored.related_external_records = None
+    await processor.on_new_records([(stored, [])])
+
+
+async def close_kept_issues(
+    processor: Any, stored: list[Record], issue_ids: set[str], logger: Any,  # noqa: ANN401
+) -> set[str]:
+    """Close (``close_stored_issue``) the records among ``stored`` named in ``issue_ids`` (issues, and attachments whose
+    record could not be built), before a full sync keeps them: their build failed, so their access was not read again
+    and may no longer be what Jira gives (an attachment may now be shown only in a restricted comment). Returns the ids
+    of those that could not be closed, which the caller must not keep: the full sync then unlinks them. A close is read
+    back, with the record's permission edges, as a write the schema refuses is skipped without an error (and a record
+    may already be stored ``RESTRICTED`` with no source time but with grants: a leveled issue whose read failed). One in
+    the trash is not written, which would bring it back: no one reads it there, and a sync that restores it builds it
+    with its access."""
+    unclosed: set[str] = set()
+    for record in stored:
+        if record.external_record_id not in issue_ids or record.is_deleted:
+            continue
+        try:
+            await close_stored_issue(processor, record)
+            if not record.is_placeholder:
+                written = await processor.get_record_by_external_id(record.connector_id, record.external_record_id)
+                if written is None or written.access_rule != AccessRule.RESTRICTED or written.source_updated_at != 0:
+                    raise RuntimeError("the close was not stored")
+                async with processor.data_store_provider.transaction() as tx_store:
+                    if await tx_store.get_edges_to_node(
+                        f"{CollectionNames.RECORDS.value}/{written.id}", CollectionNames.PERMISSION.value,
+                        raise_on_error=True,
+                    ):
+                        raise RuntimeError("the close was not stored: the record still has grants")
+        except Exception as e:
+            logger.error(
+                "Could not close stored record %s, whose build failed; the full sync unlinks it instead: %s",
+                record.external_record_id, e,
+            )
+            unclosed.add(record.external_record_id)
+    return unclosed

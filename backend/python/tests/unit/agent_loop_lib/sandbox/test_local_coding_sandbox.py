@@ -5,6 +5,7 @@ contract would be true on Docker but not on the local (default) backend."""
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -127,3 +128,79 @@ class TestPythonVenvFailureSaysWhy:
 
         with pytest.raises(EnvironmentSetupError, match="ensurepip is not available"):
             await manager.ensure_python_venv()
+
+
+class TestResourceLimitMessages:
+    async def test_memory_error_is_out_of_memory_naming_the_local_limit(self, tmp_path, monkeypatch) -> None:
+        from app.agent_loop_lib.sandbox.coding.base import (
+            CodeRequest,
+            CodeResult,
+            ErrorCategory,
+        )
+
+        sandbox = LocalCodingSandbox(working_dir=str(tmp_path / "sandbox-1"))
+
+        async def fake_execute(request: CodeRequest) -> CodeResult:
+            return CodeResult(
+                stdout="", exit_code=1, language="python", duration_ms=1.0,
+                stderr='Traceback (most recent call last):\n  File "main.py", line 1\nMemoryError\n',
+            )
+
+        monkeypatch.setattr(sandbox._executor, "execute", fake_execute)
+        result = await sandbox.execute(CodeRequest(code="x = 'a' * (2 * 1024**3)", language="python"))
+
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert "1536 MB" in result.error_analysis.message
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_CPU signals are Linux behaviour")
+    async def test_busy_loop_past_the_cpu_limit_gets_the_cpu_time_note(self, tmp_path) -> None:
+        from app.agent_loop_lib.sandbox.coding.base import CodeRequest, ErrorCategory
+        from app.agent_loop_lib.sandbox.coding.executor import ExecutionLimits
+
+        sandbox = LocalCodingSandbox(
+            working_dir=str(tmp_path / "sandbox-1"), limits=ExecutionLimits(max_cpu_seconds=1),
+        )
+        result = await sandbox.execute(CodeRequest(code="while True:\n    pass\n", language="python", timeout=20))
+
+        assert result.exit_code in (-24, 152)
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+        assert result.error_analysis.message.startswith(
+            "[sandbox] The program used up its CPU time limit (1 s of CPU)."
+        )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+class TestInstallSubprocessIsKilledOnCancel:
+    async def test_cancelled_confined_command_kills_its_process_group(self, tmp_path, monkeypatch) -> None:
+        import asyncio
+
+        from app.agent_loop_lib.sandbox.coding import environment as env_mod
+
+        monkeypatch.setattr(env_mod, "confine_command", lambda cmd, *_a, **_k: cmd)
+        spawned: list[asyncio.subprocess.Process] = []
+        real_exec = asyncio.create_subprocess_exec
+
+        async def _recording_exec(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+            proc = await real_exec(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(env_mod.asyncio, "create_subprocess_exec", _recording_exec)
+        manager = env_mod.EnvironmentManager(str(tmp_path))
+        task = asyncio.ensure_future(
+            manager._run_confined([sys.executable, "-c", "import time; time.sleep(60)"], allow_network=False)
+        )
+        for _ in range(100):
+            if spawned:
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
+        pgid = os.getpgid(spawned[0].pid)
+        assert pgid != os.getpgid(0)  # its own session, so the kill cannot reach this process
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)

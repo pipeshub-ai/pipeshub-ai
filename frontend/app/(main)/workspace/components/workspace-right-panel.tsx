@@ -326,11 +326,11 @@ export function WorkspaceRightPanel({
           <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
             {headerActions}
             <IconButton
+              aria-label={t('common.close')}
               variant="ghost"
               color="gray"
               size="2"
               onClick={handleClose}
-              aria-label={t('common.close')}
               style={{ cursor: 'pointer', margin: 0 }}
             >
               <MaterialIcon name="close" size={18} color="var(--slate-11)" />

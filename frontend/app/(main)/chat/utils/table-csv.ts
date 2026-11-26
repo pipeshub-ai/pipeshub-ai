@@ -1,3 +1,4 @@
+import { spreadsheetCell } from '@/lib/utils/spreadsheet-cell';
 import { saveTextFile } from './save-text-file';
 
 /** The parts of a markdown parser node that reading a table needs. */
@@ -49,17 +50,10 @@ export function tableNodeToRows(table: TableNode | undefined): string[][] {
   return rows;
 }
 
-// A spreadsheet runs a cell that starts like this as a formula. The text here comes from a model
-// that may be repeating a document it read, so such a cell is saved as text instead.
-const FORMULA_START = /^[=@\t\r]/;
-const SIGN_START = /^[+-]/;
-const PLAIN_NUMBER = /^[+-]?\d[\d.,]*%?$/;
-
+// The text here comes from a model that may be repeating a document it read: a cell a spreadsheet would run as a
+// formula is saved as text, by the rule every export shares (SEC-B-06, `lib/utils/spreadsheet-cell.ts`).
 function csvCell(value: string): string {
-  const safe =
-    FORMULA_START.test(value) || (SIGN_START.test(value) && value.length > 1 && !PLAIN_NUMBER.test(value))
-      ? `'${value}`
-      : value;
+  const safe = spreadsheetCell(value);
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 

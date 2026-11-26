@@ -199,7 +199,7 @@ function stubChatSessionMessageLeanFind(messages: any[]): sinon.SinonStub {
 }
 
 function serviceTokenClaims(call: CapturedAICall): Record<string, unknown> {
-  const token = call.headers.authorization.replace(/^Bearer /, '')
+  const token = call.headers.authorization!.replace(/^Bearer /, '')
   const claims = jwt.verify(token, createMockAppConfig().scopedJwtSecret) as Record<string, unknown>
   expect(claims.scopes).to.deep.equal(['conversation:permissions'])
   return claims
@@ -425,6 +425,11 @@ describe('Enterprise Search Controller', () => {
     // reservation is covered in utils.persistence.test.ts and es_controller.streaming.test.ts.
     if (!(searchUtils.reserveRun as any).restore) {
       sinon.stub(searchUtils, 'reserveRun').resolves(null)
+    }
+    // The run heartbeat is covered in utils.persistence.test.ts. These fake streams never close, so the real
+    // one would keep a 60 s interval alive after the test and log into whichever test file runs next.
+    if (!(searchUtils.keepRunAlive as any).restore) {
+      sinon.stub(searchUtils, 'keepRunAlive')
     }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
@@ -2970,7 +2975,7 @@ describe('Enterprise Search Controller', () => {
       const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
       res.status.returns(res)
       res.json.returns(res)
-      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub())
+      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub() as any)
       return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
@@ -6173,7 +6178,7 @@ describe('Enterprise Search Controller', () => {
       expect(usersFindOne.called).to.be.false
     })
 
-    it('should scope the user lookup to the sole org', async () => {
+    it('never looks a Slack-minted token up by its email (SEC-C-03, ADR-SLACKID-01)', async () => {
       const handler = streamChatInternal(createMockAppConfig())
 
       stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
@@ -6194,9 +6199,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      expect(usersFindOne.calledOnce).to.be.true
-      const lookupFilter = usersFindOne.firstCall.args[0] as { orgId?: unknown }
-      expect(String(lookupFilter.orgId)).to.equal(VALID_OID2)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(usersFindOne.called).to.be.false
     })
   })
 
@@ -6568,7 +6573,7 @@ describe('Enterprise Search Controller', () => {
         c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
       )
       expect(toolCallInsert).to.exist
-      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(toolCallInsert!.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')
@@ -7385,7 +7390,7 @@ describe('Enterprise Search Controller', () => {
         c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
       )
       expect(toolCallInsert).to.exist
-      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(toolCallInsert!.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')

@@ -67,6 +67,8 @@ def run() -> None:
             f"THEN SET LOCAL ROLE {OWNER_ROLE}; END IF; END $$")
 
     with engine.connect() as connection:
+        # db.migrate asks after a failure whether this session's transaction committed (read from the client: no statement, no transaction)
+        cfg.attributes["upgrade_pid"] = connection.connection.driver_connection.info.backend_pid
         verify = cfg.attributes.get("verify")
         # Only an upgrade is atomic with its checks; a development downgrade of many modules in one transaction would run the
         # shared lock table out of memory.

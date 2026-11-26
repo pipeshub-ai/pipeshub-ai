@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from app.agents.agent_loop import stream_bridge
-from app.agents.chat_modes import bridge
 from app.modules.retrieval import degraded_notice
 
 pytestmark = pytest.mark.asyncio
@@ -41,7 +40,8 @@ async def test_the_scope_ends_with_the_stream() -> None:
 
 async def test_both_chat_entry_points_start_their_own_scope() -> None:
     assert hasattr(stream_bridge.run_agent_loop_stream, "__wrapped__")
-    assert hasattr(bridge.run_chat_stream, "__wrapped__")
+    # The harness serves both from one module (main's chat_modes/bridge.py lives in stream_bridge).
+    assert hasattr(stream_bridge.run_chat_stream, "__wrapped__")
 
 
 async def test_closing_the_wrapped_stream_closes_the_run_it_wraps_at_once() -> None:

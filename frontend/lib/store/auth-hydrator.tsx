@@ -12,8 +12,8 @@ import { isElectron } from '@/lib/electron';
 import { rememberSignupSource } from '@/lib/utils/signup-source';
 
 /**
- * Client-only component that hydrates the auth store from localStorage
- * after React has mounted. Mount once near the root of every layout
+ * Client-only component that restores the session (one refresh from the
+ * HttpOnly cookie or the desktop keychain, ADR-WEB-02) after React has mounted. Mount once near the root of every layout
  * (public + main) so `useAuthStore().isHydrated` flips to `true`
  * and downstream gates (AuthGuard, GuestGuard, login page) can proceed.
  *

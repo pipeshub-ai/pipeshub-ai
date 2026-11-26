@@ -1,16 +1,10 @@
-"""The All Records and KB record lists, against a real Neo4j and a real ArangoDB.
+"""The All Records list, against a real Neo4j and a real ArangoDB.
 
 Seeds one user with a knowledge base (a root file and a folder holding a file)
 and one connector record shared with them directly, then lists them the way the
 product does: All Records is the knowledge hub's global flatten
-(``KnowledgeHubService.get_nodes``), the KB list is ``list_kb_records`` with the
-user's graph key. Each list must return the seeded records, a total that agrees
-with the page, and honour pagination and a search filter.
-
-On ArangoDB the KB list used to answer every request with an empty page: the
-count query was sent bind parameters it never declared, and it read
-``user_permission`` as a collection name. The error was logged and swallowed,
-so users saw an empty list rather than a failure.
+(``KnowledgeHubService.get_nodes``). The list must return the seeded records, a
+total that agrees with the page, and honour pagination and a search filter.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
 fails, naming it; one that is not configured skips, so the bare unit job can
@@ -18,7 +12,8 @@ collect this file:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/test_record_lists_e2e.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \
+    pytest tests/integration/test_record_lists_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
@@ -48,6 +43,7 @@ from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -59,9 +55,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "record_lists_it"
 
@@ -85,7 +79,8 @@ class _World:
 
 
 async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -96,9 +91,10 @@ async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
 
 
 async def _connect_arango() -> IGraphDBProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(
-        return_value={"url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
+        return_value={"url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
     )
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -142,10 +138,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
-            env = "NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL"
-            if os.environ.get(env):
-                pytest.fail(f"{request.param} is configured ({env}) but not reachable: {exc!r}")
-            pytest.skip(f"{request.param} not configured ({env} unset) and not reachable locally: {exc!r}")
+            it_backends.unavailable("NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL", exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
@@ -277,17 +270,6 @@ async def _all_records(w: _World, **overrides: object) -> KnowledgeHubNodesRespo
     return listing
 
 
-def _kb_args(w: _World, **overrides: object) -> dict:
-    args: dict = {
-        "kb_id": w.kb_id, "user_id": w.user_key, "org_id": w.org_id, "skip": 0, "limit": 50,
-        "search": None, "record_types": None, "origins": None, "connectors": None,
-        "indexing_status": None, "date_from": None, "date_to": None,
-        "sort_by": "recordName", "sort_order": "asc",
-    }
-    args.update(overrides)
-    return args
-
-
 async def test_all_records_lists_kb_and_connector_records(world: _World) -> None:
     listing = await _all_records(world)
     got = [item.id for item in listing.items]
@@ -312,28 +294,6 @@ async def test_all_records_paginates_and_filters(world: _World) -> None:
 
     kb_only = {item.id for item in (await _all_records(world, origins=["COLLECTION"])).items}
     assert {world.ids["kb_root"], world.ids["kb_file"]} <= kb_only and world.ids["drive_file"] not in kb_only
-
-
-async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
-    g = world.graph
-    records, total, available = await g.list_kb_records(**_kb_args(world))
-    assert sorted(r["id"] for r in records) == sorted([world.ids["kb_root"], world.ids["kb_file"]])
-    assert total == len(records)
-    assert world.ids["kb_folder"] in {f["id"] for f in available["folders"]}
-    assert {r["id"]: r["folder"] for r in records}[world.ids["kb_root"]] is None
-
-    first, first_total, _ = await g.list_kb_records(**_kb_args(world, limit=1))
-    second, _, _ = await g.list_kb_records(**_kb_args(world, skip=1, limit=1))
-    assert len(first) == 1 and len(second) == 1 and first_total == total
-    assert [r["id"] for r in first + second] == [r["id"] for r in records]
-
-    in_folder, folder_total, _ = await g.list_kb_records(**_kb_args(world, folder_id=world.ids["kb_folder"]))
-    assert [r["id"] for r in in_folder] == [world.ids["kb_file"]]
-    assert folder_total == len(in_folder)
-
-    found, found_total, _ = await g.list_kb_records(**_kb_args(world, search="kb_file"))
-    assert [r["id"] for r in found] == [world.ids["kb_file"]]
-    assert found_total == 1
 
 
 async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> None:

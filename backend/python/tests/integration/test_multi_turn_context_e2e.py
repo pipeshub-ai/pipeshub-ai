@@ -37,7 +37,11 @@ from tests.integration.test_agent_turn_limit_e2e import (
     _route_kwargs,
     _ScriptedChatModel,
 )
-from tests.integration.test_chat_stream_agent_loop_e2e import _drain, _events_by_name
+from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (fixture)
+    _bound_as_auth,
+    _drain,
+    _events_by_name,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -160,7 +164,7 @@ def _image_attachment() -> Iterator[None]:
     """The current turn's attachment, as blob storage resolves an uploaded PNG."""
     with (
         patch(
-            "app.agents.chat_modes.bridge.resolve_attachments",
+            "app.agents.chat_modes.setup.resolve_attachments",
             new=AsyncMock(return_value=ResolvedAttachments(has_image_attachments=True)),
         ),
         patch(
@@ -185,8 +189,16 @@ def _graph_granting_the_attachment() -> AsyncMock:
     return graph
 
 
+# What Node joins over A's answer, which read only public web pages: without it the history is unknown and the
+# flow guard refuses B's fetches (FG2).
+_PUBLIC_HISTORY = {"complete": True, "sources": []}
+
+
 def _body(query: str = _B, **extra: object) -> dict[str, Any]:
-    return {"query": query, "chatMode": "agent", "previousConversations": _previous_conversations(), **extra}
+    return {
+        "query": query, "chatMode": "agent", "previousConversations": _previous_conversations(),
+        "historyLabel": _PUBLIC_HISTORY, **extra,
+    }
 
 
 def _humans(call: list[BaseMessage]) -> list[BaseMessage]:

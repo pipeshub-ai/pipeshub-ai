@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import pytest
 
+from app.core.db.uow import Tx
 from app.core.org_context import OrgContext, bind
 
 if TYPE_CHECKING:
@@ -100,3 +101,90 @@ async def test_a_custom_plan_fetch_gives_the_units_plan_mode_back(pg_db, org_ctx
         return seen
     with org_ctx(uuid.uuid4().hex[:24]):
         assert await pg_db.run(run, custom_plan=custom) == [mode, mode]
+
+
+VRID_TAGS = ("pipeshub:graph.records_by_virtual_id", "pipeshub:graph.access_targets_vrid")
+
+
+def _vrid_reads(node: dict) -> list[str]:
+    """Every read of graph.nodes in a JSON plan that is not an index probe by the virtual record id: a sequential scan, or a scan of another key."""
+    bad = []
+    if node.get("Relation Name", "").startswith("nodes"):
+        conds = [node.get("Index Cond", "")] + [c.get("Index Cond", "") for c in node.get("Plans", []) if c["Node Type"] == "Bitmap Index Scan"]
+        if not any("virtualRecordId" in c for c in conds):
+            bad.append(f"{node['Node Type']} on {node['Relation Name']}: {conds}")
+    return bad + [b for c in node.get("Plans", []) for b in _vrid_reads(c)]
+
+
+def _scans(node: dict) -> list[dict]:
+    return ([node] if "Relation Name" in node else []) + [s for c in node.get("Plans", []) for s in _scans(c)]
+
+
+@pytest.fixture
+async def vrid_world(pg_provider, pg_db) -> AsyncIterator[tuple[Any, str]]:
+    """A knowledge base the user reads, with records two to a virtual record id, some deleted or stubs; another org holds the same ids."""
+    org, other = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
+    with bind(OrgContext(org, None, "job", "job:test", "t")):
+        p = pg_provider
+        await p.batch_upsert_nodes([{"_key": "u", "orgId": org, "userId": "uid"}], "users")
+        await p.batch_upsert_nodes([{"_key": "kb", "orgId": org, "type": "KB", "permissionModel": "APP_LEVEL", "isActive": True}], "apps")
+        await p.batch_create_edges([{"from_collection": "users", "from_id": "u", "to_collection": "apps", "to_id": "kb", "type": "USER", "role": "READER"}], "permission")
+        await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes SELECT $1, 'records', 'r' || i, jsonb_build_object('orgId', $1::text, 'connectorId', 'kb',
+            'virtualRecordId', 'v' || (i / 2), 'isDeleted', i % 7 = 0, 'isPlaceholder', i % 11 = 0, 'origin', 'UPLOAD') FROM generate_series(0, 5999) i""", org), write=True)
+        await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id)
+            SELECT $1, 'belongsTo', 'records', 'r' || i, 'apps', 'kb' FROM generate_series(0, 5999) i""", org), write=True)
+    with bind(OrgContext(other, None, "job", "job:test", "t")):
+        await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes SELECT $1, 'records', 'o' || i, jsonb_build_object('orgId', $1::text, 'connectorId', 'kb',
+            'virtualRecordId', 'v' || i) FROM generate_series(0, 2999) i""", other), write=True)
+    admin = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await admin.execute("ANALYZE graph.nodes")
+    finally:
+        await admin.close()
+    with bind(OrgContext(org, None, "job", "job:test", "t")):
+        yield pg_provider, org
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", org), write=True)
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", org), write=True)
+    with bind(OrgContext(other, None, "job", "job:test", "t")):
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+
+
+async def test_a_batch_of_virtual_record_ids_is_read_by_index_probes_at_any_size(vrid_world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under row security the statement's `doc->>'virtualRecordId' = ANY(...)` cannot use the key's index (`->>` is not leakproof), so a batch over the
+    vetted read's 1000 ids read the whole org. Every size is now read in pages of the vetted read, one index probe per id, with the same answer."""
+    p, org = vrid_world
+    sent: list[tuple[str, tuple]] = []
+    fetch = Tx.fetch
+
+    async def spy(self: Tx, sql: str, *args: object) -> list[asyncpg.Record]:
+        if any(t in sql for t in VRID_TAGS):
+            sent.append((sql, args))
+        return await fetch(self, sql, *args)
+    monkeypatch.setattr(Tx, "fetch", spy)
+    asked = ["r22"]                                                   # a stub asked by its id is read; the other stubs are not
+    for n in (1, 1000, 16000):
+        vrids = [f"v{i}" for i in range(n)]
+        sent.clear()
+        got = {r["id"] for r in await p._kh_v3_accessible_rows("u", org, asked, vrids, access=None, transaction=None)}
+        plans = []
+        admin = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+        try:
+            admin.add_log_listener(lambda _c, m, plans=plans: plans.append(json.loads(m.message.split("plan:", 1)[1])["Plan"]) if "plan:" in m.message else None)
+            async with admin.transaction():
+                for stmt in ("LOAD 'auto_explain'", "SET LOCAL auto_explain.log_min_duration = 0", "SET LOCAL auto_explain.log_nested_statements = on",
+                             "SET LOCAL auto_explain.log_level = notice", "SET LOCAL auto_explain.log_format = json", "SET LOCAL client_min_messages = notice",
+                             "SET LOCAL ROLE pipeshub_connectors"):
+                    await admin.execute(stmt)
+                await admin.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for sql, args in sent:
+                    await admin.fetch(sql, *args)
+        finally:
+            await admin.close()
+        assert sent and plans, n
+        assert any(s["Relation Name"].startswith("nodes") for pl in plans for s in _scans(pl)), (n, plans)
+        assert not [b for pl in plans for b in _vrid_reads(pl)], (n, [b for pl in plans for b in _vrid_reads(pl)])
+        with monkeypatch.context() as m:
+            m.setattr("app.services.graph_db.postgres.access._VRID_PAGE", 0)      # a page is never short: the plain statement answers
+            plain = {r["id"] for r in await p._kh_v3_accessible_rows("u", org, asked, vrids, access=None, transaction=None)}
+        live = {f"r{i}" for i in range(min(2 * n, 6000)) if i % 7 and (i % 11 or f"r{i}" in asked)}
+        assert got == plain == live | {"r22"}, (n, len(got), len(plain), len(live))

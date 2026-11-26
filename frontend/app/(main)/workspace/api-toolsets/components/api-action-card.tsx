@@ -128,10 +128,10 @@ export function ApiActionCard({ toolset, isAdmin, onOpen, onEdit, onDelete }: Ap
         </Flex>
 
         <Flex align="center" gap="3" wrap="wrap">
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t(`workspace.apiToolsets.authType.${toolset.authType}`)}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {(['read', 'write', 'destructive'] as const)
               .filter((kind) => counts[kind] > 0)
               .map((kind) => t(`workspace.apiToolsets.kindCount.${kind}`, { count: counts[kind] }))

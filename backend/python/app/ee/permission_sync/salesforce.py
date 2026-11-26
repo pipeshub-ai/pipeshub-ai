@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Set, Tuple
 from urllib.parse import quote
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.sources.salesforce.eligibility import (
+    PRODUCT_READER_USER_TYPES,
+    READERS_SOQL,
+)
 from app.connectors.sources.salesforce.rows import (
     SalesforceGroup,
     SalesforceRole,
@@ -278,10 +282,9 @@ class SalesforcePermissionsMixin:
         # These edges are written straight to the store, so the processor's licence gate is asked here.
         if await self.data_entities_processor.skips_permission_writes(self.connector_id):
             return
-        # 1. Users who can sign in: active and not frozen.
-        soql_query = "SELECT Id, Email FROM User WHERE IsActive = true"
+        # 1. Users who can sign in: active, not frozen and of a type that is someone's account.
         sf_users: List[Dict[str, str]] = []
-        async for page in self._soql_query_paginated(api_version=api_version, q=soql_query):
+        async for page in self._soql_query_paginated(api_version=api_version, q=READERS_SOQL):
             for u in page:
                 if u.get("Id") and u.get("Email"):
                     sf_users.append(u)
@@ -548,7 +551,7 @@ class SalesforcePermissionsMixin:
             return
         permissions = [
             Permission(email=u["Email"], type=PermissionType.READ, entity_type=EntityType.USER)
-            for u in sf_users if u.get("Id") in readers
+            for u in sf_users if u.get("Id") in readers and u.get("UserType") in PRODUCT_READER_USER_TYPES
         ]
         await self.data_entities_processor.on_new_record_groups([(self._product_record_group(), permissions)])
 

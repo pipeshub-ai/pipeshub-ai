@@ -23,10 +23,10 @@ class TestCodingSandboxConfigDefaults:
         csc = CodingSandboxConfig()
         assert csc.provision_timeout_s == 60.0
 
-    def test_governor_defaults(self) -> None:
+    def test_governor_defaults_leave_the_caps_to_the_environment(self) -> None:
         csc = CodingSandboxConfig()
-        assert csc.governor.max_total_sandboxes == 50
-        assert csc.governor.max_per_org == 10
+        assert csc.governor.max_total_sandboxes is None
+        assert csc.governor.max_per_org is None
 
     def test_backend_options_override(self) -> None:
         csc = CodingSandboxConfig(
@@ -35,6 +35,22 @@ class TestCodingSandboxConfigDefaults:
         )
         assert csc.backend_options["docker"]["image"] == "custom:v2"
         assert csc.backend_options["docker"]["memory_limit_mb"] == 1024
+
+    def test_a_governor_config_override_sets_the_caps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agent_loop_lib.sandbox.governor import (
+            GovernorLimits,
+            get_default_governor,
+            reset_default_governor,
+        )
+
+        monkeypatch.setenv("SANDBOX_MAX_TOTAL", "9")
+        reset_default_governor()
+        try:
+            gov = get_default_governor(GovernorLimits(max_total_sandboxes=4, max_per_org=2))
+            assert gov.capacity.ceiling() == 4
+            assert gov.capacity.per_org_limit(4) == 2
+        finally:
+            reset_default_governor()
 
     def test_governor_config_override(self) -> None:
         csc = CodingSandboxConfig(
@@ -70,7 +86,7 @@ class TestRegistryDispatchFromConfig:
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
 
         registry = build_default_registry()
-        assert set(registry.names()) == {"local", "docker", "e2b"}
+        assert set(registry.names()) == {"local", "docker", "e2b", "broker"}
 
     def test_uninstalled_backend_reports_the_real_reason(self) -> None:
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
@@ -277,7 +293,7 @@ class TestManagerWithRegistry:
             SandboxType,
         )
 
-        governor = SandboxResourceGovernor(
+        governor = SandboxResourceGovernor.in_process(
             GovernorLimits(max_total_sandboxes=1, max_per_org=1),
         )
         registry = build_default_registry()

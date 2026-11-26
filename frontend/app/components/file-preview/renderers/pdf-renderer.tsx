@@ -37,6 +37,7 @@ const PDF_WORKER_SRC = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.met
 type PdfJsViewer = {
   currentPageNumber: number;
   currentScaleValue: string;
+  currentScale?: number;
   pagesCount?: number;
   container?: HTMLElement;
 };
@@ -411,7 +412,12 @@ export function PDFRenderer({
 
   // react-pdf-highlighter only applies `pdfScaleValue` on `pagesinit`; re-apply when
   // scale (or a new document) changes once the global pdf.js viewer is present.
-  const scale = pagination?.scale ?? 1;
+  // No scale yet (the person has not zoomed): fit the page to the panel, never above 100 %,
+  // so a phone shows the whole slide and a page that already fits stays as it was.
+  // shortcut: react-pdf-highlighter re-applies `page-width` on resize without the 100 % cap; cap it there if a wide panel complains.
+  const scale = pagination?.scale;
+  const scaleValue = scale === undefined ? 'page-width' : String(scale);
+  const onScaleChange = pagination?.onScaleChange;
   useEffect(() => {
     const viewer = getPdfJsViewer();
     if (!viewer) return;
@@ -423,11 +429,15 @@ export function PDFRenderer({
       if (!isLaidOut) return;
     }
     try {
-      viewer.currentScaleValue = String(scale);
+      viewer.currentScaleValue = scaleValue;
+      if (scale === undefined && typeof viewer.currentScale === 'number') {
+        if (viewer.currentScale > 1) viewer.currentScaleValue = '1';
+        onScaleChange?.(Math.round(viewer.currentScale * 100) / 100);
+      }
     } catch {
       // Ignore transient pdf.js layout errors while the viewer is mounting/unmounting.
     }
-  }, [scale, fileUrl, rangeTransport, getPdfJsViewer]);
+  }, [scale, scaleValue, fileUrl, rangeTransport, viewerReadyEpoch, onScaleChange, getPdfJsViewer]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
@@ -476,7 +486,7 @@ export function PDFRenderer({
           padding: 'var(--space-5)',
         }}
       >
-        <MaterialIcon name="description" size={48} color="var(--olive-9)" />
+        <MaterialIcon name="description" size={48} color="var(--olive-11)" />
         <Text size="2" color="gray" align="center">
           PDF file URL not available
         </Text>
@@ -532,7 +542,7 @@ export function PDFRenderer({
               padding: 'var(--space-5)',
             }}
           >
-            <MaterialIcon name="error_outline" size={48} color="var(--olive-9)" />
+            <MaterialIcon name="error_outline" size={48} color="var(--olive-11)" />
             <Text size="2" color="gray" align="center">
               Failed to load PDF file
             </Text>
@@ -574,7 +584,7 @@ export function PDFRenderer({
                   }, 100);
                 }
               }}
-              pdfScaleValue={String(pagination?.scale ?? 1)}
+              pdfScaleValue={scaleValue}
               onSelectionFinished={() => null}
               highlightTransform={(
                 highlight,

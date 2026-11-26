@@ -27,6 +27,7 @@ vi.mock('@/config', () => ({
     props.saveRef.current = mocks.saveAccess;
     return <div data-testid="manage-access" />;
   },
+  McpInstanceConfigExtras: () => null,
 }));
 vi.mock('../../../api', () => ({
   McpServersApi: {
@@ -86,6 +87,9 @@ vi.mock('../../../../components', () => ({
       ))}
     </select>
   ),
+  FormFieldTextField: ({ size: _size, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { size?: string }) => (
+    <input {...props} />
+  ),
   TagInput: () => null,
   ConfirmationDialog: () => null,
 }));
@@ -102,11 +106,6 @@ function panel(scope: 'org' | 'personal', onSaved = vi.fn(), onOpenChange = vi.f
         customStdioAllowed={false}
         onOpenChange={onOpenChange}
         onSaved={onSaved}
-        onRequestDelete={vi.fn()}
-        busyInstanceId={null}
-        onAuthenticate={vi.fn()}
-        onReauthenticate={vi.fn()}
-        onDisconnect={vi.fn()}
         scope={scope}
       />
     </Theme>

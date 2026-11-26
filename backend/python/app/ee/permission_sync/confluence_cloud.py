@@ -1041,7 +1041,10 @@ class ConfluenceCloudPermissionsMixin:
                         external_id=principal_id,
                     )
 
-                    if not pseudo_group:
+                    if pseudo_group:
+                        # Reused, not rewritten: without this the full sync unlinks it with its grants.
+                        self.data_entities_processor.note_kept_user_groups(self.connector_id, [pseudo_group])
+                    else:
                         # Create pseudo-group on-the-fly
                         pseudo_group = await self._create_pseudo_group(principal_id)
 

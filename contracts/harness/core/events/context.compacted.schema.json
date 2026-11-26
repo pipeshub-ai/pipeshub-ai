@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/context.compacted.schema.json",
+  "title": "ContextCompactedEvent",
+  "description": "Range summarized; the summary carries the join of the range's labels.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "context.compacted"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ContextCompactedData"
+    }
+  },
+  "$defs": {
+    "ContextCompactedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "range",
+        "summaryRef"
+      ],
+      "properties": {
+        "range": {
+          "$ref": "../common.schema.json#/$defs/SeqRange"
+        },
+        "summaryRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "context.compacted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "range": {
+          "fromSeq": 3,
+          "toSeq": 40
+        },
+        "summaryRef": {
+          "ref": "cas/s1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 2048
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

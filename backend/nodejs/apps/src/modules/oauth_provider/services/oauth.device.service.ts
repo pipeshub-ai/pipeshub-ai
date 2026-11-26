@@ -82,12 +82,13 @@ export class OAuthDeviceService {
       )
     }
 
+    const allowedScopes = this.allowedScopesOf(app);
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : app.allowedScopes
+      : allowedScopes
     const { granted } = this.scopeValidatorService.resolveGrantedScopes(
       requested,
-      app.allowedScopes,
+      allowedScopes,
     )
 
     const deviceCode = crypto.randomBytes(DEVICE_CODE_BYTES).toString('hex')
@@ -107,7 +108,7 @@ export class OAuthDeviceService {
     const verificationUri = new URL('/oauth/device', frontendUrl).toString()
     const displayCode = `${userCode.slice(0, 4)}-${userCode.slice(4)}`
 
-    this.logger.info('Device authorization created', { clientId })
+    this.logger.info('Device authorization created', { client_id: clientId })
 
     return {
       device_code: deviceCode,
@@ -154,8 +155,8 @@ export class OAuthDeviceService {
         status: OAuthDeviceCodeStatus.DENIED,
       })
       this.logger.info('Device authorization denied', {
-        clientId: record.clientId,
-        userId,
+        client_id: record.clientId,
+        user_id: userId,
       })
       return
     }
@@ -173,9 +174,9 @@ export class OAuthDeviceService {
       orgId,
     })
     this.logger.info('Device authorization approved', {
-      clientId: record.clientId,
-      userId,
-      orgId,
+      client_id: record.clientId,
+      user_id: userId,
+      org_id: orgId,
     })
   }
 
@@ -282,7 +283,7 @@ export class OAuthDeviceService {
       orgId,
       this.scopeValidatorService.getGrantedScopes(
         claimed.scopes,
-        app.allowedScopes,
+        this.allowedScopesOf(app),
       ),
       true,
       fullName,
@@ -300,6 +301,11 @@ export class OAuthDeviceService {
       refresh_token: tokens.refreshToken,
       scope: tokens.scope,
     }
+  }
+
+  /** The scopes a grant of this app may carry now, both when a code is created and when its tokens are minted (`capScopes`). */
+  allowedScopesOf(app: OAuthAppDto): string[] {
+    return this.firstPartyDeviceAppService.capScopes(app);
   }
 
   private async findPendingByUserCode(userCodeRaw: string) {

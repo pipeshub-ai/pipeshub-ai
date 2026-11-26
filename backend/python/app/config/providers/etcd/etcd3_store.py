@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import json
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, List, Optional, TypeVar
 
@@ -506,7 +507,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     # the same three methods every store implements, so callers never check
     # `hasattr(self.store, 'client')` / branch on KV_STORE_TYPE to reach it.
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> int:
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> int | tuple[int, ...]:
         # There is no error callback here, so every cached value is dropped
         # once when the watch stops, which makes the next cached read reach
         # the store and register it again, and once more when it is back,
@@ -527,13 +530,32 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             except Exception as e:
                 logger.error("Error in etcd prefix-watch adapter: %s", str(e))
 
-        return await self._add_watch(
-            "add_watch_prefix_callback",
-            "/",
-            _prefix_watch_adapter,
-            keep_alive=True,
-            on_missed_changes=lambda: callback(CLEAR_ALL),
-        )
+        if keys is None:
+            return await self._add_watch(
+                "add_watch_prefix_callback",
+                "/",
+                _prefix_watch_adapter,
+                keep_alive=True,
+                on_missed_changes=lambda: callback(CLEAR_ALL),
+            )
+        # A sandbox-plane component's etcd role reads only its own keys (R38IDENT-FU-9): a watch of every key
+        # would be refused, so each key gets its own.
+        handles: list[int] = []
+        try:
+            for key in sorted(set(keys)):
+                handle = await self._add_watch(
+                    "add_watch_callback",
+                    key,
+                    _prefix_watch_adapter,
+                    keep_alive=True,
+                    on_missed_changes=lambda: callback(CLEAR_ALL),
+                )
+                handles.append(handle)
+        except BaseException:
+            for handle in handles:
+                await self._cancel(handle)
+            raise
+        return tuple(handles)
 
     async def publish_change(self, key: str) -> None:  # noqa: ARG002
         """No-op: etcd's own watch above already notifies other processes."""
@@ -542,7 +564,8 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def unsubscribe_changes(self, handle: object) -> None:
         if handle is None:
             return
-        await self._cancel(handle)
+        for one in handle if isinstance(handle, tuple) else (handle,):
+            await self._cancel(one)
 
     async def close(self) -> None:
         """Clean up resources and close connection."""

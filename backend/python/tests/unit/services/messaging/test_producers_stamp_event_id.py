@@ -87,7 +87,7 @@ async def test_signing_keeps_the_event_id_in_the_signed_context(monkeypatch: pyt
 
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     key = envelope.derive_key("stamp-test")
-    envelope.configure(None, None, key)
+    envelope.configure(None, key)
     try:
         with bind(OrgContext("org-1", None, "service", "job:test", "t")):
             signed = envelope.sign_message("record-events", {"eventType": "newRecord", "payload": dict(PAYLOAD)})

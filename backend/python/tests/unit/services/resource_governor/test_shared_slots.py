@@ -14,9 +14,12 @@ import pytest
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
 from app.services.resource_governor.shared_slots import (
+    LocalTaggedSlots,
     SharedSlots,
+    SlotDenied,
     SlotHold,
     open_shared_slots,
+    sandbox_state_directory,
     shared_slots_directory,
 )
 
@@ -186,6 +189,156 @@ class TestSharedSlots:
         with caplog.at_level(logging.WARNING):
             assert open_shared_slots(not_a_directory / "slots", 4) is None
         assert "Shared heavy-parse slots unavailable" in caplog.text
+
+
+def _tagged_pair(kind: str, tmp_path: Path) -> tuple[object, object]:
+    """Two "workers" on one set of slots: two ``SharedSlots`` on one directory,
+    or one ``LocalTaggedSlots`` seen twice (it is counted in-process only)."""
+    if kind == "shared":
+        return SharedSlots(tmp_path, 8), SharedSlots(tmp_path, 8)
+    local = LocalTaggedSlots(8)
+    return local, local
+
+
+@pytest.mark.parametrize("kind", ["shared", "local"])
+class TestTaggedSlots:
+    def test_workers_together_hold_no_more_than_the_limit(self, kind: str, tmp_path: Path) -> None:
+        one, two = _tagged_pair(kind, tmp_path)
+        assert isinstance(one.try_acquire_tagged(3, tag=b"a", tag_limit=None), SlotHold)
+        assert isinstance(two.try_acquire_tagged(3, tag=b"b", tag_limit=None), SlotHold)
+        assert isinstance(one.try_acquire_tagged(3, tag=b"", tag_limit=None), SlotHold)
+        denied = two.try_acquire_tagged(3, tag=b"a", tag_limit=None)
+        assert denied == SlotDenied("full", held=3, tag_held=1)
+
+    def test_the_tag_limit_holds_across_workers(self, kind: str, tmp_path: Path) -> None:
+        one, two = _tagged_pair(kind, tmp_path)
+        first = one.try_acquire_tagged(8, tag=b"a", tag_limit=2)
+        assert isinstance(first, SlotHold) and first.held_before == 0
+        assert isinstance(two.try_acquire_tagged(8, tag=b"a", tag_limit=2), SlotHold)
+        assert two.try_acquire_tagged(8, tag=b"a", tag_limit=2) == SlotDenied("tag_full", 2, 2)
+        assert isinstance(two.try_acquire_tagged(8, tag=b"b", tag_limit=2), SlotHold)
+        first.release()
+        assert isinstance(two.try_acquire_tagged(8, tag=b"a", tag_limit=2), SlotHold)
+
+    def test_an_empty_tag_is_never_tag_limited(self, kind: str, tmp_path: Path) -> None:
+        one, _ = _tagged_pair(kind, tmp_path)
+        for _ in range(4):
+            assert isinstance(one.try_acquire_tagged(8, tag=b"", tag_limit=1), SlotHold)
+
+    def test_a_released_slots_old_tag_is_not_counted(self, kind: str, tmp_path: Path) -> None:
+        one, two = _tagged_pair(kind, tmp_path)
+        hold = one.try_acquire_tagged(8, tag=b"a", tag_limit=1)
+        assert isinstance(hold, SlotHold)
+        hold.release()
+        hold.release()
+        assert isinstance(two.try_acquire_tagged(8, tag=b"a", tag_limit=1), SlotHold)
+        assert two.held_by_tag() == {b"a": 1}
+
+    def test_held_by_tag_counts_every_worker(self, kind: str, tmp_path: Path) -> None:
+        one, two = _tagged_pair(kind, tmp_path)
+        one.try_acquire_tagged(8, tag=b"a", tag_limit=None)
+        two.try_acquire_tagged(8, tag=b"a", tag_limit=None)
+        two.try_acquire_tagged(8, tag=b"", tag_limit=None)
+        assert one.held_by_tag() == {b"a": 2, b"": 1}
+        assert two.held_by_tag() == {b"a": 2, b"": 1}
+
+
+class TestSharedTaggedSlots:
+    def test_the_file_holds_the_tag_only(self, tmp_path: Path) -> None:
+        slots = SharedSlots(tmp_path, 2)
+        slots.try_acquire_tagged(2, tag=b"0123456789abcdef", tag_limit=None)
+        assert (tmp_path / "0").read_bytes() == b"0123456789abcdef\n"
+
+    def test_a_worker_counting_reads_as_busy(self, tmp_path: Path) -> None:
+        slots = SharedSlots(tmp_path, 4)
+        mutex = os.open(tmp_path / "mutex", os.O_RDWR)
+        try:
+            fcntl.flock(mutex, fcntl.LOCK_EX)
+            assert slots.try_acquire_tagged(4, tag=b"a", tag_limit=None) == SlotDenied("busy")
+        finally:
+            os.close(mutex)
+        assert isinstance(slots.try_acquire_tagged(4, tag=b"a", tag_limit=None), SlotHold)
+
+    def test_held_by_tag_does_not_wait_for_a_busy_mutex(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.resource_governor import shared_slots
+
+        slots = SharedSlots(tmp_path, 256)
+        tries: list[int] = []
+        sleeps: list[float] = []
+        try_lock = shared_slots._try_lock
+
+        def counted(fd: int) -> bool:
+            tries.append(fd)
+            return try_lock(fd)
+
+        monkeypatch.setattr(shared_slots, "_try_lock", counted)
+        monkeypatch.setattr(shared_slots.time, "sleep", sleeps.append)
+        mutex = os.open(tmp_path / "mutex", os.O_RDWR)
+        try:
+            fcntl.flock(mutex, fcntl.LOCK_EX)
+            with pytest.raises(TimeoutError):
+                slots.held_by_tag(budget=0.0)
+            assert tries == [slots._mutex_fd] and sleeps == []  # one try at the mutex, no spin
+        finally:
+            os.close(mutex)
+
+    def test_a_dead_holders_tagged_slot_is_free(self, tmp_path: Path) -> None:
+        SharedSlots(tmp_path, 1)
+        holder = subprocess.Popen(
+            [
+                sys.executable, "-I", "-c",
+                "import fcntl, os, sys, time\n"
+                "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                "os.pwrite(fd, b'a'.ljust(16) + b'\\n', 0)\n"
+                "print('held', flush=True)\n"
+                "time.sleep(60)\n",
+                str(tmp_path / "0"),
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "held"
+            slots = SharedSlots(tmp_path, 1)
+            assert slots.try_acquire_tagged(1, tag=b"a", tag_limit=1) == SlotDenied("full", 1, 1)
+            holder.kill()
+            holder.wait(timeout=10)
+            assert isinstance(slots.try_acquire_tagged(1, tag=b"a", tag_limit=1), SlotHold)
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait(timeout=10)
+            if holder.stdout is not None:
+                holder.stdout.close()
+
+    def test_untagged_and_tagged_holders_count_each_other(self, tmp_path: Path) -> None:
+        slots = SharedSlots(tmp_path, 4)
+        assert slots.try_acquire(2) is not None
+        assert isinstance(slots.try_acquire_tagged(2, tag=b"a", tag_limit=None), SlotHold)
+        assert slots.held_count() == 2
+        assert slots.try_acquire(2) is None
+
+
+class TestSandboxStateDirectory:
+    def test_unset_is_one_directory_per_uid(self) -> None:
+        assert sandbox_state_directory({}) == (
+            Path(tempfile.gettempdir()) / f"pipeshub-sandbox-{os.getuid()}"
+        )
+
+    def test_an_id_suffixes_the_directory(self) -> None:
+        assert sandbox_state_directory({"SANDBOX_STATE_ID": "wt1"}) == (
+            Path(tempfile.gettempdir()) / f"pipeshub-sandbox-wt1-{os.getuid()}"
+        )
+
+    @pytest.mark.parametrize("raw", ["a/b", "x" * 64, "../up", "a b"])
+    def test_an_invalid_id_is_ignored_with_a_warning(
+        self, raw: str, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            assert sandbox_state_directory({"SANDBOX_STATE_ID": raw}) == sandbox_state_directory({})
+        assert "SANDBOX_STATE_ID" in caplog.text
 
 
 class TestSharedSlotsDirectory:

@@ -1,0 +1,10 @@
+[
+  {
+    "description": "an outcome with a status nobody defined",
+    "instance": {"items": [{"runId": "r1", "interactionId": "i1", "status": "maybe"}]}
+  },
+  {
+    "description": "an outcome without its interaction",
+    "instance": {"items": [{"runId": "r1", "status": "decided", "decision": "approved"}]}
+  }
+]

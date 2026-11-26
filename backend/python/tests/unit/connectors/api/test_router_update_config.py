@@ -738,7 +738,8 @@ class TestUpdateConfigCleanup:
             body={
                 # Genuinely different from the stored auth: teardown is keyed on
                 # the credentials changing, not on an "auth" key being present.
-                "auth": {"connectorScope": "team"},
+                # (Not connectorScope: the server sets that one.)
+                "auth": {"connectorScope": "personal", "tenantId": "another-tenant"},
                 "baseUrl": "https://app.example.com",
             },
         )

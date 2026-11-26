@@ -13,19 +13,28 @@ import {
   type Node,
 } from '@xyflow/react';
 import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden, IconButton } from '@radix-ui/themes';
-import { AgentsApi } from '../api';
+import { AgentPublishIncompleteError, AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
 import { useAgentBuilderState } from './hooks/use-agent-builder-state';
 import { useAgentBuilderNodeTemplates } from './hooks/use-node-templates';
 import { useAgentBuilderReconstruction } from './hooks/use-flow-reconstruction';
 import { AgentBuilderHeader } from './components/agent-builder-header';
+import { ExportAgentDialog } from '../components/export-agent-dialog';
+import { ImportNeedsChoice } from '../components/import-needs-choice';
+import { clearImportResult, readImportResult, type ImportResult } from '../config-transfer';
 import { AgentBuilderSidebar } from './components/agent-builder-sidebar';
 import { serviceAgentKnowledgeOptions } from './sidebar-utils';
 import { AgentBuilderCanvas } from './components/agent-builder-canvas';
+import { SubAgentModelsProvider } from './components/sub-agent-models';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
+import { AgentVersionsPanel } from './components/agent-versions-panel';
+import { useFeatureFlagsStore, selectAgentHarnessOn } from '@/lib/store/feature-flags-store';
+import { VersionNoteDialog } from './components/version-note-dialog';
+import { hasUnpublishedChanges, nextVersionNumber } from './versions';
+import { useWorkspaceDrawerNestedModalHost } from '@/workspace/components/workspace-right-panel';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
 import type { AgentDetail } from '../types';
@@ -89,6 +98,8 @@ function serializeEdges(edges: Edge[]): string {
 export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const router = useRouter();
   const { t } = useTranslation();
+  // ADR-OPS-08: versions, export and import came with the agent harness; off for the org, the builder saves as before.
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const editingKey = agentKey;
   const isMobile = useIsMobile();
   const isBelowDesktop = useIsBelowDesktop();
@@ -100,6 +111,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     availableSkills,
     activeAgentConnectors,
     configuredConnectors,
+    catalogs,
+    searchCatalogs,
+    loadAllKnowledge,
     toolsets,
     apiToolsets,
     mcpServers,
@@ -169,6 +183,16 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   );
   const [banner, setBanner] = useState<string | null>(null);
   const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
+  // OWD-14: the version a publish made, for the dialog that follows it; null when the number is unknown.
+  const [publishedVersion, setPublishedVersion] = useState<number | null>(null);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  // C4.08: what an import left for the importer to choose, pinned until closed.
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [versionsReloadKey, setVersionsReloadKey] = useState(0);
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const publishModalHost = useWorkspaceDrawerNestedModalHost(versionsOpen);
 
   // ── Dirty tracking ──────────────────────────────────────────────────────────
   // A snapshot of the last-saved (or initially loaded) state. isDirty is derived
@@ -192,6 +216,15 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const agentLoading = Boolean(editingKey) && !loadedAgent && loading;
   /** The agent could not be fetched: nothing may be saved, or an empty graph would overwrite it. */
   const agentLoadFailed = Boolean(editingKey) && !loadedAgent && !loading;
+
+  useEffect(() => {
+    setImportResult(editingKey ? readImportResult(editingKey) : null);
+  }, [editingKey]);
+
+  const closeImportResult = useCallback(() => {
+    if (editingKey) clearImportResult(editingKey);
+    setImportResult(null);
+  }, [editingKey]);
 
   const { reconstructFlowFromAgent } = useAgentBuilderReconstruction();
 
@@ -509,6 +542,33 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     t,
   ]);
 
+  // A Collections or Apps group dropped whole stands for every collection or app, not the pages the palette read:
+  // read the rest once one is on the canvas, then give the group node the whole list.
+  const knowledgeGroupOnCanvas = nodes.some((n) => n.data?.type === 'kb-group' || n.data?.type === 'app-group');
+  const knowledgeIncomplete = catalogs.knowledgeBases.hasMore || catalogs.connectors.hasMore;
+  useEffect(() => {
+    if (knowledgeGroupOnCanvas && knowledgeIncomplete) void loadAllKnowledge();
+  }, [knowledgeGroupOnCanvas, knowledgeIncomplete, loadAllKnowledge]);
+  useEffect(() => {
+    if (!knowledgeGroupOnCanvas) return;
+    const groups = new Map(
+      nodeTemplates.filter((tmpl) => tmpl.type === 'kb-group' || tmpl.type === 'app-group').map((tmpl) => [tmpl.type, tmpl])
+    );
+    const listOf = (type: string, config: Record<string, unknown> | undefined) =>
+      ((type === 'kb-group' ? config?.knowledgeBases : config?.apps) as unknown[] | undefined)?.length ?? 0;
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((n) => {
+        const type = (n.data?.type as string) ?? '';
+        const tmpl = groups.get(type);
+        if (!tmpl || listOf(type, n.data.config) === listOf(type, tmpl.defaultConfig)) return n;
+        changed = true;
+        return { ...n, data: { ...n.data, config: { ...n.data.config, ...tmpl.defaultConfig } } };
+      });
+      return changed ? next : nds;
+    });
+  }, [knowledgeGroupOnCanvas, nodeTemplates, setNodes]);
+
   const onConnect = useCallback(
     (connection: Connection) => {
       if (isAgentStructureLocked) return;
@@ -696,86 +756,178 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setServiceAccountConfirmOpen(true);
   }, [agentName, hasToolsets, notifyServiceAccountToolsetBlocked, showInlineAgentNameRequired, t]);
 
-  const handleSave = useCallback(async () => {
-    if (!canPersist || agentLoadFailed) return;
-    if (saveBlockedByDeprecatedTools || saveBlockedByEmptyMcpServers) return;
-    if (saveRef.current) return;
+  /** True when a save may not go ahead; it has then already said why. */
+  const blockedSave = useCallback((): boolean => {
+    if (!canPersist || agentLoadFailed) return true;
+    if (saveBlockedByDeprecatedTools || saveBlockedByEmptyMcpServers) return true;
+    if (saveRef.current) return true;
     if (!agentName.trim()) {
       showInlineAgentNameRequired();
       setBanner(null);
-      return;
+      return true;
     }
+    return false;
+  }, [
+    agentLoadFailed,
+    agentName,
+    canPersist,
+    saveBlockedByDeprecatedTools,
+    saveBlockedByEmptyMcpServers,
+    showInlineAgentNameRequired,
+  ]);
+
+  const flowPayload = useCallback(
+    () =>
+      extractAgentConfigFromFlow(
+        agentName.trim(),
+        nodes as Parameters<typeof extractAgentConfigFromFlow>[1],
+        edges as Parameters<typeof extractAgentConfigFromFlow>[2],
+        loadedAgent,
+        shareWithOrg,
+        isServiceAccount,
+        bindingToSend(loadedAgent)
+      ),
+    [agentName, bindingToSend, edges, isServiceAccount, loadedAgent, nodes, shareWithOrg]
+  );
+
+  const markClean = useCallback(() => {
+    setCleanSnapshot({
+      nodesJson: serializeNodes(nodes),
+      edgesJson: serializeEdges(edges),
+      agentName: agentName.trim(),
+      shareWithOrg,
+      serviceAccountUserId,
+    });
+  }, [agentName, edges, nodes, serviceAccountUserId, shareWithOrg]);
+
+  /** Creates a new agent; creating publishes its version 1. */
+  const handleSave = useCallback(async () => {
+    if (loadedAgent || blockedSave()) return;
     saveRef.current = true;
     setSaving(true);
     setError(null);
     setBanner(null);
     try {
-      const payload = {
-        ...extractAgentConfigFromFlow(
-          agentName.trim(),
-          nodes as Parameters<typeof extractAgentConfigFromFlow>[1],
-          edges as Parameters<typeof extractAgentConfigFromFlow>[2],
-          loadedAgent,
-          shareWithOrg,
-          isServiceAccount,
-          bindingToSend(loadedAgent)
-        ),
-      };
-
-      if (loadedAgent) {
-        const updated = await AgentsApi.updateAgent(loadedAgent._key, payload);
-        // Agent's model list may have changed — drop the chat-side cache so
-        // the next chat view for this agent refetches fresh models.
-        invalidateModelsForContext(loadedAgent._key);
-        await refreshAgent(loadedAgent._key, { knownAgent: updated });
-        setCleanSnapshot({
-          nodesJson: serializeNodes(nodes),
-          edgesJson: serializeEdges(edges),
-          agentName: agentName.trim(),
-          shareWithOrg,
-          serviceAccountUserId,
-        });
-        setShowPostUpdateDialog(true);
-      } else {
-        const created = await AgentsApi.createAgent(payload);
-        invalidateModelsForContext(created._key);
-        setCleanSnapshot({
-          nodesJson: serializeNodes(nodes),
-          edgesJson: serializeEdges(edges),
-          agentName: agentName.trim(),
-          shareWithOrg,
-          serviceAccountUserId,
-        });
-        setSuccess(t('agentBuilder.agentCreated'));
-        router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
-      }
+      const created = await AgentsApi.createAgent(flowPayload());
+      invalidateModelsForContext(created._key);
+      markClean();
+      setSuccess(t('agentBuilder.agentCreated'));
+      router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
     } catch (e: unknown) {
       setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
     } finally {
       setSaving(false);
       saveRef.current = false;
     }
-  }, [
-    agentName,
-    bindingToSend,
-    edges,
-    serviceAccountUserId,
-    canPersist,
-    agentLoadFailed,
-    saveBlockedByDeprecatedTools,
-    saveBlockedByEmptyMcpServers,
-    showInlineAgentNameRequired,
-    isServiceAccount,
-    loadedAgent,
-    nodes,
-    refreshAgent,
-    router,
-    setError,
-    setSaving,
-    setSuccess,
-    shareWithOrg,
-    t,
-  ]);
+  }, [blockedSave, flowPayload, loadedAgent, markClean, router, setError, setSaving, setSuccess, t]);
+
+  /** OWD-14: saves the edits as the draft; chats keep running the live version. */
+  const handleSaveDraft = useCallback(async () => {
+    if (!loadedAgent || blockedSave()) return;
+    saveRef.current = true;
+    setSaving(true);
+    setError(null);
+    setBanner(null);
+    try {
+      const updated = await AgentsApi.updateAgent(loadedAgent._key, flowPayload(), { publish: false });
+      await refreshAgent(loadedAgent._key, { knownAgent: updated });
+      markClean();
+      const live = updated?.versioning?.latestVersion ?? loadedAgent.versioning?.latestVersion;
+      toast.success(
+        !harnessOn
+          ? t('agentBuilder.agentUpdated')
+          : live
+            ? t('agentVersions.draftSaved', { version: live })
+            : t('agentVersions.draftSavedNoVersion'),
+      );
+      setVersionsReloadKey((k) => k + 1);
+    } catch (e: unknown) {
+      setError(getUserFacingErrorMessage(e, t('agentVersions.saveDraftFailed')));
+    } finally {
+      setSaving(false);
+      saveRef.current = false;
+    }
+  }, [blockedSave, flowPayload, harnessOn, loadedAgent, markClean, refreshAgent, setError, setSaving, t]);
+
+  const requestPublish = useCallback(() => {
+    if (!loadedAgent || blockedSave()) return;
+    setPublishError(null);
+    setPublishDialogOpen(true);
+  }, [blockedSave, loadedAgent]);
+
+  /**
+   * OWD-14: publishes the edits as the next version. Edits still in the editor are saved and published in one
+   * request; a saved draft is published as it is.
+   */
+  const handlePublish = useCallback(
+    async (note: string) => {
+      if (!loadedAgent || saveRef.current) return;
+      saveRef.current = true;
+      setSaving(true);
+      setError(null);
+      setPublishError(null);
+      setBanner(null);
+      try {
+        let version: number | null = null;
+        let created = true;
+        if (isDirty) {
+          const updated = await AgentsApi.updateAgent(loadedAgent._key, flowPayload(), { versionNote: note });
+          // Agent's model list may have changed — drop the chat-side cache so
+          // the next chat view for this agent refetches fresh models.
+          invalidateModelsForContext(loadedAgent._key);
+          await refreshAgent(loadedAgent._key, { knownAgent: updated });
+          markClean();
+          version = updated?.versioning?.latestVersion ?? null;
+        } else {
+          const result = await AgentsApi.publishAgentVersion(loadedAgent._key, note);
+          invalidateModelsForContext(loadedAgent._key);
+          await refreshAgent(loadedAgent._key);
+          version = result?.version?.version ?? null;
+          created = result?.created !== false;
+        }
+        setPublishDialogOpen(false);
+        setVersionsReloadKey((k) => k + 1);
+        if (!created) {
+          toast.info(t('agentVersions.publishUnchanged', { version }));
+          return;
+        }
+        setPublishedVersion(version);
+        if (versionsOpen) {
+          toast.success(
+            version ? t('agentVersions.publishedTitle', { version }) : t('agentVersions.publishedTitleGeneric'),
+          );
+        } else {
+          setShowPostUpdateDialog(true);
+        }
+      } catch (e: unknown) {
+        if (e instanceof AgentPublishIncompleteError) {
+          // The edits are saved; only the publish failed, so they stay a draft that Publish can retry.
+          await refreshAgent(loadedAgent._key, e.agent ? { knownAgent: e.agent } : undefined);
+          markClean();
+          setPublishDialogOpen(false);
+          setVersionsReloadKey((k) => k + 1);
+          setError(t('agentVersions.publishIncomplete'));
+        } else {
+          setPublishError(getUserFacingErrorMessage(e, t('agentVersions.publishFailed')));
+        }
+      } finally {
+        setSaving(false);
+        saveRef.current = false;
+      }
+    },
+    [flowPayload, isDirty, loadedAgent, markClean, refreshAgent, setError, setSaving, t, versionsOpen]
+  );
+
+  /** OWD-14: a rollback rewrote the draft; load it into the editor in place of the edits it discarded. */
+  const handleRolledBack = useCallback(async () => {
+    if (!loadedAgent) return;
+    invalidateModelsForContext(loadedAgent._key);
+    await refreshAgent(loadedAgent._key);
+    initOnce.current = false;
+    setCleanSnapshot(null);
+    setNodes([]);
+    setEdges([]);
+  }, [loadedAgent, refreshAgent, setEdges, setNodes]);
 
   const handleConfirmServiceAccount = useCallback(async () => {
     if (loadedAgent && !canPersist) return;
@@ -916,6 +1068,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     router.push('/chat');
   }, [isDirty, router, t]);
 
+  const nextPublish = nextVersionNumber(loadedAgent?.versioning);
   const palette = (
     <AgentBuilderSidebar
       open={isMobile || sidebarOpen}
@@ -926,6 +1079,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       availableSkills={availableSkills}
       configuredConnectors={paletteKnowledge.connectors}
       collectionsNeedBinding={collectionsNeedBinding}
+      catalogs={catalogs}
+      onSearchCatalogs={searchCatalogs}
       toolsets={toolsets}
       activeToolsetTypeKeys={activeToolsetTypeKeys}
       toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
@@ -989,6 +1144,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           agentNameInputRef={agentNameInputRef}
           saving={saving}
           onSave={handleSave}
+          onSaveDraft={handleSaveDraft}
+          onPublish={requestPublish}
+          onOpenVersions={() => setVersionsOpen(true)}
+          versioning={loadedAgent?.versioning ?? null}
+          versioned={harnessOn}
+          unpublished={hasUnpublishedChanges(loadedAgent?.versioning, isDirty)}
           onGoBack={handleGoBack}
           isDirty={isDirty}
           shareWithOrg={shareWithOrg}
@@ -1005,11 +1166,18 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           onEnableServiceAccount={canPersist && canConvertToServiceAgent(loadedAgent, isAdmin, Boolean(editingKey)) ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
+          onExport={loadedAgent && harnessOn ? () => setExportOpen(true) : undefined}
           serviceAccountPermissionDenied={!canAccessServiceAgent}
           deletePermissionDenied={!canDeleteAgentPermission}
           sharePermissionDenied={isOrgShareLocked(loadedAgent, canShareAgent)}
           createdBy={loadedAgent?.createdBy ?? null}
         />
+
+        {importResult ? (
+          <Box px="4" py="3" style={{ flexShrink: 0, borderBottom: '1px solid var(--olive-3)', background: 'var(--olive-1)' }}>
+            <ImportNeedsChoice result={importResult} configuredModels={availableModels} onChoose={() => setSidebarOpen(true)} onClose={closeImportResult} />
+          </Box>
+        ) : null}
 
         {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner || saveBlockedByEmptyMcpServers) && (
           <Flex
@@ -1134,6 +1302,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           <PaletteTapAddContext.Provider value={isAgentStructureLocked ? null : handleTapAdd}>
             {paletteSlot}
           </PaletteTapAddContext.Provider>
+          <SubAgentModelsProvider configuredModels={availableModels}>
           <McpLiveServersContext.Provider value={mcpServersLoaded && !loading ? mcpServers : null}>
             <ErrorBoundary
               resetKeys={[agentKey]}
@@ -1167,6 +1336,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
               />
             </ErrorBoundary>
           </McpLiveServersContext.Provider>
+          </SubAgentModelsProvider>
           {agentLoadFailed ? (
             <Flex
               role="alert"
@@ -1183,7 +1353,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
                 background: 'var(--agent-flow-canvas-bg)',
               }}
             >
-              <MaterialIcon name="error_outline" size={32} color="var(--red-9)" />
+              <MaterialIcon name="error_outline" size={32} color="var(--red-11)" />
               <Text size="3" weight="medium" style={{ color: 'var(--olive-12)' }}>
                 {t('agentBuilder.agentLoadFailedTitle')}
               </Text>
@@ -1355,10 +1525,62 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         isDeleting={isDeletingAgent}
       />
 
+      {loadedAgent ? (
+        <ExportAgentDialog
+          open={exportOpen}
+          onOpenChange={setExportOpen}
+          agentKey={loadedAgent._key}
+          agentName={agentName.trim() || loadedAgent.name || ''}
+        />
+      ) : null}
+
+      {loadedAgent ? (
+        <AgentVersionsPanel
+          open={versionsOpen}
+          onOpenChange={setVersionsOpen}
+          agentKey={loadedAgent._key}
+          canEdit={canPersist}
+          localEdits={isDirty}
+          reloadKey={versionsReloadKey}
+          onRequestPublish={requestPublish}
+          onRolledBack={handleRolledBack}
+        />
+      ) : null}
+
+      <VersionNoteDialog
+        open={publishDialogOpen}
+        onOpenChange={(o) => {
+          if (!o && !saving) setPublishDialogOpen(false);
+        }}
+        title={
+          nextPublish
+            ? t('agentVersions.publishTitle', { version: nextPublish })
+            : t('agentVersions.publishTitleGeneric')
+        }
+        body={
+          nextPublish
+            ? t('agentVersions.publishBody', { version: nextPublish })
+            : t('agentVersions.publishBodyGeneric')
+        }
+        noteLabel={t('agentVersions.noteLabel')}
+        confirmLabel={t('agentVersions.publish')}
+        busyLabel={t('agentVersions.publishing')}
+        busy={saving}
+        error={publishError}
+        onConfirm={(note) => void handlePublish(note)}
+        container={versionsOpen ? publishModalHost : null}
+      />
+
       {/* ── Post-update dialog ── */}
       <Dialog.Root open={showPostUpdateDialog} onOpenChange={setShowPostUpdateDialog}>
         <Dialog.Content style={{ maxWidth: 360 }}>
-          <VisuallyHidden><Dialog.Title>{t('agentBuilder.agentUpdated')}</Dialog.Title></VisuallyHidden>
+          <VisuallyHidden>
+            <Dialog.Title>
+              {publishedVersion
+                ? t('agentVersions.publishedTitle', { version: publishedVersion })
+                : t('agentVersions.publishedTitleGeneric')}
+            </Dialog.Title>
+          </VisuallyHidden>
           <Flex direction="column" gap="4">
             <Flex align="center" gap="3">
               <Box
@@ -1378,10 +1600,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
               </Box>
               <Box>
                 <Text size="3" weight="bold" style={{ color: 'var(--olive-12)', display: 'block', lineHeight: 1.3 }}>
-                  {t('agentBuilder.agentUpdated')}
+                  {publishedVersion
+                    ? t('agentVersions.publishedTitle', { version: publishedVersion })
+                    : t('agentVersions.publishedTitleGeneric')}
                 </Text>
                 <Text size="2" style={{ color: 'var(--olive-11)', display: 'block', lineHeight: 1.4 }}>
-                  {t('agentBuilder.agentUpdatedDesc')}
+                  {t('agentVersions.publishedDesc')}
                 </Text>
               </Box>
             </Flex>

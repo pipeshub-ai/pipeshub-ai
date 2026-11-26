@@ -155,6 +155,7 @@ CALLS = [
     ("set_record_properties", ("k",), {"values": {}, "previous_names": (), "controls": {"propsVer": 1}, "conditions": [Cond("propsVer", "is_null")]}),
     ("delete_nodes", (["k"], "things"), {}),
     ("delete_nodes_and_edges", (["k"], "things"), {}),
+    ("delete_node_if_match", ("k", "things", {"v": 0}), {}),
     ("batch_create_edges", ([_EDGE], "belongsTo"), {}),
     ("get_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("get_edges_to_node", ("things/y", "belongsTo"), {}),
@@ -491,3 +492,19 @@ async def test_the_pending_reason_writes_are_conditional_on_the_revision_and_the
         assert await p.update_node_fields_if_match("r2", "things", {"reason": None}, {"contentRev": "rev-1", "reason": pending}) is True
         assert (await p.get_document("r1", "things"))["reason"] == "had one"
         assert "reason" not in await p.get_document("r2", "things")
+
+
+async def test_by_default_a_call_for_another_org_or_with_no_org_is_refused(pg_provider, orgs, org_ctx, monkeypatch) -> None:
+    """ORG_CONTEXT_MODE unset is enforce: an org-scoped provider method refuses another org's id and a call with no org bound,
+    before any statement runs; the caller's own org reads as usual."""
+    from app.core.org_context import OrgMismatch
+
+    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    a, b = orgs
+    p = pg_provider
+    with org_ctx(a):
+        assert await p.get_records_by_status(a, "c1", None) == []
+        with pytest.raises(OrgMismatch):
+            await p.get_records_by_status(b, "c1", None)
+    with pytest.raises(MissingOrgContext):
+        await p.get_records_by_status(a, "c1", None)

@@ -77,6 +77,7 @@ class SalesforceUser(BaseModel):
     Phone: Optional[str] = None
     MobilePhone: Optional[str] = None
     IsActive: Optional[bool] = None
+    UserType: Optional[str] = None
     UserRoleId: Optional[str] = None
     CreatedDate: Optional[str] = None
     LastModifiedDate: Optional[str] = None

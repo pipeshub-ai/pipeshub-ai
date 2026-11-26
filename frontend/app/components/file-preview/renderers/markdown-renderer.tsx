@@ -6,28 +6,26 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeSanitize from 'rehype-sanitize';
+import type { Schema } from 'hast-util-sanitize';
+import { UNTRUSTED_HTML_SCHEMA, rehypeSafeInlineStyle } from '@/lib/markdown/untrusted-html';
 import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
 import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { PreviewCitation } from '../types';
 import { useTextHighlighter } from '../use-text-highlighter';
 
-/**
- * Extended sanitize schema that allows common GitHub-readme HTML patterns
- * (align attributes, anchors with name, img with alt/src/width/height, etc.)
- * while still stripping scripts, iframes, forms, and event handlers.
- */
-const sanitizeSchema = {
-  ...defaultSchema,
+// A previewed file is untrusted content like an agent answer; README-style
+// anchors may also choose their target. Images may also be data: and blob: URLs
+// (SafeMarkdownImage decides which ones load).
+const sanitizeSchema: Schema = {
+  ...UNTRUSTED_HTML_SCHEMA,
   protocols: {
-    ...defaultSchema.protocols,
-    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
+    ...UNTRUSTED_HTML_SCHEMA.protocols,
+    src: [...(UNTRUSTED_HTML_SCHEMA.protocols?.src ?? []), 'data', 'blob'],
   },
   attributes: {
-    ...defaultSchema.attributes,
-    '*': [...(defaultSchema.attributes?.['*'] ?? []), 'className', 'align', 'id'],
-    img: [...(defaultSchema.attributes?.['img'] ?? []), 'src', 'alt', 'width', 'height'],
-    a: [...(defaultSchema.attributes?.['a'] ?? []), 'href', 'name', 'target', 'rel'],
+    ...UNTRUSTED_HTML_SCHEMA.attributes,
+    a: [...(UNTRUSTED_HTML_SCHEMA.attributes?.['a'] ?? []), 'target', 'rel'],
   },
 };
 
@@ -208,7 +206,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
   if (error) {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>
           error_outline
         </span>
         <Text size="3" weight="medium" color="red">
@@ -243,7 +241,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
       >
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
+          rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema], rehypeSafeInlineStyle]}
           urlTransform={markdownUrlTransform}
           components={{
             h1: ({ node: _node, ...props }) => (
@@ -263,7 +261,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
                 href={href}
                 target={target}
                 rel={target === '_blank' ? 'noopener noreferrer' : rel}
-                style={{ color: 'var(--accent-9)', textDecoration: 'underline' }}
+                style={{ color: 'var(--accent-11)', textDecoration: 'underline' }}
                 {...props}
               />
             ),
@@ -280,7 +278,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
               <ol style={{ marginLeft: 'var(--space-5)', marginBottom: 'var(--space-3)', lineHeight: 1.6 }} {...props} />
             ),
             blockquote: ({ node: _node, ...props }) => (
-              <blockquote style={{ borderLeft: '4px solid var(--slate-6)', paddingLeft: 'var(--space-3)', marginLeft: 0, marginBottom: 'var(--space-3)', color: 'var(--slate-10)', fontStyle: 'italic' }} {...props} />
+              <blockquote style={{ borderLeft: '4px solid var(--slate-6)', paddingLeft: 'var(--space-3)', marginLeft: 0, marginBottom: 'var(--space-3)', color: 'var(--slate-11)', fontStyle: 'italic' }} {...props} />
             ),
             table: ({ node: _node, ...props }) => (
               <div style={{ overflowX: 'auto', marginBottom: 'var(--space-3)' }}>

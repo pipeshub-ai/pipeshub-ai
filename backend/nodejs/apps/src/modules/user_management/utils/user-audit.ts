@@ -26,7 +26,7 @@ export type UserAuditReason =
 
 /** The refusals each event may carry; a refusal outside its event's list is not that event's decision. */
 export const USER_AUDIT_REASONS = {
-  'user.create': ['email_taken', 'password_not_allowed'],
+  'user.create': ['email_taken', 'password_not_allowed', 'admin_limit'],
   'user.invite': ['not_admin', 'admin_limit'],
   'user.role.change': ['not_admin', 'last_admin', 'admin_limit'],
   'user.update': ['not_admin'],

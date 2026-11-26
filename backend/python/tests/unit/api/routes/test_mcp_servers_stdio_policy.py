@@ -1,6 +1,7 @@
 """Catalog servers keep their template's launch settings; custom STDIO follows the policy."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +15,7 @@ from app.agents.mcp.registry import get_mcp_registry
 from app.agents.mcp.service import instance_config_from_dict
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import create_instance, update_instance
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -189,9 +191,9 @@ class TestOffByDefault:
     async def test_the_catalog_says_whether_custom_stdio_is_allowed(self, registry: Any, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
         from app.api.routes.mcp_servers import list_catalog
 
-        off = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None)
+        off = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None, category=None)
         monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
-        on = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None)
+        on = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None, category=None)
 
         assert (off["customStdioAllowed"], on["customStdioAllowed"]) == (False, True)
 
@@ -244,3 +246,9 @@ class TestRuntime:
             build_transport(config, env={"EXA_API_KEY": "k"})
 
         stdio.assert_called_once()
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

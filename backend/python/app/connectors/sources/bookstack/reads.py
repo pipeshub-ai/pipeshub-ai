@@ -51,7 +51,7 @@ def _combined(first: ReadOutcome, second: ReadOutcome) -> ReadOutcome:
 
 
 def _answered(response: object) -> bool:
-    """Whether a get_user or get_role call came back with the item, not an error body."""
+    """Whether a get call (user, role, book or chapter) came back with the item, not an error body."""
     if isinstance(response, BaseException) or not getattr(response, "success", False):
         return False
     status = getattr(response, "status_code", None)

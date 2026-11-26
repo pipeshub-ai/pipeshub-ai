@@ -50,6 +50,8 @@ class FakeRecordsDb:
         self.reindexed: list[Record] = []
         self.fail_lookup_for: set[str] = set()
         self.fail_writes_for: set[str] = set()
+        # External ids per collection that the full sync in progress wrote or noted as kept.
+        self.full_sync_seen: dict[str, set[str]] | None = None
 
     # ------------------------------------------------------------------ reads
 
@@ -88,8 +90,16 @@ class FakeRecordsDb:
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
         return self.record_groups.get(external_id)
 
-    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str, **_: object) -> bool:
-        return bool(self.record_group_permissions.get(external_id))
+    async def has_stored_permissions(
+        self, entity: str, connector_id: str, external_id: str, *, keep: bool = False, **_: object,
+    ) -> bool:
+        stored = self.record_group_permissions.get(external_id)
+        if stored and keep:
+            self._saw("recordGroups", external_id)
+            for permission in stored:
+                if permission.entity_type == EntityType.GROUP:
+                    self._saw("groups", permission.external_id)
+        return bool(stored)
 
     async def skips_permission_writes(self, connector_id: str | None) -> bool:
         return False  # licensed
@@ -112,6 +122,10 @@ class FakeRecordsDb:
                     record.source_updated_at = existing.source_updated_at
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions or [])
+            self._saw("records", record.external_record_id)
+            self._saw("recordGroups", record.external_record_group_id)
+            if record.parent_external_record_id in self.records:
+                self._saw("records", record.parent_external_record_id)
 
     async def on_new_record_groups(self, groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         self.group_writes.append([g.external_group_id for g, _ in groups])
@@ -122,6 +136,9 @@ class FakeRecordsDb:
             # As the processor: None means the grants could not be read, so the stored ones stay.
             if permissions is not None or group.external_group_id not in self.record_group_permissions:
                 self.record_group_permissions[group.external_group_id] = list(permissions or [])
+            self._saw("recordGroups", group.external_group_id)
+            if group.parent_external_group_id in self.record_groups:
+                self._saw("recordGroups", group.parent_external_group_id)
 
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         for user in users:
@@ -130,6 +147,7 @@ class FakeRecordsDb:
     async def on_new_user_groups(self, groups: list[tuple[AppUserGroup, list[Any]]]) -> None:
         for group, _members in groups:
             self.user_groups[group.source_user_group_id] = group
+            self._saw("groups", group.source_user_group_id)
 
     async def migrate_group_to_user_by_external_id(self, group_external_id: str, user_email: str, connector_id: str) -> None:
         if self.user_groups.pop(group_external_id, None) is None:
@@ -172,9 +190,47 @@ class FakeRecordsDb:
             self.records[new_record.external_record_id] = new_record
             self.record_permissions[new_record.external_record_id] = list(permissions or [])
             self.moves.append((old_external_id, new_record.external_record_id))
+            self._saw("records", new_record.external_record_id)
 
     async def reindex_existing_records(self, records: list[Record], **_: object) -> None:
         self.reindexed.extend(records)
+
+    # ------------------------------------------------------------------ full sync tracking
+
+    def begin_full_sync(self) -> None:
+        self.full_sync_seen = {"records": set(), "recordGroups": set(), "groups": set()}
+
+    def _saw(self, collection: str, external_id: str | None) -> None:
+        if self.full_sync_seen is not None and external_id:
+            self.full_sync_seen[collection].add(str(external_id))
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        for record_id in record_ids:
+            record = self.record_by_id(record_id)
+            if record is not None:
+                self._saw("records", record.external_record_id)
+
+    def note_kept_user_groups(self, connector_id: str, groups: list[AppUserGroup]) -> None:
+        for group in groups:
+            self._saw("groups", group.source_user_group_id)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        if external_group_id in self.user_groups:
+            self._saw("groups", external_group_id)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        if external_group_id in self.record_groups:
+            self._saw("recordGroups", external_group_id)
+
+    def missed_by_full_sync(self) -> dict[str, set[str]]:
+        """The stored nodes the full sync begun with ``begin_full_sync`` neither wrote nor kept:
+        what ``run_sync_task`` unlinks after it, by external id."""
+        seen = self.full_sync_seen or {}
+        stored = {"records": set(self.records), "recordGroups": set(self.record_groups), "groups": set(self.user_groups)}
+        if not any(seen.values()):
+            # As the runner: a sync that wrote nothing unlinks nothing.
+            return {collection: set() for collection in stored}
+        return {collection: ids - seen.get(collection, set()) for collection, ids in stored.items()}
 
     # ------------------------------------------------------------------ queries for assertions
 
@@ -240,6 +296,7 @@ class FakeDataStore:
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+        *, raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """Every stored node matching all the filters, as the graph stores answer them."""
         if collection == "recordGroups":

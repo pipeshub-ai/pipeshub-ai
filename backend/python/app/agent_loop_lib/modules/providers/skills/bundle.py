@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from app.agent_loop_lib.core.exceptions import RegistryError
+from app.agent_loop_lib.core.mounts import SKILLS_MOUNT_ROOT
 from app.agent_loop_lib.modules.providers.skills.loader import render_skill_md
 
 if TYPE_CHECKING:
@@ -38,7 +39,6 @@ __all__ = [
     "StagingSkillMaterializer",
 ]
 
-SKILLS_MOUNT_ROOT = "skills"
 
 
 def skill_mount_path(name: str) -> str:

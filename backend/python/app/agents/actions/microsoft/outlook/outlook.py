@@ -29,6 +29,7 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -513,7 +514,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
         "range": recurrence["range"],
     }
 
-@ToolsetBuilder("Outlook")\
+@ToolsetBuilder("Outlook", provider=ToolProvider.CONNECTOR)\
     .in_group("Microsoft 365")\
     .with_description("Microsoft Outlook integration for email and calendar management")\
     .with_category(ToolsetCategory.APP)\
@@ -771,7 +772,7 @@ class Outlook:
             ToolParameter(name="bcc_recipients", type=ParameterType.LIST, description="List of BCC recipient email addresses", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def send_email(
         self,
@@ -919,7 +920,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def reply_to_message(
         self,
@@ -947,7 +948,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply-all to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply-all comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def reply_all_to_message(
         self,
@@ -976,7 +977,7 @@ class Outlook:
             ToolParameter(name="to_recipients", type=ParameterType.LIST, description="List of recipient email addresses to forward to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Optional comment to include with the forwarded message", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def forward_message(
         self,
@@ -1030,7 +1031,7 @@ class Outlook:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return (default 10, max 50)", required=False),
             ToolParameter(name="orderby", type=ParameterType.STRING, description="OData $orderby expression", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f'Searching Outlook: "{args["search"]}"' if args.get("search") else "Fetching Outlook messages"
         ),
@@ -1076,7 +1077,7 @@ class Outlook:
         parameters=[
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the email message to retrieve", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_message(
         self,
@@ -1105,7 +1106,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Outlook message whose attachments should be listed", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of attachments to return (default 25, max 100)", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_message_attachments(
         self,
@@ -1172,7 +1173,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Outlook message that owns the attachment", required=True),
             ToolParameter(name="attachment_id", type=ParameterType.STRING, description="ID of the attachment to download", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def stage_attachment_to_blob(
         self,
@@ -1365,7 +1366,7 @@ class Outlook:
         parameters=[
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of folders to return (default 20)", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_mail_folders(
         self,
@@ -1402,7 +1403,7 @@ class Outlook:
             ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End of the time range in ISO 8601 format (e.g. 2024-01-22T00:00:00Z)", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of events to return", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_calendar_events(
         self,
@@ -1447,7 +1448,7 @@ class Outlook:
             ToolParameter(name="search", type=ParameterType.STRING, description="Search keyword or phrase to find in event subject, body, and location", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of events to return (default 10)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_calendar_events(
         self,
@@ -1490,7 +1491,7 @@ class Outlook:
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Recurrence pattern and range dict matching MS Graph API format", required=False),
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def create_calendar_event(
         self,
@@ -1557,7 +1558,7 @@ class Outlook:
         parameters=[
             ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the calendar event to retrieve", required=True),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_calendar_event(
         self,
@@ -1593,7 +1594,7 @@ class Outlook:
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Updated recurrence settings (same structure as create_calendar_event)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def update_calendar_event(
         self,
@@ -1704,7 +1705,7 @@ class Outlook:
         parameters=[
             ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the calendar event to delete", required=True),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_calendar_event(
         self,
@@ -1739,7 +1740,7 @@ class Outlook:
             ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of recurring event series to return (1–100)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_recurring_events(
         self,
@@ -1846,7 +1847,7 @@ class Outlook:
             ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return (1–50)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_recurring_events_ending(
         self,
@@ -1940,7 +1941,7 @@ class Outlook:
             ToolParameter(name="occurrence_dates", type=ParameterType.LIST, description="List of dates to delete occurrences on (YYYY-MM-DD)", required=True),
             ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_recurring_event_occurrence(
         self,
@@ -2185,7 +2186,7 @@ class Outlook:
             ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL (from event.onlineMeeting.joinUrl). Preferred over event_id.", required=False),
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Fallback when join_url is not available.", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_meeting_transcripts(
         self,

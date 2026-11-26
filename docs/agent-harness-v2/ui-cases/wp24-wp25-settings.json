@@ -1,0 +1,134 @@
+{
+  "title": "WP-24 schedule triggers and WP-25 MCP tool warnings: settings UI (UI-3)",
+  "spec": "frontend/tests/e2e/workspace/ui3-trigger-settings.spec.ts",
+  "unitTests": [
+    "frontend/app/(main)/workspace/schedules/__tests__/schedules-page.test.tsx",
+    "frontend/app/(main)/workspace/schedules/__tests__/schedules-api.test.ts",
+    "frontend/app/(main)/workspace/mcp-servers/hub/__tests__/wp25-tool-warnings.test.tsx"
+  ],
+  "screenshots": {
+    "pattern": "<name>-<desktop|phone>-<light|dark>.png",
+    "viewports": { "desktop": "1280x900", "phone": "375x812" },
+    "where": "the directory UI3_SHOTS names when the spec runs; the fixture-backed run of 2026-10-30 is kept out of git"
+  },
+  "routed": "Two answers are served by the page's route because the states cannot be made on demand: a schedule's firings (UI3-SCH-7) and the MCP manifest with scanner findings (UI3-MCP-*; the approval request is asserted as it leaves the browser). Everything else is the stack's.",
+  "cases": [
+    {
+      "id": "UI3-SCH-1",
+      "title": "Schedule form defaults",
+      "scenario": ["TR-02", "TR-06", "TR-07"],
+      "steps": ["Open Workspace > Schedules", "Click New schedule"],
+      "expected": [
+        "\"If PipesHub was down\" has Skip the runs it missed / Run once for the latest missed time / Run once for each missed time; Skip is chosen",
+        "\"If the last run is still going\" has Skip this run / Wait for it to finish, then run / Run both at the same time; Skip is chosen",
+        "\"Tell me when a run ends\": In PipesHub ticked, Email unticked and enabled, Slack greyed with \"The assistant has no Slack bot...\""
+      ],
+      "screenshots": ["ui3-sch-1-form-defaults", "ui3-sch-1-form-defaults-lower"]
+    },
+    {
+      "id": "UI3-SCH-2",
+      "title": "Each catch-up option",
+      "scenario": ["TR-02"],
+      "steps": ["Open the form", "Pick each \"If PipesHub was down\" option in turn"],
+      "expected": ["The picked option is checked", "Run once for each missed time explains \"Up to 24, oldest first, one after another.\""],
+      "screenshots": ["ui3-sch-2-catch-up-skip", "ui3-sch-2-catch-up-latest", "ui3-sch-2-catch-up-all"]
+    },
+    {
+      "id": "UI3-SCH-3",
+      "title": "Each overlap option",
+      "scenario": ["TR-06"],
+      "steps": ["Open the form", "Pick each \"If the last run is still going\" option in turn"],
+      "expected": ["The picked option is checked", "Wait for it to finish explains \"One run can wait. If another is due while one waits, it is skipped.\""],
+      "screenshots": ["ui3-sch-3-overlap-skip", "ui3-sch-3-overlap-queue", "ui3-sch-3-overlap-allow"]
+    },
+    {
+      "id": "UI3-SCH-4",
+      "title": "Slack greyed for an agent without a bot; the chosen policies are stored",
+      "scenario": ["TR-02", "TR-06", "TR-07"],
+      "steps": ["Open the form", "Fill name, prompt, cron", "Pick a seeded agent (the stack has no Slack bot)", "Pick run all, wait, tick Email", "Create"],
+      "expected": [
+        "GET /api/v1/agent-harness/schedules/notify-channels?agentKey=... answers (an agent the caller may not run is 404); Slack is greyed with \"This agent has no Slack bot. Add one in Slack settings to get messages there.\"",
+        "POST body has trigger.catchUp run_all, overlap queue, notify [in_app, email]; Node answers 201 with the same overlap and notify"
+      ],
+      "screenshots": ["ui3-sch-4-slack-greyed"]
+    },
+    {
+      "id": "UI3-SCH-5",
+      "title": "Signed webhook dialog",
+      "scenario": ["TR-04"],
+      "steps": ["Open the form", "Choose When a webhook is called (\"The caller can't sign\" stays unticked)", "Create"],
+      "expected": [
+        "POST trigger is {kind: webhook, auth: signature}; the answer carries webhookSecret, no webhookToken",
+        "The dialog shows the address, the secret, \"Copy this secret now. You won't see it again.\", how to sign, and a signing example with X-PipesHub-Timestamp and X-PipesHub-Signature: v1=$sig",
+        "The secret is not in the page after Done"
+      ],
+      "screenshots": ["ui3-sch-5-signed-webhook"]
+    },
+    {
+      "id": "UI3-SCH-6",
+      "title": "Token fallback for a caller that can't sign",
+      "scenario": ["TR-04"],
+      "steps": ["Open the form", "Choose When a webhook is called", "Tick \"The caller can't sign. Use a token in a header instead\"", "Create"],
+      "expected": [
+        "The choice warns \"Anyone who sees the token can call it. Signing is safer.\"",
+        "POST trigger is {kind: webhook, auth: token}; the dialog names the X-PipesHub-Trigger-Token header and shows no signing example"
+      ],
+      "screenshots": ["ui3-sch-6-token-choice", "ui3-sch-6-token-webhook"]
+    },
+    {
+      "id": "UI3-SCH-7",
+      "title": "History rows: skipped (last run still going), waiting, caught up",
+      "scenario": ["TR-02", "TR-06"],
+      "steps": ["Create a cron schedule (run all, queue) through the API", "Serve its firings by route: overlap_queued, overlap_skip, overlap_queue_full, and an admitted slot made a day late", "Open History on its row"],
+      "expected": [
+        "The row's summary says Run once for each missed time",
+        "Rows read: Waiting for the last run to finish; Skipped: the last run was still going; Skipped: a run was already waiting; Scheduled (caught up)",
+        "No row says Missed while PipesHub was down"
+      ],
+      "screenshots": ["ui3-sch-7-history"]
+    },
+    {
+      "id": "UI3-MCP-1",
+      "title": "MCP tab: a clean tool",
+      "scenario": ["MX-04", "D-MCP-2"],
+      "steps": ["Open the MCP server's Tool approval tab"],
+      "expected": ["The approved tool without findings has no warnings box"],
+      "screenshots": ["ui3-mcp-1-clean-tool"]
+    },
+    {
+      "id": "UI3-MCP-2",
+      "title": "MCP tab: a flagged tool",
+      "scenario": ["MX-04", "D-MCP-2"],
+      "steps": ["Open the Tool approval tab", "Collapse the warnings"],
+      "expected": [
+        "\"This tool's text reads like instructions to the AI (3)\", expanded, each finding as a plain label and its passage; no finding code shown",
+        "The box collapses and expands",
+        "\"I've read these warnings and still want agents to get this tool.\" under the findings"
+      ],
+      "screenshots": ["ui3-mcp-2-flagged-tool", "ui3-mcp-2-flagged-tool-collapsed"]
+    },
+    {
+      "id": "UI3-MCP-3",
+      "title": "Acknowledge, then approve",
+      "scenario": ["MX-04", "D-MCP-2"],
+      "steps": ["Select the flagged tool", "Tick I've read these warnings", "Approve (the route answers 409 mcp_tool_description_flagged once)", "Approve again"],
+      "expected": [
+        "Approve is disabled with \"Confirm the warnings on \\\"add\\\" to approve it.\" until the box is ticked",
+        "A 409 mcp_tool_description_flagged reads \"Nothing was approved: a tool's warnings weren't confirmed...\"",
+        "PUT .../manifest sends {name: add, digest, acknowledgeWarnings: true} and the clean tool without it"
+      ],
+      "screenshots": ["ui3-mcp-3-approve-blocked", "ui3-mcp-3-acknowledged", "ui3-mcp-3-refused", "ui3-mcp-3-approved"]
+    },
+    {
+      "id": "UI3-MCP-4",
+      "title": "A changed flagged tool is confirmed again",
+      "scenario": ["MX-04", "D-MCP-2"],
+      "steps": ["Open the tab", "Select the changed tool", "Tick its confirmation", "Approve"],
+      "expected": [
+        "The changed tool shows its description diff and its new findings, unconfirmed; Approve is off until confirmed",
+        "PUT sends {name: fetch, digest: the new one, acknowledgeWarnings: true}"
+      ],
+      "screenshots": ["ui3-mcp-4-changed-tool"]
+    }
+  ]
+}

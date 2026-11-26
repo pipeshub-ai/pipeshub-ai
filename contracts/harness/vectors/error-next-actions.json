@@ -1,0 +1,197 @@
+{
+  "description": "What a person can do next (UX-06, WP-18) for each person-facing error code that is not in an errors.json catalogue (a catalogue entry carries its own nextAction): runErrors are the RUN_ERROR codes the web app words (run-error-codes.json), answerErrors the error answer codes (AnswerErrorCode), toolErrors the failed tool call codes (ToolErrorCode). Each value is a NextAction (core/error-catalog.schema.json): a kind a client can offer a control for, and plain English words. Each section names every code of its source, no more.",
+  "runErrors": {
+    "not_started": {
+      "kind": "retry",
+      "text": "Nothing was done. Send your message again; if it keeps happening, ask your admin."
+    },
+    "no_compatible_worker": {
+      "kind": "ask_admin",
+      "text": "No server here can run this kind of task right now. Ask your admin."
+    },
+    "deadline_exceeded": {
+      "kind": "retry",
+      "text": "The run took too long and stopped. Send your message again to try once more."
+    },
+    "quarantined": {
+      "kind": "retry",
+      "text": "The run kept failing and was stopped. Send your message again to try once more."
+    },
+    "capability_lost": {
+      "kind": "retry",
+      "text": "A tool or connection the agent needs went away. Try again; if it keeps happening, ask your admin."
+    },
+    "mcp_tool_withdrawn": {
+      "kind": "retry",
+      "text": "A connected app stopped offering a tool the run used. Send your message again to continue without it."
+    },
+    "model_no_longer_configured": {
+      "kind": "retry",
+      "text": "The model this conversation used is no longer set up. Send your message again to continue on a current model."
+    },
+    "binary_mismatch": {
+      "kind": "ask_admin",
+      "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+    },
+    "candidate_image": {
+      "kind": "ask_admin",
+      "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+    },
+    "engine_unavailable": {
+      "kind": "ask_admin",
+      "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+    },
+    "engine_image_missing": {
+      "kind": "ask_admin",
+      "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+    },
+    "engine_contract_unsupported": {
+      "kind": "ask_admin",
+      "text": "This agent's coding engine cannot run on this server right now. Ask your admin."
+    },
+    "gvisor_unavailable": {
+      "kind": "ask_admin",
+      "text": "Coding engines need the gVisor sandbox runtime on this server. Ask your admin to install it."
+    },
+    "image_untrusted": {
+      "kind": "ask_admin",
+      "text": "This agent's sandbox image is not signed by a key this server trusts, so nothing was started. Ask your admin."
+    },
+    "sandbox_unavailable": {
+      "kind": "wait_then_retry",
+      "text": "No sandbox was free, so nothing was done. Wait a few minutes, then try again."
+    },
+    "store_unavailable": {
+      "kind": "wait_then_retry",
+      "text": "File storage could not be reached for several minutes, so the task stopped. Wait a few minutes, then try again."
+    },
+    "engine_tools_unreachable": {
+      "kind": "retry",
+      "text": "The coding engine could not reach PipesHub's tools. Send your message again; if it keeps happening, ask your admin."
+    },
+    "event_flood": {
+      "kind": "retry",
+      "text": "The coding engine sent far more updates than a task may and was stopped. Send your message again; if it keeps happening, ask your admin."
+    },
+    "egress_volume_exceeded": {
+      "kind": "change_request",
+      "text": "This task moved more data than one task may here, so it stopped. Send a smaller request, or ask your admin about the limit."
+    },
+    "secret_blocked": {
+      "kind": "change_request",
+      "text": "PipesHub blocked a request that looked like it contained a secret, so the task stopped. Remove the secret from your message or files and send it again."
+    },
+    "worker_lost": {
+      "kind": "retry",
+      "text": "The server running this task stopped, and this agent does not resume on its own, so the task ended. Send your message again to run it once more."
+    },
+    "provider_unavailable": {
+      "kind": "wait_then_retry",
+      "text": "The AI model provider did not answer. Wait a few minutes, then try again."
+    },
+    "rate_limited": {
+      "kind": "wait_then_retry",
+      "text": "The AI model provider is limiting requests. Wait a few minutes, then try again."
+    },
+    "operator_stopped": {
+      "kind": "ask_admin",
+      "text": "Your admin stopped this agent work for now. Ask your admin, or send your message again once they resume it."
+    },
+    "out_of_memory": {
+      "kind": "change_request",
+      "text": "This task ran out of memory and was stopped. Send a smaller task, or ask your admin about the coding engine's memory."
+    }
+  },
+  "answerErrors": {
+    "content_filter": {
+      "kind": "change_request",
+      "text": "The provider's content filter blocked the request. Rephrase your question, or start a new chat and try again."
+    },
+    "quota_exceeded": {
+      "kind": "ask_admin",
+      "text": "The model's account is out of credit. Ask your admin to top it up or pick another model."
+    },
+    "rate_limit": {
+      "kind": "wait_then_retry",
+      "text": "The model's provider is limiting requests. Wait a minute, then try again."
+    },
+    "auth_error": {
+      "kind": "ask_admin",
+      "text": "The model's provider rejected its key. Ask your admin to check the key in AI Models."
+    },
+    "model_not_found": {
+      "kind": "ask_admin",
+      "text": "The provider could not find this model. Ask your admin to check the model name and endpoint in AI Models."
+    },
+    "request_too_large": {
+      "kind": "change_request",
+      "text": "The conversation is too long for this model. Shorten your message or start a new chat."
+    },
+    "invalid_request": {
+      "kind": "ask_admin",
+      "text": "The model rejected the request. Ask your admin to check the model settings in AI Models."
+    },
+    "server_error": {
+      "kind": "wait_then_retry",
+      "text": "The model's provider is not responding. Wait a minute, then try again."
+    },
+    "timeout": {
+      "kind": "retry",
+      "text": "The model took too long to answer. Try again."
+    },
+    "unknown": {
+      "kind": "retry",
+      "text": "Something went wrong while answering. Try again; if it keeps happening, ask your admin."
+    },
+    "needs_reconciliation": {
+      "kind": "ask_admin",
+      "text": "An action may have happened before its result was saved. Ask your admin to check it before the task can go on."
+    },
+    "deadline_exceeded": {
+      "kind": "retry",
+      "text": "The run took too long and stopped. Send your message again to try once more."
+    },
+    "approval_expired": {
+      "kind": "retry",
+      "text": "Nobody approved the action in time, so it was not taken. Send your message again to try once more."
+    },
+    "budget_exhausted": {
+      "kind": "ask_admin",
+      "text": "The reply reached its spending limit. Ask your admin to raise the limit, or ask for less at a time."
+    },
+    "budget_insufficient": {
+      "kind": "ask_admin",
+      "text": "Too little budget was left for the next step. Ask your admin to raise the limit, or ask for less at a time."
+    }
+  },
+  "toolErrors": {
+    "unavailable": {
+      "kind": "none",
+      "text": "Nothing to do: the agent carries on without this tool and says what it could not reach."
+    },
+    "timeout": {
+      "kind": "none",
+      "text": "Nothing to do: the agent carries on without this answer and says what it could not get."
+    },
+    "rate_limited": {
+      "kind": "none",
+      "text": "Nothing to do: the agent carries on and may try the tool again later."
+    },
+    "auth": {
+      "kind": "reconnect",
+      "text": "Connect the app again, or ask your admin to check its connection."
+    },
+    "not_found": {
+      "kind": "none",
+      "text": "Nothing to do: the agent is told what it asked for does not exist and carries on."
+    },
+    "invalid_call": {
+      "kind": "none",
+      "text": "Nothing to do: the agent is told it called the tool wrongly and can try again."
+    },
+    "failed": {
+      "kind": "none",
+      "text": "Nothing to do: the agent carries on without this result and says what failed."
+    }
+  }
+}

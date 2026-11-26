@@ -1,0 +1,30 @@
+[
+  {
+    "description": "no unknown top-level key (F3 FM-F9)",
+    "instance": {
+      "org": {
+        "org-1": {
+          "writes": "ask"
+        }
+      }
+    }
+  },
+  {
+    "description": "a section is an object",
+    "instance": {
+      "agents": [
+        "agent-a"
+      ]
+    }
+  },
+  {
+    "description": "an agent rule is a rule",
+    "instance": {
+      "agents": {
+        "agent-a": {
+          "writes": "maybe"
+        }
+      }
+    }
+  }
+]

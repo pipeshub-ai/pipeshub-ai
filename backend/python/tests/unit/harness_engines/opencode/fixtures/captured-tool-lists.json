@@ -1,0 +1,300 @@
+{
+ "native-locked": [
+  {
+   "session": "ses_001",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_002",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_002",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_003",
+   "tools": [
+    "bash",
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_003",
+   "tools": [
+    "bash",
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_004",
+   "tools": [
+    "bash",
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_005",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_005",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_006",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_006",
+   "tools": [
+    "pipeshub_pipeshub_search",
+    "skill"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  }
+ ],
+ "native-default": [
+  {
+   "session": "ses_001",
+   "tools": [],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_001",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_002",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_002",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_003",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_003",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_004",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_005",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_005",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_006",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_007",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "read",
+    "skill",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  },
+  {
+   "session": "ses_006",
+   "tools": [
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "pipeshub_pipeshub_admin",
+    "pipeshub_pipeshub_search",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "write"
+   ],
+   "authorization": "Bearer <MODEL_TOKEN>"
+  }
+ ]
+}

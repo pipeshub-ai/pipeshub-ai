@@ -13,11 +13,14 @@ record the caller may not see.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Final
 
 from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import resolve_weburl
 from app.models.source_dates import RecordDates
+
+# The typed answer of a knowledge read whose records exist, may be read, and are still being indexed (KN-09).
+INDEX_NOT_READY: Final = "index_not_ready"
 
 # Statuses whose record should become readable without anyone acting on it.
 _PENDING = frozenset({
@@ -46,17 +49,33 @@ def is_not_indexed(status: str | None) -> bool:
     return bool(status) and status != ProgressStatus.COMPLETED.value
 
 
+def is_index_pending(status: str | None) -> bool:
+    """True while indexing will make the record readable without anyone acting on it."""
+    return status in _PENDING
+
+
+def index_not_ready_line(name: str | None) -> str:
+    """The plain line for a readable record that is still being indexed (KN-09)."""
+    return (
+        f"{name or 'This record'} is still being indexed, so its contents cannot be searched yet; "
+        "try again in a few minutes."
+    )
+
+
 _PREPARING = {
     "waiting": "it is being prepared for reading and was not ready in time, so asking again shortly should work",
     "deferred": "this call could only prepare a few records at once, so asking for it again should work",
 }
 
 
-def not_indexed_note(status: str | None, preparing: str | None = None) -> str:
-    """One paragraph telling the model the record exists but cannot be read.
+def not_indexed_note(status: str | None, *, preparing: str | None = None, name: str | None = None) -> str:
+    """One paragraph telling the model the record exists but cannot be read; a pending one leads with the plain
+    line the person can be told (KN-09).
 
     ``preparing`` is set when the record is being parsed for this read: ``waiting``
-    (not ready in time) or ``deferred`` (not started: the call asked for too many)."""
+    (not ready in time) or ``deferred`` (not started: the call asked for too many).
+    Both are keyword-only: each is an optional string, and a name taken for a
+    ``preparing`` state would drop the line silently."""
     shown = status or "unknown"
     if preparing in _PREPARING:
         return (
@@ -67,6 +86,7 @@ def not_indexed_note(status: str | None, preparing: str | None = None) -> str:
         )
     why = "it is waiting to be indexed, so asking again shortly may work" if shown in _PENDING else _WHY.get(shown)
     lines = [
+        *([index_not_ready_line(name)] if shown in _PENDING else []),
         f"Not indexed: this record exists, but its content is not indexed yet (status: {shown})"
         + (f"; {why}." if why else "."),
         "Search cannot find its text and its content cannot be read, so a search that misses it "

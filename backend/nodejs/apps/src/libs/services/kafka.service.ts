@@ -22,7 +22,11 @@ import {
   newSystemRoot,
 } from '../context/request-context';
 import { runWithEnvelope, signMessage } from '../context/envelope';
-import { isRetryableStoreError } from '../repositories/errors';
+import {
+  DocStoreReadOnlyError,
+  isRetryableStoreError,
+} from '../repositories/errors';
+import { mongoStoreMoving, untilMongoWritable } from '../repositories/fence';
 import { spawnDetached } from '../context/orgContext';
 
 /** Sign (when enabled) only where the topic is known. */
@@ -206,11 +210,13 @@ export abstract class BaseKafkaConsumerConnection
   implements IKafkaConsumer, IMessageConsumer
 {
   protected consumer: Consumer;
+  private readonly groupId: string;
 
   constructor(@unmanaged() config: KafkaConfig, @unmanaged() logger: Logger) {
     super(config, logger);
+    this.groupId = config.groupId ?? `${config.clientId ?? 'default'}-group`;
     this.consumer = this.kafka.consumer({
-      groupId: config.groupId ?? `${config.clientId ?? 'default'}-group`,
+      groupId: this.groupId,
       maxWaitTimeInMs: 5000,
       ...(config.sessionTimeout !== undefined && {
         sessionTimeout: config.sessionTimeout,
@@ -280,7 +286,17 @@ export abstract class BaseKafkaConsumerConnection
       // The runner outlives this call: it must not keep the caller's org context.
       await spawnDetached(() =>
         this.consumer.run({
-          eachMessage: async ({ topic, partition, message }) => {
+          eachMessage: async (payload) => {
+            const { topic, partition, message } = payload;
+            // a store move (F3): pause this partition until the store takes writes again. The throw keeps the offset uncommitted, so
+            // the message comes again on resume (https://kafka.js.org/docs/consuming: pause inside eachMessage, then rethrow).
+            if (await mongoStoreMoving()) {
+              const resume = payload.pause();
+              void spawnDetached(() =>
+                untilMongoWritable(() => this.isConnected()).then(resume),
+              );
+              throw new DocStoreReadOnlyError();
+            }
             try {
               if (!message.value) {
                 throw new BadRequestError('Empty message value');
@@ -300,6 +316,7 @@ export abstract class BaseKafkaConsumerConnection
                     topic,
                     parsedValue as T,
                     (value) => handler({ ...parsedMessage, value }),
+                    this.groupId,
                   ),
               );
             } catch (error) {

@@ -51,6 +51,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
+from tests.support.settle import settle
 from tests.support.undecodable_json import DEEP, UNDECODABLE
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -495,20 +496,22 @@ class TestWaitForActiveFutures:
         with consumer._futures_lock:
             consumer._active_futures.update(futures)
 
-        # The waits it asks for, not their wall time: a busy runner could stretch a 0.2 s wait past any small bound.
-        waits: list[tuple[int, float]] = []
+        waits: list[tuple[set, float]] = []
 
-        def recording_wait(fs: list[Future], timeout: float | None = None, **kw: object) -> object:
-            waits.append((len(fs), timeout))
-            return real_wait(fs, timeout=timeout, **kw)
+        def one_wait(fs, timeout=None) -> tuple[set[Future], set[Future]]:
+            waits.append((set(fs), timeout))
+            return set(), set(fs)
 
-        real_wait = indexing_consumer_module.futures_wait
-        with patch.object(
-            type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
-        ), patch.object(indexing_consumer_module, "futures_wait", recording_wait):
+        with (
+            patch.object(
+                type(messaging_env), "shutdown_task_timeout", new_callable=PropertyMock, return_value=0.2,
+            ),
+            patch("app.services.messaging.redis_streams.indexing_consumer.futures_wait", one_wait),
+        ):
             consumer._wait_for_active_futures()
 
-        assert waits == [(5, 0.2)]  # one shared 0.2 s window for all five, not one per future
+        assert waits == [(set(futures), 0.2)]
+        assert all(f.cancelled() for f in futures)
 
 
 # ===================================================================
@@ -1009,7 +1012,7 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await two_handlers_started.wait()
+        await settle(two_handlers_started.wait())
         await asyncio.sleep(0)
 
         assert len(started) == 2
@@ -1074,8 +1077,8 @@ class TestProcessMessageWrapper:
             for i in range(4)
         ]
 
-        await four_started.wait()
-        await two_parsing.wait()
+        await settle(four_started.wait())
+        await settle(two_parsing.wait())
         await asyncio.sleep(0.05)
 
         assert len(started) == 4
@@ -1197,9 +1200,7 @@ class TestProcessMessageWrapper:
                 return_value=0.01,
             ),
         ):
-            # No wall-clock bound: a busy runner stalled this loop 1.5 s with both records admitted (pytest's
-            # --timeout still catches a hang).
-            await two_started.wait()
+            await settle(two_started.wait())
             await asyncio.sleep(0.05)
             assert len(started) == 2
             assert manager.max_active["indexing"] == 2
@@ -1338,7 +1339,7 @@ class TestProcessMessageWrapper:
                 _valid_fields(payload={"recordId": "cancelled-record"}),
             )
         )
-        await entered.wait()
+        await settle(entered.wait())
         processing.cancel()
         with pytest.raises(asyncio.CancelledError):
             await processing
@@ -2498,7 +2499,7 @@ class TestRetryDelayBeforeSemaphore:
         from app.core import envelope, org_context
 
         key = envelope.derive_key("requeue-secret")
-        envelope.configure(None, None, key)
+        envelope.configure(None, key)
         monkeypatch.setenv("ENVELOPE_SIGN", "true")
         sent = []
 
@@ -3218,11 +3219,13 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                with patch.object(
+                    consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", new_callable=AsyncMock
+                ) as wait_for_finish:
                     await consumer._consume_loop()
 
-        # Backpressure engaged on first iteration -> sleep(0.5)
-        mock_sleep.assert_any_call(0.5)
+        # Backpressure engaged on the first iteration -> it waits for a finish, at most the backpressure wait
+        wait_for_finish.assert_awaited_once_with(indexing_consumer_module._BACKPRESSURE_WAIT_SECONDS)
 
     @pytest.mark.asyncio
     async def test_backpressure_flag_toggles(self, consumer):
@@ -3251,7 +3254,12 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock):
+                with (
+                    patch("asyncio.sleep", new_callable=AsyncMock),
+                    patch.object(
+                        consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", AsyncMock(return_value=False)
+                    ),
+                ):
                     await consumer._consume_loop()
 
     @pytest.mark.asyncio
@@ -3439,7 +3447,7 @@ class TestWaitOutBackpressure:
     @pytest.mark.asyncio
     async def test_not_paused_returns_immediately(self, consumer):
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = False
+        coordinator.pause_remaining.return_value = 0.0
         consumer.backpressure_coordinator = coordinator
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -3453,13 +3461,12 @@ class TestWaitOutBackpressure:
         returning — this is what actually stops XREADGROUP from running."""
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
-        coordinator.pause_remaining.return_value = 3.0
-        paused_calls = [True, True, False]
-        coordinator.is_paused.side_effect = lambda: paused_calls.pop(0)
+        slept: list[float] = []
+        coordinator.pause_remaining.side_effect = lambda **_: 0.0 if len(slept) >= 2 else 3.0
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("asyncio.sleep", new_callable=AsyncMock, side_effect=slept.append) as mock_sleep:
             await consumer._wait_out_backpressure()
 
         assert mock_sleep.await_count == 2
@@ -3473,7 +3480,6 @@ class TestWaitOutBackpressure:
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 300.0
-        coordinator.is_paused.return_value = True
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 

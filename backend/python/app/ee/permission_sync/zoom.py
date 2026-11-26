@@ -28,7 +28,7 @@ class ZoomPermissionsMixin:
         meeting_detail: Optional[ZoomMeetingDetail],
         encoded_uuid: str,
         host_email: str,
-    ) -> list[Permission]:
+    ) -> tuple[list[Permission], bool]:
         """Build permission list from host, alt-hosts, participants, and invitees.
 
         Flow:
@@ -37,6 +37,8 @@ class ZoomPermissionsMixin:
         3. Participants (report API) → READ each
         4. Invitees (settings.meeting_invitees[].email) → READ each
         5. All deduplicated via seen_emails set
+
+        Returns (permissions, whether the participants were read in full).
         """
         if await self.data_entities_processor.skips_permission_writes(self.connector_id):
             return []
@@ -66,11 +68,19 @@ class ZoomPermissionsMixin:
                 seen_emails.add(alt_email)
 
         # 3 — participants → READ
+        # A read that fails part way still grants the participants it returned;
+        # the caller then adds these grants instead of replacing the stored ones.
+        participants_read = True
+        read_so_far: list[ZoomParticipant] = []
         try:
-            participants = await self._list_meeting_participants(encoded_uuid)
-            self._add_participant_permissions(perms, participants, seen_emails)
+            participants = await self._list_meeting_participants(
+                encoded_uuid, raise_on_error=True, read_so_far=read_so_far
+            )
         except Exception as exc:
+            participants = read_so_far
+            participants_read = False
             self.logger.warning("Zoom: failed to fetch participants: %s", exc)
+        self._add_participant_permissions(perms, participants, seen_emails)
 
         # 4 — invitees → READ
         for inv in settings.meeting_invitees:
@@ -83,7 +93,7 @@ class ZoomPermissionsMixin:
                 ))
                 seen_emails.add(inv_email)
 
-        return perms
+        return perms, participants_read
 
     @staticmethod
     def _add_participant_permissions(

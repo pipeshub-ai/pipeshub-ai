@@ -166,7 +166,7 @@ const startUpstreamCall = (
 });
 
 /** The first string `code` in the error's cause chain: undici's `ECONNREFUSED`, `UND_ERR_SOCKET`, axios's own. */
-const networkCode = (error: unknown): string | undefined => {
+export const networkCode = (error: unknown): string | undefined => {
   let link = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
     if (link === null || typeof link !== 'object') return undefined;

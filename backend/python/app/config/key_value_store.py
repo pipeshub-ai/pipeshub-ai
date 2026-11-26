@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from typing import Any, Callable, Generic, List, Optional, TypeVar
 
 T = TypeVar("T")
@@ -180,11 +181,17 @@ class KeyValueStore(ABC, Generic[T]):
     # a ``client`` property to get there.
     # -------------------------------------------------------------------
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> Optional[Any]:
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> Optional[Any]:
         """Subscribe to notifications that some key changed in another process.
 
         ``callback`` receives the changed key, or the sentinel
         ``"__CLEAR_ALL__"`` meaning every cached value should be dropped.
+
+        ``keys`` limits the subscription to these keys where the store can (etcd watches each one instead of every
+        key, which a sandbox-plane component's role may not read: R38IDENT-FU-9). A store whose notifications are one
+        channel ignores it.
 
         Returns an opaque subscription handle to pass to
         :meth:`unsubscribe_changes`, or ``None`` if this store has no

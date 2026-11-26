@@ -36,6 +36,7 @@ export async function startPgStack(bin: string, db = 'conversation_stores', opts
   let bouncer: PgStack['bouncer'] | undefined;
   let pool: Pool | undefined;
   let jobsPool: Pool | undefined;
+  let importPool: Pool | undefined;
   let rt: PgRuntime;
   let catalog: QueryCatalog;
   try {
@@ -50,19 +51,29 @@ export async function startPgStack(bin: string, db = 'conversation_stores', opts
       max: opts.clientPool ?? 12,
     });
     // the copy of an existing install writes with its own login, direct to PostgreSQL (the PgBouncer here lists no such login)
-    jobsPool = opts.importer
+    importPool = opts.importer
       ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_import'), service: 'import', version: 'test', max: 4 })
-      : opts.jobs
-      ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_jobs', bouncer.port), service: 'jobs', version: 'test', max: 4 })
       : undefined;
+    jobsPool = opts.jobs
+      ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_jobs', bouncer.port), service: 'jobs', version: 'test', max: 4 })
+      : importPool;
     catalog = new QueryCatalog();
-    rt = new PgRuntime({ pool, ...(jobsPool && { jobsPool }), defaultService: 'node', catalog, ...(!opts.importer && { fence: { fn: 'kernel.assert_store_epoch', epoch: 1 } }) });
+    rt = new PgRuntime({
+      pool,
+      ...(jobsPool && { jobsPool }),
+      // with both logins, the stores' jobs units run as the jobs login and the copy's as the import login (R46CARRY-FU-3)
+      ...(importPool && jobsPool !== importPool && { importPool }),
+      defaultService: 'node',
+      catalog,
+      ...(!opts.importer && { fence: { fn: 'kernel.assert_store_epoch', epoch: 1 } }),
+    });
     configurePg(rt);
   } catch (e) {
     // Nothing returned means nobody can call stop(): put back what already started, then report the real failure.
     try {
       await pool?.end().catch(() => undefined);
       await jobsPool?.end().catch(() => undefined);
+      if (importPool !== jobsPool) await importPool?.end().catch(() => undefined);
     } finally {
       try {
         bouncer?.stop();
@@ -85,6 +96,7 @@ export async function startPgStack(bin: string, db = 'conversation_stores', opts
       try {
         await pool.end().catch(() => undefined);
         await jobsPool?.end().catch(() => undefined);
+        if (importPool !== jobsPool) await importPool?.end().catch(() => undefined);
       } finally {
         try {
           bouncer.stop();
