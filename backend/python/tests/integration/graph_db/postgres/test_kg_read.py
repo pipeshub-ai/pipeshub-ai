@@ -456,9 +456,11 @@ N = 12_000
 KEY_OF = {"records_id": "id", "records_pkey": "sk", "records_parent": "parent_sk", "links_pkey": "parent_sk", "node_keys_org_id_sk_key": "sk", "scope_classes_pkey": "id"}
 
 
-def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
+def _not_seeks(plan: dict[str, Any], indexes: set[str], levels: dict[str, int]) -> list[str]:
     """What in an ``EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`` plan is not a seek: a scan of a kg table that is not one of ``indexes``, whose index condition does not bound
-    the key column, or that returns more than one row or reads more than a few pages per probe; and an index of ``indexes`` the plan never uses."""
+    the key column, that returns or filters out more than one row per probe, or (an index-only scan) that reads more index pages per probe than a descent of the
+    index (``levels``: its btree level) and the next leaf; and an index of ``indexes`` the plan never uses. Heap pages are reported, not bounded: they measure what
+    VACUUM has reached (row versions not yet removed, pages not yet all-visible), here and on a real install alike, not the plan."""
     found: list[str] = []
     used: set[str] = set()
 
@@ -467,15 +469,49 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
             continue
         loops = node.get("Actual Loops", 0)
         pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
+        fetches = node.get("Heap Fetches", 0) / max(loops, 1)
+        removed = node.get("Rows Removed by Filter", 0) + node.get("Rows Removed by Index Recheck", 0)
         bounds = plan_gate.bounds(node)
         used.update(index for index, _ in bounds)
+        seen = f"{node['Actual Rows']} rows, {removed} filtered out, {pages:.1f} pages ({fetches:.1f} heap fetches) per probe ({loops} probes)"
         if not bounds or any(index not in indexes for index, _ in bounds):
             found.append(f"{node['Node Type']} {[index for index, _ in bounds]} on {node['Relation Name']}")
         elif bad := [(index, cond) for index, cond in bounds if "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond)]:
             found.append(f"the index condition does not bound the key: {bad}")
-        elif loops and (node["Actual Rows"] > 1 or pages > 8):
-            found.append(f"{bounds[0][0]}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
+        elif loops and (node["Actual Rows"] > 1 or removed > 1):
+            found.append(f"{bounds[0][0]}: {seen}")
+        elif loops and node["Node Type"] == "Index Only Scan" and pages - fetches > levels[bounds[0][0]] + 2:
+            found.append(f"{bounds[0][0]}: more index pages than a descent of its {levels[bounds[0][0]] + 1} levels and the next leaf: {seen}")
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
+
+
+async def _btree_levels(indexes: set[str]) -> dict[str, int]:
+    """Each kg index's btree level (0: the root is a leaf), from its metapage (pageinspect, dropped again if this added it)."""
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        had = await con.fetchval("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pageinspect')")
+        await con.execute("CREATE EXTENSION IF NOT EXISTS pageinspect")
+        try:
+            return {i: await con.fetchval("SELECT (bt_metap($1)).level", f"kg.{i}") for i in sorted(indexes)}
+        finally:
+            if not had:
+                await con.execute("DROP EXTENSION pageinspect")
+    finally:
+        await con.close()
+
+
+def test_the_seek_check_bounds_rows_and_index_pages_and_not_heap_fetches() -> None:
+    """A probe is judged by its shape: one row, nothing filtered out, an index-only scan's index pages within a descent of the index; heap fetches are not held
+    against it."""
+    def scan(**kw: Any) -> dict[str, Any]:  # noqa: ANN401
+        return {"Plan": {"Node Type": "Index Only Scan", "Schema": "kg", "Relation Name": "records", "Index Name": "records_parent",
+                         "Index Cond": "((org_id = r.org_id) AND (parent_sk >= r.sk))", "Actual Loops": 1, "Actual Rows": 1, **kw}}
+    levels = {"records_parent": 2}
+    assert _not_seeks(scan(**{"Shared Hit Blocks": 9, "Heap Fetches": 5}), {"records_parent"}, levels) == []
+    assert _not_seeks(scan(**{"Shared Hit Blocks": 4}), {"records_parent"}, levels) == []
+    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 9}), {"records_parent"}, levels)) == 1                    # 9 index pages for a 3-level index
+    assert len(_not_seeks(scan(**{"Actual Rows": 40, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
+    assert len(_not_seeks(scan(**{"Rows Removed by Filter": 300, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
 
 
 @pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
@@ -495,6 +531,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
         "classes": (kg_read.CLASSES, [[1, 2, 3]], ("scope_classes_pkey", "Index Cond: ((org_id = ", "id = q.id"), {"scope_classes_pkey"}),
         "literals": (kg_read.LITERALS, [sks], ("records_pkey", "Index Cond: ((org_id = ", "sk = q.sk", "records_parent", "links_pkey"), {"records_pkey", "records_parent", "links_pkey"}),
     }
+    levels = await _btree_levels(set(KEY_OF))
     for state in ("fresh", "analysed"):
         if state == "analysed":
             await _admin("ANALYZE kg.records; ANALYZE kg.node_keys; ANALYZE kg.scope_classes; ANALYZE kg.links")
@@ -508,7 +545,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
                 plan, ran = await pg_db.run(go, custom_plan=True)
             if "Seq Scan" in plan or any(t not in plan for t in must):
                 pytest.fail(f"{state} {name}: a scan the ids do not bound, or an index condition missing ({must})\n{plan}")
-            if bad := _not_seeks(ran, indexes):
+            if bad := _not_seeks(ran, indexes, levels):
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")
 
 
