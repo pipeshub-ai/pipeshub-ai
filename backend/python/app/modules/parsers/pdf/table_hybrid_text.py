@@ -229,9 +229,18 @@ def split_rows_at_rules(
     return out, at, sum(len(v) for v in cuts.values())
 
 
+# A word of these alone still changes a value when it is lost (a minus or a bracket before an amount, a percent sign).
+_VALUE_SIGNS = frozenset({"-", "+", "\u2212", "\u2013", "(", ")", "%"})
+
+
 def unassigned_content(words: list[Word], emitted_ids: set[int], dropped_ids: set[int]) -> list[int]:
-    """Ids of content words (a letter or a digit) that no cell of the final grid holds and that no stated rule removed."""
-    return [i for i, w in enumerate(words) if i not in emitted_ids and i not in dropped_ids and has_content(str(w["text"]))]
+    """Ids of content words (a letter or a digit, or a sign that changes a value) that no cell of the final grid holds and
+    that no stated rule removed."""
+    return [
+        i for i, w in enumerate(words)
+        if i not in emitted_ids and i not in dropped_ids
+        and (has_content(str(w["text"])) or str(w["text"]).strip() in _VALUE_SIGNS)
+    ]
 
 
 def dollar_cross_candidates(grid: list[list[str]]) -> int:

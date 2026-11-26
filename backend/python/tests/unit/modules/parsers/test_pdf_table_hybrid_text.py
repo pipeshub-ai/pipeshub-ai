@@ -179,3 +179,13 @@ def test_whitespace_runs_collapse() -> None:
 
 def test_has_content_means_a_letter_or_a_digit() -> None:
     assert tt.has_content("x") and tt.has_content("1") and not tt.has_content("....") and not tt.has_content("$")
+
+
+
+def test_a_sign_no_cell_holds_is_lost_content() -> None:
+    from app.modules.parsers.pdf import table_hybrid_text as tt
+
+    words = [{"text": "-"}, {"text": "125"}, {"text": "+"}, {"text": "·"}]
+    # the grid holds the amount but not its sign: the row has lost what the value means
+    assert tt.unassigned_content(words, {1}, set()) == [0, 2]
+    assert tt.unassigned_content(words, {0, 1, 2}, set()) == []
