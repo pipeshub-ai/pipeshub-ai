@@ -7864,7 +7864,7 @@ class IGraphDBProvider(ABC):
     async def kh_scope_reset_syncing(self) -> None:
         """At startup, before any sync: clear marks a crash left behind."""
 
-    async def kh_scope_restamp_stale(self) -> list:
+    async def kh_scope_restamp_stale(self, org_id: str) -> list:
         return []
 
     async def check_access(

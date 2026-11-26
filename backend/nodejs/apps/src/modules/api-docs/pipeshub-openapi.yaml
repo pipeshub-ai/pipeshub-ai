@@ -30066,6 +30066,21 @@ components:
                 maxUserBytes:
                   type: integer
   responses:
+    StoreUnavailable:
+      description: >-
+        The database could not answer just now (the graph store, or the config store on a read, lost its connection,
+        timed out or is restarting); nothing is wrong with the request, and nothing was changed. Retry after
+        `Retry-After` seconds.
+        It is never sent for a connector, setting or app that really is missing, which keeps its own answer.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (5).
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
       content:
@@ -57991,6 +58006,13 @@ paths:
             server's search deadline (`SEARCH_DEADLINE_SECONDS`, 50 by default)
             and was stopped ("This search took too long, so it was stopped and
             no results are shown. ..."): try again, or narrow it with filters.
+            Also returned when the embedding model's provider is limiting
+            requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -58181,6 +58203,13 @@ paths:
 
             When the service could not check what the caller may read, the usual error envelope
             also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
+
+            Also returned when the embedding model's provider is limiting requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -59914,7 +59943,11 @@ paths:
         '403': { description: "The token lacks agent:write; an engine agent needs an org admin; or the caller may not set the agent's policy" }
         '409': { description: An engine named in the profile cannot be used in this org now }
         '422': { description: A policy section widens the org's ceilings or is set on its own page (CP_* code naming the dimension) }
-        '503': { description: The document holds policy and this deployment keeps no agent policy }
+        '503':
+          description: |-
+            The document holds policy and this deployment keeps no agent policy, or the store holding the
+            organization's toolset instance list did not answer (nothing is imported; retry after the
+            `Retry-After` seconds).
   /agents/conversations/show/archives:
     get:
       tags:
@@ -62956,7 +62989,12 @@ paths:
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: Service unavailable - Connector service is unreachable
+          description: Service unavailable - Connector service is unreachable. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -63330,6 +63368,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/active:
     get:
       tags:
@@ -63767,6 +63807,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - Connector Instances
@@ -63881,6 +63923,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/stats:
     get:
       tags:
@@ -63965,6 +64009,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/explain:
     get:
       tags:
@@ -64247,7 +64293,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached. Safe to retry.
+          description: The connector service could not be reached. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64329,6 +64380,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Connector Instances
@@ -64382,7 +64435,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The source could not be reached to check the credential. Safe to retry.
+          description: The source could not be reached to check the credential. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64411,6 +64469,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/oauth/authorize:
     parameters:
       - name: connectorId
@@ -64458,6 +64518,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users:
     get:
       tags:
@@ -64494,6 +64556,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users/{userId}:
     delete:
       tags:
@@ -64533,6 +64597,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/roster:
     get:
       tags:
@@ -64610,6 +64676,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/invites:
     post:
       tags:
@@ -64699,6 +64767,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/reminders:
     post:
       tags:
@@ -64743,6 +64813,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/info:
     post:
       tags:
@@ -64792,6 +64864,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/authorize:
     post:
       tags:
@@ -64836,6 +64910,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/complete:
     post:
       tags:
@@ -64920,6 +64996,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/filter:
     patch:
       tags:
@@ -65033,6 +65111,12 @@ paths:
             admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
             only if `filter.mode` is not already the one you want. That read needs `connector:read` for an OAuth
             client or personal access token (`connector:write` does not grant it); a session needs no scope.
+            Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -65795,6 +65879,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/resync:
     post:
       tags:
@@ -66013,6 +66099,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -66118,6 +66206,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Configuration --------------------
   /connectors/{connectorId}/config:
@@ -66201,6 +66291,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - Connector Configuration
@@ -66340,6 +66432,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/auth:
     put:
       tags:
@@ -66434,6 +66528,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/filters-sync:
     put:
       tags:
@@ -66538,6 +66634,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/toggle:
     post:
       tags:
@@ -66652,6 +66750,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -66747,6 +66847,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/oauth/callback:
     get:
       tags:
@@ -66959,6 +67061,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       deprecated: true
       x-speakeasy-deprecation-message: >-
@@ -67061,6 +67165,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
@@ -67244,6 +67350,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Service Configuration (internal) --------------------
   /connectors/getTokenFromCode:
@@ -69454,7 +69562,12 @@ paths:
             The caller asked for no `scope`, or for `org`, and is not confirmed as an administrator, but
             their role could not be confirmed either, so nothing was created (`SERVICE_UNAVAILABLE`; the
             connector service's wording is replaced with `This part of PipesHub is briefly unavailable.
-            Please try again in a few seconds.`). Asking for `personal` avoids the role check.
+            Please try again in a few seconds.`). Asking for `personal` avoids the role check. Also for an
+            organization instance when the store holding the instance list did not answer while it was read
+            or re-read for the write: the instance is not created and no other instance is changed. A new OAuth
+            configuration saved just before may remain and keeps its name, so retrying with the same inline OAuth
+            credentials answers `409` until that configuration is linked (`oauthConfigId`) or deleted; any other
+            create can be retried after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -69686,6 +69799,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so no instance was changed. New `authConfig` values saved to the OAuth
+            configuration just before may remain. When the instance had a linked OAuth configuration, a
+            retry after the `Retry-After` seconds updates it in place. When it had none, that save created
+            a new configuration that no instance links to: retry with its `oauthConfigId`, or delete it
+            first, or a retry with the same `authConfig` creates another one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -69775,6 +69900,15 @@ paths:
             The agent-usage check or the store could not be read or written.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so the instance stays, with its users' sign-ins and its rules, and no other
+            instance is changed. Safe to retry after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -77274,6 +77408,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - OAuth Configuration
@@ -77448,6 +77584,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - OAuth Configuration

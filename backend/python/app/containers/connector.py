@@ -13,6 +13,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
+from app.core.org_jobs import for_each_org
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.edition_services import bootstrap_guard
 from app.health.health import Health
@@ -211,13 +212,16 @@ async def _kh_listing_background(
 ) -> None:
     if not await _kh_graph_migrations(graph_provider, config_service, logger, kb_apps_done=kb_apps_done):
         return
-    # While the scope listing is enabled, keep every connector stamped. While it is off this only reads the flag.
+    # While the scope listing is enabled, keep every connector stamped. While it is off this only reads the flag,
+    # which is an org's own setting where orgs have their own, so it is read (and acted on) org by org.
+    async def restamp(org_id: str) -> None:
+        stamped = [r for r in await graph_provider.kh_scope_restamp_stale(org_id) if r.get("stamped")]
+        if stamped:
+            logger.info(f"Knowledge hub scopes stamped: {stamped}")
+
     while True:
         try:
-            results = await graph_provider.kh_scope_restamp_stale()
-            stamped = [r for r in results if r.get("stamped")]
-            if stamped:
-                logger.info(f"Knowledge hub scopes stamped: {stamped}")
+            await for_each_org(graph_provider, "kh_scope_keeper", restamp, logger, external=True)
         except Exception as e:
             logger.error(f"❌ Knowledge hub scope keeper failed: {e}")
         await asyncio.sleep(KH_SCOPE_KEEPER_SECONDS)
