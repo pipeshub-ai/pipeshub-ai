@@ -11,6 +11,7 @@ import {
 } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
@@ -94,7 +95,29 @@ interface SuppressedFailures {
  * errors, so throwing would drop the job instead of replaying it.
  */
 /** Every recipient list a mail can carry besides `sendEmailTo` (a link may go to no one else). */
-const MAIL_RECIPIENT_LISTS = ['sendCcTo', 'sendBccTo'] as const;
+const MAIL_RECIPIENT_LISTS = ['sendCcTo', 'sendBccTo', 'replyTo'] as const;
+
+/**
+ * The live user the link is for. A store that is briefly away is asked again (three tries over about three seconds)
+ * before the job fails, so a short outage does not lose an invite.
+ */
+async function liveUserWithRetry(orgId: string, userId: string) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await getUserRepository().getLive(orgId, userId);
+    } catch (error) {
+      if (attempt >= 3 || !isRetryableStoreError(error)) throw new LinkUserUnavailable();
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+
+/** The user store could not be read for the link: the mail is not sent, and the reason given is fixed text. */
+class LinkUserUnavailable extends Error {
+  constructor() {
+    super('the invited user could not be read to prepare the set-password link');
+  }
+}
 
 /** A job asked for a set-password link it may not have (another org, or other recipients): nothing is sent. */
 class PasswordLinkRefused extends Error {
@@ -383,6 +406,7 @@ export class MailConsumer {
   }
 
   private async withPasswordResetLink(payload: MailEventPayload): Promise<MailBody> {
+
     let target = payload.passwordResetLinkFor;
     if (!target) {
       return payload.mail;
@@ -394,29 +418,37 @@ export class MailConsumer {
     if (bound === undefined || String(target.orgId) !== bound) {
       throw new PasswordLinkRefused();
     }
-    const user = await getUserRepository().getLive(bound, String(target.userId));
+    const user = await liveUserWithRetry(bound, String(target.userId));
     const stored = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
-    const to = payload.mail.sendEmailTo ?? [];
+    const to: unknown = payload.mail.sendEmailTo;
     const onlyTheUser =
       stored !== '' &&
       !/[,;<>\s]/.test(stored) &&
+      Array.isArray(to) &&
       to.length === 1 &&
       typeof to[0] === 'string' &&
       to[0].trim().toLowerCase() === stored;
-    // No copy to anyone else: CC, or any other recipient list a mail may carry.
+    // No copy to anyone else, in whatever form a job gives it (a list, or a bare string the transport would also take).
     const otherRecipients = MAIL_RECIPIENT_LISTS.some((field) => {
       const value = (payload.mail as unknown as Record<string, unknown>)[field];
-      return Array.isArray(value) && value.length > 0;
+      return !(value === undefined || value === null || (Array.isArray(value) && value.length === 0));
     });
     if (!onlyTheUser || otherRecipients) {
       throw new PasswordLinkRefused();
     }
     target = { ...target, email: stored };
+    // The mail that carries the link is rebuilt to reach the stored address alone, whatever else the job carried.
+    const linkMail: MailBody = {
+      ...payload.mail,
+      sendEmailTo: [stored],
+      sendCcTo: undefined,
+      replyTo: undefined,
+    };
     const config = this.getAppConfig();
     return {
-      ...payload.mail,
+      ...linkMail,
       templateData: {
-        ...payload.mail.templateData,
+        ...linkMail.templateData,
         link: newAccountPasswordLink(
           config.frontendUrl,
           target.email,

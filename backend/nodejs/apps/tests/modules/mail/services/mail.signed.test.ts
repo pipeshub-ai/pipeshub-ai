@@ -13,6 +13,7 @@ import {
 } from '../../../../src/libs/context/envelope';
 import { BrokerTopic } from '../../../../src/libs/types/messaging.types';
 import { setUserRepository } from '../../../../src/libs/repositories/user';
+import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 
 // A queued mail (an invite, an alert) must reach a consumer that enforces the signed envelope: with ENVELOPE_SIGN on it
 // was published in a shape that cannot be signed, and the consumer dropped it as a stripped message.
@@ -47,15 +48,14 @@ describe('mail/services/mail.signed', () => {
   };
 
   /** The real MailConsumer, behind the envelope check the Redis Streams consumer runs. */
-  const consume = async (messages: Array<Record<string, unknown>>) => {
-    setUserRepository({
-      getLive: async (o: string, id: string) => (usersByOrg[o]?.[id] ? { _id: id, orgId: o, email: usersByOrg[o][id] } : null),
-    } as never);
-    const sent: Array<{ to: string; org?: string }> = [];
+  let getLive: (o: string, id: string) => Promise<unknown>;
+  const consume = async (messages: Array<Record<string, unknown>>, notified: string[] = []) => {
+    setUserRepository({ getLive: (o: string, id: string) => getLive(o, id) } as never);
+    const sent: Array<{ to: string; org?: string; cc?: unknown; replyTo?: unknown }> = [];
     const sender = {
       getSmtpConfig: sinon.stub().returns({ host: 'mailpit', port: 1025, fromEmail: 'no-reply@example.com' }),
       send: sinon.stub().callsFake(async (mail: any) => {
-        sent.push({ to: mail.sendEmailTo[0], org: getCurrentOrgId() });
+        sent.push({ to: mail.sendEmailTo[0], org: getCurrentOrgId(), ...(mail.sendCcTo !== undefined ? { cc: mail.sendCcTo } : {}), ...(mail.replyTo !== undefined ? { replyTo: mail.replyTo } : {}) });
         return { status: 'sent' };
       }),
     };
@@ -65,7 +65,7 @@ describe('mail/services/mail.signed', () => {
       mailBroker as never,
       logger,
       sender as never,
-      { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() } as never,
+      { start: sinon.stub().resolves(), publishEvent: sinon.stub().callsFake(async (e: any) => { notified.push(JSON.stringify(e)); }) } as never,
       () => ({ frontendUrl: 'http://app.test', scopedJwtSecret: 's' }) as never,
     );
     await consumer.consume(async () => {});
@@ -81,6 +81,8 @@ describe('mail/services/mail.signed', () => {
   };
 
   beforeEach(() => {
+    getLive = async (o: string, id: string) =>
+      usersByOrg[o]?.[id] ? { _id: id, orgId: o, email: usersByOrg[o][id] } : null;
     savedSign = process.env.ENVELOPE_SIGN;
     wire.length = 0;
   });
@@ -252,6 +254,61 @@ describe('mail/services/mail.signed', () => {
       const { sent } = await consume([ghost]);
 
       expect(sent).to.deep.equal([]);
+    });
+
+    it('gets no link by CC or reply-to in any form (a bare string too)', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const withExtra = (extra: Record<string, unknown>) => ({
+        mail: { emailTemplateType: 'appuserInvite', sendEmailTo: ['victim@b.example'], subject: 'x', templateData: {}, ...extra },
+        orgId: victimB.orgId,
+        passwordResetLinkFor: victimB,
+      });
+
+      const { sent } = await consume([
+        withExtra({ sendCcTo: 'attacker@evil.example' }),
+        withExtra({ sendBccTo: 'attacker@evil.example' }),
+        withExtra({ replyTo: 'attacker@evil.example' }),
+        withExtra({ sendEmailTo: 'victim@b.example' }),
+      ]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
+    it('a store briefly away is asked again, and the invite still goes out with its link', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      let calls = 0;
+      const real = getLive;
+      getLive = async (o, id) => {
+        calls += 1;
+        if (calls === 1) throw new DocStoreReadOnlyError();
+        return real(o, id);
+      };
+      const invite = {
+        ...job(),
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'new.person@example.com' },
+      };
+
+      const { sent } = await consume([invite]);
+
+      expect(calls).to.equal(2);
+      expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
+    });
+
+    it('a store that stays away sends nothing, and the admins are told in fixed words (no store error text)', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      getLive = async () => {
+        throw new Error('connection to db-host-7:5432 refused: password authentication failed');
+      };
+      const invite = {
+        ...job(),
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'new.person@example.com' },
+      };
+      const notified: string[] = [];
+
+      const { sent } = await consume([invite], notified);
+
+      expect(sent).to.deep.equal([]);
+      expect(notified.join(' ')).to.not.include('db-host-7');
     });
 
     it('a genuine invite still gets its set-password link', async () => {
