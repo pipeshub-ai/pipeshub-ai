@@ -1,0 +1,80 @@
+# Linear simulator for the linear_sim suite (integration-tests/connectors/linear/linear_sim_*_test.py). An override, used
+# after the stack's own file:
+#
+#   deployment/docker-compose/sim-tls/make-certs.sh "$SIM_TLS_DIR"
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.linear-sim.yml up -d
+#
+# The connector calls fixed hosts over HTTPS: https://api.linear.app (GraphQL, OAuth token), https://linear.app (the
+# authorize page) and https://uploads.linear.app (files). Nothing in the product moves them. So linear-tls takes the
+# three names as network aliases and answers them with a certificate from a CA made for the run, and pipeshub-ai trusts
+# that CA through SSL_CERT_FILE (httpx and OpenSSL, so aiohttp, both read it). The test process drives the simulator's
+# control API on the published port (integration-tests/connectors/linear_sim.env).
+#
+# Fail closed: without the aliases the names resolve to the real Linear. linear-guard sits on the stack's network and is
+# healthy only while the names resolve to linear-tls's own address there, and pipeshub-ai starts only after it is. The
+# suite checks it again inside the pipeshub-ai container before any sync (integration-tests/connectors/linear/
+# sim_world.py, `linear_front`). Never stop or recreate linear-tls while a connector syncs. Every call to these names
+# from this stack goes to the simulator, so no suite that needs the real Linear can run on it. nginx resolves linear-sim
+# once, when it starts: restart linear-tls after recreating linear-sim.
+services:
+  linear-sim:
+    image: ${LINEAR_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["linear"]
+    environment:
+      CONNSIM_SOURCES: linear
+      # The workspace lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # 8114, the simulator's own port.
+    ports:
+      - "127.0.0.1:8114:80"
+    mem_limit: 512m
+
+  linear-tls:
+    image: nginx:1.27.5-alpine
+    restart: always
+    depends_on:
+      linear-sim:
+        condition: service_healthy
+    volumes:
+      - ./linear-sim/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${SIM_TLS_DIR:?run sim-tls/make-certs.sh and set SIM_TLS_DIR}/tls.pem:/etc/nginx/tls/tls.pem:ro
+      - ${SIM_TLS_DIR}/tls.key:/etc/nginx/tls/tls.key:ro
+    networks:
+      default:
+        aliases:
+          - api.linear.app
+          - linear.app
+          - uploads.linear.app
+    mem_limit: 128m
+
+  # Healthy only while the three names resolve, on this network, to the TLS front and to nothing else.
+  linear-guard:
+    image: nginx:1.27.5-alpine
+    restart: always
+    depends_on:
+      linear-tls:
+        condition: service_started
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          front=$$(getent hosts linear-tls | cut -d' ' -f1) && [ -n "$$front" ] &&
+          [ "$$(getent hosts api.linear.app | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts linear.app | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts uploads.linear.app | cut -d' ' -f1)" = "$$front" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    mem_limit: 32m
+
+  pipeshub-ai:
+    environment:
+      - SSL_CERT_FILE=/etc/pipeshub-it/ca-bundle.pem
+    volumes:
+      - ${SIM_TLS_DIR}/ca-bundle.pem:/etc/pipeshub-it/ca-bundle.pem:ro
+    depends_on:
+      linear-guard:
+        condition: service_healthy

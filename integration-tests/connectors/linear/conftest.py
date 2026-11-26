@@ -55,6 +55,13 @@ from connectors.linear.linear_test_utils import (  # type: ignore[import-not-fou
     sweep_stale_linear_artifacts,
 )
 
+from connectors.linear.sim_world import (  # noqa: F401 - fixtures of the linear_sim suite (LINEAR_SIM_ITS.md)
+    linear_front,
+    linear_sim,
+    linear_sim_people,
+    linear_world,
+)
+
 logger = logging.getLogger("linear-conftest")
 
 
