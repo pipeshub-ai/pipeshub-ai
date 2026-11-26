@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.services.graph_db.postgres.base import _pgbool
+from app.services.graph_db.postgres.kg.reader import seeks
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -274,6 +275,38 @@ async def below_seed(tx: Tx, org: str, ids: list[str], colls: list[str], appids:
 
 
 
+# The children of the frontier over hierarchy edges, with what the hop needs of each. Every read is a seek on a key, under kg.reader.seeks, so no plan depends
+# on statistics: as joins, on a leaf whose statistics put the org at a row (its rows written after the last analyse), the planner read the org's nodes and
+# scanned the parent's edges once per node, then the org's inherit edges once per child (seconds for a few thousand children, past the statement timeout
+# for more). The children by parent in byte order (edges_by_neighbour_out, as kg.dependents reads them), each child by its primary key, its inherit edge
+# to that parent by the primary key with the child as a range of one value (as hierarchy.py spells a key).
+# ``open``: nothing to test on the child but that it is live.
+CHILDREN_OPEN = """/* pipeshub:graph.access_children_open */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model, n.doc->>'connectorId' AS cid
+    FROM unnest($2::text[], $3::text[]) AS k(c, i) CROSS JOIN LATERAL (
+      SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = k.c
+        AND e.from_id COLLATE "C" = k.i COLLATE "C" AND e.doc->>'relationshipType' = ANY($4::text[])
+      ORDER BY e.from_coll, e.from_id COLLATE "C", e.to_coll COLLATE "C", e.to_id COLLATE "C" OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id OFFSET 0) n
+    WHERE NOT coalesce((n.doc->>'isDeleted')::boolean, false)"""
+# The hop rule of ``$5`` on the child's rule, whether it inherits from this parent and whether it is granted (``$6``), so a child the walk cannot take is
+# never read back.
+CHILDREN = """/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model, n.doc->>'connectorId' AS cid
+    FROM unnest($2::text[], $3::text[]) AS k(c, i) CROSS JOIN LATERAL (
+      SELECT e.from_coll, e.from_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = k.c
+        AND e.from_id COLLATE "C" = k.i COLLATE "C" AND e.doc->>'relationshipType' = ANY($4::text[])
+      ORDER BY e.from_coll, e.from_id COLLATE "C", e.to_coll COLLATE "C", e.to_id COLLATE "C" OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id OFFSET 0) n
+    LEFT JOIN LATERAL (SELECT 1 AS hit FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_id >= e.to_id AND i.from_id <= e.to_id
+      AND i.from_coll = e.to_coll AND i.to_coll = e.from_coll AND i.to_id = e.from_id ORDER BY i.from_id LIMIT 1) i ON true
+    WHERE NOT coalesce((n.doc->>'isDeleted')::boolean, false)
+      AND CASE $5 WHEN 'app' THEN (i.hit IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
+                    OR (n.id = ANY($6::text[]) AND ((i.hit IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
+                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
+                  WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.hit IS NOT NULL OR n.id = ANY($6::text[])))
+                    OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.hit IS NOT NULL AND n.id = ANY($6::text[]))
+                  ELSE e.to_coll = 'recordGroups' END"""
+
+
 async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list[str], app_id: str = "") -> set[Node]:
     """The nodes below ``starts`` over hierarchy edges, a level at a time (``MAX_HOPS``, as the walks up). The statement holds the whole hop rule of
     ``mode`` (the child's rule, whether it inherits from its parent, whether it is granted), so a child the walk cannot take is never read back:
@@ -285,29 +318,14 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
     for _ in range(MAX_HOPS):
         if not frontier:
             break
-        ids = [i for _, i in frontier]
         found: list[tuple[Node, Node, str | None, str | None]] = []
-        for k in range(0, len(ids), _CHUNK):
-            if mode == "open":      # nothing to test on the child, so no join to its inherit edge (without statistics that join is planned by the parent, a scan per child)
-                rows = await tx.fetch("""/* pipeshub:graph.access_children_open */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
-                      n.doc->>'connectorId' AS cid
-                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
-                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($4::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-                      AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)""", org, ids[k:k + _CHUNK], _HIER_TYPES, sorted({c for c, _ in frontier}))
-            else:
-                rows = await tx.fetch("""/* pipeshub:graph.access_children */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, n.doc->>'permissionModel' AS model,
-                      n.doc->>'connectorId' AS cid
-                    FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = e.to_coll AND n.id = e.to_id
-                    LEFT JOIN graph.edges i ON i.org_id = e.org_id AND i.coll = 'inheritPermissions' AND i.from_coll = e.to_coll AND i.from_id = e.to_id
-                      AND i.to_coll = e.from_coll AND i.to_id = e.from_id
-                    WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_coll = ANY($6::text[]) AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-                      AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
-                      AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN'))
-                                    OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
-                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
-                                  WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[])))
-                                    OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.from_id IS NOT NULL AND n.id = ANY($5::text[]))
-                                  ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))
+        for k in range(0, len(frontier), _CHUNK):
+            pairs = frontier[k:k + _CHUNK]
+            async with seeks(tx):
+                if mode == "open":
+                    rows = await tx.fetch(CHILDREN_OPEN, org, [c for c, _ in pairs], [i for _, i in pairs], _HIER_TYPES)
+                else:
+                    rows = await tx.fetch(CHILDREN, org, [c for c, _ in pairs], [i for _, i in pairs], _HIER_TYPES, mode, granted_l)
             found += [((r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"]), r["model"], r["cid"]) for r in rows]
         frontier = []
         for p, c, model, cid in found:
