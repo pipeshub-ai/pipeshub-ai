@@ -18,6 +18,9 @@ def _lenient_list(value: object) -> object:
 # `builders._parse_*` have always read anything but a list as empty.
 LenientList = Annotated[list[Any], BeforeValidator(_lenient_list)]
 
+# An optional text field the caller sends as null takes its default, as one left out does (OSS #6202).
+OptionalText = Annotated[str, BeforeValidator(lambda value: "" if value is None else value)]
+
 
 class AgentActor(BaseModel):
     """The authenticated caller. `user_key` is the graph key of the user
@@ -46,10 +49,10 @@ class AgentSpec(_Camel):
     `builders._parse_*` normalise and drop malformed entries."""
 
     name: str
-    description: str = ""
-    start_message: str = ""
-    system_prompt: str = ""
-    instructions: str = ""
+    description: OptionalText = ""
+    start_message: OptionalText = ""
+    system_prompt: OptionalText = ""
+    instructions: OptionalText = ""
     models: LenientList = Field(default_factory=list)
     tags: list[Any] | None = None
     default_reasoning_effort: Any = None

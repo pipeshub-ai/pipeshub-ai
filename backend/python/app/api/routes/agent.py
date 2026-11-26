@@ -72,6 +72,7 @@ from app.api.middlewares.auth import (
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
+    add_request_log_fields,
     bind_request_log_fields,
     mark_request_failure,
     path_log_fields,
@@ -209,6 +210,7 @@ from app.modules.agents.service.builders import (  # noqa: F401 - moved; re-expo
     _bind_mcp_attachments_to_instances,
     _checked_api_toolset_tools,
     _checked_service_account_binding,
+    _cleanup_failed,
     _create_knowledge_edges,
     _create_mcp_server_edges,
     _create_skill_edges,
@@ -231,7 +233,9 @@ from app.modules.agents.service.builders import (  # noqa: F401 - moved; re-expo
     _remove_mcp_servers,
     _resolve_mcp_attachments,
     _resolve_service_account_binding,
+    _rollback_failed,
     _toolset_attachments_unreadable,
+    _validate_required_fields,
     sa_forces_org_sharing,
 )
 from app.modules.agents.service.errors import (
@@ -852,6 +856,8 @@ def _agent_service(
             else lambda **kwargs: _only_an_administrator_may_bind(request, services["config_service"], **kwargs)
         ),
         hooks=hooks,
+        bind_log_fields=None if request is None else lambda **fields: bind_request_log_fields(request, **fields),
+        add_log_fields=None if request is None else lambda **fields: add_request_log_fields(request, **fields),
     )
 
 
@@ -883,19 +889,6 @@ async def _administers_for_a_tool_edit(request: Request, services: dict[str, Any
         _log.warning("agent.update: the caller's role could not be read: %s", type(e).__name__)
         return False
     return role.status is CallerRoleStatus.VALID and role.is_admin
-
-
-def _validate_required_fields(
-    data: dict[str, Any], required_fields: list[str], optional_fields: tuple[str, ...] = (),
-) -> None:
-    """The caller's text fields: each required one a non-blank string, each optional one a string or None. A value of
-    another type is the caller's mistake (a 400), not a failure while the document is built."""
-    for field in (*required_fields, *optional_fields):
-        if data.get(field) is not None and not isinstance(data[field], str):
-            raise InvalidRequestError(f"'{field}' must be text")
-    for field in required_fields:
-        if not data.get(field) or not data[field].strip():
-            raise InvalidRequestError(f"'{field}' is required")
 
 
 async def _agent_engine_settings(
@@ -1175,14 +1168,6 @@ async def _refuse_unapproved_mcp_tools(services: dict[str, Any], mcp_servers_wit
                 "tools": refused,
             },
         )
-def _rollback_failed(logger: Logger, exc: BaseException) -> None:
-    """Rolling back a failed save failed too; the save's own failure is the request's line."""
-    error_class.log_failure(logger, "agent.route.failed", exc, op="rollback", include_error_text=False)
-
-
-def _cleanup_failed(logger: Logger, exc: BaseException, **fields: object) -> None:
-    """A best-effort tidy-up after a failed save failed too; the save's own failure is the request's line."""
-    error_class.log_failure(logger, "agent.route.failed", exc, op="cleanup", include_error_text=False, **fields)
 
 
 def _stored_default_effort(llm_config: dict[str, Any], model_key: str, logger: Logger) -> dict[str, str]:

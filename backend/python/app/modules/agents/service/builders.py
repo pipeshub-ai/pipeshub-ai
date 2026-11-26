@@ -30,9 +30,9 @@ from app.modules.agents.knowledge_scope import (
 from app.modules.agents.service.errors import AgentError, InvalidRequestError
 from app.modules.retrieval.selection_scope import max_selection_nodes
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils import error_class
 from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import action_failed
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
 
 if TYPE_CHECKING:
@@ -51,6 +51,29 @@ def sa_forces_org_sharing() -> bool:
     from app import edition_services
 
     return edition_services.sa_forces_org_sharing()
+
+
+def _validate_required_fields(
+    data: dict[str, Any], required_fields: list[str], optional_fields: tuple[str, ...] = (),
+) -> None:
+    """The caller's text fields: each required one a non-blank string, each optional one a string or None. A value of
+    another type is the caller's mistake (a 400), not a failure while the document is built."""
+    for field in (*required_fields, *optional_fields):
+        if data.get(field) is not None and not isinstance(data[field], str):
+            raise InvalidRequestError(f"'{field}' must be text")
+    for field in required_fields:
+        if not data.get(field) or not data[field].strip():
+            raise InvalidRequestError(f"'{field}' is required")
+
+
+def _rollback_failed(logger: Logger, exc: BaseException) -> None:
+    """Rolling back a failed save failed too; the save's own failure is the request's line."""
+    error_class.log_failure(logger, "agent.route.failed", exc, op="rollback", include_error_text=False)
+
+
+def _cleanup_failed(logger: Logger, exc: BaseException, **fields: object) -> None:
+    """A best-effort tidy-up after a failed save failed too; the save's own failure is the request's line."""
+    error_class.log_failure(logger, "agent.route.failed", exc, op="cleanup", include_error_text=False, **fields)
 
 
 def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], bool]:
@@ -158,7 +181,8 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(toolset_data, dict):
             continue
 
-        toolset_name = toolset_data.get("name", "").lower().strip()
+        _validate_required_fields(toolset_data, [], ("name",))
+        toolset_name = (toolset_data.get("name") or "").lower().strip()
         if not toolset_name:
             continue
 
@@ -208,7 +232,8 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
         if not isinstance(knowledge_data, dict):
             continue
 
-        connector_id = knowledge_data.get("connectorId", "").strip()
+        _validate_required_fields(knowledge_data, [], ("connectorId",))
+        connector_id = (knowledge_data.get("connectorId") or "").strip()
         if not connector_id:
             continue
 
@@ -254,9 +279,9 @@ async def _refuse_limit_over_the_cap(
         nodes = await graph_provider.get_selection_nodes(
             org_id, group_ids=group_ids, record_ids=record_ids, exact_record_ids=[], limit=cap,
         )
-    except Exception:
+    except Exception as e:
         # The same cap is applied on every turn; a failed count must not block a save.
-        logger.warning("Could not size the knowledge limit of an agent in org %s", org_id, exc_info=True)
+        error_class.log_failure(logger, "agent.route.failed", e, op="size_knowledge_limit", include_error_text=False)
         return
     if len(nodes["groups"]) + len(nodes["records"]) > cap:
         raise InvalidRequestError(
@@ -333,15 +358,11 @@ async def _create_toolset_edges(
         }
 
     # Batch create all toolset nodes
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction
-        )
-        if not result:
-            return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
-    except Exception as e:
-        logger.error(f"Failed to batch create toolset nodes: {e}")
-        return created_toolsets, [{"name": "all", "error": action_failed("add these tools to the agent")}]
+    result = await graph_provider.batch_upsert_nodes(
+        toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction
+    )
+    if not result:
+        return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
 
     # Prepare all tool nodes and edges
     tool_nodes = []
@@ -389,27 +410,19 @@ async def _create_toolset_edges(
     # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
     # silently even when the referenced node was never created.
     if tool_nodes:
-        try:
-            result = await graph_provider.batch_upsert_nodes(
-                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to create tool nodes")
-        except Exception as e:
-            logger.error(f"Failed to batch create tool nodes: {e}")
-            raise
+        result = await graph_provider.batch_upsert_nodes(
+            tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to create tool nodes")
 
     # Batch create toolset -> tool edges. Re-raise for the same reason as above.
     if toolset_tool_edges:
-        try:
-            result = await graph_provider.batch_create_edges(
-                toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to link tools to their toolsets")
-        except Exception as e:
-            logger.error(f"Failed to create toolset-tool edges: {e}")
-            raise
+        result = await graph_provider.batch_create_edges(
+            toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to link tools to their toolsets")
 
     agent_toolset_edges = [
         {
@@ -423,15 +436,11 @@ async def _create_toolset_edges(
 
     # Batch create agent -> toolset edges. Re-raise — mirrors `_create_mcp_server_edges`,
     # since every caller already wraps this in a transaction rollback or an HTTPException.
-    try:
-        result = await graph_provider.batch_create_edges(
-            agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to link toolsets to the agent")
-    except Exception as e:
-        logger.error(f"Failed to create agent-toolset edges: {e}")
-        raise
+    result = await graph_provider.batch_create_edges(
+        agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to link toolsets to the agent")
 
     # Build response with created toolsets and tools
     for toolset_info in toolset_mapping.values():
@@ -786,7 +795,7 @@ async def _remove_mcp_servers(
             try:
                 await graph_provider.delete_all_edges_for_node(server_id, edge_collection)
             except Exception as cleanup_error:
-                logger.error(f"Failed to unlink MCP server node {key}: {cleanup_error}")
+                _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     for keys, collection in (
         (tool_keys, CollectionNames.AGENT_TOOLS.value), (server_keys, CollectionNames.AGENT_MCP_SERVERS.value),
     ):
@@ -795,7 +804,7 @@ async def _remove_mcp_servers(
         try:
             await graph_provider.delete_nodes(keys, collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove {collection} nodes {keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=collection, nodes=len(keys))
 
 
 async def _create_mcp_server_edges(
@@ -817,8 +826,9 @@ async def _create_mcp_server_edges(
     MCP server nodes never carry credentials — auth is resolved at chat time
     from `/services/mcp/credentials/{instanceId}/{ownerId}` (etcd), same as
     the attach-time Node/Python validation that already rejects secrets here.
-    A failed node write is returned as a failure unless `raise_on_failure`,
-    which a caller running this in its own transaction needs: on Neo4j a failed
+    A node write the store refuses (answers False) is returned as a failure unless
+    `raise_on_failure`; one that raises always propagates. A caller running this in its
+    own transaction needs `raise_on_failure`: on Neo4j a failed
     statement has already doomed that transaction, and a deadlock must reach
     the retry helper as itself.
 
@@ -871,19 +881,13 @@ async def _create_mcp_server_edges(
         }
 
     # Batch create all MCP server nodes
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
-        )
-        if not result:
-            if raise_on_failure:
-                ensure_written(result, "the agent's MCP servers")
-            return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
-    except Exception as e:
-        logger.error(f"Failed to batch create MCP server nodes: {e}")
+    result = await graph_provider.batch_upsert_nodes(
+        mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
+    )
+    if not result:
         if raise_on_failure:
-            raise
-        return created_mcp_servers, [{"name": "all", "error": action_failed("add these MCP servers to the agent")}]
+            ensure_written(result, "the agent's MCP servers")
+        return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
 
     # Prepare all tool nodes and edges (tools live in the shared AGENT_TOOLS
     # collection, same as toolset tools)
@@ -931,26 +935,18 @@ async def _create_mcp_server_edges(
     # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
     # silently even when the referenced node was never created.
     if tool_nodes:
-        try:
-            result = await graph_provider.batch_upsert_nodes(
-                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to create MCP tool nodes")
-        except Exception as e:
-            logger.error(f"Failed to batch create MCP tool nodes: {e}")
-            raise
+        result = await graph_provider.batch_upsert_nodes(
+            tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to create MCP tool nodes")
 
     # Batch create mcpServer -> tool edges. Re-raise: a swallowed failure here leaves tools
     # listed in the response with no MCP_SERVER_HAS_TOOL edge actually connecting them.
     if mcp_server_tool_edges:
-        try:
-            ensure_written(await graph_provider.batch_create_edges(
-                mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
-            ), "the MCP servers' tool links")
-        except Exception as e:
-            logger.error(f"Failed to create mcpServer-tool edges: {e}")
-            raise
+        ensure_written(await graph_provider.batch_create_edges(
+            mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
+        ), "the MCP servers' tool links")
 
     agent_mcp_server_edges = [
         {
@@ -964,13 +960,9 @@ async def _create_mcp_server_edges(
 
     # Batch create agent -> mcpServer edges, last. Re-raise: every caller turns it into a
     # failed save, and swallowing it would report "success" with servers never linked.
-    try:
-        ensure_written(await graph_provider.batch_create_edges(
-            agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
-        ), "the agent's MCP server links")
-    except Exception as e:
-        logger.error(f"Failed to create agent-mcpServer edges: {e}")
-        raise
+    ensure_written(await graph_provider.batch_create_edges(
+        agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
+    ), "the agent's MCP server links")
 
     # Build response with created MCP servers and tools
     for mcp_info in mcp_server_mapping.values():
@@ -1010,7 +1002,7 @@ async def _unlink_failed_mcp_servers(
     try:
         edges = await graph_provider.get_edges_from_node_with_target_name(agent_full_id, agent_link, raise_on_error=True)
     except Exception as read_error:
-        logger.error(f"Could not read the MCP servers of {agent_full_id} after one failed to attach: {read_error}")
+        _cleanup_failed(logger, read_error, collection=agent_link)
         return False
     leftover = [e["_to"] for e in edges or [] if e.get("_to") and e["_to"] not in accounted]
     accounted.update(leftover)
@@ -1018,7 +1010,7 @@ async def _unlink_failed_mcp_servers(
         try:
             await graph_provider.delete_all_edges_for_node(server_id, agent_link)
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink MCP server {server_id} from {agent_full_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=agent_link)
             return False
         # Unlinked, the server and its tools are never read again, so this is tidy-up only.
         try:
@@ -1032,7 +1024,7 @@ async def _unlink_failed_mcp_servers(
                 await graph_provider.delete_nodes(tool_keys, CollectionNames.AGENT_TOOLS.value)
             await graph_provider.delete_nodes([server_id.split("/", 1)[1]], CollectionNames.AGENT_MCP_SERVERS.value)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove unlinked MCP server {server_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_MCP_SERVERS.value)
     return True
 
 
@@ -1071,7 +1063,9 @@ async def _attach_mcp_servers_to_new_agent(
                 attach, {instance_id: mcp_data}, server_keys, tool_keys, explicit=True,
             )
         except Exception as e:
-            logger.error(f"Agent {agent_key} was created without MCP server '{mcp_data['name']}': {e}", exc_info=True)
+            error_class.log_failure(
+                logger, "agent.route.failed", e, op="attach_mcp_server", include_error_text=False, mcp_server_id=instance_id,
+            )
             name = mcp_data["displayName"]
             if await _unlink_failed_mcp_servers(agent_full_id, accounted, graph_provider, logger):
                 # The agent is linked last, so a failed try leaves nodes linked to nothing; without
@@ -1143,15 +1137,11 @@ async def _create_knowledge_edges(
 
     # Raise, as the toolset and MCP helpers do: returning quietly reported success
     # for an agent whose previous knowledge update_agent had just removed.
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to create knowledge nodes")
-    except Exception as e:
-        logger.error(f"Failed to batch create knowledge nodes: {e}")
-        raise
+    result = await graph_provider.batch_upsert_nodes(
+        knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to create knowledge nodes")
 
     # Prepare agent -> knowledge edges
     agent_knowledge_edges = [
@@ -1165,15 +1155,11 @@ async def _create_knowledge_edges(
     ]
 
     # Batch create agent -> knowledge edges
-    try:
-        result = await graph_provider.batch_create_edges(
-            agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to link knowledge to the agent")
-    except Exception as e:
-        logger.error(f"Failed to create agent-knowledge edges: {e}")
-        raise
+    result = await graph_provider.batch_create_edges(
+        agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to link knowledge to the agent")
 
     # Build response
     created_knowledge.extend(
@@ -1196,11 +1182,11 @@ async def _remove_knowledge_nodes(keys: list[str], graph_provider: IGraphDBProvi
                 f"{CollectionNames.AGENT_KNOWLEDGE.value}/{key}", CollectionNames.AGENT_HAS_KNOWLEDGE.value,
             )
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink knowledge node {key}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_HAS_KNOWLEDGE.value)
     try:
         await graph_provider.delete_nodes(keys, CollectionNames.AGENT_KNOWLEDGE.value)
     except Exception as cleanup_error:
-        logger.error(f"Failed to remove knowledge nodes {keys}: {cleanup_error}")
+        _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_KNOWLEDGE.value, nodes=len(keys))
 
 
 async def _finish_unlinking_old(
@@ -1224,7 +1210,7 @@ async def _finish_unlinking_old(
     try:
         edges = await graph_provider.get_edges_from_node(agent_full_id, edge_collection)
     except Exception as read_error:
-        logger.error(f"Could not read the {edge_collection} links of {agent_full_id} after a failed save: {read_error}")
+        _cleanup_failed(logger, read_error, collection=edge_collection)
         return False
     linked = {edge.get("_to") for edge in edges or []}
     remaining_old = [old_id for old_id in old_ids if old_id in linked]
@@ -1238,7 +1224,7 @@ async def _finish_unlinking_old(
         try:
             await graph_provider.delete_all_edges_for_node(old_id, edge_collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink {old_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     return True
 
 
@@ -1253,14 +1239,14 @@ async def _remove_toolsets(
             try:
                 await graph_provider.delete_all_edges_for_node(toolset_id, edge_collection)
             except Exception as cleanup_error:
-                logger.error(f"Failed to unlink toolset {key}: {cleanup_error}")
+                _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     for keys, collection in ((tool_keys, CollectionNames.AGENT_TOOLS.value), (toolset_keys, CollectionNames.AGENT_TOOLSETS.value)):
         if not keys:
             continue
         try:
             await graph_provider.delete_nodes(keys, collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove {collection} nodes {keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=collection, nodes=len(keys))
 
 
 async def _finish_removing_old_knowledge(
@@ -1285,7 +1271,7 @@ async def _finish_removing_old_knowledge(
         try:
             await graph_provider.delete_nodes(old_keys, CollectionNames.AGENT_KNOWLEDGE.value)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove old knowledge nodes {old_keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_KNOWLEDGE.value, nodes=len(old_keys))
 
 
 def _parse_skills(raw_skills: list[Any]) -> list[str]:
@@ -1350,7 +1336,7 @@ async def _create_skill_edges(
         skill_key = f"{org_id}_{name}"
         skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
         if not skill_doc or skill_doc.get("orgId") != org_id:
-            logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="unknown", skill=name)
             continue
         if not skill_visible_to(skill_doc, user_key):
             log_event(logger, "agent.skill.skipped", reason="not_owned", skill=name)
@@ -1360,7 +1346,7 @@ async def _create_skill_edges(
             # `SkillsApi.listAssignableSkills`) — closes the gap where a
             # direct API call could still newly assign a disabled or
             # deprecated skill the UI never offers.
-            logger.warning(f"Skipping non-active skill '{name}' for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="inactive", skill=name)
             continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
@@ -1599,6 +1585,7 @@ async def _assert_service_account_knowledge(
     try:
         apps = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True, app_ids=ids)
     except Exception as e:
+        error_class.mark_error(e, hide_text=True)  # the store's text can quote what was sent
         raise AgentError(
             "This agent's knowledge couldn't be checked, so it can't be saved right now. Please try again in a moment.",
             status_code=503,
