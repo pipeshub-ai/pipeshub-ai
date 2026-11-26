@@ -1765,3 +1765,16 @@ def test_padding_never_brings_two_ruled_tables_within_the_merge_distance(gap: fl
     assert max(rb[1] - ra[3], rb[0] - ra[2]) > ola._PROXIMITY_MERGE_GAP
     regions = [LayoutRegion(type=LayoutRegionType.TABLE, bbox=r, text="t", table_grid=[["a", "b"], ["c", "d"]]) for r in (ra, rb)]
     assert len(ola._resolve_overlaps(regions)) == 2
+
+
+def test_a_targeted_read_that_cannot_read_its_words_gives_no_grid() -> None:
+    from unittest.mock import MagicMock
+
+    table = MagicMock()
+    table.extract.return_value = [["left", "right"], ["a", "b"]]
+    region = MagicMock()
+    region.extract_words.side_effect = RuntimeError("unreadable")
+    # targeted: the unrestricted grid would hold text outside the target, so there is none
+    assert ola._table_grid_and_band(table, region, (0.0, 0.0, 10.0, 10.0)) == ([], [])
+    # untargeted: the character-level grid stays the fallback
+    assert ola._table_grid_and_band(table, region) == ([], [["left", "right"], ["a", "b"]])

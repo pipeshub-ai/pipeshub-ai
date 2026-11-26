@@ -3149,7 +3149,9 @@ def _table_grid_and_band(
                 )
             ]
     except Exception:
-        return [], table.extract()
+        # A targeted read cannot be limited to its target without the words: no grid, so the caller tries
+        # its next strategy instead of taking text from outside the target.
+        return [], ([] if within is not None else table.extract())
 
     rows = list(table.rows)
     buckets = [[[] for _ in row.cells] for row in rows]
