@@ -86,25 +86,27 @@ def repair_cuts(cuts: Sequence[float], body: list[Line], lo: float, hi: float) -
     if not body:
         return list(cuts)
     chans = proj_cuts(body, channels=True, strict=True)
-    out: list[float] = []
-    for i, c in enumerate(cuts):
-        bad = False
+
+    def clean(c: float) -> bool:
         for ln in body:
             ws = ln["w"]
             if any(float(w["x0"]) < c - 0.5 and float(w["x1"]) > c + 0.5 for w in ws):
-                bad = True
-                break
+                return False
             left = [w for w in ws if float(w["x1"]) <= c + 0.5]
             right = [w for w in ws if float(w["x0"]) >= c - 0.5]
             if left and right and float(right[0]["x0"]) - float(left[-1]["x1"]) < CUT_GAP_NARROW * ln["h"]:
-                bad = True
-                break
-        if not bad:
+                return False
+        return True
+
+    out: list[float] = []
+    for i, c in enumerate(cuts):
+        if clean(c):
             out.append(c)
             continue
         a = out[-1] if out else lo
         b = cuts[i + 1] if i + 1 < len(cuts) else hi
-        opts = [m for m, _, _ in chans if a < m < b]
+        # a replacement passes the same check as the cut it replaces
+        opts = [m for m, _, _ in chans if a < m < b and clean(m)]
         if not opts:
             return None
         out.append(min(opts, key=lambda m: abs(m - c)))

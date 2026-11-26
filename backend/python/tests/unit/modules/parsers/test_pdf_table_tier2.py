@@ -185,3 +185,16 @@ def test_a_header_with_no_rule_above_it_does_not_swallow_the_first_body_row(monk
         assert g[0][0].startswith("Quantity") and g[1][0] == "R0" and g[2][0] == "R1", g
     finally:
         pdf.close()
+
+
+def test_a_repaired_cut_passes_the_same_gap_check_as_the_cut_it_replaces() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": 0.0, "bottom": 10.0}
+
+    body = band_lines([w("left", 0.0, 10.0), w("right", 15.0, 25.0)])  # a 5 pt gap: under the 8 pt minimum
+    assert table_tiers.repair_cuts([13.0], body, 0.0, 100.0) is None
+    wide = band_lines([w("left", 0.0, 10.0), w("right", 30.0, 40.0)])
+    assert table_tiers.repair_cuts([12.0], wide, 0.0, 100.0) == [12.0]
