@@ -6987,6 +6987,9 @@
     "appLimited_other": "{{appName}} 只能查看其建立者選擇的 {{count}} 個項目，且僅限您可見的部分。"
   },
   "errorToast": {
+    "reconnecting": "正在重新連線…",
+    "reconnectingDescription": "目前無法檢查您的工作階段。您仍保持登入狀態，我們會繼續嘗試。",
+    "sessionUnavailable": "目前無法檢查您的工作階段。正在重新連線…",
     "accessDenied": "存取遭拒",
     "invalidRequest": "無效的請求",
     "notFound": "找不到",

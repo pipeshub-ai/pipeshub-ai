@@ -7033,6 +7033,9 @@
     "withChildren": "Dieses Element und alle untergeordneten Elemente"
   },
   "errorToast": {
+    "reconnecting": "Verbindung wird wiederhergestellt …",
+    "reconnectingDescription": "Wir können Ihre Sitzung gerade nicht prüfen. Sie bleiben angemeldet; wir versuchen es weiter.",
+    "sessionUnavailable": "Wir können Ihre Sitzung gerade nicht prüfen. Verbindung wird wiederhergestellt …",
     "accessDenied": "Zugriff verweigert",
     "invalidRequest": "Ungültige Anfrage",
     "notFound": "Nicht gefunden",
