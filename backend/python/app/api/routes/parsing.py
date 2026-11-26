@@ -98,6 +98,13 @@ from app.utils.error_class import already_logged, classify_error, level_for, log
 from app.utils.logging_fields import log_event
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
+from app.utils.table_row_memory import (
+    MAX_SENT_ROW_BYTES,
+    PreviousRows,
+    decode_stored_tables,
+    end_previous_rows,
+    offer_previous_rows,
+)
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 logger = logging.getLogger(__name__)
@@ -293,6 +300,9 @@ async def parse_file(
     record_marker: Annotated[str, Form(description="The record's delete marker as the run saw it at its start")] = "",
     org_marker: Annotated[str, Form(description="The org's delete marker as the run saw it at its start")] = "",
     stop_disabled: Annotated[bool, Form(description="Do not refuse this parse for a changed delete marker")] = False,  # noqa: FBT002
+    stored_rows: Annotated[
+        UploadFile | None, File(description="On an update, the stored version's table rows (digest to texts, per table)")
+    ] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -300,17 +310,31 @@ async def parse_file(
     if not load.try_enter(max_concurrent):
         return _saturated_response(max_concurrent)
     try:
+        await _offer_stored_rows(stored_rows, record_name or file.filename or "a file")
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
             provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
             OrphanFields(orphan_guard, record_marker[:64], org_marker[:64], stop_disabled),
         )
     finally:
+        end_previous_rows()
         load.leave()
     if response.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
         # The gate's wait or the memory wait ran out: saturated all the same.
         load.note_saturated()
     return response
+
+
+async def _offer_stored_rows(part: UploadFile | None, record_name: str) -> None:
+    """Offer, for this parse alone, the stored version's table rows the indexing side sent with an update, so an unchanged row
+    keeps its text. Rows that cannot be read are ignored: the tables are described as on a first index."""
+    if part is None:
+        return
+    tables = decode_stored_tables(await part.read(MAX_SENT_ROW_BYTES + 1))
+    if tables is None:
+        logger.warning("Parse of %s: the stored table rows sent with it are unreadable or too large; its tables are described again", record_name)
+        return
+    offer_previous_rows(PreviousRows.already_read(tables, logger, record_name))
 
 
 async def _parse_file(
