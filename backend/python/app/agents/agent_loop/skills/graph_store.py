@@ -990,7 +990,6 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
         now = _next_updated_at(existing_doc.get("updatedAtTimestamp"))
         bound = await self._with_generation(existing_doc)
-        await self._snapshot_revision(bound, now)
         bumped_metadata = skill.metadata.model_copy(update={"version": _bump_patch(existing_doc.get("version"))})
         skill = skill.model_copy(update={"metadata": bumped_metadata})
         doc = self._skill_to_doc(
@@ -1013,6 +1012,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         if status is not None:
             doc["status"] = status.value
         await self._commit_skill_update(name, doc, expected_updated_at, read=existing_doc)
+        # Archived only once the commit landed: a write that lost it never superseded the state it read.
+        await self._snapshot_revision(bound, now)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
 
@@ -1064,10 +1065,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # value outlives the skill itself (same reasoning as an org's
         # audit log surviving deletion of the thing it describes). The last
         # content joins it, so runs pinned to it still resolve (P7.1).
-        await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())
         # The node goes with every edge touching it, agent assignments included.
         if not await self._graph.delete_node_if_match(self._key(name), _SKILLS, self._bound_to(doc)):
             raise await self._missed(name, doc)
+        await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())  # after the delete landed, as in `update_skill`
         return True
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
@@ -1203,7 +1204,6 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
         now = _next_updated_at(current_doc.get("updatedAtTimestamp"))
         bound = await self._with_generation(current_doc)
-        await self._snapshot_revision(bound, now)
         # Rollback creates a NEW revision on top of the current one (never
         # reuses the archived version number) — history stays monotonic and
         # a second rollback can always distinguish "restored copy" from
@@ -1225,6 +1225,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         if sessions:
             doc["sourceSessionIds"] = sessions
         await self._commit_skill_update(name, doc, None, read=current_doc)
+        await self._snapshot_revision(bound, now)  # after the commit, as in `update_skill`
         await self._sync_relation_edges(name, restored.metadata, now)
         return restored.metadata
 
@@ -1353,8 +1354,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return docs[0] if docs else None
 
     async def _snapshot_revision(self, current_doc: dict, now: int) -> None:
-        """Archives `current_doc` into `agentSkillVersions` before it's
-        overwritten by the caller's `update_skill`/`rollback`.
+        """Archives `current_doc` into `agentSkillVersions` once the caller's
+        `update_skill`/`rollback`/`delete_skill` replaced it; never before, so a
+        write that loses its conditional commit archives nothing.
 
         The doc `id` is keyed on `(skill_key, generation, version, archived state)`, NOT
         `(skill_key, now)`; the generation keeps a re-created name's history apart
@@ -1372,8 +1374,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         generation = current_doc.get("generation")
         state = int(current_doc.get("updatedAtTimestamp") or 0)
         version_doc = {
-            # One row per archived state: a writer that then loses its conditional commit (another write
-            # superseded this version first) adds a row for the older state, never overwrites the right one.
+            # One row per archived state of a version: a resource write keeps the version, so a version can be
+            # superseded in more than one state, and each keeps its own row.
             "id": f"{skill_key}_{generation}_v{version}_s{state}" if generation else f"{skill_key}_v{version}_s{state}",
             "stateUpdatedAtTimestamp": state,
             "orgId": self._org_id,

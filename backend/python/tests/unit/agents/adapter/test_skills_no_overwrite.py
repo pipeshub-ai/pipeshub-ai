@@ -852,23 +852,24 @@ class TestACreateWhoseUndoFailsIsReported:
         assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
 
 
-class _OthersWriteBeforeTheSnapshot(FakeGraphProvider):
-    """As the store is about to archive the version it read, `interleave` runs: other writes that land first."""
+class _OthersWriteBeforeTheCommit(FakeGraphProvider):
+    """As the store is about to commit the edit of the version it read, `interleave` runs: other writes that land
+    first."""
 
     def __init__(self) -> None:
         super().__init__()
         self.interleave = None
 
-    async def batch_upsert_nodes(self, nodes: list[dict[str, Any]], collection: str, *args: object, **kwargs: object) -> bool:
-        if collection == "agentSkillVersions" and self.interleave is not None:
+    async def update_node_if_match(self, key: str, collection: str, *args: object, **kwargs: object) -> bool:
+        if collection == "agentSkills" and self.interleave is not None:
             interleave, self.interleave = self.interleave, None
             await interleave()
-        return await super().batch_upsert_nodes(nodes, collection, *args, **kwargs)
+        return await super().update_node_if_match(key, collection, *args, **kwargs)
 
 
 class TestAWriteThatLosesItsCommitArchivesNothingOverTheWinner:
     async def test_the_version_keeps_the_state_the_successful_write_superseded(self) -> None:
-        graph = _OthersWriteBeforeTheSnapshot()
+        graph = _OthersWriteBeforeTheCommit()
         loser = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
         await loser.create_skill(_NAME, _OTHER_MD, resources={"notes.md": "X"})
         winner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
@@ -883,3 +884,23 @@ class TestAWriteThatLosesItsCommitArchivesNothingOverTheWinner:
 
         assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
         assert [v.version for v in await loser.list_versions(_NAME)] == ["1.0.0"]
+
+    async def test_a_resource_write_alone_wins_and_the_loser_archives_nothing(self) -> None:
+        graph = _OthersWriteBeforeTheCommit()
+        loser = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await loser.create_skill(_NAME, _OTHER_MD, resources={"notes.md": "X"})
+        winner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+
+        async def resource_write() -> None:
+            await winner.write_resource(_NAME, "notes.md", "Y")  # same version 1.0.0, new state; no edit lands
+
+        graph.interleave = resource_write
+        with pytest.raises(SkillConflictError):
+            await loser.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the loser"))
+
+        assert not graph._col("agentSkillVersions")  # nothing superseded the state the loser read
+        assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
+        await winner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the winner"))
+        assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
+        await winner.rollback(_NAME, "1.0.0")
+        assert (await loser.content_files(_NAME))["notes.md"] == "Y"
