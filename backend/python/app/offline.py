@@ -58,7 +58,14 @@ def apply_offline_env(environ: MutableMapping[str, str] = os.environ, dotenv: di
         return []
     changed = []
     for name, value in OFFLINE_ENV_DEFAULTS.items():
-        if not environ.get(name, "").strip() and not values.get(name, "").strip():
-            environ[name] = value
-            changed.append(name)
+        if environ.get(name, "").strip():
+            continue
+        explicit = values.get(name, "").strip()
+        if explicit:
+            # load_dotenv skips a name already in the environment, even a blank one.
+            if name in environ:
+                environ[name] = explicit
+            continue
+        environ[name] = value
+        changed.append(name)
     return changed

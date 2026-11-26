@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[5]
 COMPOSE_DIR = REPO / "deployment" / "docker-compose"
 HELM = REPO / "deployment" / "helm" / "pipeshub-ai"
@@ -55,8 +57,13 @@ def test_the_env_template_and_guide_document_it() -> None:
     assert "slim image has no" in guide.split("## Air-gapped installs", 1)[1] or "slim image has none" in guide
 
 
-def test_the_main_compose_file_passes_all_seven_switches() -> None:
-    text = (COMPOSE_DIR / "docker-compose.yml").read_text()
+@pytest.mark.parametrize(
+    "compose",
+    ["docker-compose.yml", "hot-reload/docker-compose.dev.arango.yml", "hot-reload/docker-compose.dev.neo4j.yml"],
+)
+def test_the_compose_file_passes_all_seven_switches(compose) -> None:
+    """An explicit value in .env (HF_HUB_OFFLINE=0) must reach the container, or the offline default replaces it."""
+    text = (COMPOSE_DIR / compose).read_text()
     for name in (
         "TELEMETRY_COLLECTION_FLAG",
         "HF_HUB_OFFLINE",
@@ -66,4 +73,4 @@ def test_the_main_compose_file_passes_all_seven_switches() -> None:
         "LITELLM_LOCAL_MODEL_COST_MAP",
         "DO_NOT_TRACK",
     ):
-        assert f"      - {name}=${{{name}:-}}\n" in text, name
+        assert f"      - {name}=${{{name}:-}}\n" in text, (compose, name)

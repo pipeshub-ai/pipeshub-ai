@@ -71,6 +71,20 @@ class TestSwitchMapping:
         dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
         assert os.environ["HF_HUB_OFFLINE"] == "0"
 
+    def test_a_blank_process_value_takes_the_dotenv_value(self, tmp_path, monkeypatch) -> None:
+        """load_dotenv skips a name already in the environment, even blank, so the .env value must be applied here."""
+        (tmp_path / ".env").write_text("PIPESHUB_OFFLINE=1\nHF_HUB_OFFLINE=1\nTRANSFORMERS_OFFLINE=0\n")
+        monkeypatch.chdir(tmp_path)
+        _clean(monkeypatch)
+        monkeypatch.setenv("HF_HUB_OFFLINE", "")
+        monkeypatch.setenv("TRANSFORMERS_OFFLINE", " ")
+        apply_offline_env()
+        import dotenv
+
+        dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+        assert os.environ["TRANSFORMERS_OFFLINE"] == "0"  # an explicit .env value still beats the default
+
     def test_the_process_environment_beats_dotenv_for_the_flag(self, tmp_path, monkeypatch) -> None:
         (tmp_path / ".env").write_text("PIPESHUB_OFFLINE=1\n")
         monkeypatch.chdir(tmp_path)

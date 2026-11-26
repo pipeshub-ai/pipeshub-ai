@@ -44,6 +44,8 @@ _Loader.add_multi_constructor("!", lambda loader, _suffix, node: loader.construc
 def _compose_targets(path: Path) -> list[str]:
     targets: list[str] = []
     for service in (yaml.load(path.read_text(), Loader=_Loader) or {}).get("services", {}).values():
+        if not isinstance(service, dict):  # `name: !reset null` removes a service
+            continue
         for volume in service.get("volumes", []) or []:
             if isinstance(volume, dict):
                 targets.append(str(volume.get("target", "")))
