@@ -71569,8 +71569,10 @@ paths:
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
         a change of auth mode or catalog type counts, and of URL when the template lets it be
-        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
-        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
+        typed (Okta). With `CONTROL_PLANE_CREDENTIALS` on, every connection made on the instance
+        is revoked too. When a credential can't be confirmed removed, nothing is saved: a store
+        or credential service that kept it or could not answer gives 503 with `Retry-After`, any
+        other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71664,8 +71666,8 @@ paths:
             A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
             catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
             of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
-            store kept one of them or could not answer: the instance was not changed, though some credentials may
-            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
+            answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
           headers:
             Retry-After:
@@ -71682,7 +71684,11 @@ paths:
       summary: Delete an MCP server instance
       description: |
         Organization instances are deleted by administrators, a personal instance by its owner.
-        Removes every stored credential and the OAuth app configuration too.
+        Also removes the instance's stored credentials and OAuth app configuration, and with
+        `CONTROL_PLANE_CREDENTIALS` on revokes every connection made on the instance. That
+        clean-up is best effort: when a credential delete or the revoke can't be confirmed, the
+        instance is still deleted and the failure is only logged, so those credentials or
+        connections can stay stored, with no instance left to use them.
       operationId: deleteMcpInstance
       security:
         - bearerAuth: []
@@ -89556,6 +89562,41 @@ paths:
         '400': { description: A malformed body }
         '401': { description: "No service token, or one without scope control-plane:bindings" }
         '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: the binding changed while it was being revoked; repeat the call" }
+  /control-plane/internal/bindings/revoke-installation:
+    post:
+      tags: [Connections]
+      summary: Revoke every binding of an installation (internal)
+      operationId: revokeInstallationBindings
+      description: An MCP server's connection target changed or the server was removed, with `CONTROL_PLANE_CREDENTIALS` on. Revokes each binding not revoked yet; safe to repeat. Audited as the token's user when it names one.
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [installation]
+              properties:
+                installation: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: The bindings this call revoked (empty when none was live)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings: { type: array, items: { $ref: '#/components/schemas/BindingRecord' } }
+        '400': { description: A malformed body }
+        '401': { description: "No service token, or one without scope control-plane:bindings" }
+        '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: a binding changed while it was being revoked; repeat the call" }
+        '503': { description: Connections are not configured on this deployment }
   /control-plane/internal/bindings/due:
     get:
       tags: [Connections]
