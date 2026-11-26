@@ -989,7 +989,9 @@ class TestHtmlMdDocumentGaps:
                 "a.html", "r1", "1", "web", "o1", b"   \n", "vr1"
             )
         )
-        proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+        proc._mark_record.assert_awaited_once_with(
+            "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+        )
         assert any(e.event == IndexingEvent.PARSING_COMPLETE for e in events)
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
@@ -1178,7 +1180,9 @@ class TestProcessStructuredDocument:
             )
             parser.parse.assert_awaited_once()
             assert isinstance(parser.parse.await_args.args[0], bytes)
-            proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+            proc._mark_record.assert_awaited_once_with(
+                "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+            )
             assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio

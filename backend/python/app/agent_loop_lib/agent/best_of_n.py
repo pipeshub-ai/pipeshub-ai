@@ -13,7 +13,7 @@ from app.agent_loop_lib.core.types import (
     ToolResult,
 )
 from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
-from app.utils.error_class import log_failure
+from app.utils.error_class import failure_reason, log_failure
 
 _logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ async def _run_one_candidate(agent, candidate_spec, candidate_goal: Goal, team_i
     except Exception as e:
         # Swallowed into a failed candidate: no other line reports it.
         log_failure(_logger, "sub_agent.failed", e, include_error_text=False, **(spawn_refusal(e) or {}))
-        return AgentResult(goal=candidate_goal, success=False, error=str(e))
+        return AgentResult(goal=candidate_goal, success=False, error=failure_reason(e))
 
 
 async def _judge(
@@ -150,7 +150,7 @@ async def run_best_of_n(
         local_index, judge_reason = await _judge(agent, candidate_goal_desc, criteria, successful)
         winner_index = successful[local_index][0]
     except Exception as e:
-        judge_reason = f"Judge call failed ({e}); defaulting to the first successful candidate."
+        judge_reason = f"Judge call failed ({failure_reason(e)}); defaulting to the first successful candidate."
 
     winner = candidates[winner_index]
     await obs.append_timeline(

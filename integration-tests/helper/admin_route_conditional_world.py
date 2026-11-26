@@ -69,6 +69,8 @@ _GONE_TIMEOUT_SEC = 120.0
 _GONE_POLL_SEC = 2.0
 MCP_FLAG = "ENABLE_MCP"
 SKILLS_FLAG = "ENABLE_SKILLS"
+PUBLICATIONS_FLAG = "ENABLE_KNOWLEDGE_PUBLICATIONS"
+_PUBLICATIONS = "/api/v1/agent-harness/publications"
 SCOPED_SECRET_ENV = "SCOPED_JWT_SECRET"
 # The gateway gives a skills call 30 seconds. Listing skills in a new org loads
 # the built-in ones first, which can take longer than that the first time.
@@ -344,6 +346,12 @@ class World:
             )["_id"])
         if key == "fresh_creator_team":
             return self._create_team(CREATOR, "a member's test team for one case")
+        if key == "fresh_admin_command":
+            return self._create_command(ADMIN)
+        if key == "fresh_org_command":
+            return self._org_command()
+        if key == "fresh_publication":
+            return self._publish(self.value("published_kb"))
         if key in ("fresh_mcp", "fresh_personal_mcp"):
             self._switch_on(MCP_FLAG)
             if key == "fresh_mcp":
@@ -566,6 +574,48 @@ class World:
         disabled = self._create_skill()
         self._json(CREATOR, "POST", f"{_SKILLS}/{disabled}/disable", "Switching the member's own skill off", json={})
         return {"builtin_skill": sorted(active)[0], "custom_skill": custom, "disabled_skill": disabled}
+
+    def _create_command(self, caller: str) -> str:
+        """A /command of ``caller``'s own: a skill people send from the composer."""
+        self._switch_on(SKILLS_FLAG)
+        name = self._unique_name("command")
+        self._json(
+            caller, "POST", f"{_SKILLS}/", f"Creating a /command as the {caller}", ok=(201,),
+            json={"name": name, "description": "Made by the conditional-admin tests.", "body": "Say hello.",
+                  "invocation": {"user": True, "model": False}},
+        )
+        # A case may have deleted it already.
+        self._later(
+            f"/command {name}",
+            lambda: self._json(caller, "DELETE", f"{_SKILLS}/{name}", "Deleting a test /command", ok=(200, 404)),
+        )
+        return name
+
+    def _org_command(self) -> str:
+        name = self._create_command(ADMIN)
+        self._json(ADMIN, "POST", f"{_SKILLS}/{name}/publish", "Sharing a /command with the org",
+                   json={"scope": "org"})
+        return name
+
+    def _build_commands(self) -> dict[str, str]:
+        return {"member_command": self._create_command(CREATOR), "org_command": self._org_command()}
+
+    # ------------------------------------------------------------ publications
+
+    def _build_publications(self) -> dict[str, str]:
+        self._switch_on(PUBLICATIONS_FLAG)
+        return {"published_kb": self.value("member_kb")}
+
+    def _publish(self, kb_id: str) -> str:
+        """A publication of the creator's knowledge base to the org; deleting the base erases it."""
+        body = self._json(
+            CREATOR, "POST", _PUBLICATIONS, "Publishing the member's knowledge base", ok=(201,),
+            json={"containerKind": "kb", "containerId": kb_id, "audience": {"org": True}, "mode": "answer_only"},
+        )
+        publication_id = str(body.get("id") or "")
+        if not publication_id:
+            raise RuntimeError("Publishing the member's knowledge base returned no id.")
+        return publication_id
 
     # --------------------------------------------------------------------- mcp
 

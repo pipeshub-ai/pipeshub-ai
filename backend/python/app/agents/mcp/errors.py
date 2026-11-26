@@ -26,6 +26,12 @@ class MCPConnectionError(Exception):
         return f"{self} | subprocess stderr: {self.stderr_tail}" if self.stderr_tail else str(self)
 
 
+class MCPConnectTimeoutError(MCPConnectionError, TimeoutError):
+    """The server took the connection but did not finish the handshake within the connect timeout. It did not
+    answer in time, so it reads as a timeout (`classify_mcp_failure`), not as a server that could not be reached;
+    the handshake sent no call, so nothing ran."""
+
+
 class MCPHttpStatusError(MCPConnectionError):
     """The MCP server answered with an HTTP error status. The mcp SDK reports these without the
     status; the client restores it from the operation's wire record (`app.agents.mcp.wire`)."""
@@ -88,6 +94,20 @@ class MCPUrlBlockedError(MCPConnectionError):
 
 class MCPLaunchRefusedError(MCPConnectionError):
     """This deployment's local-command policy won't start the server. The message says why."""
+
+
+class MCPServerCircuitOpenError(MCPConnectionError):
+    """The server failed too many times in a row (MX-08), so nothing is sent to it until a probe
+    after the cooldown answers. Nothing ran; the message says when to try again."""
+
+    reason_code = "mcp_server_circuit_open"
+
+    def __init__(self, server: str, retry_after_seconds: float | None) -> None:
+        wait = f" Try again in about {max(1, round(retry_after_seconds))} seconds." if retry_after_seconds else ""
+        super().__init__(
+            f"The {server} MCP server failed several times in a row, so PipesHub is not calling it for now.{wait}"
+        )
+        self.retry_after_seconds = retry_after_seconds
 
 
 def is_http_unauthorized(exc: BaseException) -> bool:

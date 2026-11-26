@@ -90,7 +90,7 @@ async def test_a_walk_that_runs_out_of_time_reads_as_unmentioned(
     unknown = await _ask(_graph([]), kinds=["date"])
     _assert_hidden(await _ask(graph, kinds=["date"]), unknown)
     # It stopped at the deadline, after the first batch, not at the end of the hits.
-    assert graph.filter_accessible_record_ids.await_count == 1
+    assert len(graph.access.batches) == 1
 
 
 async def test_a_too_broad_value_for_a_user_with_no_sources_reads_as_unmentioned(env: AsyncMock) -> None:
@@ -135,10 +135,9 @@ async def test_the_scan_budget_of_a_page_starts_at_its_first_readable_hit(monkey
     monkeypatch.setattr(values, "_CHECK_BATCH", 10)
     monkeypatch.setattr(values, "_MAX_SCAN", 20)
     hits = [EntityFilterHit(record_id=f"r{i:03}", virtual_record_id=f"v{i}", connector_id=APP) for i in range(100)]
-    graph = AsyncMock()
-    graph.filter_accessible_record_ids = AsyncMock(side_effect=lambda ids, *_: [i for i in ids if i == "r005"])
+    graph = _graph([{"recordId": h.record_id} for h in hits], readable={"r005"})
     context = _context()
-    page, cursor, stopped = await values._readable_page(graph, context, hits, "u", "o", 0, 50)
+    page, cursor, stopped = await values._readable_page(graph, context, hits, "u1", "org", 0, 50)
     assert [h.record_id for h in page] == ["r005"] and stopped
     # 20 counted from r005 ends inside the third batch, so the page stops after r029, not after r019.
     assert cursor is not None and cursor.endswith(":r029")

@@ -337,12 +337,15 @@ async def test_a_connector_limited_again_after_the_watcher_settled_is_queued_for
 
     apps: list[dict] = []
     gp = _watched_graph(apps)
-    with patch.object(licence_lift, "drain_queued_syncs", AsyncMock(return_value=[])):
+    # Counts the watcher's lift passes, not graph reads: other work in the same loop may read the connectors too.
+    lift = AsyncMock(wraps=licence_lift.queue_limited_full_syncs)
+    with patch.object(licence_lift, "drain_queued_syncs", AsyncMock(return_value=[])), \
+            patch.object(licence_lift, "queue_limited_full_syncs", lift):
         task = asyncio.create_task(licence_lift.watch_licence(_config(LICENSED), gp, logging.getLogger("t"), 0.01))
         try:
-            await _watch_until(lambda: gp.get_org_apps.await_count >= 1)
+            await _watch_until(lambda: lift.await_count >= 1)
             await asyncio.sleep(0.05)
-            scans = gp.get_org_apps.await_count
+            scans = lift.await_count
             assert scans == 1, "settled: nothing limited, no more scans"
 
             proc, _ = _gate_processor(UNLICENSED, _app())

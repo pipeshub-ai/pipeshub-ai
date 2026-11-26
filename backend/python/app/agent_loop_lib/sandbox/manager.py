@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import math
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
+from app.agent_loop_lib.core.tasks import wait_owned
+from app.core.org_context import spawn_in_request
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.context import CancellationToken
+    from app.agent_loop_lib.sandbox.capacity import HoldReason
     from app.agent_loop_lib.sandbox.coding.base import SandboxContext, SandboxRef
     from app.agent_loop_lib.sandbox.coding.registry import SandboxBackendFactory
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
@@ -50,10 +57,20 @@ __all__ = [
     "SandboxManagerError",
     "UnknownSandboxError",
     "SandboxLimitExceeded",
+    "SandboxCallStopped",
     "SandboxLifecycle",
 ]
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+# How long a stopped call waits for the backend to clean up after its cancel:
+# the Docker backend's own 30 s bound for removing the container, plus a margin.
+_STOP_DRAIN_S = 35.0
+# Longest the slot-wait note may take to show or clear: a stalled event stream must
+# neither stretch the slot wait nor hold a granted slot.
+_SLOT_NOTE_S = 5.0
 
 
 class SandboxType(str, Enum):
@@ -74,7 +91,110 @@ class UnknownSandboxError(SandboxManagerError):
 
 class SandboxLimitExceeded(SandboxManagerError):
     """Raised when creating a new sandbox would exceed the configured
-    `max_concurrent` for its type."""
+    `max_concurrent` for its type, or no governor slot came free in time.
+    `reason` is the governor's `HoldReason` (`None` for `max_concurrent`)."""
+
+    def __init__(self, *args: object, reason: "HoldReason | None" = None) -> None:
+        super().__init__(*args)
+        self.reason = reason
+
+
+class SandboxCallStopped(SandboxManagerError):
+    """The run was stopped by its user while this sandbox call was in flight."""
+
+
+class _RequestSlots:
+    """The governor slots one request's calls hold, and its calls waiting
+    for a turn, oldest first. A turn given back passes straight to the
+    oldest waiter, so a newer call cannot overtake it."""
+
+    def __init__(self) -> None:
+        self.held = 0
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    async def take(
+        self, limit: int, wait_s: float, on_wait: Callable[[], Awaitable[None]],
+    ) -> None:
+        """One turn, waiting up to *wait_s* (NaN or negative: not at all);
+        `SandboxLimitExceeded` past it."""
+        if self.held < limit and not self._waiters:
+            self.held += 1
+            return
+        if not wait_s > 0:
+            raise self._refusal(limit)
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(future)
+        deadline = time.monotonic() + wait_s
+        try:
+            try:
+                await on_wait()
+            except Exception:
+                logger.debug("sandbox manager: on_wait callback failed", exc_info=True)
+            # A turn handed over by an earlier `give_back`, or one freed since
+            # the limit was read (it can only have risen).
+            while not future.done():
+                if self.held < limit and self._waiters and self._waiters[0] is future:
+                    self._waiters.popleft()
+                    self.held += 1
+                    future.set_result(None)
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.wait({future}, timeout=None if math.isinf(remaining) else remaining)
+        except BaseException:
+            self._leave(future)
+            raise
+        if not future.done():
+            self._leave(future)
+            raise self._refusal(limit)
+
+    def _leave(self, future: asyncio.Future[None]) -> None:
+        """*future* gives up its place; a turn it was already handed passes on."""
+        if future.done() and not future.cancelled():
+            self.give_back()
+            return
+        future.cancel()
+        with contextlib.suppress(ValueError):
+            self._waiters.remove(future)
+
+    def give_back(self) -> None:
+        while self._waiters:
+            future = self._waiters.popleft()
+            if not future.done():
+                future.set_result(None)  # the turn moves on; `held` is unchanged
+                return
+        self.held = max(0, self.held - 1)
+
+    @staticmethod
+    def _refusal(limit: int) -> SandboxLimitExceeded:
+        if limit == 1:
+            text = "this chat already has a code run going, the most one request may run at once; retry once it ends"
+        else:
+            text = (
+                f"this chat already has {limit} code runs going at once, the most one request "
+                f"may run; retry once one of them ends"
+            )
+        return SandboxLimitExceeded(text)
+
+
+class _RequestLease:
+    """A governor lease that also gives back its request's turn, once."""
+
+    def __init__(self, lease: Any, slots: _RequestSlots) -> None:
+        self._lease = lease
+        self._slots: _RequestSlots | None = slots
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._lease, name)
+
+    async def release(self) -> None:
+        slots, self._slots = self._slots, None
+        try:
+            await self._lease.release()
+        finally:
+            if slots is not None:
+                slots.give_back()
 
 
 @runtime_checkable
@@ -102,6 +222,9 @@ class SandboxLimits:
     max_concurrent: int | None = None
     max_lifetime_s: float | None = None
     provision_timeout_s: float | None = 60.0
+    # The most seconds one code run may take. Applied by the run_code tool
+    # (see `SandboxManager.run_timeout_cap`); `None` means no cap.
+    max_run_timeout_s: float | None = None
 
 
 @dataclass
@@ -123,6 +246,10 @@ class _InstanceRecord:
     created_at: float
     last_used_at: float
     governor_lease: Any | None = None  # GovernorLease
+    # Calls running in it now (`acquire`/`release`): one in use is never evicted to make room. Only a sandbox
+    # created through `acquire` may be evicted: a `get_or_create` caller says nothing about when it is done.
+    busy: int = 0
+    evictable: bool = False
     org_id: str | None = None
 
 
@@ -146,6 +273,8 @@ class SandboxManager:
         governor: "SandboxResourceGovernor | None" = None,
         slot_wait_s: float = 0.0,
         on_slot_wait: Callable[..., Awaitable[None]] | None = None,
+        stop_token: "CancellationToken | None" = None,
+        max_slots_per_request: int | Literal["env"] | None = None,
     ) -> None:
         self._factories: dict[SandboxType, _FactoryEntry] = {}
         self._instances: dict[tuple[SandboxType, str], _InstanceRecord] = {}
@@ -155,6 +284,9 @@ class SandboxManager:
         # the wait ends (e.g. show and clear a note for the user).
         self._slot_wait_s = slot_wait_s
         self._on_slot_wait = on_slot_wait
+        # The run's Stop signal. Calls made through `unless_stopped` end as
+        # soon as it is set, instead of running to completion.
+        self._stop_token = stop_token
         self._lock = asyncio.Lock()
         # Creations that have reserved a slot but not yet finished
         # provisioning. `_instances` alone cannot bound concurrency: a
@@ -162,6 +294,16 @@ class SandboxManager:
         # provisioning is exactly where the awaits are, so N callers would
         # otherwise all see an empty map and all proceed.
         self._in_flight: dict[SandboxType, int] = {}
+        # The most governor slots this manager's calls hold at once (`slot()`),
+        # so one chat's parallel calls cannot take every slot of the
+        # container. Opt-in, because it counts per manager: set it only where
+        # a manager serves one request (and its sub-agents), as the chat path
+        # does. A manager shared by many requests (the library's
+        # `ControlPlane`) would otherwise cap the whole server. `None`: no
+        # such limit; ``"env"`` (or an int <= 0): SANDBOX_MAX_PER_REQUEST,
+        # read on each call.
+        self._max_slots_per_request = max_slots_per_request
+        self._request_slots = _RequestSlots()
 
     def register_backend_factory(
         self,
@@ -212,12 +354,45 @@ class SandboxManager:
     def is_registered(self, type: SandboxType) -> bool:
         return type in self._factories
 
+    def reaches_network(self, type: SandboxType) -> bool:
+        """Whether code in ``type``'s registered backend can reach the network whatever it was asked for (its
+        ``capabilities().supports_network``: a host subprocess always can). False when nothing is registered yet or a
+        zero-arg factory is: neither declares capabilities, and with nothing registered no code runs."""
+        entry = self._factories.get(type)
+        if entry is None or entry.backend_factory is None:
+            return False
+        return bool(entry.backend_factory.capabilities().supports_network)
+
+    async def acquire(
+        self,
+        type: SandboxType,
+        sandbox_id: str | None = None,
+        *,
+        ctx: "SandboxContext | None" = None,
+        tool: str = "run_code",
+    ) -> tuple[str, Any]:
+        """`get_or_create`, held for the caller until `release`: a held sandbox is never evicted to make room."""
+        return await self.get_or_create(type, sandbox_id, ctx=ctx, hold=True, tool=tool)
+
+    def release(self, type: SandboxType, sandbox_id: str) -> None:
+        record = self._instances.get((type, sandbox_id))
+        if record is not None:
+            record.busy = max(0, record.busy - 1)
+            record.last_used_at = time.monotonic()
+
+    def run_timeout_cap(self, type: SandboxType) -> float | None:
+        """The most seconds one run on a `type` sandbox may take, from the
+        registered limits, or `None` when unregistered or uncapped."""
+        entry = self._factories.get(type)
+        return entry.limits.max_run_timeout_s if entry is not None else None
+
     async def get_or_create(
         self,
         type: SandboxType,
         sandbox_id: str | None = None,
         *,
         ctx: "SandboxContext | None" = None,
+        hold: bool = False,
         tool: str = "run_code",
     ) -> tuple[str, Any]:
         """Resolve an existing sandbox by id, or create a new one when
@@ -237,6 +412,8 @@ class SandboxManager:
             if record is None:
                 raise UnknownSandboxError(f"no {type.value!r} sandbox with id {sandbox_id!r}")
             record.last_used_at = time.monotonic()
+            if hold:
+                record.busy += 1
             return sandbox_id, record.backend
 
         entry = self._factories.get(type)
@@ -248,6 +425,7 @@ class SandboxManager:
         lease = None
         async with self._lock:
             await self._sweep_stale(type, entry.limits)
+            await self._evict_idle(type, entry.limits)
             self._check_concurrency(type, entry.limits)
 
             backend = self._create_backend(entry, effective_ctx)
@@ -260,6 +438,13 @@ class SandboxManager:
                 lease = await self._acquire_slot(org_id, tool)
             started = time.monotonic()
             backend = await self._provision(backend, entry.limits, type)
+        except asyncio.CancelledError:
+            # A cancel during the slot wait or the provision would otherwise
+            # leak the half-made backend (a remote VM keeps running) and its slot.
+            # One shielded task, so a second cancel during the destroy cannot
+            # skip the release.
+            await asyncio.shield(self._destroy_then_release(backend, lease))
+            raise
         except Exception:
             await self._release_lease(lease)
             raise
@@ -270,7 +455,7 @@ class SandboxManager:
         now = time.monotonic()
         record = _InstanceRecord(
             backend=backend, created_at=now, last_used_at=now,
-            governor_lease=lease, org_id=org_id,
+            governor_lease=lease, busy=1 if hold else 0, evictable=hold, org_id=org_id,
         )
         for t in entry.capabilities:
             self._instances[(t, new_id)] = record
@@ -322,40 +507,167 @@ class SandboxManager:
         """Hold a governor slot while one call (of tool *tool*) runs on the sandbox.
 
         Waits for a free slot (see `slot_wait_s`), then raises
-        `SandboxLimitExceeded`. A no-op for a sandbox that keeps its slot for
+        `SandboxLimitExceeded`. With a per-request limit, this manager's
+        calls hold at most `request_slot_limit()` slots at once; its other
+        calls wait for one of those first, within the same `slot_wait_s`. A no-op for a sandbox that keeps its slot for
         life (metered backends), an unknown id, or a manager with no governor.
+
+        The slot is released when the body returns or raises. So a backend
+        must not return or raise from a cancelled call while its compute (a
+        container, a subprocess) is still running: it stops that first, and
+        only then lets the cancel through.
         """
         record = self._instances.get((type, sandbox_id))
         if record is None or self._governor is None or record.governor_lease is not None:
             yield
             return
-        lease = await self._acquire_slot(record.org_id, tool)
+        lease = await self._acquire_slot(
+            record.org_id, tool, per_request=self._max_slots_per_request is not None,
+        )
         try:
             yield
         finally:
-            await self._release_lease(lease)
+            # Shielded: a cancel landing while the release waits for the
+            # governor's lock must not leave the slot counted.
+            await asyncio.shield(self._release_lease(lease))
 
-    async def _acquire_slot(self, org_id: str | None, tool: str) -> Any:
+    def request_slot_limit(self) -> int | None:
+        """The most slots this request's calls hold at once: the setting,
+        never above the governor's ceiling. ``None`` when this manager has
+        no per-request limit (it may be shared by many requests)."""
+        limit = self._max_slots_per_request
+        if limit is None:
+            return None
+        if not isinstance(limit, int) or limit <= 0:
+            from app.agent_loop_lib.sandbox.capacity import max_per_request
+
+            limit = max_per_request()
+        capacity = getattr(self._governor, "capacity", None)
+        ceiling = capacity.ceiling() if capacity is not None else None
+        return max(1, min(limit, ceiling) if isinstance(ceiling, int) else limit)
+
+    async def _acquire_slot(self, org_id: str | None, tool: str, *, per_request: bool = False) -> Any:
         """A governor slot, waiting up to `slot_wait_s`; the wait note is
-        shown when the wait starts and cleared once the slot is granted."""
+        shown when the wait starts and cleared once the slot is granted.
+
+        With *per_request*, the call first takes one of this request's
+        `request_slot_limit()` turns, waiting for it in arrival order. That
+        wait holds no governor slot, so it costs other chats nothing, and it
+        counts against the same `slot_wait_s`; past it the call is refused
+        like a full governor."""
         notify = self._on_slot_wait
         shown = False
 
         async def on_wait() -> None:
             nonlocal shown
+            if shown:
+                return
             shown = True
             if notify is not None:
-                await notify(tool, waiting=True)
+                try:
+                    await asyncio.wait_for(notify(tool, waiting=True), _SLOT_NOTE_S)
+                except TimeoutError:
+                    logger.warning("showing the slot-wait note took over %gs; going on", _SLOT_NOTE_S)
 
+        lease = None
+        turn = False
         try:
-            return await self._governor.acquire(org_id=org_id, wait_s=self._slot_wait_s, on_wait=on_wait)
+            wait_s = self._slot_wait_s
+            if per_request:
+                started = time.monotonic()
+                await self._request_slots.take(self.request_slot_limit() or 1, wait_s, on_wait)
+                turn = True
+                if wait_s >= 0:
+                    wait_s = max(0.0, wait_s - (time.monotonic() - started))
+            lease = await self._governor.acquire(org_id=org_id, wait_s=wait_s, on_wait=on_wait)
+            if turn:
+                lease = _RequestLease(lease, self._request_slots)
+            return lease
+        except BaseException:
+            if turn:
+                self._request_slots.give_back()
+            raise
         finally:
             # Granted, timed out or cancelled: the note is taken down either way.
             if shown and notify is not None:
                 try:
-                    await notify(tool, waiting=False)
+                    # Bounded: a stalled event stream must not hold a granted slot.
+                    await asyncio.wait_for(notify(tool, waiting=False), _SLOT_NOTE_S)
+                except TimeoutError:
+                    logger.warning("clearing the slot-wait note took over %gs; going on", _SLOT_NOTE_S)
+                except asyncio.CancelledError:
+                    # The slot was granted but the caller will never see it.
+                    if lease is not None:
+                        await asyncio.shield(self._release_lease(lease))
+                    raise
                 except Exception:
                     logger.warning("clearing the slot-wait note failed", exc_info=True)
+
+    async def unless_stopped(self, fn: Callable[[], Awaitable[T]], *, tool: str) -> T:
+        """Run `fn()` until it finishes or the run is stopped, whichever is first.
+
+        On Stop, `fn` gets one asyncio cancel. Backends turn that into
+        "stop the container or process, release the slot, re-raise", and
+        this waits for that cleanup (see `_drain`) before raising
+        `SandboxCallStopped`. If `fn` finished in the same tick as the Stop,
+        its real result (or exception) wins. A Stop that was already set
+        means `fn` is never started. A cancel of the calling task itself
+        (a disconnect, shutdown) still cancels `fn` and raises
+        `CancelledError`, as before.
+
+        `fn` is a callable rather than a coroutine so that a call that never
+        starts leaves no un-awaited coroutine behind.
+        """
+        token = self._stop_token
+        if token is None:
+            return await fn()
+        if token.is_cancelled:
+            raise SandboxCallStopped(tool)
+        async def call_fn() -> T:
+            return await fn()
+
+        call = spawn_in_request(call_fn())
+        stop = spawn_in_request(token.wait())
+        try:
+            await wait_owned({call, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+        if call.done():
+            return call.result()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        call.cancel()
+        await self._drain(call)
+        logger.info(
+            "sandbox call stopped by the user: tool=%s cleanup_s=%.1f", tool, loop.time() - started,
+        )
+        raise SandboxCallStopped(tool)
+
+    @staticmethod
+    async def _drain(call: asyncio.Future[Any]) -> None:
+        """Wait for a cancelled call to finish its cleanup, at most
+        `_STOP_DRAIN_S`. A second cancel of this task is remembered and
+        re-raised at the end: it must not let the tool return while the
+        call still holds its slot."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STOP_DRAIN_S
+        cancelled_again = False
+        while not call.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning("sandbox call did not finish within %gs of Stop", _STOP_DRAIN_S)
+                break
+            try:
+                await asyncio.wait({call}, timeout=remaining)
+            except asyncio.CancelledError:
+                cancelled_again = True
+        if call.done():
+            if not call.cancelled() and call.exception() is not None:
+                logger.debug("stopped sandbox call ended with an error", exc_info=call.exception())
+        else:
+            call.add_done_callback(lambda f: f.cancelled() or f.exception())
+        if cancelled_again:
+            raise asyncio.CancelledError
 
     async def _release_lease(self, lease: Any | None) -> None:
         if lease is None:
@@ -390,23 +702,17 @@ class SandboxManager:
         record = self._instances.pop(key, None)
         if record is None:
             return
-        await self._safe_destroy(record.backend)
-        await self._release_lease(record.governor_lease)
         for other_key in [k for k, v in self._instances.items() if v is record]:
             del self._instances[other_key]
+        await self._teardown([record])
 
     async def destroy_all(self) -> None:
         """Tear down every tracked sandbox — called from `ControlPlane.stop()`.
         Never raises; failures are logged and swallowed so one broken
         backend can't block the rest of shutdown."""
-        seen: set[int] = set()
-        for record in list(self._instances.values()):
-            if id(record) in seen:
-                continue
-            seen.add(id(record))
-            await self._safe_destroy(record.backend)
-            await self._release_lease(record.governor_lease)
+        records = list({id(r): r for r in self._instances.values()}.values())
         self._instances.clear()
+        await self._teardown(records)
 
     def active_count(self, type: SandboxType) -> int:
         """Number of distinct live backend instances for `type` (dedups
@@ -434,14 +740,36 @@ class SandboxManager:
                 result.append(ref)
         return result
 
+    async def _evict_idle(self, type: SandboxType, limits: SandboxLimits) -> None:
+        """At the limit, the least recently used sandbox no call is running in makes room (LONGTASK-F5).
+
+        A manager belongs to one request, so every sandbox it tracks is that request's own: without this, a
+        request that called `run_code` without a `sandbox_id` more than `max_concurrent` times starved itself,
+        its idle sandboxes holding every slot until the request ended."""
+        if limits.max_concurrent is None:
+            return
+        while self.active_count(type) + self._in_flight.get(type, 0) >= limits.max_concurrent:
+            idle = {
+                id(v): (k, v) for k, v in self._instances.items() if k[0] == type and v.evictable and v.busy == 0
+            }
+            if not idle:
+                return
+            key, record = min(idle.values(), key=lambda kv: kv[1].last_used_at)
+            logger.info("sandbox evicted: type=%s id=%s reason=idle_at_limit", type.value, key[1])
+            await self._safe_destroy(record.backend)
+            await self._release_lease(record.governor_lease)
+            for other_key in [k for k, v in self._instances.items() if v is record]:
+                del self._instances[other_key]
+
     def _check_concurrency(self, type: SandboxType, limits: SandboxLimits) -> None:
         if limits.max_concurrent is None:
             return
         in_use = self.active_count(type) + self._in_flight.get(type, 0)
         if in_use >= limits.max_concurrent:
             raise SandboxLimitExceeded(
-                f"max_concurrent={limits.max_concurrent} reached for sandbox "
-                f"type {type.value!r}; retry once a sandbox is released"
+                f"all {limits.max_concurrent} {type.value} sandboxes this request may use are running code "
+                f"right now; wait for one of those calls to finish, or pass the sandbox_id of one of them to "
+                f"run in it next"
             )
 
     async def _sweep_stale(self, type: SandboxType, limits: SandboxLimits) -> None:
@@ -455,16 +783,30 @@ class SandboxManager:
             k for k, v in self._instances.items()
             if k[0] == type and (now - v.created_at) > limits.max_lifetime_s
         ]
-        seen: set[int] = set()
-        for key in stale_keys:
-            record = self._instances.get(key)
-            if record is None or id(record) in seen:
-                continue
-            seen.add(id(record))
-            await self._safe_destroy(record.backend)
-            await self._release_lease(record.governor_lease)
-            for other_key in [k for k, v in self._instances.items() if v is record]:
-                del self._instances[other_key]
+        stale = {id(self._instances[k]): self._instances[k] for k in stale_keys}
+        for other_key in [k for k, v in self._instances.items() if id(v) in stale]:
+            del self._instances[other_key]
+        await self._teardown(list(stale.values()))
+
+    async def _teardown(self, records: list[_InstanceRecord]) -> None:
+        """Destroy each record's backend, then give back its slot. One
+        shielded task: a cancel (a client disconnect cancels the request's
+        cleanup) returns at once but the teardown still finishes, so a
+        sandbox that keeps its slot for life never leaves it counted."""
+        if not records:
+            return
+
+        async def run() -> None:
+            for record in records:
+                await self._destroy_then_release(record.backend, record.governor_lease)
+
+        await asyncio.shield(run())
+
+    async def _destroy_then_release(self, backend: SandboxLifecycle, lease: Any | None) -> None:
+        try:
+            await self._safe_destroy(backend)
+        finally:
+            await self._release_lease(lease)
 
     async def _safe_destroy(self, backend: SandboxLifecycle) -> None:
         """Never raises: one wedged backend must not block the teardown of

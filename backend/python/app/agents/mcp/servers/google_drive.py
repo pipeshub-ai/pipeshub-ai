@@ -7,7 +7,13 @@ on the admin's Google Cloud project before the endpoint responds
 (`gcloud services enable drive.googleapis.com drivemcp.googleapis.com`).
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -50,6 +56,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["storage", "docs", "productivity"],
+        category=MCPCategory.DOCS,
+        capabilities=[
+            "Find a file",
+            "Read a doc or sheet",
+            "Organize folders",
+        ],
     )
 )
 class GoogleDriveMCPServer:

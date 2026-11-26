@@ -54,7 +54,7 @@ function SuggestionPill({ icon, label, onClick }: { icon: string; label: string;
       style={{ border: '1px solid var(--olive-3)', borderRadius: 'var(--radius-2)', background: 'var(--olive-2)' }}
     >
       <Flex align="center" gap="2">
-        <MaterialIcon name={icon} size={14} color="var(--slate-10)" />
+        <MaterialIcon name={icon} size={14} color="var(--slate-11)" />
         <Text size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
           {label}
         </Text>
@@ -127,6 +127,13 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const toolsRef = useRef<string[]>([]);
   const confirmedToolsRef = useRef<string[]>([]);
 
+  interface ScopePatch {
+    knowledgeScope: ProjectKnowledgeScope;
+    appliedFilters: AppliedFilters;
+  }
+  const scopeRef = useRef<ScopePatch | null>(null);
+  const confirmedScopeRef = useRef<ScopePatch | null>(null);
+
   const load = useCallback(async () => {
     setIsLoading(true);
     setLoadError(false);
@@ -140,6 +147,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       ]);
       toolsRef.current = detail.tools ?? [];
       confirmedToolsRef.current = detail.tools ?? [];
+      const initialScope: ScopePatch = {
+        knowledgeScope: detail.knowledgeScope ?? { apps: [], kb: [] },
+        appliedFilters: detail.appliedFilters ?? { apps: [], kb: [] },
+      };
+      scopeRef.current = initialScope;
+      confirmedScopeRef.current = initialScope;
       setProject(detail);
       setInstructionsDraft(detail.instructions ?? '');
       setConversationTotal(conv.pagination.totalCount);
@@ -178,10 +191,20 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     hasDirectMembership(project?.members, profile?.userId);
   const isArchived = Boolean(project?.isArchived);
 
-  /** A PATCH response, minus a tool list that newer local toggles have already moved past. */
+  /** A PATCH response, minus tool or knowledge scope lists that newer local changes have already moved past. */
   const applyServerProject = useCallback(
     (updated: ProjectDetail) => {
-      setProject({ ...updated, tools: toolsRef.current });
+      const pendingScope = scopeRef.current;
+      setProject({
+        ...updated,
+        tools: toolsRef.current,
+        ...(pendingScope
+          ? {
+              knowledgeScope: pendingScope.knowledgeScope,
+              appliedFilters: pendingScope.appliedFilters,
+            }
+          : {}),
+      });
     },
     [setProject],
   );
@@ -211,33 +234,93 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     setProject((prev) => (prev ? { ...prev, linkedKnowledgeBaseId: kbId } : prev));
   }, []);
 
-  const handleConnectorsChange = useCallback(
-    async (patch: { knowledgeScope: ProjectKnowledgeScope; appliedFilters: AppliedFilters }) => {
-      if (!project) return;
-      const previousScope = project.knowledgeScope;
-      const previousFilters = project.appliedFilters;
-      setProject({ ...project, knowledgeScope: patch.knowledgeScope, appliedFilters: patch.appliedFilters });
-      try {
-        const updated = await ProjectApi.update(projectId, patch);
-        applyServerProject(updated);
-      } catch {
-        setProject((prev) =>
-          prev ? { ...prev, knowledgeScope: previousScope, appliedFilters: previousFilters } : prev,
-        );
-        toast.error(t('chat.projects.workspace.updateConnectorsFailed'));
-      }
-    },
-    [project, projectId, applyServerProject, t],
+  const scopeSaver = useMemo(
+    () =>
+      createSerialSaver<ScopePatch, ProjectDetail>({
+        save: async (patch) => {
+          const updated = await ProjectApi.update(projectId, patch);
+          confirmedScopeRef.current = {
+            knowledgeScope: updated.knowledgeScope ?? { apps: [], kb: [] },
+            appliedFilters: updated.appliedFilters ?? { apps: [], kb: [] },
+          };
+          return updated;
+        },
+        onSaved: (updated) => {
+          const savedScope: ScopePatch = {
+            knowledgeScope: updated.knowledgeScope ?? { apps: [], kb: [] },
+            appliedFilters: updated.appliedFilters ?? { apps: [], kb: [] },
+          };
+          confirmedScopeRef.current = savedScope;
+          scopeRef.current = savedScope;
+          setProject((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  knowledgeScope: savedScope.knowledgeScope,
+                  appliedFilters: savedScope.appliedFilters,
+                }
+              : prev,
+          );
+        },
+        onError: (_error, value) => {
+          const fallback = confirmedScopeRef.current;
+          scopeRef.current = fallback;
+          setProject((prev) =>
+            prev && fallback
+              ? {
+                  ...prev,
+                  knowledgeScope: fallback.knowledgeScope,
+                  appliedFilters: fallback.appliedFilters,
+                }
+              : prev,
+          );
+          const hadConnectorChange =
+            JSON.stringify(value.knowledgeScope.apps) !==
+            JSON.stringify(fallback?.knowledgeScope.apps);
+          toast.error(
+            hadConnectorChange
+              ? t('chat.projects.workspace.updateConnectorsFailed')
+              : t('chat.projects.workspace.updateCollectionsFailed', {
+                  defaultValue: 'Failed to update collections',
+                }),
+          );
+        },
+      }),
+    [projectId, setProject, t],
   );
+
+  const handleScopeChange = useCallback(
+    (patch: ScopePatch) => {
+      scopeRef.current = patch;
+      setProject((prev) =>
+        prev
+          ? {
+              ...prev,
+              knowledgeScope: patch.knowledgeScope,
+              appliedFilters: patch.appliedFilters,
+            }
+          : prev,
+      );
+      void scopeSaver.push(patch);
+    },
+    [setProject, scopeSaver],
+  );
+
+  const handleConnectorsChange = handleScopeChange;
+  const handleCollectionsChange = handleScopeChange;
 
   const toolsSaver = useMemo(
     () =>
       createSerialSaver<string[], ProjectDetail>({
-        save: (tools) => ProjectApi.update(projectId, { tools }),
+        save: async (tools) => {
+          const updated = await ProjectApi.update(projectId, { tools });
+          confirmedToolsRef.current = updated.tools ?? [];
+          return updated;
+        },
         onSaved: (updated) => {
           confirmedToolsRef.current = updated.tools ?? [];
           toolsRef.current = updated.tools ?? [];
-          setProject(updated);
+          applyServerProject(updated);
         },
         onError: () => {
           toolsRef.current = confirmedToolsRef.current;
@@ -245,7 +328,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
           toast.error(t('chat.projects.workspace.updateToolsFailed'));
         },
       }),
-    [projectId, setProject, t],
+    [projectId, setProject, applyServerProject, t],
   );
 
   const handleToolsChange = useCallback(
@@ -447,12 +530,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             href="/projects/"
             style={{ display: 'flex', alignItems: 'center', gap: 4, textDecoration: 'none', flexShrink: 0 }}
           >
-            <MaterialIcon name="chevron_left" size={18} color="var(--slate-10)" />
-            <Text size="2" style={{ color: 'var(--slate-10)' }}>
+            <MaterialIcon name="chevron_left" size={18} color="var(--slate-11)" />
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {t('projects.pageTitle')}
             </Text>
           </Link>
-          <Text size="2" style={{ color: 'var(--slate-7)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             /
           </Text>
           <Text
@@ -626,7 +709,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
                 {t('chat.projects.workspace.heroTitle', { defaultValue: 'What should we work on?' })}
               </Text>
-              <Text size="2" style={{ color: 'var(--slate-10)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.projects.workspace.heroSubtitle', {
                   defaultValue: "Every chat you start here inherits this project's instructions, files and tools.",
                 })}
@@ -734,6 +817,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               onSaveInstructions={() => void handleSaveInstructions()}
               onKbCreated={handleKbCreated}
               onConnectorsChange={(patch) => void handleConnectorsChange(patch)}
+              onCollectionsChange={(patch) => void handleCollectionsChange(patch)}
               onToolsChange={handleToolsChange}
               onOpenShare={() => setShareOpen(true)}
             />

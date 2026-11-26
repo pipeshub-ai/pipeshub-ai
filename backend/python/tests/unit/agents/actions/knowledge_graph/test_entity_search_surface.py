@@ -14,6 +14,7 @@ from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder
 from app.agents.actions.knowledge_graph import entity_search_surface as surface
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+from app.agents.actions.knowledge_graph.ops.summarize import SUMMARIZE_TOOL_NAME
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
@@ -34,8 +35,9 @@ def _tools(offered: bool | None, *, named: bool | None = True) -> tuple[list[Any
     state: dict[str, Any] = {key: value for key, value in keys if value is not None}
     instance = KnowledgeGraph(state=state)
     built = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
-    # The timeline tool has its own switch (test_timeline.py); these are about entity search.
-    declared = [t for t in built if t.name != TIMELINE_TOOL_NAME]
+    # The timeline tool and the quarantined summary have their own switches (test_timeline.py,
+    # test_ga28_knowledge_summarize.py); these are about entity search.
+    declared = [t for t in built if t.name not in {TIMELINE_TOOL_NAME, SUMMARIZE_TOOL_NAME}]
     return declared, instance.tools_for_request(list(declared))
 
 

@@ -23,7 +23,10 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/lib/hooks/use-chat-speech-synthesis', () => ({
   useChatSpeechSynthesis: () => ({ isSupported: false, isSpeaking: false, speak: vi.fn(), stop: vi.fn() }),
 }));
-vi.mock('@/lib/store/command-store', () => ({ useCommandStore: { getState: () => ({ dispatch: vi.fn() }) } }));
+// The last answer also registers the /copy and /feedback commands (our side).
+vi.mock('@/lib/store/command-store', () => ({
+  useCommandStore: { getState: () => ({ dispatch: vi.fn(), register: vi.fn(), unregister: vi.fn() }) },
+}));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: h.toastSuccess, error: h.toastError } }));
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: { forkAgentConversation: h.forkAgentConversation } }));
 vi.mock('../../../api', () => ({
@@ -34,6 +37,8 @@ vi.mock('../../../store', () => {
     activeSlotId: 's1',
     slots: { s1: h.slot },
     bumpConversationsVersion: h.bump,
+    // The harness's model badge reads the configured models (our side).
+    settings: { availableModels: [] },
     updateSlot: h.updateSlot,
   });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), {

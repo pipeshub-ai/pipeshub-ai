@@ -17,8 +17,14 @@
 # Optional env:
 #   SMOKE_VARIANT   neo4j-kafka (default) | arangodb-redis | eks
 #                   eks uses values-eks.yaml on a 3-worker cluster, scaled down
+#                   arangodb-redis and eks run the code sandbox on the DinD
+#                   sidecar and check it (a run, the proxy policy, the
+#                   sidecar's usage route)
+#   SMOKE_REQUIRE_USAGE=1  fail when docker-proxy does not serve
+#                   /_pipeshub/usage (an image older than the route skips it)
 
 #   APP_IMAGE       image to install (default pipeshubai/pipeshub-ai:slim)
+#   SMOKE_HARDENED  1 installs the hardened profile (default 0: the chart's default profile)
 #   KIND_CLUSTER    cluster name (default pipeshub-helm-smoke-<pid>)
 #   SMOKE_PORT      local port for the port-forward (default 13001)
 #   HELM_TIMEOUT    how long helm waits for every pod to be Ready (default 30m)
@@ -30,6 +36,10 @@ set -euo pipefail
 CHART="$(cd "$(dirname "${BASH_SOURCE[0]}")/../pipeshub-ai" && pwd)"
 VARIANT="${SMOKE_VARIANT:-neo4j-kafka}"
 APP_IMAGE="${APP_IMAGE:-pipeshubai/pipeshub-ai:slim}"
+# The hardened profile runs the app on a read-only root, which only an image built from this tree supports; the
+# published image is the last release's, so CI installs the chart's default profile, as a new install gets.
+HARDENED="${SMOKE_HARDENED:-0}"
+HARDENED_VALUE="$([[ "$HARDENED" == 1 ]] && echo true || echo false)"
 CLUSTER="${KIND_CLUSTER:-pipeshub-helm-smoke-$$}"
 PORT="${SMOKE_PORT:-13001}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-30m}"
@@ -40,6 +50,8 @@ RELEASE="pipeshub-ai"
 LOG_PREFIX="kind_smoke"
 
 die() { echo "${LOG_PREFIX}: $*" >&2; exit 1; }
+
+[[ "$HARDENED" == 0 || "$HARDENED" == 1 ]] || die "SMOKE_HARDENED must be 0 or 1 (got ${HARDENED})"
 
 for tool in kind kubectl helm docker curl python3 openssl; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -53,11 +65,20 @@ case "$VARIANT" in
     VARIANT_ARGS=()
     ;;
   arangodb-redis)
+    # Also the code sandbox on a small DinD sidecar (requests = limits).
     VARIANT_ARGS=(
       --set neo4j.enabled=false
       --set arango.enabled=true
       --set "arango.auth.rootPassword=$(openssl rand -hex 12)"
       --set messageBroker.type=redis
+      --set config.sandboxMode=docker
+      --set config.sandboxAllowLocal=false
+      --set sandbox.dind.enabled=true
+      --set sandbox.dind.resources.requests.cpu=1
+      --set sandbox.dind.resources.requests.memory=1Gi
+      --set sandbox.dind.resources.limits.cpu=1
+      --set sandbox.dind.resources.limits.memory=1Gi
+      --set sandbox.dind.storage.sizeLimit=8Gi
     )
     ;;
   eks)
@@ -106,7 +127,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "${LOG_PREFIX}: variant=${VARIANT} image=${APP_IMAGE} cluster=${CLUSTER}"
+echo "${LOG_PREFIX}: variant=${VARIANT} image=${APP_IMAGE} hardened=${HARDENED_VALUE} cluster=${CLUSTER}"
 
 if [[ "$KIND_NODES" -gt 1 ]]; then
   {
@@ -124,12 +145,35 @@ kubectl config use-context "kind-${CLUSTER}" >/dev/null
 
 helm dependency build "$CHART" >/dev/null
 
+# What the image can run (its ai.pipeshub.capabilities label), so the chart renders what that image supports: the
+# published image is the last release's, which may be older than the label ("none"). From a local copy, else from the
+# registry's config without pulling; unreadable leaves the chart's default (this release's image).
+image_capabilities() {
+  local out
+  if out="$(docker image inspect "$APP_IMAGE" --format '{{ index .Config.Labels "ai.pipeshub.capabilities" }}' 2>/dev/null)"; then
+    [[ -z "$out" || "$out" == "<no value>" ]] && out=none
+    printf '%s' "$out"
+    return 0
+  fi
+  if out="$(docker buildx imagetools inspect "$APP_IMAGE" --format '{{ json .Image }}' 2>/dev/null)" && [[ -n "$out" ]]; then
+    out="$(printf '%s' "$out" | grep -oE '"ai\.pipeshub\.capabilities": *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/')"
+    printf '%s' "${out:-none}"
+  fi
+}
+CAPABILITIES="$(image_capabilities || true)"
+CAPABILITY_ARGS=()
+if [[ -n "$CAPABILITIES" ]]; then
+  CAPABILITY_ARGS=(--set-string "image.capabilities=${CAPABILITIES//,/\\,}")
+  echo "${LOG_PREFIX}: image capabilities: ${CAPABILITIES}"
+fi
+
 # values-local.yaml is the preset the README gives for kind. The overrides only
 # supply secrets and trim CPU requests so every pod schedules on one 4-CPU node.
 echo "${LOG_PREFIX}: installing (helm waits up to ${HELM_TIMEOUT} for every pod to be Ready)"
 if ! helm install "$RELEASE" "$CHART" \
   --namespace "$NAMESPACE" --create-namespace \
   -f "$VALUES_FILE" \
+  --set hardened="$HARDENED_VALUE" \
   --set image.repository="${APP_IMAGE%:*}" \
   --set image.tag="${APP_IMAGE##*:}" \
   --set secretKey="$(openssl rand -hex 32)" \
@@ -144,6 +188,7 @@ if ! helm install "$RELEASE" "$CHART" \
   --set qdrant.resources.requests.cpu=250m \
   --set arango.resources.requests.cpu=250m \
   "${VARIANT_ARGS[@]}" \
+  ${CAPABILITY_ARGS[@]+"${CAPABILITY_ARGS[@]}"} \
   --wait --timeout "$HELM_TIMEOUT"; then
   die "helm install did not become Ready within ${HELM_TIMEOUT}"
 fi
@@ -197,6 +242,16 @@ fi
 # unused when a hosted embedding model is configured.
 echo "${LOG_PREFIX}: services $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"])' "$WORK/health.json")"
 
+# The app pod. `deploy/${RELEASE}` is ambiguous: the Arango pod carries the
+# deployment's selector labels too, so kubectl may pick it.
+APP_POD="$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/component=main" \
+  --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')"
+[[ -n "$APP_POD" ]] || die "no running app pod"
+
+# Runs a script from stdin with the app container's Python; images differ in
+# whether they name it python3 or python.
+APP_PYTHON='p=$(command -v python3 || command -v python || ls /usr/local/bin/python3 /app/.venv/bin/python 2>/dev/null | head -n1); [ -n "$p" ] || { echo "no python in the app container (PATH=$PATH)" >&2; exit 127; }; exec "$p" -'
+
 if [[ "$VARIANT" == "eks" ]]; then
   MONGO_POD="${RELEASE}-mongodb-0"
   QDRANT_POD="${RELEASE}-qdrant-0"
@@ -205,7 +260,7 @@ if [[ "$VARIANT" == "eks" ]]; then
     --password "$(kubectl get secret -n "$NAMESPACE" "${RELEASE}-secrets" -o jsonpath='{.data.mongodb-password}' | base64 -d)" \
     --authenticationDatabase admin --eval 'const s=rs.status(); if (s.members.filter(m => m.health===1).length < 3) quit(1)' \
     || die "mongo replica set does not have 3 healthy members"
-  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -- python -c '
+  kubectl exec -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- python -c '
 import json, os, urllib.request
 key = os.environ["QDRANT_API_KEY"]
 req = urllib.request.Request("http://pipeshub-ai-qdrant:6333/cluster", headers={"api-key": key})
@@ -215,7 +270,7 @@ print("peers", len(peers))
 if len(peers) < 3:
     raise SystemExit(1)
 ' || die "qdrant does not have 3 peers"
-  kubectl exec -n "$NAMESPACE" "deploy/${RELEASE}" -- python -c '
+  kubectl exec -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- python -c '
 import json, os, urllib.request
 key = os.environ["QDRANT_API_KEY"]
 create = urllib.request.Request(
@@ -235,9 +290,20 @@ if params.get("replication_factor") != 2:
     || die "redis replica is not connected"
   kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli CONFIG GET maxmemory-policy | grep -q noeviction \
     || die "redis maxmemory-policy is not noeviction"
-  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- python - <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
+fi
+
+if [[ "$VARIANT" == "eks" || "$VARIANT" == "arangodb-redis" ]]; then
+  # arangodb-redis asks for config.sandboxMode=docker, so it keeps the app pod's sidecar when hardened.
+  if [[ "$HARDENED" == 1 && "$VARIANT" == "eks" ]]; then
+    # D1: the daemon is in the sandbox-broker pod; the app pods have none.
+    app_containers="$(kubectl get deploy -n "$NAMESPACE" "$RELEASE" -o jsonpath='{.spec.template.spec.containers[*].name}')"
+    [[ " $app_containers " != *" dind "* ]] || die "the app pod still runs the dind sidecar"
+    [[ " $app_containers " != *" docker-proxy "* ]] || die "the app pod still runs the docker-proxy sidecar"
+    kubectl exec -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- test ! -e /var/run/dind/docker.sock \
+      || die "the app container can see the DinD daemon socket"
+    kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}-sandbox-broker" -c sandbox-broker -- python - <<'PY' || die "sandbox run_code via the broker's DinD failed"
 import os
-os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
+os.environ.setdefault("DOCKER_HOST", "unix:///var/run/dind/docker.sock")
 import docker
 client = docker.from_env()
 image = os.environ["SANDBOX_DOCKER_IMAGE"]
@@ -247,9 +313,34 @@ text = out.decode() if isinstance(out, bytes) else str(out)
 if "2" not in text:
     raise SystemExit(text)
 print(text)
-# The app reaches the daemon only through docker-proxy, which refuses this.
+PY
+  else
+  # The default profile's sandbox runs in the app pod's DinD sidecar, reached only through docker-proxy.
+  kubectl exec -i -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- sh -c "$APP_PYTHON" <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
+import os
+os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
+import docker
+client = docker.from_env()
+image = os.environ["SANDBOX_DOCKER_IMAGE"]
+client.images.pull(image)
+# docker-proxy refuses a create without memory, CPU and process limits.
+limits = {"mem_limit": 512 * 2**20, "nano_cpus": 500_000_000, "pids_limit": 256}
+# create/start/wait/logs, as the app does: containers.run() returns no output
+# unless the log driver is json-file or journald.
+container = client.containers.create(image, ["python", "-c", "print(1+1)"], network_mode="none", **limits)
 try:
-    client.containers.create(image, ["true"], privileged=True, network_mode="none")
+    container.start()
+    status = container.wait(timeout=120).get("StatusCode")
+    text = container.logs(stdout=True, stderr=True).decode(errors="replace")
+finally:
+    container.remove(force=True)
+if status != 0:
+    raise SystemExit(f"sandbox container exited {status}: {text}")
+if "2" not in text:
+    raise SystemExit(text)
+print(text)
+try:
+    client.containers.create(image, ["true"], privileged=True, network_mode="none", **limits)
 except docker.errors.APIError as exc:
     if exc.status_code != 403:
         raise
@@ -257,7 +348,43 @@ else:
     raise SystemExit("docker-proxy admitted a privileged container")
 if os.path.exists("/var/run/dind/docker.sock"):
     raise SystemExit("the app container can see the DinD daemon socket")
+# The code sandbox cap is sized from the dind sidecar's limits.
+if not os.environ.get("SANDBOX_HOST_MEMORY_BYTES", "").isdigit():
+    raise SystemExit("SANDBOX_HOST_MEMORY_BYTES is not the dind memory limit")
 PY
+  # The live limit reads the sidecar's own cgroup through docker-proxy.
+  kubectl exec -i -n "$NAMESPACE" "$APP_POD" -c pipeshub-ai -- env SMOKE_REQUIRE_USAGE="${SMOKE_REQUIRE_USAGE:-0}" sh -c "$APP_PYTHON" <<'PY' \
+    || die "docker-proxy /_pipeshub/usage did not report the dind sidecar"
+import json, os, time, urllib.error, urllib.request
+host = os.environ.get("DOCKER_HOST", "tcp://127.0.0.1:2375").replace("tcp://", "http://")
+def get(path):
+    try:
+        with urllib.request.urlopen(host + path, timeout=10) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+if os.environ.get("SANDBOX_DOCKER_TOPOLOGY") != "dind-sidecar":
+    raise SystemExit("SANDBOX_DOCKER_TOPOLOGY is not dind-sidecar")
+status, body = get("/_pipeshub/usage")
+if status == 403 and os.environ["SMOKE_REQUIRE_USAGE"] != "1":
+    print("docker-proxy predates /_pipeshub/usage; usage check skipped")
+    raise SystemExit(0)
+sidecar = (body or {}).get("sidecar")
+if status != 200 or not sidecar:
+    raise SystemExit(f"/_pipeshub/usage: HTTP {status} {body}")
+if sidecar["memLimitBytes"] != int(os.environ["SANDBOX_HOST_MEMORY_BYTES"]):
+    raise SystemExit(f"memLimitBytes {sidecar['memLimitBytes']} is not the dind limit")
+if sidecar["ageS"] >= 15:
+    raise SystemExit(f"the sidecar stats are {sidecar['ageS']} s old")
+time.sleep(6)
+status, body = get("/_pipeshub/usage")
+if (body or {}).get("sidecar", {}).get("cpuUtil") is None:
+    raise SystemExit(f"no CPU rate on the second read: {body}")
+if get("/containers/x/stats")[0] != 403:
+    raise SystemExit("docker-proxy forwarded a per-container stats call")
+print("sidecar", json.dumps(body["sidecar"]))
+PY
+  fi
 fi
 
 echo "${LOG_PREFIX}: ok (variant=${VARIANT}, core services healthy, UI 200)"

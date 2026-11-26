@@ -1,5 +1,5 @@
 import { expect } from 'chai'
-import { appReplicaCeiling, localStorageReplicaProblem } from '../../../../src/modules/storage/utils/replicas'
+import { appReplicaCeiling, configuredLocalStorageReplicaProblem, localStorageReplicaProblem } from '../../../../src/modules/storage/utils/replicas'
 
 describe('storage/utils/replicas', () => {
   it('reads the replica ceiling the Helm chart sets', () => {
@@ -19,4 +19,14 @@ describe('storage/utils/replicas', () => {
     expect(problem).to.contain('up to 2 app replicas')
     expect(problem).to.contain('S3 or Azure Blob')
   })
+
+  for (const [what, stored] of [
+    ['one layer', JSON.stringify({ storageType: 's3' })],
+    ['a JSON string of JSON (older Python writer)', JSON.stringify(JSON.stringify({ storageType: 's3' }))],
+  ] as const) {
+    it(`reads the saved storage type stored as ${what}`, async () => {
+      const kv = { get: async () => stored } as never
+      expect(await configuredLocalStorageReplicaProblem(kv, { PIPESHUB_APP_MAX_REPLICAS: '2' })).to.equal(null)
+    })
+  }
 })

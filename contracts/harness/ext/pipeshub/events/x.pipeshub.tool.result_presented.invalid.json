@@ -1,0 +1,124 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "callId": "call_1",
+        "status": "completed",
+        "content": "{\"issues\": 3}",
+        "resultSummary": "Found 3 issues"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.tool.result_presented",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.result_presented",
+      "data": {
+        "callId": "call_1",
+        "status": "completed",
+        "content": "{\"issues\": 3}",
+        "resultSummary": "Found 3 issues"
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.result_presented",
+      "data": {
+        "callId": "call_1",
+        "status": "completed",
+        "content": "{\"issues\": 3}",
+        "resultSummary": "Found 3 issues",
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "status outside the vocabulary",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.result_presented",
+      "data": {
+        "callId": "call_1",
+        "status": "ok",
+        "content": ""
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "a step's link is http or https only (WP-115)",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.result_presented",
+      "data": {
+        "callId": "call_1",
+        "status": "completed",
+        "content": "{\"issues\": 3}",
+        "resultSummary": "Found 3 issues",
+        "step": {
+          "action": "readPage",
+          "href": "file:///etc/passwd"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

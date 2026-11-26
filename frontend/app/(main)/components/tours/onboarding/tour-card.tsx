@@ -66,7 +66,7 @@ function TourStepRow({
         className="material-icons-outlined"
         style={{
           fontSize: '16px',
-          color: 'var(--olive-9)',
+          color: 'var(--olive-11)',
           flexShrink: 0,
           marginLeft: '8px',
         }}
@@ -192,7 +192,7 @@ export function OnboardingTour() {
           <Text
             size="1"
             style={{
-              color: 'var(--olive-9)',
+              color: 'var(--olive-11)',
               lineHeight: '1.5',
               display: 'block',
               marginBottom: '14px',
@@ -205,7 +205,7 @@ export function OnboardingTour() {
                   href="https://docs.pipeshub.com/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ color: 'var(--accent-9)', textDecoration: 'none' }}
+                  style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
                 />,
               }}
             />
@@ -214,7 +214,7 @@ export function OnboardingTour() {
           <Text
             size="1"
             style={{
-              color: 'var(--olive-9)',
+              color: 'var(--olive-11)',
               lineHeight: '1.5',
               display: 'block',
               marginBottom: '14px',

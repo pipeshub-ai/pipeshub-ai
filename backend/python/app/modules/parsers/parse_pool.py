@@ -46,13 +46,14 @@ from app.capacity.member_budget import AdmissionTimeout, Cancelled
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parse_engine import pools as class_pools
 from app.modules.parse_engine import wiring
-from app.modules.parsers import parse_worker
+from app.modules.parsers import parse_worker, worker_deaths
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
 from app.services.resource_governor.lanes import parse_lanes_mode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
 from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_OUT_OF_MEMORY,
     PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
@@ -89,15 +90,24 @@ IDLE_SECONDS = 60.0
 WORKER_START_SECONDS = 120.0
 # How often a waiting lane checks whether its job was abandoned.
 _POLL_SECONDS = 0.25
+# A worker whose data segment stays this close to its own RLIMIT_DATA (the Excel load's memory
+# cap) for this long is stopped from here. At that cap a load can sit inside one C call for
+# minutes, where no signal handler runs and the worker's own watcher thread cannot allocate
+# either; the worker's watcher stops every other at-cap load within half a second.
+_AT_DATA_LIMIT_MARGIN_KB = 4096
+_AT_DATA_LIMIT_SECONDS = 3.0
 _PYTHON_ROOT = str(Path(__file__).resolve().parents[3])
 
 
 class ParseWorkerError(ParseError):
     """A parse worker died or overran. The message is the reason people see."""
 
-    def __init__(self, message: str, cause: str) -> None:
+    def __init__(self, message: str, cause: str, *, retrying: bool = False) -> None:
         super().__init__(ParseErrorCode.PARSE_FAILED, message, {"parse_worker": cause})
         self.cause = cause
+        # A worker the kernel killed, on the first death of this record's worker: the record is retried (see
+        # ``worker_deaths``), because the file may not be what ran the container out of memory.
+        self.retrying_worker_death = retrying
 
 
 class ParseAbandonedError(IndexingError):
@@ -106,6 +116,12 @@ class ParseAbandonedError(IndexingError):
     An ``IndexingError`` so that a record caught by a shutdown is retried
     rather than marked as a bad file.
     """
+
+
+def _current_record_id() -> str | None:
+    from app.utils.indexing_timing import current_record_id
+
+    return current_record_id()
 
 
 class _WorkerUnavailable(Exception):
@@ -178,6 +194,8 @@ class _Job:
     # fallback charge). ``covered`` is whether a heavy parse permit of this process covers the job.
     kind: object | None = None
     covered: bool = False
+    # The record this job parses for, read where the job is made (the record's own task).
+    record_id: str | None = field(default_factory=lambda: _current_record_id())
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -245,6 +263,24 @@ class _Worker:
                 stream.close()
         with suppress(subprocess.TimeoutExpired):
             self.process.wait(timeout=5)
+
+
+def _at_data_limit(worker: object) -> bool:
+    """True while *worker*'s data segment is within ``_AT_DATA_LIMIT_MARGIN_KB`` of its soft
+    RLIMIT_DATA. False with no limit set, and wherever /proc cannot say."""
+    pid = getattr(getattr(worker, "process", None), "pid", None)
+    if not isinstance(pid, int):
+        return False
+    try:
+        with open(f"/proc/{pid}/limits", encoding="ascii") as limits:
+            soft = next((line.split()[3] for line in limits if line.startswith("Max data size")), "unlimited")
+        if not soft.isdigit():
+            return False
+        with open(f"/proc/{pid}/status", encoding="ascii") as status:
+            vm_data_kb = next((int(line.split()[1]) for line in status if line.startswith("VmData:")), 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return vm_data_kb >= int(soft) // 1024 - _AT_DATA_LIMIT_MARGIN_KB
 
 
 class _Lane:
@@ -341,11 +377,24 @@ class _Lane:
 
         timeout = job.timeout if job.timeout is not None else messaging_env.record_processing_timeout
         deadline = time.monotonic() + timeout
+        at_limit_since: float | None = None
         while not worker.reply_ready(_POLL_SECONDS):
             if self._abandoned(job):
                 self._drop_worker()
                 raise ParseAbandonedError("parse abandoned while it was running")
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if not _at_data_limit(worker):
+                at_limit_since = None
+            elif at_limit_since is None:
+                at_limit_since = now
+            elif now - at_limit_since >= _AT_DATA_LIMIT_SECONDS:
+                self._drop_worker()
+                _logger.warning(
+                    "Parsing %s (%d bytes) sat at its memory limit for %.0fs; its worker was replaced",
+                    job.label, job.size, _AT_DATA_LIMIT_SECONDS,
+                )
+                raise ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "at_memory_limit")
+            if now >= deadline:
                 self._drop_worker()
                 _logger.warning(
                     "Parsing %s (%d bytes) was stopped after %.0fs; its worker was replaced",
@@ -364,7 +413,12 @@ class _Lane:
 
     def _crashed(self, job: _Job) -> ParseWorkerError:
         worker = self._worker
-        self._drop_worker()  # stops and reaps it, so its exit status is known
+        status = None
+        if worker is not None:
+            # Read before the worker is stopped: stopping it kills it, which would read as a kill from outside.
+            with suppress(subprocess.TimeoutExpired):
+                status = worker.process.wait(timeout=1)
+        self._drop_worker()  # stops and reaps it
         from app.services.resource_governor.kinds import ParseKind
 
         # Only an Excel load sets that limit; any other job dying of it (an operator's `ulimit -t`) is the retryable crash below.
@@ -376,16 +430,26 @@ class _Lane:
                 job.label, job.size,
             )
             return ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
+        # The kernel's kill (the OOM killer, a cgroup limit) ends a worker with SIGKILL. The kill lands on the
+        # largest-looking worker, which need not be the one whose file used the memory, so the record gets one
+        # more try: only a second death of its worker is read as the file being too large. Any other end
+        # (a crash, a nonzero exit, an unknown status) is not retried.
+        killed = status == -signal.SIGKILL
+        retrying = killed and worker_deaths.deaths.is_first(job.record_id)
         _logger.warning(
-            "The parse worker died while parsing %s (%d bytes), most likely out of memory. "
-            "That record fails; a fresh worker takes the next file.",
+            "The parse worker died while parsing %s (%d bytes), most likely out of memory. %s",
             job.label, job.size,
+            "The record is retried once; a fresh worker takes the next file." if retrying
+            else "That record fails; a fresh worker takes the next file.",
         )
         governor = _State.governor
         if governor is not None:
             # Proof of memory exhaustion that the periodic sampler may not see
-            # for several seconds, same as a dead Docling or rasterizer worker.
+            # for several seconds, same as a dead Docling or rasterizer worker. It halves the heavy parse
+            # limit for a cooldown, so the retry runs with fewer large files beside it.
             governor.report_memory_incident("parse worker died (most likely OOM-killed)")
+        if retrying:
+            return ParseWorkerError(PARSE_WORKER_KILLED_RETRYING, "crashed", retrying=True)
         return ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "crashed")
 
 
@@ -504,6 +568,7 @@ async def submit(
     interactive: bool = False,
     kind: object | None = None,
     permit: Permit | None = None,
+    process_only: bool = False,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -519,7 +584,12 @@ async def submit(
     *interactive* (a chat attachment a person is waiting on) runs on a pool of
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
+
+    *process_only* never falls back to a thread (which *timeout* cannot stop): with no worker process, or a pool that
+    closed under the job, it raises ``ParseWorkerError``.
     """
+    if process_only and parse_pool_workers() <= 0:
+        raise ParseWorkerError("No parse worker process is available", "no_worker")
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
@@ -531,8 +601,10 @@ async def submit(
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
+        if pool is None and process_only:
+            raise ParseWorkerError("No parse worker process is available", "no_worker")
         if pool is not None:
-            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            job = _Job(fn, args, label, size, timeout, require_worker=process_only, kind=kind, covered=_covered(kind))
             if held is not None:
                 # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
                 # while still queued. The tokens go back then, not when the awaiting caller goes away.
@@ -542,6 +614,8 @@ async def submit(
                 return await pool.submit(job)
             except _PoolClosed:
                 release_here = held is not None  # never enqueued: nothing else will release it
+                if process_only:
+                    raise ParseWorkerError("The parse worker pool closed", "pool_closed") from None
         # A thread cannot be stopped: if this coroutine is cancelled, the work goes on and keeps its tokens until it
         # ends, so the permit is released when the thread does, not when the caller goes away.
         future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn, *args)

@@ -1,0 +1,8 @@
+{
+  "name": "pxh-node-pm2",
+  "private": true,
+  "description": "The standalone Node image's pm2, installed with npm ci from this lock.",
+  "dependencies": {
+    "pm2": "7.1.1"
+  }
+}

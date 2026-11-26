@@ -8,7 +8,8 @@ import { accessLog } from '../../../src/libs/middlewares/access-log.middleware'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
 import { Logger } from '../../../src/libs/services/logger.service'
-import { setContextIdentity } from '../../../src/libs/context/request-context'
+import { getRequestContext, setContextIdentity } from '../../../src/libs/context/request-context'
+import { newRequestId, recordsOf } from '../../helpers/log-capture'
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
 import { registerUpstreams } from '../../../src/libs/http/upstream-call'
 import { getConnectorStats } from '../../../src/modules/tokens_manager/controllers/connector.controllers'
@@ -19,7 +20,7 @@ const USER = '65f0a1b2c3d4e5f6a7b8c9d1'
 const BODY_SECRET = 'alice@example.com'
 const CONNECTOR_ID = '65f0a1b2c3d4e5f6a7b8c9d2'
 
-type Logged = { level: string; message: string; meta: Record<string, any> }
+type Logged = { level: string; message: string; meta: Record<string, any>; request_id?: string }
 
 /**
  * The real request chain (context, access line, error middleware), the real getConnectorStats controller
@@ -27,27 +28,32 @@ type Logged = { level: string; message: string; meta: Record<string, any> }
  */
 describe('upstream-call: what a request logs about its upstream call', () => {
   let logged: Logged[]
+  // The request under test (its root id); a line from any other context is not this test's.
+  let current = ''
   let upstream: http.Server
   let gateway: http.Server
   let gatewayBase: string
   let mode: 'ok' | 'fail' | 'drop'
   let receivedIds: Array<string | undefined>
 
-  const atLeast = (levels: string[]): Logged[] => logged.filter((l) => levels.includes(l.level))
-  const callLines = (): Logged[] => logged.filter((l) => l.message === 'upstream.call.end')
+  const mine = (): Logged[] => recordsOf(logged, current) as Logged[]
+  const atLeast = (levels: string[]): Logged[] => mine().filter((l) => levels.includes(l.level))
+  const callLines = (): Logged[] => mine().filter((l) => l.message === 'upstream.call.end')
   const accessLine = async (): Promise<Logged> => {
     for (let i = 0; i < 200; i += 1) {
-      const line = logged.find((l) => l.message === 'http.request.end')
+      const line = mine().find((l) => l.message === 'http.request.end')
       if (line) return line
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     throw new Error('no access line')
   }
-  const request = (method: string, path: string, requestId?: string): Promise<number> =>
+  /** `rootId` is what the gateway makes of the id it is sent (sanitised). */
+  const request = (method: string, path: string, requestId = newRequestId('upstream-flow'), rootId = requestId): Promise<number> =>
     new Promise((resolve, reject) => {
+      current = rootId
       const req = http.request(
         `${gatewayBase}${path}`,
-        { method, agent: false, headers: requestId ? { 'x-request-id': requestId } : {} },
+        { method, agent: false, headers: { 'x-request-id': requestId } },
         (res) => {
           res.resume()
           res.on('end', () => resolve(res.statusCode ?? 0))
@@ -124,7 +130,12 @@ describe('upstream-call: what a request logs about its upstream call', () => {
     receivedIds = []
     // Every logger, whatever root it was created from: module loggers keep the instance they got at load.
     sinon.stub(Logger.prototype as any, 'logWithLevel').callsFake((level: unknown, message: unknown, meta: unknown) => {
-      logged.push({ level: String(level), message: String(message), meta: (meta ?? {}) as Record<string, any> })
+      logged.push({
+        level: String(level),
+        message: String(message),
+        meta: (meta ?? {}) as Record<string, any>,
+        request_id: getRequestContext()?.rootId,
+      })
     })
   })
 
@@ -137,11 +148,11 @@ describe('upstream-call: what a request logs about its upstream call', () => {
     expect(callLines().map((l) => [l.level, l.meta.upstream, l.meta.route, l.meta.status, l.meta.error_class])).to.deep.equal([
       ['warning', 'connector', '/connector/api/v1/stats', 500, 'upstream_5xx'],
     ])
-    const middleware = logged.filter((l) => l.message === 'http.request.error')
+    const middleware = mine().filter((l) => l.message === 'http.request.error')
     expect(middleware.map((l) => [l.level, l.meta.error_class])).to.deep.equal([['warning', 'upstream_5xx']])
     expect([access.level, access.meta.error_class]).to.deep.equal(['warning', 'upstream_5xx'])
-    // The controller's own catch-and-log line is N5's; it is the only ERROR left.
-    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal(['Error getting connector stats'])
+    // The controller no longer logs what it passes on: no ERROR at all.
+    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal([])
     expect(JSON.stringify(logged.map((l) => [l.message, l.meta]))).to.not.include(BODY_SECRET)
   })
 
@@ -154,7 +165,7 @@ describe('upstream-call: what a request logs about its upstream call', () => {
       ['warning', 2, 'unavailable', 'UND_ERR_SOCKET'],
       ['warning', 3, 'unavailable', 'UND_ERR_SOCKET'],
     ])
-    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal(['Error getting connector stats'])
+    expect(atLeast(['error']).map((l) => l.message)).to.deep.equal([])
   })
 
   it('a 200 and a chat stream log exactly their access line at INFO and above', async () => {
@@ -175,7 +186,7 @@ describe('upstream-call: what a request logs about its upstream call', () => {
 
   it("the service gets the gateway's sanitised request id, not the client's raw one", async () => {
     mode = 'ok'
-    await request('GET', `/api/v1/connectors/${CONNECTOR_ID}/stats`, 'rq bad!')
+    await request('GET', `/api/v1/connectors/${CONNECTOR_ID}/stats`, 'rq bad!', 'rqbad')
     await accessLine()
     expect(receivedIds).to.deep.equal(['rqbad'])
   })

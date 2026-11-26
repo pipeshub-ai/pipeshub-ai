@@ -6,6 +6,7 @@ import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { RequestContextStore, getRequestContext, runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { createOAuthRedirectMiddleware } from '../../../../src/modules/oauth_provider/middlewares/oauth.redirect.middleware'
 import * as sessionUtils from '../../../../src/libs/utils/user-session.utils'
+import { assertNotLogged, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('OAuthRedirectMiddleware', () => {
   let mockTokenService: any
@@ -26,7 +27,13 @@ describe('OAuthRedirectMiddleware', () => {
     mockNext = sinon.stub()
   })
 
-  afterEach(() => { sinon.restore() })
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
+    sinon.restore()
+  })
 
   describe('createOAuthRedirectMiddleware', () => {
     it('should redirect to frontend when no auth token', async () => {
@@ -41,6 +48,26 @@ describe('OAuthRedirectMiddleware', () => {
       const redirectUrl = mockRes.redirect.firstCall.args[0]
       expect(redirectUrl).to.include('http://frontend:3000/oauth/authorize')
       expect(redirectUrl).to.include('client_id=cid')
+    })
+
+    // The query is unvalidated client input; login_hint is usually an email (docs/logging.md, "Personal data").
+    it('logs the redirect without the query, and still forwards every parameter', async () => {
+      const mw = createOAuthRedirectMiddleware(mockTokenService, mockLogger, 'http://frontend:3000')
+      const query = {
+        client_id: 'cid',
+        redirect_uri: 'https://app.example.com/cb',
+        scope: 'org:read',
+        state: 'STATE-SECRET-123',
+        code_challenge: 'CHALLENGE-abc',
+        login_hint: 'jane.doe@example.com',
+      }
+
+      await mw({ headers: {}, query } as any, mockRes, mockNext)
+
+      expect(mockLogger.info.args).to.deep.equal([['No auth token, redirecting to frontend OAuth page']])
+      assertNotLogged(mockLogger, 'jane.doe', 'STATE-SECRET-123', 'CHALLENGE-abc', 'app.example.com', 'cid')
+      const forwarded = new URL(mockRes.redirect.firstCall.args[0]).searchParams
+      expect(Object.fromEntries(forwarded)).to.deep.equal(query)
     })
 
     it('should call next for valid Bearer token', async () => {

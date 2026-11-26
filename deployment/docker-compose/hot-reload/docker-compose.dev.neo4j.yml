@@ -1,3 +1,18 @@
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   pipeshub-ai:
     image: pipeshub-ai:latest
@@ -55,11 +70,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
-      - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY to a random key, e.g. the output of openssl rand -base64 32 (install.sh generates one)}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -115,10 +129,9 @@ services:
       - REDIS_DB=${REDIS_DB:-0}
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin&replicaSet=rs0&w=majority
       - MONGO_DB_NAME=es
-      # Standalone mongod — multi-document transactions unavailable. App branches on this.
-      - REPLICA_SET_AVAILABLE=false
+      - REPLICA_SET_AVAILABLE=true
 
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
@@ -250,6 +263,7 @@ services:
       # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
       - ../scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
       - ../../../backend/python/app:/app/python/app
+      - ../../../backend/python/harness_core:/app/python/harness_core
       # Mount entire source directories — picks up all config file additions automatically
       - ../../../backend/nodejs/apps:/app/backend
       - ../../../frontend:/app/frontend
@@ -266,30 +280,38 @@ services:
       start_period: 60s
 
   mongodb:
-    image: mongo:8.0.17
-    restart: always
+    # Single-node replica set, defined once in the base file.
+    extends:
+      file: ../docker-compose.yml
+      service: mongodb
+    # The base file attaches its own network; this file uses the default one.
+    networks: !reset null
+    # Host tools must add directConnection=true: the member advertises
+    # mongodb:27017, which only resolves inside the Compose network.
     ports:
       - "27017:27017"
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
 
   redis:
-    image: redis:7.4-bookworm
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint hands /data to the redis user (CHOWN, and DAC_READ_SEARCH
+    # to reach into the 0700 folder an earlier root-running redis left) and drops to
+    # it (SETUID, SETGID); redis-server holds none of them. The command goes through
+    # that entrypoint: started straight from sh, redis-server ran as root.
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
+    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     ports:
       - "6379:6379"
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
-      sh -c "redis-server
+      sh -c "exec docker-entrypoint.sh redis-server
       --appendonly yes
       --appendfsync everysec
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
@@ -300,9 +322,22 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096
 
   neo4j:
-    image: neo4j:5.26.0
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     restart: always
     ports:
       - "7474:7474"
@@ -322,7 +357,9 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          # 2G heap + 1G page cache still needs JVM/native headroom.
+          memory: 4G
+          pids: 4096
         reservations:
           cpus: '2'
           memory: 2G
@@ -334,8 +371,13 @@ services:
       start_period: 30s
 
   zookeeper:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-zookeeper:7.9.0
+    image: confluentinc/cp-zookeeper:7.9.0@sha256:5ae28c2f45b89e12e8ba27bd0cfbe6488ef7082a17f01c878ab7f1841a58874b
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: always
     ports:
       - "2181:2181"
@@ -350,10 +392,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 4096
 
   kafka-1:
+    <<: *hardened
     profiles: ["kafka"]
-    image: confluentinc/cp-kafka:7.9.0
+    image: confluentinc/cp-kafka:7.9.0@sha256:02170e46da5c36b1581cd42ebfbf2a55edae6348c62bc772bc2166841db745b2
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
     restart: always
     depends_on:
       zookeeper:
@@ -383,9 +435,15 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          pids: 4096
 
   qdrant:
-    image: qdrant/qdrant:v1.15
+    <<: *hardened
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
     stop_grace_period: 120s
     ports:
       - "6333:6333"
@@ -412,6 +470,7 @@ services:
           # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
           # the app the figure, for the warning on the Services page.
           memory: ${QDRANT_MEMORY_LIMIT:-4G}
+          pids: 4096
         reservations:
           cpus: '2'
           memory: 2G
@@ -431,6 +490,8 @@ services:
 
 volumes:
   mongodb_data:
+    driver: local
+  mongodb_replset_key:
     driver: local
   redis_data:
     driver: local

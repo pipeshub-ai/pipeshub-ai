@@ -1,0 +1,150 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000,
+          "cacheWriteTokens": 0
+        },
+        "costUsd": 0.0123,
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes usage.recorded",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "usage.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000,
+          "cacheWriteTokens": 0
+        },
+        "costUsd": 0.0123,
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "usage.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000,
+          "cacheWriteTokens": 0
+        },
+        "costUsd": 0.0123,
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        },
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "cost cannot be negative",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "usage.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1,
+          "outputTokens": 1
+        },
+        "costUsd": -0.5
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "costUsd is at most a billion dollars",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "usage.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "tokens": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000,
+          "cacheWriteTokens": 0
+        },
+        "costUsd": 1000000001,
+        "route": {
+          "provider": "anthropic",
+          "model": "claude-x"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

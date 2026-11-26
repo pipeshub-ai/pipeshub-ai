@@ -125,9 +125,10 @@ export async function insertRows(
     let conflict = 'ON CONFLICT DO NOTHING';
     let batch = group;
     let upsert = false;
+    let key: string[] = [];
     if (isUpsert(table)) {
       // replace in place: the key stays, every other column takes the new value (a column the row leaves out goes back to its default)
-      const key = await primaryKey(k, table);
+      key = await primaryKey(k, table);
       const set = (await allColumns(k, table))
         .filter((c) => !key.includes(c))
         .map((c) => `${c} = ${cols.includes(c) ? `excluded.${c}` : 'DEFAULT'}`);
@@ -143,20 +144,36 @@ export async function insertRows(
           ];
       }
     }
-    // xmax is 0 on a row this statement inserted and set on one it updated; rowCount counts both
-    const { rows: out, rowCount } = await k.query<{ ins: boolean }>(
+    if (!upsert) {
+      const { rowCount } = await k.query(
+        fill(
+          '/* pipeshub:import.rows */ INSERT INTO @{T} (@{C}) SELECT @{C} FROM jsonb_populate_recordset(NULL::@{T}, $1::jsonb) @{X}',
+          { T: table, C: list, X: conflict },
+        ),
+        [JSON.stringify(batch)],
+      );
+      written += rowCount ?? 0;
+      continue;
+    }
+    // rows inserted = rows written - rows whose key was there before. Not `RETURNING (xmax = 0)`: a partitioned table (notifications)
+    // refuses system columns there ("cannot retrieve a system column in this context"). Every part of the statement reads the same
+    // snapshot, so `pre` counts the keys as they were before the insert. A key the rows do not name is a default: never there before.
+    const named = key.every((c) => cols.includes(c));
+    const { rows: out } = await k.query<{ ins: number }>(
       fill(
-        '/* pipeshub:import.rows */ INSERT INTO @{T} (@{C}) SELECT @{C} FROM jsonb_populate_recordset(NULL::@{T}, $1::jsonb) @{X}@{R}',
+        '/* pipeshub:import.rows */ WITH src AS (SELECT @{C} FROM jsonb_populate_recordset(NULL::@{T}, $1::jsonb)), pre AS (SELECT count(*)::int AS n FROM @{T} WHERE @{PRE}), up AS (INSERT INTO @{T} (@{C}) SELECT @{C} FROM src @{X} RETURNING 1) SELECT (SELECT count(*)::int FROM up) - (SELECT n FROM pre) AS ins',
         {
           T: table,
           C: list,
           X: conflict,
-          R: upsert ? ' RETURNING (xmax = 0) AS ins' : '',
+          PRE: named
+            ? `(${key.join(', ')}) IN (SELECT ${key.join(', ')} FROM src)`
+            : 'false',
         },
       ),
       [JSON.stringify(batch)],
     );
-    written += upsert ? out.filter((r) => r.ins).length : (rowCount ?? 0);
+    written += out[0]?.ins ?? 0;
   }
   return written;
 }

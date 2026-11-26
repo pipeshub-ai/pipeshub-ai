@@ -5,7 +5,6 @@ importing the full streaming module, which pulls in heavy LLM SDK deps
 that may not be present in the test environment.
 """
 
-import pytest
 
 
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:

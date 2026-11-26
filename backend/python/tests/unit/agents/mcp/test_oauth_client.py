@@ -6,13 +6,16 @@ import httpx
 import pytest
 
 from app.agents.mcp.oauth_client import (
+    MCPMalformedTokenError,
     MCPOAuthError,
     MCPRefreshTokenInvalidError,
     _parse_form_encoded,
     exchange_code_for_token,
+    parse_tokens,
     refresh_access_token,
     request_client_credentials_token,
 )
+from app.utils.oauth_errors import MAX_TOKEN_LIFETIME_S
 from tests.support.mcp_oauth_fakes import json_response, mock_async_client
 
 
@@ -684,3 +687,100 @@ class TestDeauthReason:
     ])
     def test_the_reason(self, error: MCPOAuthError, reason: str | None) -> None:
         assert error.deauth_reason == reason
+
+
+MARKER = "FIELD-MARKER-26E"
+
+
+class TestParseTokens:
+    """One parse for a provider's answer (snake_case) and a saved record (camelCase): a field of the wrong shape is
+    MCPMalformedTokenError, named as OAuth spells it and never quoted."""
+
+    @pytest.mark.parametrize(("data", "field"), [
+        ({"expires_in": f"soon-{MARKER}"}, "expires_in"),
+        ({"expires_in": [MARKER]}, "expires_in"),
+        ({"expires_in": "3600.5"}, "expires_in"),
+        ({"expires_in": float("nan")}, "expires_in"),
+        ({"expires_in": float("inf")}, "expires_in"),
+        ({"expires_in": 10**20}, "expires_in"),
+        ({"expires_in": MAX_TOKEN_LIFETIME_S + 1}, "expires_in"),
+        ({"expires_in": -(MAX_TOKEN_LIFETIME_S + 1)}, "expires_in"),
+        ({"scope": [MARKER]}, "scope"),
+        ({"token_type": {"t": MARKER}}, "token_type"),
+        ({"refresh_token": 26}, "refresh_token"),
+        ({"access_token": 26}, "access_token"),
+        ({"access_token": None}, "access_token"),
+        ({"created_at": f"bad-{MARKER}"}, "created_at"),
+        ({"created_at": 10**15}, "created_at"),
+        ({"expiresIn": f"soon-{MARKER}"}, "expires_in"),
+        ({"createdAt": [MARKER]}, "created_at"),
+        ({"scope": [MARKER], "tokenUrl": "https://t"}, "scope"),
+    ])
+    def test_a_field_of_the_wrong_shape_is_malformed_and_named(self, data: dict, field: str) -> None:
+        saved_record = any(c.isupper() for key in data for c in key)  # camelCase keys
+        base = {"accessToken": "a"} if saved_record else {"access_token": "a"}
+
+        with pytest.raises(MCPMalformedTokenError) as raised:
+            parse_tokens({**base, **data})
+
+        e = raised.value
+        assert e.field_name == field
+        assert str(e) == f"OAuth token field '{field}' is malformed"
+        assert MARKER not in str(e)
+        assert e.__context__ is None and e.__cause__ is None  # pydantic's text quotes the value
+        assert e.refresh_reason == "malformed_token" and isinstance(e, MCPOAuthError)
+        assert (e.unanswered, e.rejected_client, e.deauth_reason) == (False, False, None)  # no outage, no strike
+
+    def test_a_saved_record_without_an_access_token_names_it_as_oauth_does(self) -> None:
+        with pytest.raises(MCPMalformedTokenError) as raised:
+            parse_tokens({"refreshToken": "r"})
+        assert raised.value.field_name == "access_token"
+
+    @pytest.mark.parametrize(("expires_in", "kept"), [
+        (3600, 3600), ("3600", 3600), (3600.0, 3600), (3599.5, 3599), (None, None), (-5, -5),
+        (MAX_TOKEN_LIFETIME_S, MAX_TOKEN_LIFETIME_S), (-MAX_TOKEN_LIFETIME_S, -MAX_TOKEN_LIFETIME_S),
+    ], ids=["int", "numeric_text", "whole_float", "fraction", "none", "negative", "the_bound", "minus_the_bound"])
+    def test_a_well_formed_lifetime_is_kept(self, expires_in: object, kept: object) -> None:
+        tokens = parse_tokens({"access_token": "a", "expires_in": expires_in})
+
+        assert tokens.expires_in == kept
+        tokens.is_expired  # noqa: B018 - created_at + the lifetime is inside datetime's range
+        tokens.expires_at_epoch  # noqa: B018
+
+    @pytest.mark.parametrize(("expires_in", "kept", "expired", "has_epoch"), [
+        (0.5, 1, False, True), (-0.5, -1, True, True), (3599.5, 3599, False, True),
+        (0, 0, False, False), (0.0, 0, False, False),  # exact zero: no expiry, as on main
+    ], ids=["half_second", "minus_half_second", "fraction", "zero", "zero_float"])
+    def test_a_lifetime_under_a_second_keeps_its_expiry(
+        self, expires_in: float, kept: int, expired: bool, has_epoch: bool,
+    ) -> None:
+        # A fraction is dropped toward zero, but never to 0: the expiry properties read 0 as "no expiry".
+        for data in ({"access_token": "a", "expires_in": expires_in}, {"accessToken": "a", "expiresIn": expires_in}):
+            tokens = parse_tokens(data)
+
+            assert tokens.expires_in == kept
+            assert tokens.is_expired is expired
+            assert (tokens.expires_at_epoch is not None) is has_epoch
+
+    def test_snake_and_camel_case_give_the_same_tokens(self) -> None:
+        snake = {"access_token": "a", "refresh_token": "r", "expires_in": 60, "token_url": "https://t", "created_at": "2026-01-01T00:00:00+00:00"}
+        camel = {"accessToken": "a", "refreshToken": "r", "expiresIn": 60, "tokenUrl": "https://t", "createdAt": "2026-01-01T00:00:00+00:00"}
+        before = dict(camel)
+
+        assert parse_tokens(snake) == parse_tokens(camel)
+        assert camel == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["exchange", "client_credentials", "refresh"])
+    async def test_each_token_request_refuses_a_malformed_answer(self, call: str) -> None:
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=json_response(200, {"access_token": "a", "expires_in": f"soon-{MARKER}"}))
+        url = "https://auth.example.com/token"
+        with mock_async_client(inner), pytest.raises(MCPMalformedTokenError) as raised:
+            if call == "exchange":
+                await exchange_code_for_token(url, "cid", "csec", "code", "https://app/cb", allow_private=True)
+            elif call == "client_credentials":
+                await request_client_credentials_token(url, "cid", "csec", allow_private=True)
+            else:
+                await refresh_access_token(url, "cid", "csec", "rt", allow_private=True)
+        assert raised.value.field_name == "expires_in"

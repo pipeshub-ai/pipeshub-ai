@@ -54,7 +54,8 @@ async def test_a_crashing_tool_gate_is_one_line_and_the_call_is_denied_with_a_co
 
     result = await ToolExecutor(registry, kernel).call_tool(ToolCall(id="c1", name="probe__run", arguments={}))
 
-    assert result.is_error and result.content == f"middleware error: '{_SENTINEL}'"
+    # The middleware's error can quote the call's input or a store's answer: the model gets only why it failed.
+    assert result.is_error and result.content == "middleware error: internal (KeyError)"
     (failed,) = _failed(caplog)
     fields = log_record_fields(failed)
     assert (fields["context"], fields["middleware"], fields["error_class"]) == ("ToolCallContext", "_crashing_gate", "internal")

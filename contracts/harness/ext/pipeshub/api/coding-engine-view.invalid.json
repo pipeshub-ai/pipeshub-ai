@@ -1,0 +1,5 @@
+[
+  {"description": "no choice", "instance": {"engines": [], "orgDefault": null}},
+  {"description": "an engine without availability", "instance": {"engines": [{"kind": "codex"}], "orgDefault": null, "choice": "none"}},
+  {"description": "a reason that is not a catalogue code", "instance": {"engines": [{"kind": "codex", "available": false, "reason": {"code": "needs an anthropic model"}}], "orgDefault": null, "choice": "none"}}
+]

@@ -76,6 +76,7 @@ def test_a_load_past_its_cpu_limit_is_refused_as_too_large(monkeypatch: pytest.M
     with pytest.raises(ParseError) as raised:
         parser.load_workbook_from_binary(_links_on_merges())
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    # wall-clock-ok: a backstop many times the limit under test; unbounded the load runs about 80 s
     assert time.monotonic() - started < 30  # the limit plus slack; unbounded this runs about 80 s
 
 
@@ -87,6 +88,7 @@ def test_the_cpu_limit_never_raises_into_the_worker() -> None:
     with pytest.raises(parse_pool.ParseWorkerError) as raised:
         parse_pool.run_blocking(spin_under_the_cpu_limit, 1, label="spin", timeout=120, kind=ParseKind.EXCEL_LOAD)
     assert raised.value.cause == "timed_out"
+    # wall-clock-ok: a backstop many times the limit under test; unbounded the load runs about 80 s
     assert time.monotonic() - started < 30, "the CPU limit ended it, not the pool's timeout"
 
 
@@ -148,6 +150,7 @@ def test_the_pool_timeout_ends_a_load_in_a_worker_as_too_large(monkeypatch: pyte
     with pytest.raises(ParseError) as raised:
         parser.load_workbook_from_binary(_links_on_merges())
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    # wall-clock-ok: a backstop many times the limit under test; unbounded the load runs about 80 s
     assert time.monotonic() - started < 30
 
 
