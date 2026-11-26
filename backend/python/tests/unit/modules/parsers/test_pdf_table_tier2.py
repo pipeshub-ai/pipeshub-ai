@@ -40,7 +40,7 @@ def evidence_tables(page: pdfplumber.page.Page, box: tuple[float, float, float, 
     decisions: list = []
     real = tr.reconcile
 
-    def recording(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+    def recording(*args, **kwargs) -> list:
         decisions.extend(out := real(*args, **kwargs))
         return out
 
