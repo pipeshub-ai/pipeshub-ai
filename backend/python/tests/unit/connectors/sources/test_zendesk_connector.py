@@ -3549,6 +3549,22 @@ class TestArticleStreaming:
         with pytest.raises(Exception, match="Failed to fetch Zendesk article"):
             await zendesk_connector._process_article_blockgroups_for_streaming(self._record())
 
+    async def test_raises_when_the_article_comments_cannot_all_be_read(self, zendesk_connector) -> None:
+        """A failed comment list must not stream the body alone as if the article had no comments."""
+        datasource = _ready(zendesk_connector)
+        self._no_attachments(datasource)
+        datasource.show_article = AsyncMock(return_value=_make_response(data={
+            "article": {"id": 55, "title": "T", "body": "<p>Body</p>"}}))
+        walk = zendesk_connector._fetch_paginated_list_checked
+
+        async def checked(api_method, key, **kwargs):
+            return ([], False) if key == "comments" else await walk(api_method, key, **kwargs)
+
+        zendesk_connector._fetch_paginated_list_checked = checked
+
+        with pytest.raises(RuntimeError, match="every comment for Zendesk article 55"):
+            await zendesk_connector._process_article_blockgroups_for_streaming(self._record())
+
     async def test_stream_record_dispatches_webpage(self, zendesk_connector) -> None:
         _ready(zendesk_connector)
         zendesk_connector._process_article_blockgroups_for_streaming = AsyncMock(

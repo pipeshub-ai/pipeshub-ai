@@ -3311,12 +3311,17 @@ class ZendeskConnector(BaseConnector):
         # Comments hang off the body the way ticket comments hang off the description.
         # An article comment has no ACL of its own: it is readable by whoever can read
         # the article, and only org-wide-public articles are synced.
-        comments = await self._fetch_paginated_list(
+        comments, comments_complete = await self._fetch_paginated_list_checked(
             datasource.list_article_comments,
             "comments",
             article_id=int(article_id),
             sort_order="asc",
         )
+        if not comments_complete:
+            # Streaming the body alone would present the article as if it had no comments.
+            raise RuntimeError(
+                f"Failed to read every comment for Zendesk article {article_id}"
+            )
         for index, comment in enumerate(comments, start=1):
             comment_body = comment.get("body") or ""
             if "<" in comment_body and ">" in comment_body:
