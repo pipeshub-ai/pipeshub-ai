@@ -1,0 +1,8 @@
+{
+  "name": "pxh-sandbox-tsx",
+  "private": true,
+  "description": "The sandbox image's global tsx, installed with npm ci from this lock.",
+  "dependencies": {
+    "tsx": "4.23.13"
+  }
+}

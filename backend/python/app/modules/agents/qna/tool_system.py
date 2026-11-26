@@ -11,9 +11,9 @@ This module retains only:
 
 import json
 import logging
-import os
 
 from app.modules.agents.qna.chat_state import ChatState
+from app.utils.env_flags import PIPESHUB_ENABLE_CODE_EXECUTION, env_flag
 
 logger = logging.getLogger(__name__)
 
@@ -61,30 +61,22 @@ def code_execution_enabled(state: ChatState) -> bool:
     2. ``PIPESHUB_ENABLE_CODE_EXECUTION`` env var
     3. Default: ``True``
 
-    If the flag cannot be read at all, code execution is treated as
-    disabled: an outage in flag resolution must not switch it on.
+    If the request's override cannot be read, code execution is treated as
+    disabled: an outage in flag resolution must not switch it on. A malformed
+    env value is the matrix's one parse refusing it (``InvalidEnvFlag``); the
+    service already refused to start on it.
     """
     try:
         state_flag = state.get("enable_code_execution")
-        if isinstance(state_flag, bool):
-            return state_flag
-
-        env_val = os.environ.get("PIPESHUB_ENABLE_CODE_EXECUTION")
     except Exception:
         logger.warning(
             "code_execution_enabled: could not resolve the flag; treating code execution as disabled",
             exc_info=True,
         )
         return False
-
-    if env_val is not None:
-        raw = env_val.strip().lower()
-        if raw in {"1", "true", "yes", "on"}:
-            return True
-        if raw in {"0", "false", "no", "off"}:
-            return False
-
-    return True
+    if isinstance(state_flag, bool):
+        return state_flag
+    return env_flag(PIPESHUB_ENABLE_CODE_EXECUTION)
 
 
 def get_tool_results_summary(state: ChatState) -> str:

@@ -12,6 +12,43 @@ export const toKnowledgeLimit = (
       }
     : undefined;
 
+const LIMIT_KEYS = ['apps', 'recordGroups', 'records'] as const;
+
+/** How many items a limit names; none (everything) is 0. */
+export const knowledgeLimitSize = (
+  limit: KnowledgeLimit | null | undefined,
+): number =>
+  limit
+    ? limit.apps.length + limit.recordGroups.length + limit.records.length
+    : 0;
+
+/**
+ * A limit read back from storage, where nothing has validated it. Absent or
+ * null is everything. Anything else must be an object whose lists hold only
+ * ids and name at least one between them, or it is `'unreadable'`: a caller
+ * must refuse it rather than fall back to everything.
+ */
+export const readStoredKnowledgeLimit = (
+  stored: unknown,
+): KnowledgeLimit | undefined | 'unreadable' => {
+  if (stored === undefined || stored === null) return undefined;
+  if (typeof stored !== 'object' || Array.isArray(stored)) return 'unreadable';
+  const raw = stored as Record<string, unknown>;
+  const limit: KnowledgeLimit = { apps: [], recordGroups: [], records: [] };
+  for (const key of LIMIT_KEYS) {
+    const ids = raw[key];
+    if (ids === undefined || ids === null) continue;
+    if (
+      !Array.isArray(ids) ||
+      !ids.every((id) => typeof id === 'string' && id !== '')
+    ) {
+      return 'unreadable';
+    }
+    limit[key] = [...(ids as string[])];
+  }
+  return knowledgeLimitSize(limit) > 0 ? limit : 'unreadable';
+};
+
 /** Two limits name the same items, in any order; absent equals only absent. */
 export const sameKnowledgeLimit = (
   a: KnowledgeLimit | null | undefined,

@@ -1,0 +1,16 @@
+{
+ "scenario": "agent_quick_reasoning",
+ "parts": [
+  {
+   "type": "text",
+   "content": "You get 25 days of paid leave a year.",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "reasoning",
+   "content": "The user asks about leave. The handbook says 25 days.",
+   "runId": "run-golden"
+  }
+ ]
+}

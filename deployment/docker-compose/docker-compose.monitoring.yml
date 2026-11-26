@@ -1,0 +1,84 @@
+# Optional dashboards and alerts for the agent harness (C9.04, C9.05): Prometheus and Grafana, nothing else.
+# A laptop runs neither unless this overlay is named:
+#
+#   GRAFANA_ADMIN_PASSWORD=... docker compose -f docker-compose.yml -f docker-compose.agent-harness.yml \
+#     -f docker-compose.monitoring.yml up -d
+#
+# Prometheus reads Node's merged harness metrics route on the unpublished internal port (3002) with the worker
+# credential, which Node writes to a volume only these two containers share. Grafana (dashboard "PipesHub agent
+# harness") and Prometheus (alert rules) listen on 127.0.0.1 only. Both stay small: 7 days of samples, 256 MB each.
+
+services:
+  pipeshub-ai:
+    environment:
+      - HARNESS_METRICS_CREDENTIAL_FILE=/run/pxh-monitoring/worker-credential
+    volumes:
+      - pxh_monitoring_credential:/run/pxh-monitoring
+
+  prometheus:
+    # The same baseline as every other service (ADR-OPS-02): both images run as
+    # their own non-root user and need no capability.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-7d}
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/prometheus/agent-harness.rules.yml:/etc/prometheus/rules/agent-harness.rules.yml:ro
+      - pxh_monitoring_credential:/run/pxh-monitoring:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 256m
+    networks:
+      - pipeshub
+    depends_on:
+      - pipeshub-ai
+
+  grafana:
+    # The same baseline as every other service (ADR-OPS-02): both images run as
+    # their own non-root user and need no capability.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5}
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD to start Grafana}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3003}:3000"
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    mem_limit: 256m
+    networks:
+      - pipeshub
+    depends_on:
+      - prometheus
+
+volumes:
+  pxh_monitoring_credential:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

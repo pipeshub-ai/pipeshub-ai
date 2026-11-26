@@ -22,6 +22,7 @@ from app.web.errors import (
     UpstreamError,
 )
 from app.web.fetch.http import MAX_PAGE_MB, FetchedBody, check_page_status, fetch_public
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 PUBLIC = "https://example.com/page"
 # Numeric hosts resolve locally, without DNS; the autouse network guard fakes every lookup.
@@ -106,16 +107,21 @@ class TestFetch:
             await fetch_public(PUBLIC, Deadline(expires_at=0, clock=lambda: 1))
         fetch.assert_not_called()
 
-    async def test_slow_server_ends_at_the_deadline(self) -> None:  # WP-0-FETCH-05
+    def test_slow_server_ends_at_the_deadline(self) -> None:  # WP-0-FETCH-05
         async def drip(*args: object, **kwargs: object) -> None:
             await asyncio.sleep(30)
 
-        with _resolves_publicly(), patch("app.web.fetch.http.fetch_url_with_fallback", drip):
-            loop = asyncio.get_running_loop()
-            started = loop.time()
-            with pytest.raises(TimedOut):
-                await fetch_public(PUBLIC, Deadline.after(0.2))
-            assert loop.time() - started < 2
+        async def main() -> None:
+            # The address check resolves on a thread, which this loop's clock would not wait for.
+            with patch("app.web.fetch.http.check_public", AsyncMock()), \
+                 patch("app.web.fetch.http.fetch_url_with_fallback", drip):
+                loop = asyncio.get_running_loop()
+                started = loop.time()
+                with pytest.raises(TimedOut):
+                    await fetch_public(PUBLIC, Deadline.after(0.2, clock=loop.time))
+                assert loop.time() - started == pytest.approx(0.2)
+
+        run_on_virtual_time(main)
 
     async def test_no_answer_is_unreachable(self) -> None:
         with _resolves_publicly(), _fallback(None), pytest.raises(Unreachable):

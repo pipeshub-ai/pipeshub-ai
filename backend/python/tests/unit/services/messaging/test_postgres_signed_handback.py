@@ -91,9 +91,9 @@ def clock(monkeypatch):  # noqa: ANN201
     async def keys():  # noqa: ANN202
         return (KEY,)
 
-    envelope.configure(keys, None, KEY)
+    envelope.configure(keys, KEY)
     yield now
-    envelope.configure(None, None, None)
+    envelope.configure(None)
 
 
 def _signed(issued_at: float, record: str = "rec-1") -> str:
@@ -108,6 +108,7 @@ def _consumer(queue: _Queue, hand_backs: int = 0, group: str = "g", on_check=Non
     consumer.config = SimpleNamespace(group_id=group)
     consumer.precision_filter = _Filter(hand_backs, on_check)
     consumer.queue = queue
+    consumer.inbox = None
     consumer.message_handler = object()
     consumer.stage_admission = None
     consumer._paused_until = 0.0
@@ -359,9 +360,9 @@ async def test_an_admission_made_with_the_previous_key_holds_until_that_key_is_d
     async def only_new():  # noqa: ANN202
         return (new_key,)
 
-    envelope.configure(both, None, new_key)
+    envelope.configure(both, new_key)
     assert envelope.admission_valid(await both(), TOPIC, "g", 7, json.loads(old), ms, mac)
-    envelope.configure(only_new, None, new_key)
+    envelope.configure(only_new, new_key)
     assert not envelope.admission_valid(await only_new(), TOPIC, "g", 7, json.loads(old), ms, mac)
 
 
@@ -508,7 +509,7 @@ async def test_a_hand_back_that_is_not_signed_for_this_key_cannot_be_renewed(clo
 
 
 async def test_nothing_is_renewed_without_a_key_to_verify_with(clock) -> None:
-    envelope.configure(None, None, None)
+    envelope.configure(None)
     assert await refresh_envelope(TOPIC, json.loads(_signed(clock[0]))) is None
 
 

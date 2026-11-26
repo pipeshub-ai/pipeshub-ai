@@ -38,6 +38,41 @@ def column_fqn(table_fqn: str, column_name: str) -> str:
     return f"{table_fqn}.{column_name}"
 
 
+async def note_tables_kept(
+    processor: DataSourceEntitiesProcessor,
+    data_store_provider: DataStoreProvider,
+    connector_id: str,
+    table_fqns: Collection[str],
+    logger: Logger,
+) -> bool:
+    """Note the stored records of tables still at the source that this sync did not write.
+
+    A full sync unlinks what it did not write; a table it could not read or
+    write is still there, so its stored record and column records are noted
+    kept. Outside a full sync noting does nothing. Returns False when they
+    could not all be looked up: nothing is noted, and the sync is incomplete.
+    """
+    if not table_fqns or processor.full_sync_running(connector_id) is not True:
+        return True
+    ids: list[str] = []
+    fqn = ""
+    try:
+        for fqn in sorted(table_fqns):
+            table = await processor.get_record_by_external_id(
+                connector_id=connector_id, external_record_id=fqn, raise_on_error=True,
+            )
+            async with data_store_provider.transaction() as tx_store:
+                columns = await tx_store.get_records_by_parent(connector_id, fqn, RecordType.SQL_COLUMN.value)
+            if table and table.id:
+                ids.append(table.id)
+            ids.extend(column.id for column in columns if column.id)
+    except Exception as e:
+        logger.warning(f"Could not look up the stored records of table {fqn} to keep: {type(e).__name__}: {e}")
+        return False
+    processor.note_kept_records(connector_id, ids)
+    return True
+
+
 class SqlSyncLifecycleMixin:
     connector_id: str
     logger: Logger

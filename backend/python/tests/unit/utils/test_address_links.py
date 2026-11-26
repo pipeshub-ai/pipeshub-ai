@@ -15,12 +15,16 @@ from app.utils.chat_helpers import (
     build_address_links_info,
     enrich_records_with_address_links,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _graph(links: dict, readable: set[str], docs: list[dict]) -> AsyncMock:
     graph = AsyncMock()
     graph.get_address_links_batch = AsyncMock(return_value=links)
-    graph.filter_accessible_record_ids = AsyncMock(return_value=readable)
+    graph.access = InMemoryRecordAccess()
+    for user in ("user-1", "alice", "bob"):
+        graph.access.user(user, "org-1").readable(user, "org-1", *readable)
+    graph.access.serve(graph)
     graph.get_records_by_record_ids = AsyncMock(
         side_effect=lambda ids, org_id: [d for d in docs if d["id"] in ids]
     )
@@ -79,7 +83,7 @@ class TestEnrichRecordsWithAddressLinks:
     async def test_nothing_is_added_when_access_cannot_be_checked(self) -> None:
         hits = _hits()
         graph = _graph({"pr-1": {"mentioned_in": ["slack-1"], "links_to": []}}, set(), DOCS)
-        graph.filter_accessible_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        graph.access.fail_with(RuntimeError("graph down"))
 
         await enrich_records_with_address_links(hits, graph, "org-1", user_id="user-1")
 
@@ -163,7 +167,7 @@ class TestEnrichmentIsDecidedAfresh:
         assert "address_links" not in hits["vrid-pr"]
 
         failing = _graph(links, {"slack-1"}, DOCS)
-        failing.filter_accessible_record_ids = AsyncMock(side_effect=RuntimeError("down"))
+        failing.access.fail_with(RuntimeError("down"))
         hits["vrid-pr"]["address_links"] = {"mentioned_in": [{"record_id": "stale"}]}
         await enrich_records_with_address_links(hits, failing, "org-1", user_id="bob")
         assert "address_links" not in hits["vrid-pr"]

@@ -7,12 +7,11 @@ import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
-import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { ChatApi } from '@/chat/api';
+import { useComposerPrefill } from '@/chat/commands';
 import {
   buildAssistantApiFilters,
   type AttachmentRef,
-  type ChatCollectionAttachment,
   type SearchRequest,
 } from '@/chat/types';
 import {
@@ -20,6 +19,9 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { InteractionWaitingBar } from '../interaction-waiting-bar';
+import { JobAskFloat } from '../job-ask/job-ask-float';
+import { sendChatMessage } from '../../send-chat-message';
 import { i18n } from '@/lib/i18n';
 import { readAccessNotices } from '@/app/components/feedback/access-notice';
 
@@ -34,6 +36,11 @@ let lastEffectiveAgentIdForQueryMode: string | null = null;
  * Must be used inside AssistantRuntimeProvider.
  */
 export function ChatInputWrapper() {
+  // "Try it" from the skills editor (SLASH1): taken once, so a later visit to the chat starts empty.
+  const prefill = useComposerPrefill((s) => s.prefill);
+  useEffect(() => {
+    if (prefill) useComposerPrefill.setState({ prefill: null });
+  }, [prefill]);
   const aui = useAui();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
@@ -176,93 +183,22 @@ export function ChatInputWrapper() {
       return;
     }
 
-    // ── Chat mode ──
-    // Block a second send while a run is in flight, but allow Enter after
-    // Stop (`stopping`) so a follow-up can start with a new runId before
-    // the old run's grace timer fires.
-    const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
-    if (active?.isStreaming && !active.stopping) {
-      return;
-    }
-    if (active?.remoteRunInProgress) {
-      showRemoteRunInProgressToast();
-      return;
-    }
-
-    // Ensure a slot exists for new chats
-    let activeSlotId = store.activeSlotId;
-    if (!activeSlotId) {
-      activeSlotId = store.createSlot(null);
-      store.setActiveSlot(activeSlotId);
-      const urlParams =
-        typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-      const rawAgentId = urlParams?.get('agentId');
-      const agentIdFromUrl = rawAgentId?.trim() ? rawAgentId : null;
-      if (agentIdFromUrl) {
-        store.updateSlot(activeSlotId, {
-          threadAgentId: agentIdFromUrl,
-          agentStreamTools:
-            store.agentStreamTools === null ? null : [...store.agentStreamTools],
-        });
-      } else {
-        // A thread can't be scoped to both an agent and a project.
-        const rawProjectId = urlParams?.get('projectId');
-        const projectIdFromUrl = rawProjectId?.trim() ? rawProjectId : null;
-        if (projectIdFromUrl) {
-          store.updateSlot(activeSlotId, { projectId: projectIdFromUrl });
-        }
-      }
-    }
-
-    const { settings, collectionNamesCache } = store;
-
-    // Collections for message metadata + slot UI; `settings.filters` is not cleared on send.
-    const hubApps = settings.filters.apps ?? [];
-    const recordGroups = settings.filters.kb ?? [];
-    const collectionsAtSendTime: ChatCollectionAttachment[] = [
-      ...hubApps.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-        kind: 'collectionRoot' as const,
-      })),
-      ...recordGroups.map((id) => ({
-        id,
-        name: collectionNamesCache[id] || 'Collection',
-        kind: 'recordGroup' as const,
-      })),
-    ];
-
-    if (collectionsAtSendTime.length > 0) {
-      store.updateSlot(activeSlotId, {
-        pendingCollections: collectionsAtSendTime,
-      });
-    }
-
-    // Attachments were uploaded the moment they were added to the composer,
-    // so by the time we reach here every ref is already server-assigned.
-    // Forward verbatim to the runtime; no upload step at send time.
-    aui.thread().append({
-      role: 'user',
-      content: [{ type: 'text', text: message }],
-      metadata: {
-        custom: {
-          collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
-          attachments: attachments && attachments.length > 0 ? attachments : undefined,
-          mentionIds: mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined,
-        },
-      },
-      startRun: true,
-    });
+    sendChatMessage(aui, message, attachments, mentions);
   };
 
   return (
-    <ChatInput
-      onSend={handleSend}
-      onUploadFile={handleUploadFile}
-      onDeleteFile={handleDeleteFile}
-      isAgentChat={isAgentChat}
-      agentId={effectiveAgentId}
-      persistDraft
-    />
+    <>
+      <JobAskFloat />
+      <InteractionWaitingBar />
+      <ChatInput
+        onSend={handleSend}
+        onUploadFile={handleUploadFile}
+        onDeleteFile={handleDeleteFile}
+        isAgentChat={isAgentChat}
+        agentId={effectiveAgentId}
+        prefill={prefill}
+        persistDraft
+      />
+    </>
   );
 }

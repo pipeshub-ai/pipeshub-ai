@@ -1,0 +1,3136 @@
+{
+  "generatedBy": "python -m app.control_plane.catalog.dump --write",
+  "kind": "mcp",
+  "items": [
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/airtable@c.21ce23f6c206",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "airtable",
+      "version": "c.21ce23f6c206",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Airtable",
+        "description": "Discover bases, explore tables, and read and update Airtable records.",
+        "icon": "/icons/connectors/airtable.svg",
+        "categories": [
+          "database",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.airtable.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://airtable.com/oauth2/v1/authorize",
+        "tokenUrl": "https://airtable.com/oauth2/v1/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://airtable.com/developers/agents/mcp/getting-started",
+        "authHint": {
+          "label": "Airtable OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with Airtable and choose the bases to connect."
+        },
+        "category": "data",
+        "capabilities": [
+          "Look up records in a base",
+          "Update rows in a table",
+          "See a table's fields"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "airtable"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/apollo@c.47355bcd9888",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "apollo",
+      "version": "c.47355bcd9888",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Apollo",
+        "description": "Find people and companies in Apollo.",
+        "icon": "/icons/connectors/apollo.svg",
+        "categories": [
+          "sales",
+          "prospecting",
+          "crm"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.apollo.io/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.apollo.io/mcp/oauth_metadata/redirect_to_authorize",
+        "tokenUrl": "https://mcp.apollo.io/api/v1/oauth/token",
+        "defaultScopes": [
+          "read_user_profile",
+          "mcp_scope",
+          "mixed_people_api_search",
+          "mixed_companies_search"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.apollo.io/docs/apollo-mcp",
+        "authHint": null,
+        "category": "sales",
+        "capabilities": [
+          "Find people by role and company",
+          "Look up a company",
+          "Find contact details for a lead"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "apollo"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/atlassian_rovo@c.2392ebbc0714",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "atlassian_rovo",
+      "version": "c.2392ebbc0714",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Atlassian Rovo",
+        "description": "Jira, Confluence, Bitbucket, and more via the Atlassian Rovo MCP Server.",
+        "icon": "/icons/connectors/atlassian.svg",
+        "categories": [
+          "issues",
+          "docs",
+          "project-management"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.atlassian.com/v1/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.atlassian.com/v1/authorize",
+        "tokenUrl": "https://cf.mcp.atlassian.com/v1/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://support.atlassian.com/atlassian-rovo-mcp-server/",
+        "authHint": {
+          "label": "Atlassian OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Atlassian account."
+        },
+        "category": "projects",
+        "capabilities": [
+          "Create and update Jira issues",
+          "Search Confluence pages",
+          "Track sprint work",
+          "Read Bitbucket repositories"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "atlassian_rovo"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/box@c.79e1afa54c97",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "box",
+      "version": "c.79e1afa54c97",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Box",
+        "description": "Search, summarize, and extract insights from enterprise content in Box.",
+        "icon": "/icons/connectors/box.svg",
+        "categories": [
+          "storage",
+          "docs"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.box.com",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://account.box.com/api/oauth2/authorize",
+        "tokenUrl": "https://api.box.com/oauth2/token",
+        "defaultScopes": [
+          "root_readwrite",
+          "ai.readwrite"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://developer.box.com/guides/box-mcp/setup",
+        "authHint": {
+          "label": "Box OAuth",
+          "placeholder": null,
+          "helpText": "Create Integration Credentials for the Box MCP Server in your Box Admin Console (Integrations), then provide the client ID/secret below — Box does not support dynamic client registration."
+        },
+        "category": "docs",
+        "capabilities": [
+          "Search company files",
+          "Summarize a document",
+          "Pull facts out of contracts"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "box"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/canva@c.18db7e4bda27",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "canva",
+      "version": "c.18db7e4bda27",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Canva",
+        "description": "Create, edit, search, and export designs in Canva.",
+        "icon": "/icons/connectors/canva.svg",
+        "categories": [
+          "design",
+          "graphics",
+          "marketing"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.canva.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.canva.com/authorize",
+        "tokenUrl": "https://mcp.canva.com/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://www.canva.dev/docs/apps/mcp/",
+        "authHint": {
+          "label": "Canva OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Canva account."
+        },
+        "category": "design",
+        "capabilities": [
+          "Create and edit designs",
+          "Search your designs",
+          "Export designs"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "canva"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/clickup@c.0d2a28f4b591",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "clickup",
+      "version": "c.0d2a28f4b591",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "ClickUp",
+        "description": "Tasks, documents, and chat in a ClickUp workspace (public beta).",
+        "icon": "/icons/connectors/clickup.svg",
+        "categories": [
+          "project-management",
+          "docs"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.clickup.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.clickup.com/oauth/authorize",
+        "tokenUrl": "https://mcp.clickup.com/oauth/token",
+        "defaultScopes": [
+          "read",
+          "write"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+        "authHint": {
+          "label": "ClickUp OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your ClickUp account."
+        },
+        "category": "projects",
+        "capabilities": [
+          "Create and assign tasks",
+          "Update task status",
+          "Read docs in a workspace"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "clickup"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/cloudflare@c.fc8e2cde47ee",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "cloudflare",
+      "version": "c.fc8e2cde47ee",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Cloudflare",
+        "description": "Manage Cloudflare DNS, Workers, KV, analytics and security settings.",
+        "icon": "/icons/connectors/cloudflare.svg",
+        "categories": [
+          "cloudflare",
+          "dns",
+          "workers",
+          "cdn",
+          "security"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.cloudflare.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.cloudflare.com/authorize",
+        "tokenUrl": "https://mcp.cloudflare.com/token",
+        "defaultScopes": [
+          "user:read",
+          "account:read"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/",
+        "authHint": {
+          "label": "Cloudflare OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Cloudflare account."
+        },
+        "category": "developer",
+        "capabilities": [
+          "Change DNS records",
+          "Deploy and inspect Workers",
+          "Check traffic analytics",
+          "Review security settings"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "cloudflare"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/context7@c.5a834e55428e",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "context7",
+      "version": "c.5a834e55428e",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Context7",
+        "description": "Up-to-date documentation and code examples for programming libraries and frameworks.",
+        "icon": "/icons/connectors/context7.svg",
+        "categories": [
+          "docs",
+          "developer",
+          "libraries"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "none",
+        "supportedAuthModes": [
+          "none"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.context7.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": null,
+        "tokenUrl": null,
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://context7.com/docs",
+        "authHint": null,
+        "category": "developer",
+        "capabilities": [
+          "Look up library documentation",
+          "Get current code examples",
+          "Check how an API is used"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "none",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/docusign@c.2a76c7da0fb0",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "docusign",
+      "version": "c.2a76c7da0fb0",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "DocuSign",
+        "description": "Agreements, envelopes, and e-signature workflows via DocuSign IAM.",
+        "icon": "/icons/connectors/docusign.svg",
+        "categories": [
+          "e-signature",
+          "docs",
+          "contracts"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.docusign.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://account.docusign.com/oauth/auth",
+        "tokenUrl": "https://account.docusign.com/oauth/token",
+        "defaultScopes": [
+          "signature",
+          "aow_manage",
+          "adm_store_unified_repo_read",
+          "spring_read",
+          "spring_write",
+          "cors"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.docusign.com/platform/mcp-server/",
+        "authHint": {
+          "label": "DocuSign OAuth",
+          "placeholder": null,
+          "helpText": "Create an Integration Key (App and Keys) in your DocuSign production account and provide the client ID/secret below — DocuSign does not support dynamic client registration."
+        },
+        "category": "finance",
+        "capabilities": [
+          "Send a document for signature",
+          "Check an envelope's status",
+          "Find signed agreements"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "docusign"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/egnyte@c.a2553790d29c",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "egnyte",
+      "version": "c.a2553790d29c",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Egnyte",
+        "description": "Search, read, and ask questions about files and folders in Egnyte.",
+        "icon": "/icons/connectors/egnyte.svg",
+        "categories": [
+          "storage",
+          "docs"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp-server.egnyte.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp-oauth.egnyte.com/external/oauth2/authorize/egnyte-connect",
+        "tokenUrl": "https://mcp-oauth.egnyte.com/egnyte-connect/oauth2/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.egnyte.com/integration/cfs/api-docs/remote-mcp-server",
+        "authHint": {
+          "label": "Egnyte OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Egnyte account. Which tools you get depends on your Egnyte plan, and an Egnyte admin may need to allow MCP access first."
+        },
+        "category": "docs",
+        "capabilities": [
+          "Search files and folders",
+          "Ask questions about a file",
+          "Read a document"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "egnyte"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/exa@c.beb78b4d5b45",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "exa",
+      "version": "c.beb78b4d5b45",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Exa",
+        "description": "Neural web search and content retrieval for AI agents.",
+        "icon": "/icons/connectors/exa.svg",
+        "categories": [
+          "search",
+          "web"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "stdio",
+        "defaultAuthMode": "api_token",
+        "supportedAuthModes": [
+          "api_token"
+        ],
+        "command": "npx",
+        "args": [
+          "-y",
+          "exa-mcp-server@3.4.1"
+        ],
+        "requiredEnv": [
+          "EXA_API_KEY"
+        ],
+        "optionalEnv": [],
+        "defaultUrl": null,
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": null,
+        "tokenUrl": null,
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://docs.exa.ai/reference/exa-mcp",
+        "authHint": {
+          "label": "Exa API key",
+          "placeholder": "exa_...",
+          "helpText": "Create an API key at https://dashboard.exa.ai/"
+        },
+        "category": "search",
+        "capabilities": [
+          "Search the web",
+          "Read a web page",
+          "Research a company or topic"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "api_token",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/fathom@c.5d38146f37a0",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "fathom",
+      "version": "c.5d38146f37a0",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Fathom",
+        "description": "Search meetings, transcripts, summaries and action items recorded in Fathom.",
+        "icon": "/icons/connectors/fathom.svg",
+        "categories": [
+          "meetings",
+          "transcripts",
+          "notes"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://api.fathom.ai/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://fathom.video/mcp/oauth/authorize",
+        "tokenUrl": "https://api.fathom.ai/mcp/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.fathom.ai/mcp-docs",
+        "authHint": {
+          "label": "Fathom OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Fathom account."
+        },
+        "category": "meetings",
+        "capabilities": [
+          "Find what was said in a meeting",
+          "Get meeting summaries",
+          "List action items from calls"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "fathom"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/fireflies@c.9b22374100de",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "fireflies",
+      "version": "c.9b22374100de",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Fireflies",
+        "description": "Search meeting transcripts, summaries and action items in Fireflies.",
+        "icon": "/icons/connectors/fireflies.png",
+        "categories": [
+          "meetings",
+          "transcripts",
+          "notes"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://api.fireflies.ai/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://api.fireflies.ai/authorize",
+        "tokenUrl": "https://api.fireflies.ai/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.fireflies.ai/getting-started/mcp-configuration",
+        "authHint": {
+          "label": "Fireflies OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Fireflies account."
+        },
+        "category": "meetings",
+        "capabilities": [
+          "Search meeting transcripts",
+          "Get action items from calls",
+          "Summarize a meeting"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "fireflies"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/github@c.7b8823a0ce3a",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "github",
+      "version": "c.7b8823a0ce3a",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "GitHub",
+        "description": "Repositories, issues, pull requests, and actions on GitHub.",
+        "icon": "/icons/connectors/github.svg",
+        "categories": [
+          "dev",
+          "vcs"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "api_token",
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://api.githubcopilot.com/mcp/",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://github.com/login/oauth/authorize",
+        "tokenUrl": "https://github.com/login/oauth/access_token",
+        "defaultScopes": [
+          "repo",
+          "read:org"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://github.com/github/github-mcp-server",
+        "authHint": {
+          "label": "Personal access token",
+          "placeholder": "ghp_...",
+          "helpText": "Create a fine-grained PAT at https://github.com/settings/tokens, or sign in with OAuth."
+        },
+        "category": "developer",
+        "capabilities": [
+          "Review pull requests",
+          "Open and triage issues",
+          "Search code",
+          "Check workflow runs"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "api_token",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        },
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "github"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/gitlab@c.ceff8786efb5",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "gitlab",
+      "version": "c.ceff8786efb5",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "GitLab",
+        "description": "Projects, issues, merge requests, and pipelines on GitLab (beta).",
+        "icon": "/icons/connectors/gitlab.svg",
+        "categories": [
+          "dev",
+          "vcs",
+          "issues"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://gitlab.com/api/v4/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://gitlab.com/oauth/authorize",
+        "tokenUrl": "https://gitlab.com/oauth/token",
+        "defaultScopes": [
+          "mcp"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
+        "authHint": {
+          "label": "GitLab OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your GitLab.com account. PipesHub registers itself; no GitLab OAuth app is required."
+        },
+        "category": "developer",
+        "capabilities": [
+          "Review merge requests",
+          "Track issues",
+          "Check pipeline status"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "gitlab"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/gmail@c.77c03000f665",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "gmail",
+      "version": "c.77c03000f665",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Gmail",
+        "description": "Search threads, read email, create drafts, and manage labels in a Gmail account.",
+        "icon": "/icons/connectors/gmail.svg",
+        "categories": [
+          "email",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://gmailmcp.googleapis.com/mcp/v1",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "defaultScopes": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.modify"
+        ],
+        "authorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        },
+        "clientSecretPrefix": "GOCSPX-",
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server",
+        "authHint": {
+          "label": "Google OAuth",
+          "placeholder": null,
+          "helpText": "Enable both the Gmail API (gmail.googleapis.com) and the Gmail MCP API (gmailmcp.googleapis.com) on your Google Cloud project, then create an OAuth client ID and provide it below — Google does not support dynamic client registration."
+        },
+        "category": "communication",
+        "capabilities": [
+          "Search email",
+          "Draft a reply",
+          "Label and organize mail"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "gmail"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/google_calendar@c.928e4e949309",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "google_calendar",
+      "version": "c.928e4e949309",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Google Calendar",
+        "description": "Find availability and manage events on a Google Calendar.",
+        "icon": "/icons/connectors/calendar.svg",
+        "categories": [
+          "calendar",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://calendarmcp.googleapis.com/mcp/v1",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "defaultScopes": [
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.events.freebusy",
+          "https://www.googleapis.com/auth/calendar.events"
+        ],
+        "authorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        },
+        "clientSecretPrefix": "GOCSPX-",
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server",
+        "authHint": {
+          "label": "Google OAuth",
+          "placeholder": null,
+          "helpText": "Enable both the Calendar API (calendar-json.googleapis.com) and the Calendar MCP API (calendarmcp.googleapis.com) on your Google Cloud project, then create an OAuth client ID and provide it below — Google does not support dynamic client registration."
+        },
+        "category": "meetings",
+        "capabilities": [
+          "Schedule meetings",
+          "Find free time",
+          "See today's events",
+          "Move an event"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "google_calendar"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/google_drive@c.1c3712be35b8",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "google_drive",
+      "version": "c.1c3712be35b8",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Google Drive",
+        "description": "Search, read, and manage files in a Google Drive account.",
+        "icon": "/icons/connectors/drive.svg",
+        "categories": [
+          "storage",
+          "docs",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://drivemcp.googleapis.com/mcp/v1",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "defaultScopes": [
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file"
+        ],
+        "authorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        },
+        "clientSecretPrefix": "GOCSPX-",
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.google.com/workspace/drive/api/guides/configure-mcp-server",
+        "authHint": {
+          "label": "Google OAuth",
+          "placeholder": null,
+          "helpText": "Enable both the Drive API (drive.googleapis.com) and the Drive MCP API (drivemcp.googleapis.com) on your Google Cloud project, then create an OAuth client ID and provide it below — Google does not support dynamic client registration."
+        },
+        "category": "docs",
+        "capabilities": [
+          "Find a file",
+          "Read a doc or sheet",
+          "Organize folders"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "google_drive"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/granola@c.3ec0bb573ae6",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "granola",
+      "version": "c.3ec0bb573ae6",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Granola",
+        "description": "Search and read your meeting notes and summaries in Granola. Transcripts need a paid plan.",
+        "icon": "/icons/connectors/granola.svg",
+        "categories": [
+          "meetings",
+          "notes",
+          "transcripts"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.granola.ai/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp-auth.granola.ai/oauth2/authorize",
+        "tokenUrl": "https://mcp-auth.granola.ai/oauth2/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.granola.ai/help-center/sharing/integrations/mcp",
+        "authHint": {
+          "label": "Granola OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Granola account. What the tools can reach depends on your Granola plan."
+        },
+        "category": "meetings",
+        "capabilities": [
+          "Read meeting notes",
+          "Get meeting summaries",
+          "Search past meetings"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "granola"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/hubspot@c.99bfd70b8a55",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "hubspot",
+      "version": "c.99bfd70b8a55",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "HubSpot",
+        "description": "Contacts, companies, deals, and activity history in the HubSpot CRM.",
+        "icon": "/icons/connectors/hubspot.svg",
+        "categories": [
+          "crm",
+          "sales",
+          "marketing"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.hubspot.com",
+        "urlEditable": false,
+        "requireOauthClient": true,
+        "authorizationUrl": "https://mcp.hubspot.com/oauth/authorize/user",
+        "tokenUrl": "https://mcp.hubspot.com/oauth/v3/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.hubspot.com/ai-tools/mcp",
+        "authHint": {
+          "label": "HubSpot OAuth",
+          "placeholder": null,
+          "helpText": "Create an MCP connector in your HubSpot account (Development > MCP Connectors), add the redirect URI shown on this form exactly (must match, including HTTPS when this deployment's public URL is HTTPS), then paste that connector's client ID and secret — HubSpot does not support dynamic client registration. All actions respect the connecting user's existing HubSpot permissions."
+        },
+        "category": "sales",
+        "capabilities": [
+          "Look up a contact or company",
+          "Update a deal stage",
+          "Log sales activity",
+          "Review the pipeline"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "hubspot"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/huggingface@c.35f22efa6426",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "huggingface",
+      "version": "c.35f22efa6426",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Hugging Face",
+        "description": "Search models, datasets, Spaces and papers on the Hugging Face Hub.",
+        "icon": "/icons/connectors/huggingface.svg",
+        "categories": [
+          "ml",
+          "models",
+          "datasets",
+          "ai"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://huggingface.co/mcp?login",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://huggingface.co/oauth/authorize",
+        "tokenUrl": "https://huggingface.co/oauth/token",
+        "defaultScopes": [
+          "openid",
+          "profile",
+          "read-mcp",
+          "read-repos"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://huggingface.co/docs/hub/en/hf-mcp-server",
+        "authHint": {
+          "label": "Hugging Face OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Hugging Face account."
+        },
+        "category": "developer",
+        "capabilities": [
+          "Find a model",
+          "Search datasets",
+          "Read research papers",
+          "Explore Spaces"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "huggingface"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/instantly@c.bd71e5f8a19e",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "instantly",
+      "version": "c.bd71e5f8a19e",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Instantly",
+        "description": "Cold email campaigns, leads, analytics, and email accounts in Instantly.",
+        "icon": "/icons/connectors/instantly.svg",
+        "categories": [
+          "email",
+          "campaigns",
+          "sales",
+          "crm",
+          "outreach"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth",
+          "api_token"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.instantly.ai/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://api.instantly.ai/oauth/authorize",
+        "tokenUrl": "https://api.instantly.ai/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developer.instantly.ai/mcp/introduction",
+        "authHint": {
+          "label": "API Key",
+          "placeholder": "Enter your Instantly API key",
+          "helpText": "Find your API key in Instantly under Settings > Integrations. To sign in without an API key, choose OAuth."
+        },
+        "category": "sales",
+        "capabilities": [
+          "Run cold email campaigns",
+          "Manage leads",
+          "Check campaign results"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "instantly"
+        },
+        {
+          "mode": "api_token",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/intercom@c.083298261a71",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "intercom",
+      "version": "c.083298261a71",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Intercom",
+        "description": "Search and manage conversations, contacts, companies and tickets in Intercom. US-hosted workspaces only.",
+        "icon": "/icons/connectors/intercom.svg",
+        "categories": [
+          "support",
+          "customer-service",
+          "crm"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.intercom.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.intercom.com/authorize",
+        "tokenUrl": "https://mcp.intercom.com/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.intercom.com/docs/guides/mcp",
+        "authHint": {
+          "label": "Intercom OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Intercom account. Only US-hosted workspaces are supported."
+        },
+        "category": "support",
+        "capabilities": [
+          "Answer customer conversations",
+          "Find a customer's history",
+          "Manage support tickets"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "intercom"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/linear@c.d3638811965b",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "linear",
+      "version": "c.d3638811965b",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Linear",
+        "description": "Find, create, and update issues, projects, and comments in Linear.",
+        "icon": "/icons/connectors/linear.svg",
+        "categories": [
+          "issues",
+          "project-management"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.linear.app/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.linear.app/authorize",
+        "tokenUrl": "https://mcp.linear.app/token",
+        "defaultScopes": [
+          "read",
+          "write"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://linear.app/docs/mcp",
+        "authHint": {
+          "label": "Linear OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Linear account."
+        },
+        "category": "projects",
+        "capabilities": [
+          "Create and update issues",
+          "Plan cycles and projects",
+          "Comment on issues"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "linear"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/lucid@c.2734173124dd",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "lucid",
+      "version": "c.2734173124dd",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Lucid",
+        "description": "Collaborate on diagrams, flowcharts, wireframes and whiteboards in Lucid.",
+        "icon": "/icons/connectors/lucid.svg",
+        "categories": [
+          "lucid",
+          "diagrams",
+          "flowcharts",
+          "whiteboard",
+          "design"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.lucid.app/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.lucid.app/oauth/authorize",
+        "tokenUrl": "https://mcp.lucid.app/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://help.lucid.co/hc/en-us/articles/42578801807508",
+        "authHint": {
+          "label": "Lucid OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Lucid account."
+        },
+        "category": "design",
+        "capabilities": [
+          "Draw a flowchart",
+          "Edit diagrams",
+          "Make wireframes"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "lucid"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/microsoft_learn@c.9d487ddf1822",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "microsoft_learn",
+      "version": "c.9d487ddf1822",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Microsoft Learn",
+        "description": "Search Microsoft's official documentation and code samples for Azure, .NET, Microsoft 365 and more.",
+        "icon": "/icons/connectors/microsoft-learn.svg",
+        "categories": [
+          "docs",
+          "microsoft",
+          "azure",
+          "developer"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "none",
+        "supportedAuthModes": [
+          "none"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://learn.microsoft.com/api/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": null,
+        "tokenUrl": null,
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://learn.microsoft.com/en-us/training/support/mcp",
+        "authHint": null,
+        "category": "developer",
+        "capabilities": [
+          "Look up Azure documentation",
+          "Find .NET code samples",
+          "Search Microsoft 365 docs"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "none",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/miro@c.b8ae35cd616d",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "miro",
+      "version": "c.b8ae35cd616d",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Miro",
+        "description": "Collaborate on visual boards, diagrams, wireframes, and mind maps in Miro.",
+        "icon": "/icons/connectors/miro.svg",
+        "categories": [
+          "miro",
+          "whiteboard",
+          "diagrams",
+          "collaboration",
+          "visual"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.miro.com/",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.miro.com/authorize",
+        "tokenUrl": "https://mcp.miro.com/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.miro.com/docs/mcp-intro",
+        "authHint": {
+          "label": "Miro OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Miro account."
+        },
+        "category": "design",
+        "capabilities": [
+          "Brainstorm on a whiteboard",
+          "Create mind maps",
+          "Sketch wireframes"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "miro"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/monday@c.ae8669190be3",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "monday",
+      "version": "c.ae8669190be3",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "monday.com",
+        "description": "Find and manage boards, items, and updates in monday.com.",
+        "icon": "/icons/connectors/monday.svg",
+        "categories": [
+          "project-management",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.monday.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://auth.monday.com/oauth2/authorize",
+        "tokenUrl": "https://auth.monday.com/oauth_ms/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developer.monday.com/api-reference/docs/mondaycom-mcp",
+        "authHint": null,
+        "category": "projects",
+        "capabilities": [
+          "Manage boards and items",
+          "Update an item's status",
+          "Post updates to a board"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "monday"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/notion@c.c53cce56824b",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "notion",
+      "version": "c.c53cce56824b",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Notion",
+        "description": "Pages, databases, and blocks in a Notion workspace.",
+        "icon": "/icons/connectors/notion.svg",
+        "categories": [
+          "docs",
+          "productivity"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.notion.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.notion.com/authorize",
+        "tokenUrl": "https://mcp.notion.com/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developers.notion.com/docs/mcp",
+        "authHint": {
+          "label": "Notion OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Notion account."
+        },
+        "category": "docs",
+        "capabilities": [
+          "Search the workspace",
+          "Write and edit pages",
+          "Query a database"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "notion"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/okta@c.7e6995b9a656",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "okta",
+      "version": "c.7e6995b9a656",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Okta",
+        "description": "Users and groups in your Okta org. Setup asks for your org's MCP URL and an OAuth app.",
+        "icon": "/icons/connectors/okta.svg",
+        "categories": [
+          "identity",
+          "iam",
+          "admin"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": null,
+        "urlEditable": true,
+        "requireOauthClient": true,
+        "authorizationUrl": null,
+        "tokenUrl": null,
+        "defaultScopes": [
+          "okta.users.read",
+          "okta.groups.read"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://help.okta.com/oie/en-us/content/topics/mcp/mcp-server.htm",
+        "authHint": {
+          "label": "Okta OAuth",
+          "placeholder": null,
+          "helpText": "Your org's MCP URL, for example https://your-company.okta.com/mcp. Create an OIDC app, add the redirect URI shown here, and paste its client ID and secret."
+        },
+        "category": "security",
+        "capabilities": [
+          "Look up users and groups",
+          "Check group membership",
+          "Review who has access"
+        ],
+        "readOnly": true,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "okta"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/paypal@c.6b8e36f382f1",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "paypal",
+      "version": "c.6b8e36f382f1",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "PayPal",
+        "description": "Invoices, payments, and merchant activity in a PayPal account.",
+        "icon": "/icons/connectors/paypal.svg",
+        "categories": [
+          "payments",
+          "invoices",
+          "finance"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.paypal.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.paypal.com/authorize",
+        "tokenUrl": "https://mcp.paypal.com/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://developer.paypal.com/tools/mcp-server/",
+        "authHint": {
+          "label": "PayPal OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your PayPal account. PipesHub registers itself; no PayPal app is required."
+        },
+        "category": "finance",
+        "capabilities": [
+          "Create and send invoices",
+          "Look up payments",
+          "Review merchant activity"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "paypal"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/posthog@c.62dd64c51806",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "posthog",
+      "version": "c.62dd64c51806",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "PostHog",
+        "description": "Product analytics, feature flags, experiments, and error tracking in PostHog.",
+        "icon": "/icons/connectors/posthog.svg",
+        "categories": [
+          "analytics",
+          "product"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.posthog.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://oauth.posthog.com/oauth/authorize/",
+        "tokenUrl": "https://oauth.posthog.com/oauth/token/",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://posthog.com/docs/model-context-protocol",
+        "authHint": {
+          "label": "PostHog OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your PostHog account."
+        },
+        "category": "data",
+        "capabilities": [
+          "Query product analytics",
+          "Turn feature flags on or off",
+          "Review experiments",
+          "Look into errors"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "posthog"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/slack@c.6038e94ed8da",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "slack",
+      "version": "c.6038e94ed8da",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Slack (community)",
+        "description": "The archived community Slack server, run with a bot token. No longer maintained.",
+        "icon": "/icons/connectors/slack.svg",
+        "categories": [
+          "chat",
+          "collaboration"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "stdio",
+        "defaultAuthMode": "api_token",
+        "supportedAuthModes": [
+          "api_token"
+        ],
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-slack@2025.4.25"
+        ],
+        "requiredEnv": [
+          "SLACK_BOT_TOKEN",
+          "SLACK_TEAM_ID"
+        ],
+        "optionalEnv": [
+          "SLACK_CHANNEL_IDS"
+        ],
+        "defaultUrl": null,
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": null,
+        "tokenUrl": null,
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
+        "authHint": {
+          "label": "Slack bot token",
+          "placeholder": "xoxb-...",
+          "helpText": "Install a Slack app with the required scopes and copy its bot token (xoxb-...). Also provide your workspace Team ID (starts with T)."
+        },
+        "category": "communication",
+        "capabilities": [
+          "Search messages",
+          "Read channels",
+          "Post a message"
+        ],
+        "readOnly": false,
+        "replacedBy": "slack_official"
+      },
+      "credentialRequirements": [
+        {
+          "mode": "api_token",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/slack_official@c.f0fec38cc13b",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "slack_official",
+      "version": "c.f0fec38cc13b",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Slack",
+        "description": "Search messages and files, read channels and threads, and post in Slack, as the signed-in user.",
+        "icon": "/icons/connectors/slack.svg",
+        "categories": [
+          "chat",
+          "collaboration"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.slack.com/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://slack.com/oauth/v2_user/authorize",
+        "tokenUrl": "https://slack.com/api/oauth.v2.user.access",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://docs.slack.dev/ai/slack-mcp-server/",
+        "authHint": null,
+        "category": "communication",
+        "capabilities": [
+          "Search messages and files",
+          "Read channels and threads",
+          "Post a message"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "slack_official"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/stripe@c.1278719883fe",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "stripe",
+      "version": "c.1278719883fe",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Stripe",
+        "description": "Customers, payments, subscriptions, refunds, invoices, and balance data in Stripe.",
+        "icon": "/icons/connectors/stripe.svg",
+        "categories": [
+          "payments",
+          "billing",
+          "finance"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "api_token",
+        "supportedAuthModes": [
+          "api_token",
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.stripe.com",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://access.stripe.com/mcp/oauth2/authorize",
+        "tokenUrl": "https://access.stripe.com/mcp/oauth2/token",
+        "defaultScopes": [
+          "mcp"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.stripe.com/mcp",
+        "authHint": {
+          "label": "Restricted API key",
+          "placeholder": "rk_live_...",
+          "helpText": "Create a restricted key with least-privilege access at https://dashboard.stripe.com/apikeys and select 'Authorizing agent access to your account'. To use OAuth, select OAuth as the authentication mode first."
+        },
+        "category": "finance",
+        "capabilities": [
+          "Look up customers",
+          "Check payments and subscriptions",
+          "Issue refunds",
+          "Read invoices"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "api_token",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": null
+        },
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "stripe"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/trello@c.046703794071",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "trello",
+      "version": "c.046703794071",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Trello",
+        "description": "Read and update boards, lists and cards in Trello.",
+        "icon": "/icons/connectors/trello.svg",
+        "categories": [
+          "boards",
+          "cards",
+          "tasks",
+          "project-management"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.trello.com/v1",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://auth.atlassian.com/authorize",
+        "tokenUrl": "https://auth.atlassian.com/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://claude.com/connectors/trello",
+        "authHint": {
+          "label": "Trello OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Trello (Atlassian) account."
+        },
+        "category": "projects",
+        "capabilities": [
+          "Update boards and cards",
+          "Move cards between lists",
+          "Add checklist items"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "trello"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/vercel@c.23f0502af15e",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "vercel",
+      "version": "c.23f0502af15e",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Vercel",
+        "description": "Search Vercel documentation, manage projects and deployments, and analyze deployment logs.",
+        "icon": "/icons/connectors/vercel.svg",
+        "categories": [
+          "deployment",
+          "developer-tools"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.vercel.com",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://vercel.com/oauth/authorize",
+        "tokenUrl": "https://api.vercel.com/login/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://vercel.com/docs/agent-resources/vercel-mcp",
+        "authHint": {
+          "label": "Vercel OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Vercel account."
+        },
+        "category": "developer",
+        "capabilities": [
+          "Check deployments",
+          "Read deployment logs",
+          "Search Vercel docs"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "vercel"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/zapier@c.b2c5a0effe20",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "zapier",
+      "version": "c.b2c5a0effe20",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Zapier",
+        "description": "Connect to Zapier's MCP server to discover and use actions across your connected apps and workflows.",
+        "icon": "/icons/connectors/zapier.svg",
+        "categories": [
+          "automation",
+          "productivity",
+          "integrations"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.zapier.com/api/v1/connect",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.zapier.com/oauth/authorize",
+        "tokenUrl": "https://mcp.zapier.com/api/v1/oauth/token",
+        "defaultScopes": [],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.zapier.com/mcp/get-started/connect",
+        "authHint": {
+          "label": "Zapier OAuth",
+          "placeholder": null,
+          "helpText": "Sign in with your Zapier account."
+        },
+        "category": "automation",
+        "capabilities": [
+          "Run actions in thousands of apps",
+          "Automate a workflow",
+          "Send data between apps"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "zapier"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/zapmail@c.3a748c07cc34",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "zapmail",
+      "version": "c.3a748c07cc34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Zapmail",
+        "description": "Manage cold email domains and mailboxes in Zapmail.",
+        "icon": "/icons/connectors/zapmail.svg",
+        "categories": [
+          "email",
+          "outreach",
+          "infrastructure"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.zapmail.ai/mcp",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://mcp.zapmail.ai/authorize",
+        "tokenUrl": "https://mcp.zapmail.ai/token",
+        "defaultScopes": [
+          "mailboxes",
+          "inbox"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": true,
+        "documentationUrl": "https://docs.zapmail.ai/mcp-2107149m0",
+        "authHint": null,
+        "category": "sales",
+        "capabilities": [
+          "Provision and update outreach mailboxes",
+          "Read a mailbox's inbox",
+          "Buy and renew sending domains"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "zapmail"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "mcp:pipeshub/zoom@c.1538b8922a9d",
+      "kind": "mcp",
+      "publisher": "pipeshub",
+      "name": "zoom",
+      "version": "c.1538b8922a9d",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Zoom",
+        "description": "Meetings and related Workplace tools via Zoom's official MCP server.",
+        "icon": "/icons/connectors/zoom.svg",
+        "categories": [
+          "meetings",
+          "collaboration"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "transport": "streamable_http",
+        "defaultAuthMode": "oauth",
+        "supportedAuthModes": [
+          "oauth"
+        ],
+        "command": null,
+        "args": [],
+        "requiredEnv": [],
+        "optionalEnv": [],
+        "defaultUrl": "https://mcp.zoom.us/mcp/zoom/streamable",
+        "urlEditable": false,
+        "requireOauthClient": false,
+        "authorizationUrl": "https://zoom.us/oauth/authorize",
+        "tokenUrl": "https://zoom.us/oauth/token",
+        "defaultScopes": [
+          "meeting:read:search",
+          "meeting:read:assets",
+          "agentic_search:read:search",
+          "cloud_recording:read:list_user_recordings",
+          "cloud_recording:read:content",
+          "docs:read:export",
+          "docs:write:import",
+          "hub:read:content",
+          "hub:write:content"
+        ],
+        "authorizationParams": {},
+        "clientSecretPrefix": null,
+        "supportsDcr": false,
+        "documentationUrl": "https://developers.zoom.us/docs/mcp/servers/connect-to-zoom-mcp-servers/",
+        "authHint": {
+          "label": "Zoom OAuth",
+          "placeholder": null,
+          "helpText": "Create a User-managed General App in the Zoom App Marketplace, add this deployment's redirect URI (HTTPS; Zoom rejects localhost), add the scopes listed above, and paste that app's client ID and secret — Zoom does not support dynamic client registration. Use the Production credentials when this PipesHub URL is the live one. Recordings, Docs and Hub also need those products on the Zoom account."
+        },
+        "category": "meetings",
+        "capabilities": [
+          "Search past meetings",
+          "Find meeting recordings",
+          "Get a meeting's summary or transcript"
+        ],
+        "readOnly": false,
+        "replacedBy": null
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "zoom"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": []
+      },
+      "descriptorSetDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  ]
+}

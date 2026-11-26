@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/resolved-run-config.schema.json",
+  "title": "ResolvedRunConfig",
+  "description": "A run's pin (02-lld §2.9): what RunConfigPinner resolved at admission, at the org head revision it saw. Written on the run in the admission transaction and copied to RunSpec x.pipeshub.resolved at claim; the run's legacy pinned fields are derived from it. `digest` is the canonical digest of every other member (pin-replay determinism: the same subject and snapshot pin the same digest); it is the run's policy_version (C4.04), which /status shows as the settings version. Never holds a secret: the model by reference and digest, bindings by reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "headRevision",
+    "routing",
+    "scope",
+    "effectiveSet",
+    "effectiveConfig",
+    "llm",
+    "deploymentDigest",
+    "digest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "headRevision": {
+      "description": "The org head revision the resolution saw; admission refuses the pin when the head moved before it committed (CP_STALE, re-pinned once).",
+      "$ref": "common.schema.json#/$defs/Revision"
+    },
+    "routing": {
+      "$ref": "#/$defs/Routing"
+    },
+    "scope": {
+      "$ref": "#/$defs/RunScope"
+    },
+    "effectiveSet": {
+      "$ref": "effective-set.schema.json"
+    },
+    "effectiveConfig": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/effective-run-config.schema.json"
+    },
+    "llm": {
+      "description": "The configured model the run calls, as the configuration said at admission (fixes R2 F2's modelKey re-read); null when the org default applies and is resolved by the worker.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/PinnedLlm"
+        }
+      ]
+    },
+    "deploymentDigest": {
+      "description": "Digest of the deployment layer the resolution folded.",
+      "$ref": "common.schema.json#/$defs/Digest"
+    },
+    "digest": {
+      "$ref": "common.schema.json#/$defs/Digest"
+    }
+  },
+  "$defs": {
+    "Routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "reason"
+      ],
+      "properties": {
+        "path": {
+          "enum": [
+            "durable",
+            "legacy"
+          ]
+        },
+        "reason": {
+          "description": "Why the turn takes the legacy path (a rollout reason such as kill_switch or chat_mode_not_supported); `inherited` for a child, which takes its parent's; null for a durable turn.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z_]{0,63}$"
+            }
+          ]
+        }
+      }
+    },
+    "RunScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentKey",
+        "projectId"
+      ],
+      "properties": {
+        "agentKey": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+            }
+          ]
+        },
+        "projectId": {
+          "description": "From the conversation record, never from the client.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+            }
+          ]
+        },
+        "agentOwner": {
+          "description": "The user who owns the agent, as the root's admission read it; absent when the run has no agent or the agent no owner. A child's pin carries its parent's, so what the owner shared with the agent stays visible down the tree.",
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+        }
+      }
+    },
+    "PinnedLlm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "modelKey",
+        "provider",
+        "model",
+        "configDigest"
+      ],
+      "properties": {
+        "modelKey": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "endpointRef": {
+          "description": "Which configured endpoint, by reference; never its key.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "configDigest": {
+          "description": "Digest of the model's configuration without its secrets.",
+          "$ref": "common.schema.json#/$defs/Digest"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "headRevision": 1042,
+      "routing": {
+        "path": "durable",
+        "reason": null
+      },
+      "scope": {
+        "agentKey": "a7",
+        "projectId": null
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "schemaVersion": 1,
+        "dimensions": {
+          "budgets.maxCostUsd": {
+            "value": 3,
+            "setBy": "agent",
+            "ceilings": [
+              {
+                "layer": "release",
+                "value": 5
+              },
+              {
+                "layer": "agent",
+                "value": 3
+              }
+            ]
+          },
+          "models.primary": {
+            "value": "openai:gpt-x",
+            "setBy": "agent",
+            "ceilings": []
+          }
+        }
+      },
+      "llm": {
+        "modelKey": "mk-1",
+        "provider": "openai",
+        "model": "gpt-x",
+        "configDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "schemaVersion": 1,
+      "headRevision": 1042,
+      "routing": {
+        "path": "legacy",
+        "reason": "chat_mode_not_supported"
+      },
+      "scope": {
+        "agentKey": null,
+        "projectId": "p3"
+      },
+      "effectiveSet": {
+        "items": [],
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "effectiveConfig": {
+        "schemaVersion": 1,
+        "dimensions": {
+          "budgets.maxCostUsd": {
+            "value": 3,
+            "setBy": "agent",
+            "ceilings": [
+              {
+                "layer": "release",
+                "value": 5
+              },
+              {
+                "layer": "agent",
+                "value": 3
+              }
+            ]
+          },
+          "models.primary": {
+            "value": "openai:gpt-x",
+            "setBy": "agent",
+            "ceilings": []
+          }
+        }
+      },
+      "llm": null,
+      "deploymentDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ]
+}

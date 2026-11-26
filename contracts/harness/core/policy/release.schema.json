@@ -1,0 +1,594 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/policy/release.schema.json",
+  "title": "ReleaseDefaults",
+  "description": "The release layer's defaults (R2 principle 5, F10): each default the harness ships, defined here once and generated as RELEASE_DEFAULTS in every target. Layers below only narrow or choose inside them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "engineProfile",
+    "engineIsolation",
+    "children",
+    "memory",
+    "models",
+    "runs",
+    "journal",
+    "budgets",
+    "rollout",
+    "snapshots",
+    "triggers",
+    "quotas",
+    "toolResults",
+    "interactions",
+    "recovery",
+    "sandbox",
+    "ui"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "engineProfile": {
+      "$ref": "#/$defs/EngineProfileDefaults"
+    },
+    "engineIsolation": {
+      "$ref": "#/$defs/EngineIsolation"
+    },
+    "children": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxPerRun"
+      ],
+      "properties": {
+        "maxPerRun": {
+          "description": "The most children an agent definition may grant one run, and what a deep run admits when the definition sets none.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxChars"
+      ],
+      "properties": {
+        "maxChars": {
+          "description": "The longest memory a run may propose or a person may write.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offering"
+      ],
+      "properties": {
+        "offering": {
+          "description": "The offering an install is when AGENT_HARNESS_OFFERING is unset.",
+          "$ref": "../common.schema.json#/$defs/Offering"
+        }
+      }
+    },
+    "runs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deadlineMs"
+      ],
+      "properties": {
+        "deadlineMs": {
+          "description": "A run's deadline when its admission names none.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxCommitEvents"
+      ],
+      "properties": {
+        "maxCommitEvents": {
+          "description": "The most events one worker commit carries. Node's commit route refuses a larger one and a worker splits before sending it. A wire limit: no layer changes it.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    },
+    "budgets": {
+      "description": "A run's budgets when no layer narrows them (RunSpec budgets); activeTimeS null: the run's own deadline bounds it. The USD cap is the real limit; the token caps are runaway backstops (SPENDCONT).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTurns",
+        "maxTokens",
+        "loopMaxTokens",
+        "maxCostUsd",
+        "activeTimeS"
+      ],
+      "properties": {
+        "maxTurns": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "maxTokens": {
+          "description": "The token backstop of coding-engine work: an engine run, and a loop run that may hand off to an engine (code_task), whose tree includes the engine child.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "loopMaxTokens": {
+          "description": "The token backstop of a loop run that cannot hand off to an engine; at most maxTokens.",
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "maxCostUsd": {
+          "$ref": "../common.schema.json#/$defs/Usd"
+        },
+        "activeTimeS": {
+          "type": "null"
+        }
+      }
+    },
+    "rollout": {
+      "description": "Which turns take the durable path when no layer narrows it (CPD-10): the chat modes the durable loop runs as today's loop does, for an agent and for the built-in assistant, and the model families (null: any). `contracts/harness/vectors/durable-chat-modes.json` holds the modes to Python's MODE_CATALOG.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "durable"
+      ],
+      "properties": {
+        "durable": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "modes",
+            "assistantModes",
+            "modelFamilies"
+          ],
+          "properties": {
+            "modes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "../common.schema.json#/$defs/Name"
+              }
+            },
+            "assistantModes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "../common.schema.json#/$defs/Name"
+              }
+            },
+            "modelFamilies": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    },
+    "snapshots": {
+      "description": "How long engine sandbox snapshots are kept when no layer shortens it (OWD-12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ttlDays"
+      ],
+      "properties": {
+        "ttlDays": {
+          "$ref": "policy-layer.schema.json#/$defs/SnapshotTtlDays"
+        }
+      }
+    },
+    "triggers": {
+      "description": "Webhook limits and completion-notice channels when no layer narrows them (TR-04, TR-07).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "webhookMaxBytes",
+        "webhookPerMinute",
+        "notifyChannels"
+      ],
+      "properties": {
+        "webhookMaxBytes": {
+          "$ref": "policy-layer.schema.json#/$defs/WebhookMaxBytes"
+        },
+        "webhookPerMinute": {
+          "$ref": "policy-layer.schema.json#/$defs/WebhookPerMinute"
+        },
+        "notifyChannels": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "policy-layer.schema.json#/$defs/NotifyChannel"
+          }
+        }
+      }
+    },
+    "quotas": {
+      "description": "Concurrency caps when no layer lowers them (C4.10): 200 runs per org, 10 per person.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeRunsPerOrg",
+        "activeRunsPerUser"
+      ],
+      "properties": {
+        "activeRunsPerOrg": {
+          "$ref": "policy-layer.schema.json#/$defs/ActiveRunsPerOrg"
+        },
+        "activeRunsPerUser": {
+          "$ref": "policy-layer.schema.json#/$defs/ActiveRunsPerUser"
+        }
+      }
+    },
+    "toolResults": {
+      "description": "The inline tool-result cap when no layer lowers it (C4.10): null, each executor's own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxChars"
+      ],
+      "properties": {
+        "maxChars": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/ToolResultMaxChars"
+            }
+          ]
+        }
+      }
+    },
+    "interactions": {
+      "description": "Waiting for a person when no layer narrows it (C4.10): the deployment's wait, conversation answers allowed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waitS",
+        "conversationGrants"
+      ],
+      "properties": {
+        "waitS": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/PersonWaitS"
+            }
+          ]
+        },
+        "conversationGrants": {
+          "type": "boolean"
+        }
+      }
+    },
+    "recovery": {
+      "description": "Crash recovery when no layer turns it off (C4.10): on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "autoResume"
+      ],
+      "properties": {
+        "autoResume": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sandbox": {
+      "description": "Sandbox resources when no layer lowers them (C4.10): the engine template's; the largest input, the deployment's (J-26).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpus",
+        "memoryMb",
+        "pids",
+        "scratchMb",
+        "inputMaxMb"
+      ],
+      "properties": {
+        "cpus": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/SandboxCpus"
+            }
+          ]
+        },
+        "memoryMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/SandboxMemoryMb"
+            }
+          ]
+        },
+        "pids": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/SandboxPids"
+            }
+          ]
+        },
+        "scratchMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/SandboxScratchMb"
+            }
+          ]
+        },
+        "inputMaxMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "policy-layer.schema.json#/$defs/SandboxInputMaxMb"
+            }
+          ]
+        }
+      }
+    },
+    "ui": {
+      "description": "What a conversation shows when no layer hides it (C4.10): reasoning and the terminal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reasoning",
+        "terminal"
+      ],
+      "properties": {
+        "reasoning": {
+          "type": "boolean"
+        },
+        "terminal": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "EngineProfileDefaults": {
+      "description": "Every engine's release profile except the engine itself (PinnedEngineProfile without `engine`); the engines are the allowlist's.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "isolationMin",
+        "egress",
+        "tools",
+        "limits",
+        "subAgents",
+        "reasoningEffort",
+        "approvals",
+        "skills",
+        "accountKinds"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "../engine-profile.schema.json#/$defs/EngineModeName"
+        },
+        "isolationMin": {
+          "$ref": "../engine-profile.schema.json#/$defs/IsolationModeName"
+        },
+        "egress": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileEgress"
+        },
+        "tools": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileTools"
+        },
+        "limits": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileLimits"
+        },
+        "subAgents": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileSubAgents"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "../engine-profile.schema.json#/$defs/ProfileEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approvals": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileApprovals"
+        },
+        "skills": {
+          "anyOf": [
+            {
+              "$ref": "../engine-profile.schema.json#/$defs/ProfileSkillNames"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accountKinds": {
+          "$ref": "../engine-profile.schema.json#/$defs/ProfileAccountKinds"
+        }
+      }
+    },
+    "EngineIsolation": {
+      "description": "Coding engines' sandbox floor (engineProfile.isolationMin) on a production install, and the one documented way a dev or test install runs them below it. Production is the default: nothing needs to be set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "devOverride",
+        "installGuide"
+      ],
+      "properties": {
+        "devOverride": {
+          "description": "Dev and test only, off by default: with the variable `env` set to `true`, every release engine profile's floor is `isolationMin` instead, and admins see a persistent warning while it is on. An org ceiling that asks for more still refuses.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "env",
+            "isolationMin"
+          ],
+          "properties": {
+            "env": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+            },
+            "isolationMin": {
+              "$ref": "../engine-profile.schema.json#/$defs/IsolationModeName"
+            }
+          }
+        },
+        "installGuide": {
+          "description": "Where an admin reads how to install the floor's runtime (gVisor's runsc on Docker Compose).",
+          "type": "string",
+          "pattern": "^https://[^\\s]{1,500}$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "gvisor",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "engineIsolation": {
+        "devOverride": {
+          "env": "PIPESHUB_ENGINES_WITHOUT_GVISOR",
+          "isolationMin": "docker"
+        },
+        "installGuide": "https://github.com/pipeshub-ai/pipeshub-ai/blob/main/deployment/docker-compose/GVISOR.md"
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 10000000,
+        "loopMaxTokens": 2000000,
+        "maxCostUsd": 5,
+        "activeTimeS": null
+      },
+      "rollout": {
+        "durable": {
+          "modes": [
+            "auto",
+            "deep",
+            "quick",
+            "react"
+          ],
+          "assistantModes": [
+            "internal_search",
+            "web_search"
+          ],
+          "modelFamilies": null
+        }
+      },
+      "snapshots": {
+        "ttlDays": 7
+      },
+      "triggers": {
+        "webhookMaxBytes": 262144,
+        "webhookPerMinute": 30,
+        "notifyChannels": [
+          "in_app",
+          "email",
+          "slack"
+        ]
+      },
+      "quotas": {
+        "activeRunsPerOrg": 200,
+        "activeRunsPerUser": 10
+      },
+      "toolResults": {
+        "maxChars": null
+      },
+      "interactions": {
+        "waitS": null,
+        "conversationGrants": true
+      },
+      "recovery": {
+        "autoResume": true
+      },
+      "sandbox": {
+        "cpus": null,
+        "memoryMb": null,
+        "pids": null,
+        "scratchMb": null,
+        "inputMaxMb": null
+      },
+      "ui": {
+        "reasoning": true,
+        "terminal": true
+      }
+    }
+  ]
+}

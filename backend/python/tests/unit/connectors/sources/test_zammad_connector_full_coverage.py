@@ -2014,6 +2014,9 @@ class TestFetchKBAnswerAttachments:
         parent.inherit_permissions = False
 
         connector._transform_attachment_to_file_record = AsyncMock(side_effect=Exception("bad"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("graph down")
+        )
 
         answer_data = {
             "id": 5,
@@ -2021,8 +2024,8 @@ class TestFetchKBAnswerAttachments:
             "translations": [],
         }
 
-        result = await connector._fetch_kb_answer_attachments(answer_data, parent, [])
-        assert result == []
+        with pytest.raises(Exception, match="graph down"):
+            await connector._fetch_kb_answer_attachments(answer_data, parent, [])
 
 
 class TestBuildTicketAttachmentChildRecords:

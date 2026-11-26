@@ -61,6 +61,10 @@ def test_each_python_service_start_line_uses_it() -> None:
         port = name.upper()
         assert (f"(use_own_pg_login kv; PIPESHUB_SERVICE={name} {port}_SERVICE_PORT=${{{port}_PORT}} "
                 f"exec python -m app.{name}_main) &") in text
+    # the harness worker and model gateway connect as the connectors role (platform_0012 grants it their keys; no role is named
+    # after them, so their own login would name a role that does not exist)
+    for name in ("harness", "model_gateway"):
+        assert f"(use_own_pg_login connectors; PIPESHUB_SERVICE={name} exec python -m app.{name}_main) &" in text
     assert not re.search(r"^\s*(\w+=\S+ )*python -m app\.", text, re.M)
 
 

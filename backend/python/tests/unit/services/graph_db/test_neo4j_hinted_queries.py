@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from neo4j.exceptions import ClientError, Neo4jError
 
 from app.services.graph_db.neo4j import neo4j_provider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.log_capture import failure_line
 
 
 def test_every_index_hint_is_a_named_constant() -> None:
@@ -38,7 +40,7 @@ def test_every_index_hint_is_a_named_constant() -> None:
 
 
 def _provider(execute: AsyncMock) -> Neo4jProvider:
-    provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+    provider = Neo4jProvider(logger=logging.getLogger("tests.neo4j_hinted_queries"), config_service=MagicMock())
     provider.client = MagicMock()
     provider.client.execute_query = execute
     return provider
@@ -49,7 +51,7 @@ def _error(code: str) -> Neo4jError:
 
 
 class TestPageRecordIdsByType:
-    async def test_a_missing_index_falls_back_to_the_unhinted_page(self) -> None:
+    async def test_a_missing_index_falls_back_to_the_unhinted_page(self, caplog: pytest.LogCaptureFixture) -> None:
         execute = AsyncMock(side_effect=[_error("Neo.ClientError.Schema.IndexNotFound"), [{"id": "r1"}, {"id": "r2"}]])
         provider = _provider(execute)
         assert await provider.page_record_ids_by_type("org-1", ["MAIL"], after_key="r0", limit=2) == ["r1", "r2"]
@@ -57,7 +59,8 @@ class TestPageRecordIdsByType:
         assert "USING INDEX" in hinted
         assert "USING INDEX" not in unhinted
         assert execute.await_args_list[1].kwargs["parameters"] == execute.await_args_list[0].kwargs["parameters"]
-        provider.logger.warning.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.WARNING, "refused")
+        assert (fields["op"], fields["step"], fields["index"]) == ("_execute_hinted", "unhinted_fallback", "record_org_id_key")
 
     async def test_the_hint_is_used_when_the_index_is_there(self) -> None:
         execute = AsyncMock(return_value=[{"id": "r1"}])

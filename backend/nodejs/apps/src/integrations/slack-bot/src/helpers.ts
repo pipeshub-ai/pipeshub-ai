@@ -1,7 +1,8 @@
-import axios from "axios";
-import FormData from "form-data";
-import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
-import { type SlackBotConfig } from "./botRegistry";
+import axios from 'axios';
+import FormData from 'form-data';
+import { markdownToSlackMrkdwn, markdownToText } from './utils/md_to_mrkdwn';
+import { escapeSlackText, safeLinkLabel } from './utils/slack-escape';
+import { type SlackBotConfig } from './botRegistry';
 
 // ---------------------------------------------------------------------------
 // Interfaces & Types
@@ -29,6 +30,12 @@ export interface BotResponse {
   content: string;
   citations?: CitationData[];
   messageType: string;
+  /** Which limit cut the answer short (BUDGETEND): `budget`, `turns` or `time`. */
+  truncatedBy?: string;
+  /** With `truncatedBy` `budget`: which shared budget ran out (C9.06), as `budgetStopNotice` reads it. */
+  budgetScope?: string;
+  /** WP-89: a durable run's settled outcome; `content` is then only the prose and `closing` the English after it. */
+  runOutcome?: { closing?: unknown };
 }
 
 export interface ConversationData {
@@ -390,6 +397,7 @@ export const SLACK_THREAD_REPLIES_LIMIT = 101;
 export interface SlackOwnBotIdentity {
   userId?: string;
   botId?: string;
+  teamId?: string;
 }
 
 function isSet(value: string | undefined): value is string {
@@ -777,7 +785,10 @@ export function formatSlackErrorMessage(rawMessage: string): string {
     return DEFAULT_SLACK_ERROR_MESSAGE;
   }
 
-  return truncateFromEnd(normalizedMessage, MAX_USER_VISIBLE_ERROR_LENGTH);
+  // A backend error can echo model or user text: shown as text, never as Slack syntax (SEC-B-03).
+  return escapeSlackText(
+    truncateFromEnd(normalizedMessage, MAX_USER_VISIBLE_ERROR_LENGTH),
+  );
 }
 
 export function resolveSlackErrorMessage(error: unknown): string {
@@ -832,7 +843,8 @@ export async function sendUserFacingSlackErrorMessage(
 export function describeSlackFile(file: SlackFile): string {
   const name = file.name?.trim() || file.id;
   const ext = file.filetype?.trim();
-  return ext ? `${name} (${ext})` : name;
+  // The sender chose the file name.
+  return escapeSlackText(ext ? `${name} (${ext})` : name);
 }
 
 export interface SkippedAttachments {
@@ -1405,8 +1417,9 @@ export function buildSlackRichTextLinkElement(
     type: "link",
     url,
   };
-  if (label && label !== url) {
-    element.text = label;
+  const shown = label === undefined ? undefined : safeLinkLabel(url, label);
+  if (shown && shown !== url) {
+    element.text = shown;
   }
   if (makeBold) {
     element.style = {
@@ -1927,12 +1940,17 @@ export async function resolveOwnBotIdentity(
     pending = typedClient.apiCall('auth.test').then((result) => ({
       userId: typeof result.user_id === 'string' ? result.user_id : undefined,
       botId: typeof result.bot_id === 'string' ? result.bot_id : undefined,
+      teamId: typeof result.team_id === 'string' ? result.team_id : undefined,
     }));
     ownBotIdentityByKey.set(cacheKey, pending);
   }
   try {
     const identity = await pending;
-    return { userId: identity.userId ?? knownUserId, botId: identity.botId };
+    return {
+      userId: identity.userId ?? knownUserId,
+      botId: identity.botId,
+      ...(identity.teamId ? { teamId: identity.teamId } : {}),
+    };
   } catch (error) {
     ownBotIdentityByKey.delete(cacheKey);
     console.error(

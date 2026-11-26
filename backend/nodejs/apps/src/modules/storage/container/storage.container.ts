@@ -9,6 +9,12 @@ import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { StorageController } from '../controllers/storage.controller';
 import { configuredLocalStorageReplicaProblem } from '../utils/replicas';
 
+/** Builds the controller the storage routes serve, for the given configuration. */
+export type StorageControllerFactory = (
+  storageConfig: DefaultStorageConfig,
+  appConfig: AppConfig,
+) => StorageController;
+
 const loggerConfig = {
   service: 'Storage service',
 };
@@ -33,7 +39,7 @@ export class StorageContainer {
     return container;
   }
 
-  private static async initializeServices(
+  protected static async initializeServices(
     container: Container,
     appConfig: AppConfig,
   ): Promise<void> {
@@ -66,22 +72,46 @@ export class StorageContainer {
         .toDynamicValue(() => storageConfig) // Always fetch latest reference
         .inTransientScope();
 
+      const controllerFactory: StorageControllerFactory = (
+        config,
+        latestAppConfig,
+      ) =>
+        this.createStorageController(
+          container,
+          config,
+          keyValueStoreService,
+          latestAppConfig,
+        );
+      container
+        .bind<StorageControllerFactory>('StorageControllerFactory')
+        .toConstantValue(controllerFactory);
       container
         .bind<StorageController>('StorageController')
-        .toDynamicValue(() => {
-          return new StorageController(
-            storageConfig,
-            Logger.getInstance(loggerConfig),
-            keyValueStoreService,
-            appConfig.scopedJwtSecret,
-          );
-        });
+        .toDynamicValue(() => controllerFactory(storageConfig, appConfig));
     } catch (error) {
       this.logger.error('Failed to initialize storage services', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
     }
+  }
+
+  /**
+   * Extension point: a subclass returns its own StorageController (a subclass
+   * of it) here, and may bind what that controller needs on the container.
+   */
+  protected static createStorageController(
+    _container: Container,
+    storageConfig: DefaultStorageConfig,
+    keyValueStoreService: KeyValueStoreService,
+    appConfig: AppConfig,
+  ): StorageController {
+    return new StorageController(
+      storageConfig,
+      Logger.getInstance(loggerConfig),
+      keyValueStoreService,
+      appConfig.scopedJwtSecret,
+    );
   }
 
   /** Logged at every start while the deployment is in that state (see /health warnings too). */

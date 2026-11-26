@@ -4,7 +4,7 @@ import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/re
 import '@/lib/__tests__/test-i18n';
 
 vi.mock('../../api', () => ({ ConnectorsApi: {} }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => <span>locked</span> }));
+vi.mock('@/config', () => ({ PermissionLockIcon: () => <span>locked</span>, useUserPermission: () => true }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({

@@ -201,4 +201,87 @@ describe('mail/utils/emailTemplates', () => {
       expect(result).to.be.a('string')
     })
   })
+  describe('sandboxCapacityAlert', () => {
+    // Built the same way the platform alert handler builds it.
+    let build: typeof import('../../../../src/modules/notification/utils/sandbox-capacity-mail').buildSandboxCapacityMail
+    let getEmailContent: typeof import('../../../../src/modules/mail/utils/email-content').getEmailContent
+
+    before(() => {
+      build = require('../../../../src/modules/notification/utils/sandbox-capacity-mail').buildSandboxCapacityMail
+      getEmailContent = require('../../../../src/modules/mail/utils/email-content').getEmailContent
+    })
+
+    const { parseSandboxCapacityAlert } = require('../../../../src/modules/notification/utils/sandbox-capacity-alert')
+    const payload = (overrides: Record<string, unknown> = {}) => ({
+      v: 1,
+      alertId: 'a1',
+      level: 'warning',
+      host: 'pipeshub-7d9c',
+      memorySource: 'host',
+      windowMinutes: 30,
+      runs: 412,
+      waited: 57,
+      refused: 0,
+      busyPercent: 72,
+      refusedPercent: 0,
+      longestWaitSeconds: 118,
+      slotWaitSeconds: 120,
+      reason: 'memory',
+      limit: { current: 3, ceiling: 6, floor: 2 },
+      hostMemoryTotalGb: 16,
+      hostMemoryFreeGb: 1.1,
+      ...overrides,
+    })
+    const mail = (overrides: Record<string, unknown> = {}, type = 'SANDBOX_CAPACITY_WARNING') => {
+      const parsed = parseSandboxCapacityAlert({ type, payload: payload(overrides) })
+      if (!parsed.ok) throw new Error(parsed.reason)
+      return build(parsed.alert)
+    }
+    const render = (overrides: Record<string, unknown> = {}) =>
+      getEmailContent('sandboxCapacityAlert', mail(overrides)!.templateData as never)
+
+    it('lists the action for each reason', () => {
+      expect(render({ reason: 'memory' })).to.contain('Add memory to the host')
+      expect(render({ reason: 'cpu' })).to.contain('Add CPU cores to the host')
+      expect(render({ reason: 'slots' })).to.contain('SANDBOX_MAX_TOTAL')
+      expect(render()).to.contain('load alerts guide')
+    })
+
+    it('shows the indexing paragraph only when indexing slowed down for memory', () => {
+      expect(render()).to.not.contain('Already done')
+      const html = render({ indexingSlowedSince: '2026-11-16T10:13:40Z' })
+      expect(html).to.contain('Already done')
+      expect(html).to.contain('10:13 UTC')
+    })
+
+    it('labels the memory row for the code runner and uses its action when the memory is the sidecar', () => {
+      const html = render({ memorySource: 'sidecar' })
+      expect(html).to.contain('Code runner memory free / total')
+      expect(html).to.contain('sandbox.dind.resources')
+      expect(render()).to.contain('Host memory free / total')
+    })
+
+    it('leaves the memory row out when the values are unknown', () => {
+      const html = render({ hostMemoryTotalGb: null, hostMemoryFreeGb: null })
+      expect(html).to.not.contain('memory free / total')
+    })
+
+    it('ignores free text in the event', () => {
+      const html = render({ reasonText: '<script>alert(1)</script>', indexingText: 'x' })
+      expect(html).to.not.contain('script')
+      expect(html).to.contain('Free memory on the host was low')
+    })
+
+    it('puts the brand product name in the subject', () => {
+      expect(mail()!.subject).to.equal('PipesHub: code runs in chat are waiting for capacity')
+    })
+
+    it('has no email for a resolved notice', () => {
+      expect(mail({}, 'SANDBOX_CAPACITY_RESOLVED')).to.equal(null)
+    })
+
+    it('refuses data missing the required fields', () => {
+      expect(() => getEmailContent('sandboxCapacityAlert', { heading: 'x' })).to.throw('sandboxCapacityAlert requires')
+    })
+  })
 })

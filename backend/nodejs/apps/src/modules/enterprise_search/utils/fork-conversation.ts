@@ -6,6 +6,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { ProjectService } from '../../projects/services/project.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
+import { FOREIGN_TURN_STUB } from '../../agent-harness/domain/session-audience';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import type {
   ChatSessionDto,
@@ -23,6 +24,11 @@ import {
   collectArtifactRefs,
   pointMessageAtCopies,
 } from './fork-artifacts';
+import { detachCopiedRuns } from './copied-runs';
+import {
+  harnessVersionOf,
+  pinForkExecutor,
+} from '../../../libs/repositories/agent-harness/session-fields';
 
 const logger = Logger.getInstance({ service: 'ForkConversation' });
 
@@ -151,6 +157,40 @@ export function expirePendingApprovals(
   return settled.every((part, i) => part === parts[i]) ? parts : settled;
 }
 
+/**
+ * A collaborator's turn (SS2) as the fork keeps it: the stub "continue
+ * privately" writes. Their answer ran with their access, and the fork's own
+ * runs see its whole history, so the copy must not carry what the owner's
+ * runs in the original saw only as a stub.
+ */
+export function stubCollaboratorTurn(
+  message: IMessage,
+  forkerId: string,
+): IMessage {
+  // Persisted rows are read lean: a missing sender may be stored as null.
+  const sender: unknown = message.senderId;
+  if (sender === undefined || sender === null || idText(sender) === forkerId) {
+    return message;
+  }
+  return {
+    messageType: message.messageType,
+    content: FOREIGN_TURN_STUB,
+    contentFormat: 'MARKDOWN',
+    citations: [],
+    foreignTurn: true,
+  } as unknown as IMessage;
+}
+
+/** Who sent a stored message (SS2): a collaborator's id, or null for the owner's own turn. */
+/** A stored id as text: a string as is, an ObjectId as its hex. */
+const idText = (id: { toString(): string }): string => id.toString();
+
+const senderOf = (message: object): string | null => {
+  // Persisted rows may store a missing sender as null.
+  const sender: unknown = (message as { senderId?: unknown }).senderId;
+  return sender === undefined || sender === null ? null : idText(sender);
+};
+
 function withExpiredApprovals(message: IMessage): IMessage {
   return Array.isArray(message.parts)
     ? { ...message, parts: expirePendingApprovals(message.parts) }
@@ -234,11 +274,15 @@ async function copyForkArtifacts(
   lastSeq: number,
   forkId: string,
 ): Promise<ArtifactCopyMap> {
-  const contents = await getConversationRepository().listArtifactMarkerContents(
-    source._id,
-    source.orgId,
-    lastSeq,
-  );
+  // Only the owner's own turns: a collaborator's artifacts are never copied (SS2).
+  const contents: string[] = [];
+  for await (const batch of messagesUpTo(source._id, source.orgId, lastSeq)) {
+    for (const { dto } of batch) {
+      if (senderOf(dto) === null && dto.content.includes('::artifact[')) {
+        contents.push(dto.content);
+      }
+    }
+  }
   const refs = collectArtifactRefs(contents);
   if (refs.length === 0) {
     return new ArtifactCopyMap([]);
@@ -252,6 +296,69 @@ async function copyForkArtifacts(
     );
   }
   return new ArtifactCopyMap(outcome.copies);
+}
+
+/** A copied message's citation link as the id it names; persisted links are Mixed, so it may name none. */
+function citationIdOf(link: unknown): string | null {
+  if (link === null || typeof link !== 'object') return null;
+  const id: unknown = (link as { citationId?: unknown }).citationId;
+  return id === undefined || id === null ? null : idText(id);
+}
+
+/**
+ * Each message's citations pointed at new citation documents of the fork's
+ * own: erasing either conversation deletes the citation documents its
+ * messages name, so a shared one would vanish from the other. A citation
+ * whose document is already gone is dropped, as "continue privately" does.
+ */
+async function withCopiedCitations(
+  messages: IMessage[],
+  orgId: string,
+  tx: Tx | undefined,
+  repo: ConversationRepository,
+): Promise<IMessage[]> {
+  const ids = [
+    ...new Set(
+      messages.flatMap((message) =>
+        (message.citations ?? []).flatMap((link) => {
+          const id = citationIdOf(link);
+          return id === null ? [] : [id];
+        }),
+      ),
+    ),
+  ];
+  if (ids.length === 0) return messages;
+  const stored = await repo.getCitations(ids, orgId);
+  const created = await repo.createCitations(
+    stored.map(({ content, chunkIndex, citationType, metadata }) => ({
+      content,
+      chunkIndex,
+      citationType,
+      metadata,
+    })),
+    tx,
+  );
+  // createCitations answers in the order it was given.
+  const copyOf = new Map(
+    stored.flatMap((source, i) => {
+      const copy = created[i];
+      return copy === undefined ? [] : [[source._id, copy._id] as const];
+    }),
+  );
+  return messages.map((message) =>
+    Array.isArray(message.citations) && message.citations.length > 0
+      ? {
+          ...message,
+          citations: message.citations.flatMap((link) => {
+            const id = citationIdOf(link);
+            const copy = id === null ? undefined : copyOf.get(id);
+            return copy === undefined
+              ? []
+              : [{ ...link, citationId: copy as never }];
+          }),
+        }
+      : message,
+  );
 }
 
 /** Artifacts copied for a fork before its chat is written. */
@@ -292,7 +399,10 @@ export async function copyArtifactsForFork(
 /**
  * Copy a chat session and every message up to `messageId` (inclusive) into a
  * new session owned by `userId`. The source is left unchanged. Share state is
- * not copied: the fork is private to the caller. Messages are copied in
+ * not copied: the fork is private to the caller. The copy depends on nothing
+ * of the original's: its messages name none of the original's runs
+ * (`copied`), its citations are its own documents, a collaborator's turn is a
+ * stub, and a durable original gives a durable fork with a clean workspace. Messages are copied in
  * batches so a long thread is never held in memory whole. Without a
  * transaction (a store that cannot give one), a failed copy hides what it
  * already wrote.
@@ -357,6 +467,13 @@ export async function copySessionUpToMessage(
     },
     unit,
   );
+  // The fork keeps the original's executor; its first durable run imports the copied messages.
+  await pinForkExecutor(
+    conversation._id,
+    orgId,
+    await harnessVersionOf(source._id, source.orgId, unit),
+    unit,
+  );
   const copies = artifacts?.copies ?? new ArtifactCopyMap([]);
 
   let messageCount = 0;
@@ -368,20 +485,30 @@ export async function copySessionUpToMessage(
       unit,
       repo,
     )) {
-      await repo.appendMessages(
-        conversation._id,
-        orgId,
-        batch.map(
-          (row) =>
-            pointMessageAtCopies(
-              withExpiredApprovals(
+      const copied = batch.map((row) =>
+        pointMessageAtCopies(
+          withExpiredApprovals(
+            stubCollaboratorTurn(
+              detachCopiedRuns(
                 stripMessageForCopy(
                   row.dto as unknown as Record<string, unknown>,
                 ),
               ),
-              copies,
-            ) as unknown as NewMessage,
+              userId,
+            ),
+          ),
+          copies,
         ),
+      );
+      await repo.appendMessages(
+        conversation._id,
+        orgId,
+        (await withCopiedCitations(
+          copied,
+          orgId,
+          unit,
+          repo,
+        )) as unknown as NewMessage[],
         unit,
       );
       messageCount += batch.length;

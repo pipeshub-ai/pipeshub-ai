@@ -141,7 +141,7 @@ describe('ConnectorsCrawlingService (Local FS desktop presence)', () => {
 
     const result = await makeService(publishEvent).crawl(orgId, userId, scheduleConfig, 'Local FS', connectorId);
 
-    expect(result).to.deep.equal({ success: true });
+    expect(result).to.deep.equal({ success: true, skipped: 'desktop_offline' });
     expect(publishEvent.called).to.be.false;
   });
 

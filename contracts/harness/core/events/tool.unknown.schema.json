@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/tool.unknown.schema.json",
+  "title": "ToolUnknownEvent",
+  "description": "Outcome of a non-idempotent effect is unknown and could not be reconciled.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "tool.unknown"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ToolUnknownData"
+    }
+  },
+  "$defs": {
+    "ToolUnknownData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/Text"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.unknown",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "reason": "lost ack after commit"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

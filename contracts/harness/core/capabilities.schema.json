@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/capabilities.schema.json",
+  "title": "HarnessCapabilities",
+  "description": "Capability probe result published by each process (REPORT 11). Admission pins effective = detected ∩ org policy as capabilitiesDigest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "processRole",
+    "version",
+    "ttlS",
+    "caps"
+  ],
+  "properties": {
+    "processRole": {
+      "enum": [
+        "node",
+        "query",
+        "worker",
+        "indexing",
+        "connectors",
+        "sandbox-broker"
+      ]
+    },
+    "version": {
+      "$ref": "common.schema.json#/$defs/Text"
+    },
+    "profile": {
+      "description": "Derived deployment profile; never set by an env var.",
+      "enum": [
+        "desktop-eval",
+        "desktop",
+        "compose-single",
+        "compose-hardened",
+        "k8s",
+        "k8s-managed"
+      ]
+    },
+    "ttlS": {
+      "$ref": "common.schema.json#/$defs/PosInt"
+    },
+    "caps": {
+      "$ref": "#/$defs/Capabilities"
+    }
+  },
+  "$defs": {
+    "Capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "journal.durable",
+        "livebus",
+        "sandbox.isolation",
+        "sandbox.egress",
+        "mcp.stdio",
+        "blob.cas.gc",
+        "triggers.always_on",
+        "workers.dispatched"
+      ],
+      "properties": {
+        "journal.durable": {
+          "description": "Replica set with w:majority. False keeps the harness off.",
+          "type": "boolean"
+        },
+        "livebus": {
+          "enum": [
+            "redis",
+            "inproc"
+          ]
+        },
+        "sandbox.isolation": {
+          "enum": [
+            "none",
+            "virtual",
+            "container",
+            "container_gvisor",
+            "microvm",
+            "remote"
+          ]
+        },
+        "sandbox.egress": {
+          "enum": [
+            "none",
+            "allowlist",
+            "allowlist_secrets"
+          ]
+        },
+        "mcp.stdio": {
+          "enum": [
+            "off",
+            "isolated",
+            "inproc_unsafe"
+          ]
+        },
+        "blob.cas.gc": {
+          "type": "boolean"
+        },
+        "triggers.always_on": {
+          "type": "boolean"
+        },
+        "workers.dispatched": {
+          "type": "boolean"
+        }
+      },
+      "description": "Closed capability vocabulary; new capabilities need a schema version."
+    }
+  },
+  "examples": [
+    {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "compose-single",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": true,
+        "livebus": "redis",
+        "sandbox.isolation": "container_gvisor",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true
+      }
+    },
+    {
+      "processRole": "node",
+      "version": "2.0.0",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": false,
+        "livebus": "inproc",
+        "sandbox.isolation": "none",
+        "sandbox.egress": "none",
+        "mcp.stdio": "off",
+        "blob.cas.gc": false,
+        "triggers.always_on": false,
+        "workers.dispatched": false
+      }
+    }
+  ]
+}

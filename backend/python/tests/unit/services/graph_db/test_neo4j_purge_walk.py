@@ -58,7 +58,8 @@ async def test_without_its_index_the_walk_drops_the_hint_and_says_so_once(caplog
     queries = [call.args[0] for call in execute.await_args_list]
     assert [HINT in q for q in queries] == [True, False, True, False]
     assert [r["id"] for r in first["records"] + second["records"]] == ["a", "b"]
-    assert caplog.text.count("walking the trash without it") == 1
+    fallbacks = [r for r in caplog.records if getattr(r, "step", None) == "unhinted_fallback"]
+    assert [(r.levelno, r.op, r.index) for r in fallbacks] == [(logging.WARNING, "_execute_hinted", "record_org_deleted_at")]
 
 
 async def test_any_other_error_is_raised() -> None:

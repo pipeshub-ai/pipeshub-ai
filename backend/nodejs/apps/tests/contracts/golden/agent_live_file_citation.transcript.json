@@ -1,0 +1,117 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "What does the Q3 plan say?",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "What does the Q3 plan say?",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "The Q3 launch moves to May [1](/record/live:00000000000000000000000000000001/preview#blockIndex=0) and the budget is unchanged [2](/record/live:00000000000000000000000000000001/preview#blockIndex=1).",
+      "contentFormat": "MARKDOWN",
+      "citations": [
+        {
+          "citationId": "oid-5"
+        },
+        {
+          "citationId": "oid-6"
+        }
+      ],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1"
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-read",
+          "toolName": "goldendrive__read_file",
+          "args": "{\"file_id\": \"file-q3\"}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Read File — file_id: \"file-q3\"",
+          "resultPreview": "[{\"type\": \"text\", \"text\": \"<record>\\nRecord ID: live:00000000000000000000000000000001\\nName: Q3 plan.txt\\nConnector: DRIVE\\nType: FILE\\nExternal ID: file-q3\\nCreated At: N/A\\nLast Updated At: N/A\\nConnector ID: N/A\\nExternal Parent ID: N/A\\nMIME Type: text/plain\\nFile Information:\\n* Extension: txt\\n\\nRecord blocks (sorted):\\n\\n\"}, {\"type\": \"text\", \"text\": \"[/record/live:00000000000000000000000000000001/preview#blockIndex=0] The Q3 launch moves to May.\\n\\n\"}, {\"type\": \"text\", \"text\": \"[/record/live:00000000000000000000000000000001/preview#blockIndex=1] The Q3 budget is unchanged.\\n\\n\"}, {\"type\": \"text\", \"text\": \"\\n</record>\\n\"}, {\"type\": \"text\", \"text\": \"\\n\\nCite facts from the above using each block's `[refN]` id as a markdown link, e.g. [source](/record/live:00000000000000000000000000000001/preview#blockIndex=1). Do NOT use external URLs as citations.\"}]",
+          "resultSummary": "Completed successfully — 5 items"
+        },
+        {
+          "type": "text",
+          "content": "The Q3 launch moves to May [1](/record/live:00000000000000000000000000000001/preview#blockIndex=0) and the budget is unchanged [2](/record/live:00000000000000000000000000000001/preview#blockIndex=1).",
+          "runId": "uuid-1",
+          "isFinal": true
+        }
+      ],
+      "_id": "oid-7",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

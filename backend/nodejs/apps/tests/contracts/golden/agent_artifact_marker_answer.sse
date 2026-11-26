@@ -1,0 +1,72 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"conversationId":"oid-1","title":"Export Q3 revenue as CSV"}}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-promote", "toolCallName": "artifacts__promote_artifact", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-promote", "delta": "{\"artifact_id\": \"art-q3\"}", "runId": "uuid-1", "argsSummary": "Promote Artifact \u2014 artifact_id: \"art-q3\"", "argsPreview": "{\"artifact_id\": \"art-q3\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "artifacts__promote_artifact", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "conv-golden", "delta": [{"op": "add", "path": "/artifacts/-", "value": {"artifactId": "art-q3", "fileName": "q3-revenue.csv", "mimeType": "text/csv", "sizeBytes": 2048, "downloadUrl": "https://storage.test/signed/art-q3?sig=golden", "artifactType": "SPREADSHEET", "isTemporary": false, "recordId": "art-q3", "version": 2, "visibility": "VISIBLE"}}]}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-promote", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-promote", "content": "{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply.\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-5", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "Here is the export you asked for.\n\n", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-5", "delta": "::artifact[evil.csv](https://attacker.test/x){text/csv|x|x|document|1}", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-5", "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Here is the export you asked for.\n\n"}, {"op": "replace", "path": "/rawLength", "value": 35}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export Q3 revenue as CSV", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Here is the export you asked for.\n\n::artifact[evil.csv](https://attacker.test/x){text/csv|x|x|document|1}"}, {"op": "replace", "path": "/rawLength", "value": 105}]}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}"}, {"op": "replace", "path": "/rawLength", "value": 105}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-promote", "toolName": "artifacts__promote_artifact", "args": "{\"artifact_id\": \"art-q3\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Promote Artifact \u2014 artifact_id: \"art-q3\"", "resultPreview": "{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply.\"}", "resultSummary": "Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."}, {"type": "text", "content": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}", "runId": "uuid-1", "isFinal": true}], "answer": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}", "citations": [], "confidence": null, "succeeded_tool_names": ["artifacts__promote_artifact"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"Export Q3 revenue as CSV","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"quick"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-1","sharedWith":[],"conversationErrors":[],"createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}","contentFormat":"MARKDOWN","citations":[],"confidence":null,"followUpQuestions":[],"modelInfo":{"chatMode":"quick"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"parts":[{"type":"text","content":"","runId":"uuid-1"},{"type":"tool_call","toolCallId":"call-promote","toolName":"artifacts__promote_artifact","args":"{\"artifact_id\": \"art-q3\"}","status":"completed","runId":"uuid-1","argsSummary":"Promote Artifact — artifact_id: \"art-q3\"","resultPreview":"{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply.\"}","resultSummary":"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."},{"type":"text","content":"Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}","runId":"uuid-1","isFinal":true}],"_id":"oid-4","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>"}}}
+

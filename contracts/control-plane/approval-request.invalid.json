@@ -1,0 +1,14 @@
+[
+  {
+    "description": "an unknown change kind",
+    "instance": {"schemaVersion": 1, "id": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "target": {"type": "installation", "id": "i1", "revision": 1}, "change": {"type": "anything"}, "changeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "requestedBy": "user:u7", "approvers": [{"principal": "role:orgAdmin"}], "state": "open", "decisions": [], "createdAt": 0, "expiresAt": null}
+  },
+  {
+    "description": "nobody can approve",
+    "instance": {"schemaVersion": 1, "id": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "target": {"type": "installation", "id": "i1", "revision": 1}, "change": {"type": "install"}, "changeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "requestedBy": "user:u7", "approvers": [], "state": "open", "decisions": [], "createdAt": 0, "expiresAt": null}
+  },
+  {
+    "description": "a decision that is neither approve nor reject",
+    "instance": {"schemaVersion": 1, "id": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "orgId": "o1", "target": {"type": "installation", "id": "i1", "revision": 1}, "change": {"type": "install"}, "changeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "requestedBy": "user:u7", "approvers": [{"principal": "role:orgAdmin"}], "state": "open", "decisions": [{"by": "user:u1", "decision": "maybe", "at": 0}], "createdAt": 0, "expiresAt": null}
+  }
+]

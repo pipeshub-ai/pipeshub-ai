@@ -262,8 +262,8 @@ export class DesktopProxySocketGateway {
       // failure, so the desktop client keeps retrying until the check works.
       this.logger.error('Desktop handshake: session check failed', {
         error,
-        orgId,
-        userId,
+        org_id: orgId,
+        target_user_id: userId,
       });
       return new Error('Unable to check the session right now');
     }
@@ -305,8 +305,8 @@ export class DesktopProxySocketGateway {
       sockets.forEach((socket, i) => {
         if (!refusals[i]) return;
         this.logger.info('Disconnecting desktop socket: session revoked', {
-          orgId: socket.data.orgId,
-          userId: socket.data.userId,
+          org_id: socket.data.orgId,
+          target_user_id: socket.data.userId,
           reason: refusals[i],
         });
         socket.disconnect(true);

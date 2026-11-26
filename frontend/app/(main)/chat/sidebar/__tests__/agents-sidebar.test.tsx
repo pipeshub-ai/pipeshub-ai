@@ -37,6 +37,9 @@ vi.mock('@/app/components/ui/lottie-loader', () => ({
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
 import { AgentsSidebar } from '../agents-sidebar';
+import { useFeatureFlagsStore, type AgentHarnessRollout } from '@/lib/store/feature-flags-store';
+import { HARNESS_ORG_ANSWERS, SURFACES_SHOWN } from '@/lib/store/__tests__/harness-org-answers';
+import { i18n } from '@/lib/i18n';
 
 function listRecord(overrides: Partial<AgentListRecord> = {}): AgentListRecord {
   return {
@@ -110,6 +113,20 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.clearAllMocks();
+});
+
+describe('GATE: agent import follows the harness for the org (ADR-OPS-08)', () => {
+  afterEach(() => useFeatureFlagsStore.setState({ agentHarness: null }));
+
+  for (const [answer, rollout] of Object.entries(HARNESS_ORG_ANSWERS) as Array<[keyof typeof HARNESS_ORG_ANSWERS, AgentHarnessRollout | null]>) {
+    it(`${answer}: the import button is ${SURFACES_SHOWN[answer] ? 'shown' : 'not shown'}`, async () => {
+      useFeatureFlagsStore.setState({ agentHarness: rollout });
+      agentsApi.getAgents.mockResolvedValue(page([listRecord()]));
+      await renderSidebar();
+      const importLabel = i18n.t('agentTransfer.import.button');
+      expect(screen.queryByRole('button', { name: importLabel }) !== null).toBe(SURFACES_SHOWN[answer]);
+    });
+  }
 });
 
 describe('AgentsSidebar', () => {

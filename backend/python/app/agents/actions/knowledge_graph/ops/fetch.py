@@ -9,6 +9,7 @@ built fresh per call from live ``tool_state`` without duplicating the body.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -37,11 +38,6 @@ DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 # one of them is the model following the "read it in order" hint; on any other
 # record it is the default some models send on every call.
 FETCH_SELECTED_RECORDS_KEY = "fetch_selected_records"
-
-_CITATION_RULE = (
-    "\n\nCite facts from the above using each block's `[refN]` id "
-    "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
-)
 
 # Below this, a record's share of a multi-record fetch holds a header and a
 # sliver of text -- too little to read, enough to pass for "read". Such a
@@ -134,6 +130,7 @@ _UNAVAILABLE_PHRASING = {
     "content_being_prepared": "exists, and its content is being prepared — ask again shortly",
     "storage_error": "could not be read right now (storage error) — retrying may work",
     "not_available": "not available",
+    "publication_answer_only": "published for answers only — use what search returned, it cannot be opened in full",
 }
 
 
@@ -164,7 +161,8 @@ def _unavailable_note(
             block = entry.get("context") or f"Record ID: {record_id}"
             if record_id_shortener is not None:
                 block = record_id_shortener.shorten_record_ids_in_text(block)
-            described.append(f"{block}\n{not_indexed_note(entry.get('status'), entry.get('preparing'))}")
+            note = not_indexed_note(entry.get("status"), preparing=entry.get("preparing"), name=entry.get("name"))
+            described.append(f"{block}\n{note}")
             continue
         # `shorten_if_known` never mints a label for an id the model has not
         # already seen -- an invented "R7" would be worse than the raw id.
@@ -180,6 +178,32 @@ def _unavailable_note(
         lines.append(f"{ids_str}: {_UNAVAILABLE_PHRASING.get(reason, 'not available')}")
     note = "\n\nNote: " + "; ".join(lines) if lines else ""
     return note + "".join(f"\n\n{block}" for block in described)
+
+
+def _index_not_ready(
+    not_available: list[str],
+    reasons: dict[str, str],
+    not_indexed: dict[str, dict[str, str]],
+    record_id_shortener: Any = None,  # noqa: ANN401
+) -> dict[str, Any] | None:
+    """The typed ``index_not_ready`` answer when every id of a fetch that read nothing is a record the caller may
+    read that is still being indexed (KN-09); ``None`` otherwise. Only ids past the access check are described, so
+    a record the caller may not read never lands here (ADR-OWD-02)."""
+    from app.utils.fetch_full_record import NOT_INDEXED_YET
+    from app.utils.not_indexed import INDEX_NOT_READY, is_index_pending
+
+    if not not_available:
+        return None
+    records: list[dict[str, str]] = []
+    for record_id in not_available:
+        entry = not_indexed.get(record_id)
+        if reasons.get(record_id) != NOT_INDEXED_YET or entry is None or not is_index_pending(entry.get("status")):
+            return None
+        shown = (
+            record_id_shortener.shorten_if_known(record_id) if record_id_shortener is not None else record_id
+        )
+        records.append({"recordId": shown, "name": entry.get("name") or "", "indexingStatus": entry["status"]})
+    return {"status": INDEX_NOT_READY, "records": records}
 
 
 def _not_read_note(
@@ -200,9 +224,19 @@ def _not_read_note(
 
 
 async def _ids_outside_scope(context: "AgentContext", record_ids: list[str]) -> list[str]:
-    return await ids_outside_scope(
-        context.tool_state or {}, context.graph_provider, context.user_id, context.org_id, record_ids,
-    )
+    state = context.tool_state or {}
+    outside = await ids_outside_scope(state, context.graph_provider, context.user_id, context.org_id, record_ids)
+    if not outside:
+        return outside
+    # Publications lay over the scope (SYNC4 S11): an id the scope admits by place goes on to the read gate.
+    from app.harness.knowledge.scope_overlay import published_within_scope
+    from app.utils.fetch_slack_thread import resolve_user_key
+
+    user_key = await resolve_user_key(context.graph_provider, context.user_id)
+    if not user_key:
+        return outside
+    published = await published_within_scope(state, context.graph_provider, user_key, context.org_id, outside)
+    return [record_id for record_id in outside if record_id not in published]
 
 
 # The longest query a focused-read note repeats back; a model's query is a
@@ -253,6 +287,7 @@ async def execute_fetch_record(
     from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
     from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
     from app.agents.agent_loop.tool_adapter import _to_tool_output
+    from app.harness.knowledge.caller import caller_user_id_of
     from app.modules.agents.qna.chat_state import remember_record_ids
     from app.modules.pipeline.parse_now import ParseNow, optional_redis
     from app.modules.retrieval.context.targeted import (
@@ -260,6 +295,7 @@ async def execute_fetch_record(
         targeted_retrieval_enabled,
     )
     from app.utils.chat_helpers import (
+        CITE_BLOCK_REFS_HINT,
         ImageBudget,
         _renderable_block_indices,
         image_dict_to_part,
@@ -337,6 +373,7 @@ async def execute_fetch_record(
         org_id=context.org_id,
         graph_provider=context.graph_provider,
         user_id=context.user_id,
+        caller_user_id=caller_user_id_of(getattr(context, "user_info", None)),
         connection_sources=connection_sources_of((context.tool_state or {}).get("filters")),
         # A continuation reads what the first page left stored; it never starts a parse.
         parse_now=(
@@ -408,7 +445,7 @@ async def execute_fetch_record(
         focus_note = _focused_read_note(focus) if focus else ""
         budget.charge_framing(focus_note)
         budget.charge_framing_chars(
-            len(_CITATION_RULE)
+            len(CITE_BLOCK_REFS_HINT)
             + len(_unavailable_note(
                 result.get("not_available_ids", []), result.get("unavailable_reasons", {}),
                 None, result.get("not_indexed_records"),
@@ -530,7 +567,7 @@ async def execute_fetch_record(
         # when the flag is off.
         if record_id_shortener is not None:
             text = record_id_shortener.shorten_record_ids_in_text(text)
-        text += _CITATION_RULE
+        text += CITE_BLOCK_REFS_HINT
         text += _unavailable_note(
             result.get("not_available_ids", []),
             result.get("unavailable_reasons", {}),
@@ -615,6 +652,17 @@ async def execute_fetch_record(
             result.get("not_indexed_records"),
         )
         message += _recovery_hint()
-        return ToolOutput(success=False, error=message), citation_ref_mapper
+        reasons = result.get("unavailable_reasons") or {}
+        pending = _index_not_ready(
+            result["not_available_ids"], reasons, result.get("not_indexed_records") or {}, record_id_shortener,
+        )
+        if pending is not None:
+            # KN-09: the records exist and may be read; they are not indexed yet. A distinct answer, not a failure.
+            return ToolOutput(success=True, data=json.dumps({**pending, "message": message})), citation_ref_mapper
+        # Missing, unreadable and outside the turn's scope read alike (QA27); the person sees the code's words.
+        hidden = all(reasons.get(rid, UNAVAILABLE) == UNAVAILABLE for rid in result["not_available_ids"])
+        return ToolOutput(
+            success=False, error=message, error_code="not_found" if hidden else None,
+        ), citation_ref_mapper
 
     return _to_tool_output(result), citation_ref_mapper

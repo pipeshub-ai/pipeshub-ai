@@ -9,21 +9,39 @@
  * One handler instance per stream: create a fresh one per
  * `ChatApi.stream*` call (it closes over per-run text/citation buffers).
  */
+import { runOutcome } from './run-outcome';
 import type { SSEEvent } from '@/lib/api';
 import type {
   AGUIEventEnvelope,
   AGUIJsonPatchOp,
+  AttachmentRef,
+  ContextCompactedView,
   MessagePart,
   SSEAskUserQuestionEvent,
+  SSEInteractionWaitingEvent,
+  SSEApprovalRequestedEvent,
+  SSEApprovalResolvedEvent,
   SSEArtifactEvent,
   SSEChunkCitation,
   SSEConnectedEvent,
+  SSEEngineProgressEvent,
+  SSEPlanEvent,
+  SSEPlanStep,
 } from './types';
 import { TOOL_PROGRESS_STATUS } from './types';
 import type { StreamMessageCallbacks } from './api';
-import { toolStatusLabel } from './utils/tool-display';
+import { countedApprovals } from './interactions';
+import { humanizeToolName, toolStatusLabel } from './utils/tool-display';
+import { engineName, isAcpEngine } from '@/app/(main)/workspace/ai-accounts/access-copy';
+import { i18n } from '@/lib/i18n';
+import { answerErrorText, memoryLimitOf, providerWaitText, sandboxWaitText } from './harness-errors';
+import { runFailureWords } from './run-failure-words';
+import { toRunModel } from './utils/run-model';
 import { ChatStreamError } from './stream-error';
 import { toolApprovalDetails } from './tool-approval';
+import { toCodeTaskHandoff } from './handoff';
+import { connectRequested, connectResolved } from './connect-cards';
+import { stepFacts } from './engine-steps';
 
 /** Mutable counters the caller inspects after the stream ends (mirrors the
  * legacy dispatcher's local `receivedComplete`/`lastSSEError` bookkeeping). */
@@ -39,6 +57,116 @@ interface AGUIStreamState {
   confidence?: string;
   rawLength: number;
 }
+
+/**
+ * Everything a handler has built, as plain JSON: a durable stream saves it
+ * with the last frame id, so a reloaded page resumes with `Last-Event-ID`
+ * instead of replaying the run from its first frame.
+ */
+export interface AGUIHandlerCheckpoint {
+  textBuffer: string;
+  rawTextReceived: number;
+  state: AGUIStreamState;
+  parts: MessagePart[];
+  seenIds: string[];
+  /** `openTurnParts` keys (`<runId>:text`, `<runId>:reasoning`) still open. */
+  openTurnKeys: string[];
+  rootRunId: string | null;
+  /** Root text parts by message id, as indexes into `parts`. */
+  rootTextMessages: Record<string, number>;
+  endedRootMessageId: string | null;
+  /**
+   * Sub-agents' cards still open (UX3). The stream's ids name the cards this
+   * reader holds and a resume is not told them again (QA6-F12), so they are
+   * saved with the id that names them. Absent in a state saved before that.
+   */
+  childCards?: SSEApprovalRequestedEvent[];
+  /** The root run's latest plan (UXR-B1): a resume after its frame is not told it again. */
+  plan?: SSEPlanEvent | null;
+}
+
+export interface AGUIHandlerOptions {
+  resumeFrom?: AGUIHandlerCheckpoint;
+  /**
+   * Durable streams only. The server ends a message it can no longer stream
+   * (lost buffer, re-claimed run) and restarts it whole under a new id; that
+   * restart replaces the ended message instead of settling it as narration.
+   * The restart names the message it replaces (`replacesMessageId`); a stream
+   * without that marker is read by frame order: an end directly followed by
+   * a start with another id.
+   */
+  replaceRestartedMessages?: boolean;
+  onMessageRestarted?: (
+    previousMessageId: string,
+    messageId: string,
+    via: 'marker' | 'order',
+  ) => void;
+  /** The reader's clock (ms), for the provider wait's countdown; tests inject one. */
+  now?: () => number;
+}
+
+/** A steering message's files as the frame names them; anything malformed is dropped. */
+function steeringAttachments(raw: unknown): AttachmentRef[] {
+  if (!Array.isArray(raw)) return [];
+  const str = (value: unknown): string => (typeof value === 'string' ? value : '');
+  return raw.flatMap((item): AttachmentRef[] => {
+    if (!item || typeof item !== 'object') return [];
+    const fields = item as Record<string, unknown>;
+    const recordId = str(fields.recordId);
+    if (!recordId) return [];
+    return [{
+      recordId,
+      virtualRecordId: str(fields.virtualRecordId),
+      recordName: str(fields.recordName),
+      mimeType: str(fields.mimeType),
+      extension: str(fields.extension),
+      ...(fields.source === 'upload' || fields.source === 'paste-text' ? { source: fields.source } : {}),
+    }];
+  });
+}
+
+function restartedMessage(
+  data: AGUIEventEnvelope | undefined,
+  endedRootMessageId: string | null,
+  messageId: string | undefined,
+): { messageId: string; via: 'marker' | 'order' } | null {
+  const marker = data?.replacesMessageId;
+  if (typeof marker === 'string' && marker !== '' && marker !== messageId) {
+    return { messageId: marker, via: 'marker' };
+  }
+  if (endedRootMessageId !== null && endedRootMessageId !== messageId) {
+    return { messageId: endedRootMessageId, via: 'order' };
+  }
+  return null;
+}
+
+/** A sub-agent's interaction ids are its own run's, so they may repeat another run's (UX3). */
+const childCardKey = (card: { interactionId: string; childRunId?: string }): string =>
+  `${card.childRunId ?? ''}\u0000${card.interactionId}`;
+
+export type AGUIEventHandler = ((event: SSEEvent) => void) & {
+  checkpoint(): AGUIHandlerCheckpoint;
+  /** Re-sends the restored parts and answer text to the callbacks. */
+  publishView(): void;
+};
+
+/**
+ * Stream frames the chat hides on purpose (UX-01), keyed `TYPE`, `CUSTOM:<name>` or `STATE_SNAPSHOT:<status>`, with
+ * why. Every other frame of `contracts/harness/vectors/ui-stream-events.json` is shown or feeds what is shown.
+ */
+export const HIDDEN_STREAM_FRAMES: Readonly<Record<string, string>> = Object.freeze({
+  STEP_FINISHED: "A sub-agent's end shows from its own RUN_FINISHED or RUN_ERROR.",
+  TOOL_CALL_END: 'It carries no result; the step updates on TOOL_CALL_RESULT.',
+  REASONING_START: 'The reasoning row opens on REASONING_MESSAGE_START.',
+  'CUSTOM:tool_unavailable':
+    "The search step's own result names each tool, live and saved alike; its Connect rows are drawn from that (UX-06).",
+  'CUSTOM:retrieval_context': 'A measurement frame for evaluation clients, not for people.',
+  'CUSTOM:run_usage': 'A measurement frame for evaluation clients, not for people.',
+  'STATE_SNAPSHOT:running': "A sub-agent's progress shows on its own card.",
+  'STATE_SNAPSHOT:completed': 'The end shows from RUN_FINISHED and the final answer.',
+  'STATE_SNAPSHOT:failed': 'The end shows from RUN_ERROR or the error answer.',
+  'STATE_SNAPSHOT:cancelled': 'The end shows from RUN_FINISHED with the stopped answer.',
+});
 
 // Mirrors the server-side caps in `transcript_collector.py`. A result arrives
 // already truncated, but a TOOL_CALL_ARGS `delta` is the call's whole JSON:
@@ -82,6 +210,77 @@ class LivePartsBuilder {
    * name here, keyed by the parent's runId, until that `RUN_STARTED` lands. */
   private pendingRoleByParent = new Map<string, string>();
 
+  private rootRunId: string | null = null;
+
+  private textPartsById = new Map<string, MessagePart>();
+
+  /** A durable stream: a child's row names its parent, so it reads the child's own timeline once the stream ends. */
+  constructor(private readonly durable = false) {}
+
+  static restore(checkpoint: AGUIHandlerCheckpoint, durable = false): LivePartsBuilder {
+    const builder = new LivePartsBuilder(durable);
+    const parts = JSON.parse(JSON.stringify(checkpoint.parts)) as MessagePart[];
+    builder.parts.push(...parts);
+    builder.seenIds = new Set(checkpoint.seenIds);
+    builder.rootRunId = checkpoint.rootRunId;
+    if (checkpoint.rootRunId) builder.containers.set(checkpoint.rootRunId, builder.parts);
+    const visit = (container: MessagePart[]) => {
+      for (const part of container) {
+        if (part.type === 'tool_call' && part.status === 'running' && part.toolCallId) {
+          builder.openToolCalls.set(part.toolCallId, part);
+        }
+        if (part.type === 'sub_agent' && part.runId && Array.isArray(part.parts)) {
+          builder.containers.set(part.runId, part.parts);
+          if (part.status === 'running') builder.subAgentParts.set(part.runId, part);
+          visit(part.parts);
+        }
+      }
+    };
+    visit(builder.parts);
+    for (const key of checkpoint.openTurnKeys) {
+      const separator = key.lastIndexOf(':');
+      const runId = key.slice(0, separator);
+      const type = key.slice(separator + 1);
+      const container = builder.containerFor(runId || undefined);
+      const open = [...container].reverse().find((part) => part.type === type);
+      if (open) builder.openTurnParts.set(key, open);
+    }
+    for (const [messageId, index] of Object.entries(checkpoint.rootTextMessages)) {
+      const part = builder.parts[index];
+      if (part?.type === 'text') builder.textPartsById.set(messageId, part);
+    }
+    return builder;
+  }
+
+  exportState(): Pick<
+    AGUIHandlerCheckpoint,
+    'parts' | 'seenIds' | 'openTurnKeys' | 'rootRunId' | 'rootTextMessages'
+  > {
+    const rootTextMessages: Record<string, number> = {};
+    for (const [messageId, part] of this.textPartsById) {
+      const index = this.parts.indexOf(part);
+      if (index >= 0) rootTextMessages[messageId] = index;
+    }
+    return {
+      parts: JSON.parse(JSON.stringify(this.parts)) as MessagePart[],
+      seenIds: [...this.seenIds],
+      openTurnKeys: [...this.openTurnParts.keys()],
+      rootRunId: this.rootRunId,
+      rootTextMessages,
+    };
+  }
+
+  /** Drops a root text message the server restarted under a new id. */
+  removeTextMessage(messageId: string): void {
+    const part = this.textPartsById.get(messageId);
+    this.textPartsById.delete(messageId);
+    if (!part) return;
+    const index = this.parts.indexOf(part);
+    if (index >= 0) this.parts.splice(index, 1);
+    for (const [key, open] of this.openTurnParts) {
+      if (open === part) this.openTurnParts.delete(key);
+    }
+  }
   /** messageId -> where that text message's model call starts in its container. */
   private modelCallStarts = new Map<string, { container: MessagePart[]; index: number }>();
 
@@ -135,6 +334,129 @@ class LivePartsBuilder {
     return false;
   }
 
+  /** A message the user sent while the run worked, where the run took it
+   * (`input.consumed`); the saved transcript has the same part there. */
+  handleUserInput(data: AGUIEventEnvelope): void {
+    const value = (data.value ?? {}) as { messageSeq?: unknown; content?: unknown; attachments?: unknown };
+    const messageSeq = typeof value.messageSeq === 'number' ? value.messageSeq : undefined;
+    const key = `user_input:${String(messageSeq)}`;
+    if (messageSeq === undefined || this.seenIds.has(key)) return;
+    this.seenIds.add(key);
+    const attachments = steeringAttachments(value.attachments);
+    this.parts.push({
+      type: 'user_input',
+      content: typeof value.content === 'string' ? value.content : '',
+      messageSeq,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+    });
+  }
+
+  /** The /command the run started from (SLASH1 `slash_command` frame): the timeline's first row, once. */
+  handleSlashCommand(data: AGUIEventEnvelope): void {
+    const value = (data.value ?? {}) as Record<string, unknown>;
+    if (typeof value.name !== 'string' || this.seenIds.has('slash_command')) return;
+    this.seenIds.add('slash_command');
+    this.parts.unshift({
+      type: 'slash_command',
+      commandName: value.name,
+      ...(typeof value.version === 'string' ? { commandVersion: value.version } : {}),
+      ...(typeof value.expandedChars === 'number' ? { expandedChars: value.expandedChars } : {}),
+      ...(typeof value.owner === 'string' ? { owner: value.owner } : {}),
+      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+    });
+  }
+
+  /** What the person's `/compact` did before the run's first turn (SLASH2 C2 `context_compacted` frame), once. */
+  handleContextCompacted(data: AGUIEventEnvelope): void {
+    const value = (data.value ?? {}) as Partial<ContextCompactedView>;
+    if (typeof value.outcome !== 'string' || this.seenIds.has('context_compacted')) return;
+    this.seenIds.add('context_compacted');
+    this.parts.unshift({
+      type: 'context_compacted',
+      compacted: {
+        executor: String(value.executor ?? ''),
+        outcome: value.outcome,
+        beforeTokens: typeof value.beforeTokens === 'number' ? value.beforeTokens : null,
+        afterTokens: typeof value.afterTokens === 'number' ? value.afterTokens : null,
+        userMessagesKept: value.userMessagesKept === true,
+        ...(typeof value.focus === 'string' ? { focus: value.focus } : {}),
+      },
+      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+    });
+  }
+
+  /** Something the run tells the person beside its steps (CTL-5b `notice` frame), shown once. */
+  handleNotice(data: AGUIEventEnvelope): void {
+    const { code, item, kind, engine, reason, instance, tools, writeBy, finishBy, occurrence } = (data.value ?? {}) as {
+      code?: unknown;
+      item?: unknown;
+      kind?: unknown;
+      engine?: unknown;
+      reason?: unknown;
+      instance?: unknown;
+      tools?: unknown;
+      writeBy?: unknown;
+      finishBy?: unknown;
+      occurrence?: unknown;
+    };
+    if (code === 'time_plan') {
+      // ADR-RUN-01 D4: the run's time plan; a later turn's replaces the one before it.
+      if (typeof writeBy !== 'string' || typeof finishBy !== 'string') return;
+      const earlier = this.parts.findIndex((part) => part.type === 'notice' && part.code === 'time_plan');
+      if (earlier >= 0) this.parts.splice(earlier, 1);
+      this.parts.push({
+        type: 'notice',
+        code,
+        writeBy,
+        finishBy,
+        ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+      });
+      return;
+    }
+    // WP-89: by code and occurrence, so a state notice journaled again (a second retire after a resume) shows again.
+    const again = typeof occurrence === 'number' && Number.isInteger(occurrence) ? occurrence : undefined;
+    const key = `notice:${String(code)}:${String(item)}:${String(again)}`;
+    if (typeof code !== 'string' || this.seenIds.has(key)) return;
+    this.seenIds.add(key);
+    this.parts.push({
+      type: 'notice',
+      code,
+      ...(again !== undefined ? { occurrence: again } : {}),
+      ...(typeof item === 'string' ? { item } : {}),
+      ...(kind === 'toolset' || kind === 'mcp' ? { kind } : {}),
+      ...(typeof engine === 'string' ? { engine } : {}),
+      ...(typeof reason === 'string' ? { reason: reason as unknown as MessagePart['reason'] } : {}),
+      ...(typeof instance === 'string' ? { instance } : {}),
+      ...(Array.isArray(tools) ? { tools: tools.filter((tool): tool is string => typeof tool === 'string') } : {}),
+      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+    });
+  }
+
+  /** An engine run's progress line, folded into its `engine_task` part as the saved answer keeps it (CTL-4). */
+  handleEngineProgress(data: AGUIEventEnvelope): void {
+    const value = data.value as (SSEEngineProgressEvent & { turnId?: unknown; seq?: unknown }) | undefined;
+    if (!value || typeof value.taskId !== 'string' || typeof value.kind !== 'string') return;
+    if (typeof value.turnId === 'string' && typeof value.seq === 'number') {
+      const key = `engine:${value.taskId}:${value.turnId}:${value.seq}`;
+      if (this.seenIds.has(key)) return;
+      this.seenIds.add(key);
+    }
+    const frame: SSEEngineProgressEvent = { tool: value.tool, taskId: value.taskId, kind: value.kind, text: value.text ?? '', ...(value.data ? { data: value.data } : {}) };
+    // A code task's child says its steps on its parent's stream, under its own run: they nest under its row.
+    const container = this.containerFor(typeof data.runId === 'string' ? data.runId : undefined);
+    const task = container.find((part) => part.type === 'engine_task' && part.taskId === value.taskId);
+    if (task) task.frames = [...(task.frames ?? []), frame];
+    else {
+      container.push({
+        type: 'engine_task',
+        ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+        taskId: value.taskId,
+        frames: [frame],
+      });
+    }
+  }
+
   handleStepStarted(data: AGUIEventEnvelope): void {
     const stepName = typeof data.stepName === 'string' ? data.stepName : '';
     const parentRunId = typeof data.runId === 'string' ? data.runId : undefined;
@@ -149,12 +471,22 @@ class LivePartsBuilder {
     if (!runId) return;
     if (!parentRunId) {
       this.containers.set(runId, this.parts);
+      this.rootRunId = runId;
       return;
     }
     const roleName = this.pendingRoleByParent.get(parentRunId) ?? 'sub-agent';
     this.pendingRoleByParent.delete(parentRunId);
+    const model = toRunModel(data.model);
+    const codeTaskGoal = typeof data.codeTaskGoal === 'string' ? data.codeTaskGoal : undefined;
+    const goal = typeof data.goal === 'string' && data.goal.trim() ? data.goal.trim() : undefined;
+    const codeTaskHandoff = toCodeTaskHandoff(data.codeTaskHandoff);
     const subAgentPart: MessagePart = {
       type: 'sub_agent', runId, roleName, parts: [], status: 'running',
+      ...(this.durable ? { parentRunId } : {}),
+      ...(model ? { model } : {}),
+      ...(codeTaskGoal ? { codeTaskGoal } : {}),
+      ...(goal ? { goal } : {}),
+      ...(codeTaskHandoff ? { codeTaskHandoff } : {}),
     };
     this.containerFor(parentRunId).push(subAgentPart);
     this.containers.set(runId, subAgentPart.parts as MessagePart[]);
@@ -168,9 +500,15 @@ class LivePartsBuilder {
     const runId = typeof data.runId === 'string' ? data.runId : undefined;
     if (!runId) return;
     const part = this.subAgentParts.get(runId);
-    if (part) part.status = status;
+    if (part) {
+      part.status = status;
+      // WP62-ERR: the child's machine reason, so the live row words a budget or sign-in stop as a reload does.
+      if (status === 'failed' && typeof data.errorType === 'string') part.errorType = data.errorType;
+      // R32SECCOMP-FU-4: an out-of-memory end's limit, so the live card names it as a reload does.
+      const limit = status === 'failed' ? memoryLimitOf(data.details) : null;
+      if (limit !== null) part.memoryLimitMb = limit;
+    }
     this.subAgentParts.delete(runId);
-    this.containers.delete(runId);
   }
 
   handleToolCallStart(data: AGUIEventEnvelope): void {
@@ -209,6 +547,9 @@ class LivePartsBuilder {
     if (typeof data.argsSummary === 'string') {
       part.argsSummary = data.argsSummary;
     }
+    // The built-in agent's step names its page, query or file as an engine's does (WP-115).
+    const step = stepFacts(data.step);
+    if (step) part.step = step;
   }
 
   handleToolCallResult(data: AGUIEventEnvelope): void {
@@ -223,8 +564,12 @@ class LivePartsBuilder {
     if (typeof data.resultSummary === 'string') {
       part.resultSummary = data.resultSummary;
     }
+    if (typeof data.errorCode === 'string') part.errorCode = data.errorCode;
+    if (data.nothingSent === true) part.nothingSent = true;
     // Checked where it is drawn, the same for a live frame and a saved part.
     if (data.resultView !== undefined && data.resultView !== null) part.resultView = data.resultView;
+    const step = stepFacts(data.step);
+    if (step) part.step = step;
     const approval = status === 'awaiting_approval' ? toolApprovalDetails(data.approval) : null;
     if (approval) part.approval = approval;
   }
@@ -251,6 +596,7 @@ class LivePartsBuilder {
     if (messageId) this.modelCallStarts.set(messageId, { container, index: container.length });
     container.push(part);
     this.openTurnParts.set(`${runId ?? ''}:text`, part);
+    if (messageId) this.textPartsById.set(messageId, part);
   }
 
   /** Mirrors `TranscriptCollector`: a model call that failed mid-stream is
@@ -259,6 +605,7 @@ class LivePartsBuilder {
     if (!messageId) return;
     const start = this.modelCallStarts.get(messageId);
     this.modelCallStarts.delete(messageId);
+    this.textPartsById.delete(messageId);
     this.openTurnParts.delete(`${runId ?? ''}:text`);
     this.openTurnParts.delete(`${runId ?? ''}:reasoning`);
     if (start) start.container.splice(start.index);
@@ -326,6 +673,28 @@ function applyStatePatch(state: AGUIStreamState, ops: AGUIJsonPatchOp[]): AGUISt
   return next;
 }
 
+const PLAN_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed', 'cancelled']);
+
+/** A `plan` frame's value, or null when it is not one (a newer server's shape is never guessed at). */
+export function planOf(value: unknown): SSEPlanEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const { runId, steps, currentTaskId } = value as Record<string, unknown>;
+  if (typeof runId !== 'string' || !Array.isArray(steps)) return null;
+  const valid = steps.filter(
+    (step): step is SSEPlanStep =>
+      !!step &&
+      typeof step === 'object' &&
+      typeof (step as SSEPlanStep).taskId === 'string' &&
+      typeof (step as SSEPlanStep).title === 'string' &&
+      PLAN_STATUSES.has((step as SSEPlanStep).status),
+  );
+  return {
+    runId,
+    steps: valid.map((step) => ({ ...step, deps: Array.isArray(step.deps) ? step.deps : [] })),
+    currentTaskId: typeof currentTaskId === 'string' ? currentTaskId : null,
+  };
+}
+
 /**
  * What an MCP server said about a running tool (`AGUIFormatter.tool_progress`), shown after its
  * label: its own message, else "3/10", or a percentage for fractional progress.
@@ -350,23 +719,49 @@ function toolProgressText(snapshot: Record<string, unknown>): string {
 export function createAGUIEventHandler(
   callbacks: StreamMessageCallbacks,
   tracking?: AGUIStreamTracking,
-): (event: SSEEvent) => void {
-  let textBuffer = '';
-  let rawTextReceived = 0;
+  options: AGUIHandlerOptions = {},
+): AGUIEventHandler {
+  const resume = options.resumeFrom;
+  let textBuffer = resume?.textBuffer ?? '';
+  let rawTextReceived = resume?.rawTextReceived ?? 0;
   let awaitingRetryAfterDiscard = false;
-  let state: AGUIStreamState = { citations: [], normalizedAnswer: '', rawLength: 0 };
-  const partsBuilder = new LivePartsBuilder();
+  let state: AGUIStreamState = resume
+    ? { ...resume.state }
+    : { citations: [], normalizedAnswer: '', rawLength: 0 };
+  let endedRootMessageId = resume?.endedRootMessageId ?? null;
+  let plan = resume?.plan ?? null;
+  const durable = options.replaceRestartedMessages === true;
+  const partsBuilder = resume ? LivePartsBuilder.restore(resume, durable) : new LivePartsBuilder(durable);
   const emitParts = () => callbacks.onParts?.(partsBuilder.snapshot());
+  const childCards = new Map<string, SSEApprovalRequestedEvent>(
+    (resume?.childCards ?? []).map((card) => [childCardKey(card), card]),
+  );
+  const requested = (card: SSEApprovalRequestedEvent) => {
+    if (card.childRunId) childCards.set(childCardKey(card), card);
+    callbacks.onApprovalRequested?.(card);
+  };
+  const resolved = (decision: SSEApprovalResolvedEvent) => {
+    if (decision.childRunId) childCards.delete(childCardKey(decision));
+    callbacks.onApprovalResolved?.(decision);
+  };
 
-  return (event: SSEEvent) => {
+  const handle = (event: SSEEvent) => {
     const data = event.data as AGUIEventEnvelope | undefined;
     const type = data?.type ?? event.event;
+    // A frame this tab does not know (a newer Node's, VS-10) changes nothing, not even the END/START adjacency.
+    let known = true;
 
     switch (type) {
       case 'STEP_STARTED': {
         const stepName = typeof data?.stepName === 'string' ? data.stepName : '';
         if (stepName.startsWith('sub_agent:')) {
-          const roleName = stepName.slice('sub_agent:'.length);
+          const engine = typeof data?.childEngine === 'string' ? data.childEngine : '';
+          // A code task's child is its engine's run: named as its card names it ("Codex wants to:").
+          const roleName = engine
+            ? i18n.t(`interaction.engine.${engine}`, {
+                defaultValue: isAcpEngine(engine) ? engineName(engine) : humanizeToolName(engine),
+              })
+            : stepName.slice('sub_agent:'.length);
           callbacks.onStatus?.({ status: 'executing', message: `Delegating to ${roleName}...` });
         }
         if (data) partsBuilder.handleStepStarted(data);
@@ -398,7 +793,16 @@ export function createAGUIEventHandler(
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         const messageId = typeof data?.messageId === 'string' ? data.messageId : undefined;
         const isNewRootTurn = partsBuilder.isRootRun(runId) && !partsBuilder.hasSeenMessage(messageId);
-        if (isNewRootTurn && textBuffer) {
+        const replaced =
+          options.replaceRestartedMessages === true && isNewRootTurn
+            ? restartedMessage(data, endedRootMessageId, messageId)
+            : null;
+        if (replaced !== null) {
+          partsBuilder.removeTextMessage(replaced.messageId);
+          options.onMessageRestarted?.(replaced.messageId, messageId ?? '', replaced.via);
+          state = { ...state, normalizedAnswer: '', rawLength: 0 };
+          callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+        } else if (isNewRootTurn && textBuffer) {
           partsBuilder.settleLastRootText();
           state = { ...state, normalizedAnswer: '', rawLength: 0 };
           callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
@@ -408,6 +812,7 @@ export function createAGUIEventHandler(
           rawTextReceived = 0;
           awaitingRetryAfterDiscard = false;
         }
+        endedRootMessageId = null;
         if (data) partsBuilder.handleTextStart(data);
         emitParts();
         break;
@@ -429,6 +834,11 @@ export function createAGUIEventHandler(
 
       case 'TEXT_MESSAGE_END': {
         if (data) partsBuilder.handleTextEnd(data);
+        const endedId = typeof data?.messageId === 'string' ? data.messageId : null;
+        endedRootMessageId =
+          endedId !== null && partsBuilder.isRootRun(typeof data?.runId === 'string' ? data.runId : undefined)
+            ? endedId
+            : null;
         // After a text turn ends there is often a multi-second gap before the
         // next TOOL_CALL_START arrives (the LLM is still generating tool-call
         // arguments server-side). Show "Thinking…" so the chat doesn't look
@@ -484,10 +894,10 @@ export function createAGUIEventHandler(
 
       case 'TOOL_CALL_START': {
         const toolCallName = typeof data?.toolCallName === 'string' ? data.toolCallName : 'tool';
-        // Status uses present-tense humanization only — `displayName` is past
-        // tense for the timeline ("Ran code") and would make a long-running
-        // tool look finished while the chat is still busy.
-        callbacks.onStatus?.({ status: 'executing', message: `${toolStatusLabel(toolCallName)}...` });
+        // Present tense: a written `displayName` is past tense ("Ran code") and would make a long-running tool look
+        // finished; only its app and tool words are taken ("E2Esaas · Create ticket").
+        const shownName = typeof data?.displayName === 'string' ? data.displayName : undefined;
+        callbacks.onStatus?.({ status: 'executing', message: `${toolStatusLabel(toolCallName, shownName)}...` });
         // A tool call is about to run for the turn that was just streamed —
         // it was never the final answer, so settle it into the timeline
         // (already appended as a `text` part above) and stop showing it in
@@ -576,10 +986,77 @@ export function createAGUIEventHandler(
           callbacks.onConnected?.((value ?? {}) as SSEConnectedEvent);
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
-        } else if (name === 'turn_started') {
-          callbacks.onTurnStarted?.((value ?? {}) as { conversationId?: string; userMessageId?: string });
+        } else if (name === 'approval_requested') {
+          requested(value as SSEApprovalRequestedEvent);
+        } else if (name === 'approval_resolved') {
+          resolved(value as SSEApprovalResolvedEvent);
+        } else if (name === 'approval_counted' && value && typeof value === 'object') {
+          const { interactionId, approvals } = value as { interactionId?: unknown; approvals?: unknown };
+          const counted = countedApprovals(approvals);
+          if (typeof interactionId === 'string' && counted !== undefined) {
+            callbacks.onApprovalCounted?.({ interactionId, approvals: counted });
+          }
+        } else if (name === 'run_cost') {
+          callbacks.onRunCost?.(value);
+        } else if (name === 'interaction_waiting' && value && typeof value === 'object') {
+          const waiting = value as Partial<SSEInteractionWaitingEvent>;
+          callbacks.onInteractionWaiting?.({ count: Number(waiting.count) || 0, paused: waiting.paused === true });
+        } else if (name === 'unknown_effect' && value && typeof value === 'object') {
+          // An action that may or may not have happened holds the run for a person (UX3).
+          requested({
+            ...(value as Omit<SSEApprovalRequestedEvent, 'args' | 'kind'>),
+            args: '',
+            kind: 'unknown_effect',
+          });
+        } else if (name === 'unknown_effect_resolved') {
+          resolved(value as SSEApprovalResolvedEvent);
+        } else if (name === 'connect_requested') {
+          // G-12: a call waits for the owner to connect an item; its card sits where an approval would.
+          const card = connectRequested(value);
+          if (card) requested(card);
+        } else if (name === 'connect_resolved') {
+          const decision = connectResolved(value);
+          if (decision) resolved(decision);
         } else if (name === 'artifact') {
           if (value) callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (name === 'turn_started') {
+          callbacks.onTurnStarted?.((value ?? {}) as { conversationId?: string; userMessageId?: string });
+        } else if (name === 'engine_progress') {
+          if (value && typeof value === 'object' && data) {
+            partsBuilder.handleEngineProgress(data);
+            emitParts();
+          }
+        } else if (name === 'plan') {
+          const shown = planOf(value);
+          if (shown && partsBuilder.isRootRun(shown.runId)) {
+            plan = shown;
+            callbacks.onPlan?.(shown);
+          }
+        } else if (name === 'user_input' && data) {
+          // The run took a message the user sent while it worked: whatever
+          // streamed before was not the answer (a new turn follows).
+          if (textBuffer) {
+            partsBuilder.settleLastRootText();
+            textBuffer = '';
+            rawTextReceived = 0;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+          }
+          partsBuilder.handleUserInput(data);
+          emitParts();
+        } else if (name === 'notice' && data) {
+          partsBuilder.handleNotice(data);
+          emitParts();
+        } else if (name === 'context_compacted' && data) {
+          if (partsBuilder.isRootRun(data.runId as string | undefined)) {
+            partsBuilder.handleContextCompacted(data);
+            emitParts();
+          }
+        } else if (name === 'slash_command' && data) {
+          if (partsBuilder.isRootRun(data.runId as string | undefined)) {
+            partsBuilder.handleSlashCommand(data);
+            emitParts();
+          }
         } else if (name === 'message_discarded') {
           const runId = typeof data?.runId === 'string' ? data.runId : undefined;
           const discarded = (value ?? {}) as { messageId?: unknown };
@@ -595,6 +1072,9 @@ export function createAGUIEventHandler(
             callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
           }
           emitParts();
+        } else {
+          // A name of HIDDEN_STREAM_FRAMES, or one this tab does not know: it changes nothing.
+          known = false;
         }
         break;
       }
@@ -626,7 +1106,15 @@ export function createAGUIEventHandler(
           emitParts();
           break;
         }
-        const message = typeof data?.message === 'string' ? data.message : 'Stream ended with an error';
+        const errorCode = typeof data?.code === 'string' ? data.code : null;
+        // WP-100: worded from the run's typed outcome (sent to this client, X-PipesHub-Frames: 2) as the saved
+        // failure is; the frame's own fields from a Node before it.
+        const readable = runFailureWords(errorCode, runOutcome(data?.runOutcome), {
+          servers: data?.servers,
+          details: data?.details,
+        });
+        const message =
+          readable !== null ? readable : typeof data?.message === 'string' ? data.message : 'Stream ended with an error';
         // A Stop can surface as RUN_ERROR{code:'abort'} instead of a clean
         // RUN_FINISHED{status:'stopped'}; its raw message is no reply to show.
         // `receivedError` stays unset so `runChatStream` still ends the turn as
@@ -650,14 +1138,27 @@ export function createAGUIEventHandler(
         // `AGUIFormatter.answer_final`) carries no progress status — it means
         // the answer is settled, so no further "working" indicator is due.
         if (snapshot?.final === true) {
+          // An error answer is shown in the reader's words for its code, never the answer's English (QA17-O2).
+          const localized =
+            snapshot.answerMatchType === 'Error' ? answerErrorText(snapshot.errorCode) : null;
+          if (localized !== null) {
+            textBuffer = localized;
+            callbacks.onChunk?.({ chunk: '', accumulated: localized, citations: [] });
+          }
           callbacks.onAnswerFinal?.();
           break;
         }
         const status = typeof snapshot?.status === 'string' ? snapshot.status : '';
         const STATUS_MESSAGES: Record<string, string> = {
+          queued: i18n.t('chatStream.queued'),
           starting: 'Starting...',
           calling_llm: 'Thinking...',
           running_tool: 'Executing tool...',
+          waiting_provider: providerWaitText(snapshot?.retry_at, (options.now ?? Date.now)()),
+          waiting_sandbox: sandboxWaitText(snapshot?.retry_at, (options.now ?? Date.now)()),
+          waiting_store: i18n.t('chatStream.storeWait'),
+          // ADR-OPS-01 D6: its coding engine version was retired; the notice beside it says what happens next.
+          waiting_engine_version: i18n.t('chatStream.engineVersionWait'),
         };
         let message = STATUS_MESSAGES[status];
         if (message) {
@@ -674,11 +1175,42 @@ export function createAGUIEventHandler(
         break;
       }
 
-      // STEP_FINISHED / TOOL_CALL_END — no UI surface today, same as the
-      // legacy dispatcher silently ignoring their equivalents. TOOL_CALL_END
-      // carries no result — the transcript update happens on TOOL_CALL_RESULT.
+      // Hidden on purpose (HIDDEN_STREAM_FRAMES): like a frame this tab does not know, they change nothing.
+      case 'STEP_FINISHED':
+      case 'TOOL_CALL_END':
+      case 'REASONING_START':
+        known = false;
+        break;
+
       default:
+        known = false;
         break;
     }
+    if (known && type !== 'TEXT_MESSAGE_START' && type !== 'TEXT_MESSAGE_END') endedRootMessageId = null;
   };
+
+  return Object.assign(handle, {
+    checkpoint: (): AGUIHandlerCheckpoint => ({
+      textBuffer,
+      rawTextReceived,
+      state: { ...state },
+      endedRootMessageId,
+      ...partsBuilder.exportState(),
+      childCards: [...childCards.values()],
+      plan,
+    }),
+    publishView: () => {
+      emitParts();
+      for (const card of childCards.values()) callbacks.onApprovalRequested?.(card);
+      if (plan) callbacks.onPlan?.(plan);
+      if (textBuffer || state.citations.length > 0) {
+        callbacks.onChunk?.({
+          chunk: '',
+          accumulated: textBuffer,
+          citations: state.citations,
+          ...(state.confidence !== undefined ? { confidence: state.confidence } : {}),
+        });
+      }
+    },
+  });
 }

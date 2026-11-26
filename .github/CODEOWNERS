@@ -1,0 +1,15 @@
+# Changes here alter what CI, a release or an install trusts, so they need an
+# code owner's review (SEC-D-12). Branch protection on main must require review from
+# code owners for this file to take effect. scripts/workflow_lint.py (WF-OWNERS)
+# fails if one of these paths loses its owner.
+/.github/                                        @pipeshub-ai/maintainers
+/.github/workflows/                              @pipeshub-ai/maintainers
+/contracts/supply-chain/                         @pipeshub-ai/maintainers
+/backend/python/requirements/                    @pipeshub-ai/maintainers
+/backend/python/harness_engines/vendor_rules.py  @pipeshub-ai/maintainers
+/backend/python/harness_engines/trust_roots.py   @pipeshub-ai/maintainers
+/backend/python/harness_engines/release_keys.py  @pipeshub-ai/maintainers
+/contracts/release-keys/                         @pipeshub-ai/maintainers
+/deployment/                                     @pipeshub-ai/maintainers
+/scripts/supply_chain.py                         @pipeshub-ai/maintainers
+/scripts/workflow_lint.py                        @pipeshub-ai/maintainers

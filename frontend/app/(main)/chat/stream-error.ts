@@ -1,4 +1,5 @@
 import type { McpAuthMode } from '@/app/(main)/workspace/mcp-servers/types';
+import { DurableAdmissionError, type ErrorSource } from './harness-errors';
 
 /** A stream the server ended with RUN_ERROR; `code` and `details` say what the thread can offer. */
 export class ChatStreamError extends Error {
@@ -16,10 +17,18 @@ export class ChatStreamError extends Error {
 export interface ChatStreamErrorInfo {
   code: string;
   details?: unknown;
+  /** A typed harness error, so the thread can offer its next step (UX-06). */
+  source?: ErrorSource;
 }
 
+/** The code a refused turn had none for: it never reached the server. */
+export const NO_RESPONSE_CODE = 'no_response';
+
 export function streamErrorInfo(error: unknown): ChatStreamErrorInfo | undefined {
-  return error instanceof ChatStreamError && error.code ? { code: error.code, details: error.details } : undefined;
+  if (error instanceof DurableAdmissionError) return { code: error.code ?? NO_RESPONSE_CODE, source: 'admission' };
+  return error instanceof ChatStreamError && error.code
+    ? { code: error.code, details: error.details, source: 'run' }
+    : undefined;
 }
 
 export const MCP_SERVER_CONFIG_MISSING = 'mcp_server_config_missing';

@@ -17,7 +17,6 @@ vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   return {
     useAuthStore: auth.useAuthStore,
-    readStoredRefreshToken: auth.readStoredRefreshToken,
     logoutAndRedirect: () => {
       logoutAndRedirect();
       auth.useAuthStore.getState().logout();
@@ -27,7 +26,8 @@ vi.mock('@/config', async () => {
 
 vi.mock('@/lib/utils/jwt', () => ({ getUserIdFromToken: () => 'user-a' }));
 
-const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
+const { SESSION_HINT_KEY } = await import('@/lib/auth/session-credential');
 const { useFeatureFlagsStore } = await import('@/lib/store/feature-flags-store');
 const { useInitializeUserProfile } = await import('@/lib/hooks/use-initialize-user-profile');
 const { useUserStore } = await import('@/lib/store/user-store');
@@ -75,7 +75,7 @@ async function flush() {
 
 const signOut = () => useAuthStore.getState().logout();
 const signIn = (token = jwtExpiringIn(3600)) =>
-  useAuthStore.getState().setTokens(token, 'refresh-b');
+  useAuthStore.getState().setTokens(token);
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
@@ -83,7 +83,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   logoutAndRedirect.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'refresh-a', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), isAuthenticated: true });
   useToastStore.setState({ toasts: [] });
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -280,7 +280,7 @@ describe('a token refresh that overlaps a sign-out', () => {
 
     expect(await refresh).toBe(false);
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
-    expect(storage.has(ACCESS_TOKEN_STORAGE_KEY)).toBe(false);
+    expect(storage.has(SESSION_HINT_KEY)).toBe(false);
   });
 
   it('does not sign the next person out when a 401 from before the sign-out fails to refresh after it', async () => {
@@ -354,18 +354,18 @@ describe('a token refresh that overlaps a sign-out', () => {
   });
 
   it('does not sign the last person back in when another tab signed out while the refresh was out', async () => {
-    storage.set(REFRESH_TOKEN_STORAGE_KEY, 'refresh-a');
+    storage.set(SESSION_HINT_KEY, 'user-a:o1');
     const answer = deferredRefresh();
     const before = useAuthStore.getState().accessToken;
     const refresh = refreshAccessToken();
 
     // The other tab's sign-out is in storage, but this tab has not handled the event yet.
-    storage.delete(REFRESH_TOKEN_STORAGE_KEY);
+    storage.delete(SESSION_HINT_KEY);
     answer(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
 
     expect(await refresh).toBe(false);
     expect(useAuthStore.getState().accessToken).toBe(before);
-    expect(storage.has(REFRESH_TOKEN_STORAGE_KEY)).toBe(false);
+    expect(storage.has(SESSION_HINT_KEY)).toBe(false);
   });
 
   it("never lets the next person wait on the last person's refresh", async () => {
