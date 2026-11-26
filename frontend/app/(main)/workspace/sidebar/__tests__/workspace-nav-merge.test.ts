@@ -78,6 +78,17 @@ describe('placeWorkspaceExtras', () => {
     expect(placed([extra('/workspace/x', 'workspace'), extra('/workspace/y', 'workspace', '/workspace/nope')])).toEqual(['system', 'system']);
   });
 
+  it('follows an anchor that is an earlier extra, placed or named', () => {
+    expect(
+      placed([
+        extra('/workspace/a', 'workspace', '/workspace/ai-models'),
+        extra('/workspace/b', 'workspace', '/workspace/a'),
+        extra('/workspace/c', 'security'),
+        extra('/workspace/d', 'workspace', '/workspace/c'),
+      ]),
+    ).toEqual(['ai', 'ai', 'security', 'security']);
+  });
+
   it('leaves an entry for a named list where it is', () => {
     const named = [extra('/workspace/x', 'personal'), extra('/workspace/y', 'ai', '/workspace/mail')];
     expect(placeWorkspaceExtras(ADMIN, named)).toEqual(named);

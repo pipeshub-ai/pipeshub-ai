@@ -62,20 +62,24 @@ export function mergeWorkspaceNav(
 /**
  * The extras with each `workspace` one given the admin list it belongs in: the list
  * holding its route (so it still replaces that entry) or its `after` route, else System.
+ * The route can be a built-in entry's or an earlier extra's.
  */
 export function placeWorkspaceExtras(
   adminItems: Readonly<Record<WorkspaceAdminSection, readonly NavItem[]>>,
   extras: readonly WorkspaceNavExtra[],
 ): WorkspaceNavExtra[] {
-  const sectionOf = (route: string | undefined) =>
-    route === undefined
-      ? undefined
-      : (Object.keys(adminItems) as WorkspaceAdminSection[]).find((key) =>
-          adminItems[key].some((item) => item.route === route),
-        );
-  return extras.map((extra) =>
-    extra.section === 'workspace'
-      ? { ...extra, section: sectionOf(extra.route) ?? sectionOf(extra.after) ?? 'system' }
-      : extra,
-  );
+  const adminSections = Object.keys(adminItems) as WorkspaceAdminSection[];
+  const sectionByRoute = new Map<string, WorkspaceAdminSection>();
+  for (const key of adminSections) {
+    for (const item of adminItems[key]) sectionByRoute.set(item.route, key);
+  }
+  const sectionOf = (route: string | undefined) => (route === undefined ? undefined : sectionByRoute.get(route));
+  return extras.map((extra) => {
+    const section =
+      extra.section === 'workspace' ? sectionOf(extra.route) ?? sectionOf(extra.after) ?? 'system' : extra.section;
+    if ((adminSections as string[]).includes(section) && !sectionByRoute.has(extra.route)) {
+      sectionByRoute.set(extra.route, section as WorkspaceAdminSection);
+    }
+    return section === extra.section ? extra : { ...extra, section };
+  });
 }

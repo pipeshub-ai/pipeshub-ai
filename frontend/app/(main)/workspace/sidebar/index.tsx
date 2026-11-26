@@ -117,7 +117,9 @@ const ADMIN_SECTIONS = [
 ] as const;
 
 /** Pages of Personal settings beyond the built-in list in settings-scope.ts: an edition's. */
-const EXTRA_PERSONAL_ROUTES = NAV_EXTRAS.filter((item) => item.section === 'personal').map((item) => item.route);
+const EXTRA_PERSONAL_ROUTES = NAV_EXTRAS.filter(
+  (item) => item.section === 'personal' || (item.section === 'developerSettings' && item.personal),
+).map((item) => item.route);
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 

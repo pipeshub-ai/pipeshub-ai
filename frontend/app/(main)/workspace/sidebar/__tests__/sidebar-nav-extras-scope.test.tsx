@@ -29,6 +29,7 @@ vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   workspaceNavExtras: [
     { section: 'personal', icon: 'star', labelKey: 'test.mine', route: '/workspace/mine' },
+    { section: 'developerSettings', icon: 'key', labelKey: 'test.myTokens', route: '/workspace/my-tokens', personal: true },
     { section: 'workspace', icon: 'star', labelKey: 'test.orgThing', route: '/workspace/org-thing', adminOnly: true, after: '/workspace/mail' },
   ],
 }));
@@ -49,6 +50,13 @@ describe('WorkspaceSidebar — an edition\'s entries', () => {
   it('treats a personal entry\'s page as Personal settings and lists it only there', () => {
     renderAt('/workspace/mine');
     expect(screen.getByText('test.mine')).toBeTruthy();
+    expect(screen.getByText(en.workspaceMenu.workspaceSettings)).toBeTruthy();
+    expect(screen.queryByText('test.orgThing')).toBeNull();
+  });
+
+  it('treats a personal developer-settings entry\'s page as Personal settings and lists it there', () => {
+    renderAt('/workspace/my-tokens');
+    expect(screen.getByText('test.myTokens')).toBeTruthy();
     expect(screen.getByText(en.workspaceMenu.workspaceSettings)).toBeTruthy();
     expect(screen.queryByText('test.orgThing')).toBeNull();
   });
