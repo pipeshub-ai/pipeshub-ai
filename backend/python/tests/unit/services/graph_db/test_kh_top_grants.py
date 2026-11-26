@@ -70,7 +70,7 @@ class _KgTx:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict]:  # noqa: ANN401
         self.candidates_read = True
-        return [{"node_sk": 1, "node_group": None}] if "chain_top_grants" in sql else [{"sk": 1, "id": "a"}]
+        return [{"node_sk": 1, "node_group": None, "node_parent": None}] if "chain_top_grants" in sql else [{"sk": 1, "id": "a"}]
 
 
 async def _top_grants(monkeypatch: Any, linked: bool) -> tuple[TopGrants, _KgTx]:  # noqa: ANN401
@@ -97,6 +97,6 @@ async def test_a_viewer_linked_to_a_source_account_hands_the_walk_every_grant(mo
     """kg keys no source account, so its grants are not among kg's candidates: a viewer linked to one in the connector gets every grant, or the
     record only that account's grant reaches is never placed as a chain-top and the browse leaves it out."""
     top, tx = await _top_grants(monkeypatch, linked=True)
-    assert top.by_group is None and await top.ids() == ["a", "z"] and not tx.candidates_read
+    assert top.by_group is None and top.parents == {} and await top.ids() == ["a", "z"] and not tx.candidates_read
     top, tx = await _top_grants(monkeypatch, linked=False)
     assert top.by_group == {None: [1]} and await top.ids() == ["a"] and tx.candidates_read
