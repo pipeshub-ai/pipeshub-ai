@@ -97,6 +97,9 @@ interface SuppressedFailures {
 /** Every recipient list a mail can carry besides `sendEmailTo` (a link may go to no one else). */
 const MAIL_RECIPIENT_LISTS = ['sendCcTo', 'sendBccTo', 'replyTo'] as const;
 
+/** The template a set-password link may be minted into. */
+const LINK_TEMPLATE = 'appuserInvite';
+
 /**
  * The live user the link is for. A store that is briefly away is asked again (three tries over about three seconds)
  * before the job fails, so a short outage does not lose an invite.
@@ -415,7 +418,12 @@ export class MailConsumer {
     // into a mail addressed to that user's stored address alone, and with that stored address: never with anything
     // the job says (a job is not proof of who the user is). With no org bound, no link.
     const bound = getCurrentOrgId();
-    if (bound === undefined || String(target.orgId) !== bound) {
+    // Only the invite carries a link (the one mail our producers put one in): a job cannot wrap it in other text.
+    if (
+      bound === undefined ||
+      String(target.orgId) !== bound ||
+      payload.mail.emailTemplateType !== LINK_TEMPLATE
+    ) {
       throw new PasswordLinkRefused();
     }
     const user = await liveUserWithRetry(bound, String(target.userId));

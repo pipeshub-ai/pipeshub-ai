@@ -311,6 +311,19 @@ describe('mail/services/mail.signed', () => {
       expect(notified.join(' ')).to.not.include('db-host-7');
     });
 
+    it('gets no link wrapped in any template but the invite (no attacker-written text around a real link)', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const other = {
+        ...job(),
+        mail: { ...job().mail, emailTemplateType: 'resetPassword', subject: 'Your account is locked' },
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'new.person@example.com' },
+      };
+
+      const { sent } = await consume([other]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
     it('a genuine invite still gets its set-password link', async () => {
       process.env.ENVELOPE_SIGN = 'false';
       const invite = {
