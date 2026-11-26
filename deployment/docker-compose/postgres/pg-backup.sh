@@ -34,6 +34,9 @@ lock="${PG_BACKUP_LOCK:-/tmp/pg-backup.lock}"   # taken around each backup and i
 # when it is set. The backup times are exported as timestamps, so their age keeps growing in Prometheus even if this loop stops.
 metrics="${PG_BACKUP_METRICS_FILE:-/tmp/pg-backup.prom}"
 state="${PG_BACKUP_STATE_DIR:-/tmp/pg-backup.d}"   # the last readable `pgbackrest info` and the last attempt
+# when the scheduler first ran, on the shared socket volume beside the gap holds so that recreating the container keeps it (a new volume
+# starts it again); PgBackupNoFullBackup measures from it
+started="${PG_BACKUP_STARTED_FILE:-/var/run/postgresql/pg-backup-started}"
 metrics_pl="$(dirname "${BASH_SOURCE[0]}")/pg-backup-metrics.pl"
 
 if [ "${1:-}" = clear-gap-hold ]; then
@@ -111,7 +114,7 @@ gap_report() {
 }
 
 refresh_metrics() {
-  "$metrics_pl" write "$state/info.new" "$state" "$gaps" "$full_s" "$incr_s" "$metrics" || echo "pg-backup: could not write the metrics" >&2
+  "$metrics_pl" write "$state/info.new" "$state" "$gaps" "$full_s" "$incr_s" "$metrics" "$started" || echo "pg-backup: could not write the metrics" >&2
 }
 attempted() { echo "$(date +%s) $1" > "$state/attempt"; refresh_metrics; }   # 1: the backup succeeded, 0: it failed
 srv=""
@@ -139,7 +142,7 @@ ages() {
     printf "%d %d\n", $full ? $now - $full : 1e15, $any ? $now - $any : 1e15;' < "$state/info.new"
 }
 
-mkdir -p "$state"; [ -s "$state/started" ] || date +%s > "$state/started"
+mkdir -p "$state"; [ -s "$started" ] || date +%s > "$started" || echo "pg-backup: cannot record the start in $started" >&2
 : > "$state/info.new"; refresh_metrics; serve_metrics
 until pgbackrest stanza-create && pgbackrest check; do
   : > "$state/info.new"; refresh_metrics

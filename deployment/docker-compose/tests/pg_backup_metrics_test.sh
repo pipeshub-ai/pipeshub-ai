@@ -8,7 +8,7 @@ work="$(mktemp -d)"; srv=""; trap '[ -z "$srv" ] || kill "$srv" 2>/dev/null; rm 
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fail=1; fi; }
 mkdir -p "$work/state" "$work/gaps"
-write() { perl "$here/postgres/pg-backup-metrics.pl" write "$1" "$work/state" "$work/gaps" 604800 21600 "$work/m.prom"; }
+write() { perl "$here/postgres/pg-backup-metrics.pl" write "$1" "$work/state" "$work/gaps" 604800 21600 "$work/m.prom" "$work/started"; }
 metric() { awk -v n="$1" '$1 == n { print $2 }' "$work/m.prom"; }
 ts() { metric "pipeshub_pg_backup_last_success_timestamp_seconds{stanza=\"pipeshub\",repo=\"$1\",type=\"$2\"}"; }
 
@@ -55,7 +55,7 @@ printf '[{"name":"pipeshub","status":{"code":2,"message":"no valid backups"},"ba
 check "a new repository without backups is up" "$(metric pipeshub_pg_backup_repository_up)" 1
 
 check "no scheduler start recorded: no start series" "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" ""
-echo 1793000000 > "$work/state/started"
+echo 1793000000 > "$work/started"
 echo "1794200000 0" > "$work/state/attempt"; : > "$work/gaps/000000010000000000000015"; : > "$work/gaps/000000010000000000000016"
 write "$here/tests/fixtures/pgbackrest-info.json"
 check "the last attempt failed" "$(metric pipeshub_pg_backup_last_attempt_success)" 0

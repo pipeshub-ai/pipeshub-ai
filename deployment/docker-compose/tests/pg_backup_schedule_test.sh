@@ -53,7 +53,7 @@ chmod +x "$work/pgbackrest" "$work/sleep"
 decide() { # info JSON -> what the loop did first
   printf '%s' "$1" > "$work/info.json"; : > "$work/log"
   PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" PG_WAL_GAP_HOLDS="$work/holds" PG_BACKUP_LOCK="$work/lock" STUB_INFO="$work/info.json" STUB_LOG="$work/log" \
-    PG_BACKUP_METRICS_FILE="$work/metrics.prom" PG_BACKUP_STATE_DIR="$work/state" PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
+    PG_BACKUP_METRICS_FILE="$work/metrics.prom" PG_BACKUP_STATE_DIR="$work/state" PG_BACKUP_STARTED_FILE="$work/socket/pg-backup-started" PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
   head -1 "$work/log"
 }
 now=$(date +%s)
@@ -82,12 +82,16 @@ check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" 
 
 # the metrics (pg-backup-metrics.pl): written on every repository read, keeping the last readable backup times; each attempt recorded
 metric() { grep -E "^$1( |\{)" "$work/metrics.prom" | sed -E 's/.* //' || :; }
-rm -rf "$work/state"; t0=$(date +%s); decide 'not json' >/dev/null 2>&1
+rm -rf "$work/state" "$work/socket"; mkdir -p "$work/socket"; t0=$(date +%s); decide 'not json' >/dev/null 2>&1
 started="$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)"
 check "metrics: the scheduler's start is exported from the first loop, before any backup or readable repository" \
   "$([ -n "$started" ] && [ "$started" -ge "$t0" ] && [ "$started" -le "$(date +%s)" ] && echo now)" now
 decide "$recent" >/dev/null 2>&1
 check "metrics: a restart keeps the first start, so a first full backup that never completes keeps ageing" \
+  "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" "$started"
+rm -rf "$work/state" "$work/metrics.prom"; /bin/sleep 1   # a later second, so a start written again would differ
+decide "$recent" >/dev/null 2>&1   # a recreated container: a new /tmp, the same socket volume
+check "metrics: a recreated container keeps the first start (it is on the socket volume)" \
   "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" "$started"
 check "metrics: the repository is up" "$(metric pipeshub_pg_backup_repository_up)" 1
 decide "$warn_first" >/dev/null 2>&1

@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # Prometheus metrics of the `pg-backup` service (pg-backup.sh), in two modes:
 #
-#   pg-backup-metrics.pl write <new info JSON file> <state dir> <gap dir> <full interval s> <incr interval s> <metrics file>
+#   pg-backup-metrics.pl write <new info JSON file> <state dir> <gap dir> <full interval s> <incr interval s> <metrics file> <started file>
 #     Reads `pgbackrest --output=json info` as the scheduler just took it (an empty file when that failed). A readable stanza replaces
 #     <state dir>/info.json; otherwise the last readable one is kept, so the backup times stay exported (and age) while the repository
 #     cannot be read, and repository_up says so. Writes the metrics file atomically.
@@ -19,7 +19,7 @@ use JSON::PP;
 my $mode = shift // '';
 if ($mode eq 'write') { write_metrics(@ARGV) }
 elsif ($mode eq 'serve') { serve(@ARGV) }
-else { die "usage: $0 write <info> <state dir> <gap dir> <full s> <incr s> <metrics> | serve <port> <metrics> <gap dir>\n" }
+else { die "usage: $0 write <info> <state dir> <gap dir> <full s> <incr s> <metrics> <started> | serve <port> <metrics> <gap dir>\n" }
 
 sub slurp { my ($f) = @_; open(my $h, '<', $f) or return ''; local $/; my $t = <$h>; close $h; return $t // '' }
 
@@ -48,8 +48,8 @@ sub gap_segments { my ($gaps) = @_; my $n = 0; if (opendir(my $d, $gaps)) { $n =
 sub esc { my ($v) = @_; $v =~ s/(["\\])/\\$1/g; $v =~ s/\n/\\n/g; return $v }
 
 sub write_metrics {
-    my ($new, $state, $gaps, $full_s, $incr_s, $out) = @_;
-    die "write: six arguments\n" unless defined $out;
+    my ($new, $state, $gaps, $full_s, $incr_s, $out, $started) = @_;
+    die "write: seven arguments\n" unless defined $started;
     my $up = 0;
     my ($doc, $why) = stanzas(slurp($new));
     if ($doc) {
@@ -92,7 +92,7 @@ sub write_metrics {
         "# TYPE pipeshub_pg_backup_schedule_seconds gauge",
         "pipeshub_pg_backup_schedule_seconds{type=\"full\"} $full_s", "pipeshub_pg_backup_schedule_seconds{type=\"incr\"} $incr_s";
     # written once by pg-backup.sh when the scheduler first starts (kept across restarts): how long it has run without a full backup
-    if (my ($since) = slurp("$state/started") =~ /^(\d+)/) {
+    if (my ($since) = slurp($started) =~ /^(\d+)/) {
         push @m, "# HELP pipeshub_pg_backup_scheduler_start_timestamp_seconds When the backup scheduler first started on this repository.",
             "# TYPE pipeshub_pg_backup_scheduler_start_timestamp_seconds gauge", "pipeshub_pg_backup_scheduler_start_timestamp_seconds $since";
     }
