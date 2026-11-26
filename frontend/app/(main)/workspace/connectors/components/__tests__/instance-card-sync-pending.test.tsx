@@ -35,7 +35,7 @@ describe('InstanceCard: sync turning on or off', () => {
     expect(syncSwitch().hasAttribute('disabled')).toBe(true);
     expect(syncSwitch().getAttribute('aria-busy')).toBe('true');
     expect(screen.getByText('Turning on…')).toBeTruthy();
-    expect(screen.getByTestId('sync-toggle-spinner')).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Turning on…' }).getAttribute('aria-live')).toBe('polite');
   });
 
   it('shows "Turning off…" while sync is turning off', () => {
@@ -66,6 +66,6 @@ describe('InstanceCard: sync turning on or off', () => {
     renderInTheme(<InstanceCard instance={instance} onToggleSyncActive={vi.fn()} />);
 
     expect(syncSwitch().hasAttribute('disabled')).toBe(false);
-    expect(screen.queryByTestId('sync-toggle-spinner')).toBeNull();
+    expect(screen.queryByRole('status', { name: 'Turning on…' })).toBeNull();
   });
 });

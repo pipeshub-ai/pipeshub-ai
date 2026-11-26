@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, IconButton, Avatar, Spinner, Switch, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
+import { Spinner } from '@/app/components/ui/spinner';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { formatRelativeTime, shortUserName } from '@/lib/utils/formatters';
@@ -111,6 +112,11 @@ export function InstanceCard({
 
   const syncToggleInFlight = syncToggleBusy || Boolean(syncTogglePending);
   const syncToggleDirection = syncTogglePending ?? (instance.isActive ? 'off' : 'on');
+  const syncToggleLabel = t(
+    syncToggleDirection === 'on'
+      ? 'workspace.connectors.instanceCard.turningOn'
+      : 'workspace.connectors.instanceCard.turningOff'
+  );
   const syncSwitchDisabled =
     !canToggleSync || syncToggleInFlight || !onToggleSyncActive || !canManageConnectorSync;
 
@@ -327,14 +333,20 @@ export function InstanceCard({
                 syncSwitchControl
               )}
               {syncToggleInFlight && (
-                <Flex align="center" gap="1" style={{ marginLeft: 'var(--space-1)' }}>
-                  <Spinner size="1" data-testid="sync-toggle-spinner" />
-                  <Text size="1" style={{ color: 'var(--gray-11)' }}>
-                    {t(
-                      syncToggleDirection === 'on'
-                        ? 'workspace.connectors.instanceCard.turningOn'
-                        : 'workspace.connectors.instanceCard.turningOff'
-                    )}
+                <Flex
+                  role="status"
+                  aria-live="polite"
+                  aria-label={syncToggleLabel}
+                  align="center"
+                  gap="1"
+                  style={{ marginLeft: 'var(--space-1)' }}
+                >
+                  {/* One announcement: the row is the status, the ring is decoration. */}
+                  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+                    <Spinner size={12} color="var(--gray-11)" ariaLabel={syncToggleLabel} />
+                  </span>
+                  <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+                    {syncToggleLabel}
                   </Text>
                 </Flex>
               )}
