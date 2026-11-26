@@ -756,7 +756,7 @@ def _server_key_would_leave(provider: str, configuration: Mapping[str, Any]) -> 
     return parsed.scheme.lower() != "https" or not any(host == h or host.endswith(f".{h}") for h in hosts)
 
 
-def require_explicit_api_key(
+def vetted_model_configuration(
     provider: str, configuration: Mapping[str, Any], model_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a copy of ``configuration`` whose ``apiKey`` is safe to hand to an SDK.
@@ -832,7 +832,7 @@ def _get_embedding_model_impl(
         is_default=is_default,
         empty_error="No embedding model configured",
     )
-    configuration = require_explicit_api_key(provider, configuration, config)
+    configuration = vetted_model_configuration(provider, configuration, config)
 
     logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
@@ -2188,7 +2188,7 @@ def _get_generator_model_impl(
         model_name = model_names[0]
     elif not is_default and model_name not in model_names:
         raise ValueError(f"Model name {model_name} not found in {configured_model}")
-    configuration = require_explicit_api_key(provider, configuration, config)
+    configuration = vetted_model_configuration(provider, configuration, config)
 
     # Resolved once per call from the process-wide learned-facts snapshot
     # (see `app/utils/llm_api_mode_store.py`) and threaded explicitly into
@@ -3175,7 +3175,7 @@ def get_image_generation_model(
     builder = _IMAGE_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported image generation provider: {provider}")
-    configuration = require_explicit_api_key(provider, configuration, config)
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
@@ -3560,7 +3560,7 @@ def get_tts_model(
     builder = _TTS_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported TTS provider: {provider}")
-    configuration = require_explicit_api_key(provider, configuration, config)
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
@@ -4232,7 +4232,7 @@ def get_stt_model(
     builder = _STT_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported STT provider: {provider}")
-    configuration = require_explicit_api_key(provider, configuration, config)
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
