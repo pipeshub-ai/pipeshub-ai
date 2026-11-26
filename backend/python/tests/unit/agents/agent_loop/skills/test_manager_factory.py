@@ -456,3 +456,30 @@ class TestBuildManagementSkillManager:
                 retrieval_service=MagicMock(),
             )
         assert result is fake_manager
+
+
+class TestReservedSkillNames:
+    @pytest.mark.asyncio
+    async def test_a_pack_that_fails_to_load_still_keeps_its_name(self, tmp_path, monkeypatch) -> None:
+        """The packs failing validation must not free their names for a member's skill."""
+        import app.agents.agent_loop.skills.manager_factory as mf
+        from app.agent_loop_lib.modules.providers.skills.base import SkillNameReservedError
+        from tests.support.skill_stores import skill_store
+        from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
+
+        (tmp_path / "broken-pack").mkdir()
+        (tmp_path / "broken-pack" / "SKILL.md").write_text("not a skill")
+        monkeypatch.setattr(mf, "_BUILTIN_PACKS_ROOT", str(tmp_path))
+        monkeypatch.setattr(mf, "_builtin_seeder", None)
+        monkeypatch.setattr(mf, "_builtin_seeder_load_failed", False)
+        forget = getattr(mf._reserved_skill_names, "cache_clear", lambda: None)  # read once per process
+        forget()
+        try:
+            assert mf.get_builtin_seeder() is None
+            assert mf._reserved_skill_names() == frozenset({"broken-pack"})
+            member = skill_store(FakeGraphProvider(), "org-1", "user-a", reserved_names=mf._reserved_skill_names)
+            md = "---\nname: broken-pack\ndescription: Use when testing\n---\n\nBody.\n"
+            with pytest.raises(SkillNameReservedError):
+                await member.create_skill("broken-pack", md)
+        finally:
+            forget()
