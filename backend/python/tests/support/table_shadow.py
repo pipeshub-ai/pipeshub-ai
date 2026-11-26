@@ -68,6 +68,9 @@ class FakeSupervisor:
         async with self._turn:
             yield
 
+    async def prepare(self, timeout_s: float) -> str | None:
+        return None
+
     async def run_unlocked(self, spec: dict, png: bytes) -> dict:
         return await self.run_table(spec, png)
 

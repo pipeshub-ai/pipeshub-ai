@@ -319,3 +319,32 @@ async def test_a_child_that_stops_reading_its_input_times_out_and_is_killed() ->
             stuck.kill()
             await stuck.wait()
         await s.shutdown()
+
+
+async def test_the_model_starts_before_the_permit_is_taken_and_within_the_callers_deadline() -> None:
+    import contextlib
+
+    def slow_weights(_mode: str) -> str:
+        time.sleep(3.0)  # a slow download of the weights
+        return "unused"
+
+    s = supervisor(weights_dir=slow_weights)
+    permits: list[float] = []
+
+    @contextlib.asynccontextmanager
+    async def acquire(wait_s: float):  # noqa: ANN202
+        permits.append(wait_s)
+        yield
+
+    meta = ts.TableRequestMeta.model_validate({"v": 1, "tables": [
+        {"id": "p1:b0", "image": "c0", "scale_factor": 1.0, "page_w": 100.0, "page_h": 100.0, "table_bbox": [0, 0, 8, 6], "cap": 10,
+         "tokens": [{"id": 0, "bbox": [0, 0, 1, 1], "text": "x"}]},
+    ]})
+    try:
+        t0 = time.monotonic()
+        results, refused = await ts.run_tables(meta, {"c0": PNG}, s, acquire, deadline=time.monotonic() + 1.0)
+        assert (results, refused) == ([], "deadline")
+        assert permits == []  # no permit is held while the model starts
+        assert time.monotonic() - t0 < 2.5  # the caller's deadline bounds the wait, not the download
+    finally:
+        await s.shutdown()
