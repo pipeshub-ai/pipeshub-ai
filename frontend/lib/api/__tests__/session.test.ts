@@ -393,7 +393,9 @@ describe('a 401 from the server', () => {
     expect(logoutAndRedirect).not.toHaveBeenCalled();
     expect(useAuthStore.getState().accessToken).toBe(token);
     expect(errorToasts()).toHaveLength(1);
-    expect(errorToasts()[0].title).toMatch(/try again shortly/i);
+    // The busy toast: its title says the server is busy, its sentence when to try again.
+    expect(errorToasts()[0].title).toBe('The server is busy');
+    expect(errorToasts()[0].description).toBe(busyMessage());
   });
 
   it('lets a caller suppress the toast when the refresh gets no answer', async () => {
