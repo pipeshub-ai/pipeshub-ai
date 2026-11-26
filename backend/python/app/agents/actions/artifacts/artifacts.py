@@ -25,9 +25,14 @@ from typing import Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_SINK_NONE
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER, LEGACY_FORMATTER, ArtifactSSEPayload
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import infer_artifact_type
 from app.services.artifact_registry import (
@@ -93,7 +98,7 @@ def _not_a_real_document(name: str | None, mime_type: str | None, raw: bytes) ->
     return None
 
 
-@ToolsetBuilder("Artifact Manager")\
+@ToolsetBuilder("Artifact Manager", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Save, update, list, and share versioned artifacts generated in this conversation - always available, no authentication required")\
     .with_category(ToolsetCategory.UTILITY)\
@@ -126,6 +131,18 @@ class ArtifactManager:
     def _record_actor(self) -> Actor:
         """Who knowledge records are read as: the run's user, whose access the agent has."""
         return Actor(org_id=self.chat_state.get("org_id", ""), user_id=self.chat_state.get("user_id", ""))
+
+    def _provenance(self, task_id: str) -> Any:  # noqa: ANN401 - ArtifactProvenance
+        """What the content can carry: the records this request showed the model (SS0)."""
+        from app.agents.agent_loop.artifact_provenance import request_provenance
+
+        return request_provenance(self.chat_state, task_id=task_id)
+
+    @staticmethod
+    async def _record_provenance(registry: Any, artifact_id: str, version: int, provenance: Any) -> None:  # noqa: ANN401
+        from app.agents.agent_loop.artifact_provenance import record_output_provenance
+
+        await record_output_provenance(registry, artifact_id, version, provenance)
 
     def _decode(self, content: str, is_base64: bool) -> bytes | str:
         try:
@@ -180,7 +197,7 @@ class ArtifactManager:
                 ),
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_NONE],
     )
     async def save_artifact(
         self,
@@ -209,6 +226,7 @@ class ArtifactManager:
         except ValueError:
             return _result(False, {"success": False, "error": f"Invalid visibility {visibility!r}; must be 'VISIBLE' or 'STAGING'"})
 
+        provenance = self._provenance("artifacts.save_artifact")
         try:
             metadata, version = await registry.register_output(
                 actor=self._actor(),
@@ -227,6 +245,7 @@ class ArtifactManager:
             logger.exception("[save_artifact] failed for %s", name)
             return _result(False, {"success": False, "error": "Failed to save artifact"})
 
+        await self._record_provenance(registry, metadata.artifact_id, metadata.version, provenance)
         self._schedule_marker(conversation_id, metadata)
         # Use metadata.visibility (the ACTUAL state in the registry) for
         # the response message, not the caller's `vis` parameter — when
@@ -288,7 +307,7 @@ class ArtifactManager:
                 description="The version you last saw for this artifact. If it no longer matches the current version, the update is rejected rather than silently overwritten.",
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_NONE],
     )
     async def update_artifact(
         self,
@@ -306,6 +325,7 @@ class ArtifactManager:
         if isinstance(raw, str):
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
 
+        provenance = self._provenance("artifacts.update_artifact")
         try:
             current = await registry.resolve(actor=self._actor(), ref=artifact_id)
             refusal = _not_a_real_document(current.name, mime_type or current.mime_type, raw)
@@ -330,6 +350,9 @@ class ArtifactManager:
             logger.exception("[update_artifact] failed for %s", artifact_id)
             return _result(False, {"success": False, "error": "Failed to update artifact"})
 
+        # Viewers are checked against every version's sources, so this one's
+        # adds to the earlier versions' rather than replacing them.
+        await self._record_provenance(registry, metadata.artifact_id, metadata.version, provenance)
         conversation_id = self.chat_state.get("conversation_id")
         if conversation_id:
             self._schedule_marker(conversation_id, metadata)
@@ -372,7 +395,7 @@ class ArtifactManager:
                 description="The artifact's ID.",
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="read")],
     )
     async def get_artifact_download_url(self, artifact_id: str) -> tuple[bool, str]:
         registry = self._registry()
@@ -428,7 +451,7 @@ class ArtifactManager:
                 description="Character offset to start reading from — use with max_chars to page through a long file.",
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="read")],
     )
     async def get_artifact_content(
         self,
@@ -532,7 +555,7 @@ class ArtifactManager:
                 description="The PipesHub record ID of the file.",
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="read")],
     )
     async def get_record_download_url(self, record_id: str) -> tuple[bool, str]:
         graph_provider = self.chat_state.get("graph_provider")
@@ -644,7 +667,7 @@ class ArtifactManager:
             "run_code's input_artifacts and re-run to regenerate this output from updated code."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="read")],
     )
     async def list_artifacts(self) -> tuple[bool, str]:
         registry = self._registry()
@@ -699,7 +722,7 @@ class ArtifactManager:
                 description="The artifact_id returned by save_artifact or a run_code result block.",
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_NONE],
     )
     async def promote_artifact(self, artifact_id: str) -> tuple[bool, str]:
         registry = self._registry()
@@ -739,7 +762,7 @@ class ArtifactManager:
         """Emit a live SSE artifact event for a just-promoted artifact.
 
         The `event_sink` is available in `chat_state` when streaming is active
-        (stored by `stream_bridge.py` / `bridge.py` at context construction).
+        (stored by `stream_bridge.py` at context construction).
         """
         event_sink = self.chat_state.get("event_sink")
         if event_sink is None:

@@ -290,7 +290,7 @@ describe('ai gateway identity', () => {
 
     it('restores a redacted template from storage on save, and drops one with nothing stored', async () => {
       const models = seed();
-      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+      (models.llm[0]!.configuration as any).identityForwardingHeaderTemplates = {
         Authorization: 'Bearer static-secret',
       };
       const store = keyedStore({ [MODELS_PATH]: models });
@@ -361,7 +361,7 @@ describe('ai gateway identity', () => {
 
     it('restores a redacted template before previewing', async () => {
       const models = seed();
-      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+      (models.llm[0]!.configuration as any).identityForwardingHeaderTemplates = {
         Authorization: 'Bearer static-secret',
       };
       const store = keyedStore({ [MODELS_PATH]: models });

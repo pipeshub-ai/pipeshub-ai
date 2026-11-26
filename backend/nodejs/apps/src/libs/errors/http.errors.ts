@@ -12,6 +12,13 @@ export class HttpError extends BaseError {
   }
 }
 
+/**
+ * A 4xx that normal operation produces, such as the loser of a claim race. The
+ * domain has already logged the decision with its reason, so the error
+ * middleware records it at info instead of as an error with a stack.
+ */
+export class ExpectedRefusalError extends HttpError {}
+
 export class BadRequestError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('BAD_REQUEST', message, HTTP_STATUS.BAD_REQUEST, metadata);

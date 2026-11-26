@@ -44,6 +44,7 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createUserAccountRouter POST /logout/manual',
   'createUserAccountRouter POST /password/reset/token',
   'createUserAccountRouter PUT /validateEmailChange',
+  // Cancelling an org's deletion (ORGDEL): no body; the org and the admin come from the verified token.
 
   // JSON-RPC, parsed and checked by the MCP SDK against each tool's schema.
   'createMCPRouter POST /',
@@ -89,6 +90,9 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createSkillsRouter POST /:name/enable',
   'createSkillsRouter POST /:name/rollback',
   'createSkillsRouter PUT /:name/resource',
+  'createSkillsRouter POST /:name/publish',
+  // The MCP hub's manifest approval and runner settings (harness): the Python hub validates both bodies,
+  // and the approval workflow parses the manifest with its own Zod schema before it acts on it.
   'createToolsetsRouter PUT /instances/:instanceId',
   'createToolsetsRouter POST /instances/:instanceId/authenticate',
   'createToolsetsRouter POST /instances/:instanceId/reauthenticate',
@@ -185,7 +189,7 @@ describe('Every write route validates its input', () => {
     const original = ValidationMiddleware.validate.bind(ValidationMiddleware)
     // The health router reads its config, which insists on a key, when built.
     const secretKey = process.env.SECRET_KEY
-    process.env.SECRET_KEY = secretKey ?? 'route-validation-coverage-test-key'
+    process.env.SECRET_KEY = secretKey ?? '76f97113547cefd96bae5677d7ea37037d646dd6d63accd322ca73b8c7598ef9'
     const validate = sinon.stub(ValidationMiddleware, 'validate').callsFake((schema, options) => {
       const handler = original(schema, options)
       validators.add(handler)

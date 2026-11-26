@@ -41,6 +41,7 @@ import {
   listParams,
   vectorStoreObject,
 } from '../../../src/modules/openai_compat/utils/openai-objects';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 
 const file = (recordId: string, indexingStatus = 'COMPLETED') => ({
   recordId,
@@ -225,6 +226,11 @@ describe('openai_compat files, vector stores and projects against a fake collect
     api.close();
     upstream.close();
   });
+
+  // The calls to our own API go through upstreamFetch, which sends only to a registered PipesHub service. The registry is
+  // global to the mocha worker, so each test registers the fake and clears it after.
+  beforeEach(() => registerUpstreams({ nodejs: [`http://127.0.0.1:${(upstream.address() as AddressInfo).port}`] }));
+  afterEach(() => registerUpstreams({}));
 
   const json = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
     fetch(`${base}${path}`, {

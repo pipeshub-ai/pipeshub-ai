@@ -29,6 +29,13 @@ from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.oauth_config_registry import TOOLSET_SOURCE
 from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, DocumentationLink
+from harness_core.tools.tags import TAG_PROVIDER_CONNECTOR, TAG_PROVIDER_PLATFORM
+
+
+class ToolProvider(str, Enum):
+    """Who provides a toolset's tools (KN2): the platform's own, or a configured connector's (granted per instance)."""
+    PLATFORM = TAG_PROVIDER_PLATFORM.value
+    CONNECTOR = TAG_PROVIDER_CONNECTOR.value
 
 
 class ToolsetCategory(str, Enum):
@@ -341,8 +348,9 @@ class ToolsetConfigBuilder:
 class ToolsetBuilder:
     """Main builder for creating toolsets with the decorator"""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, provider: ToolProvider) -> None:
         self.name = name
+        self.provider = ToolProvider(provider)
         self.app_group = ""
         self.supported_auth_types: List[str] = ["API_TOKEN"]  # Supported auth types (user selects one during creation)
         self.description = ""
@@ -571,6 +579,7 @@ class ToolsetBuilder:
             tools=self.tools,
             internal=self.is_internal,
             essential=self.is_essential,
+            provider=self.provider,
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:

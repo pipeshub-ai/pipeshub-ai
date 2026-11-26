@@ -1,0 +1,172 @@
+name: Agent Harness Infrastructure
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/nodejs/apps/src/modules/agent-harness/**'
+      - 'backend/nodejs/apps/tests/integration/agent-harness/**'
+      - 'backend/nodejs/apps/tests/modules/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/**'
+      - 'backend/python/app/agent_loop_lib/sandbox/**'
+      - 'backend/python/app/agents/agent_loop/sandbox_bridge.py'
+      - 'backend/python/app/harness/**'
+      - 'backend/python/app/sandbox/**'
+      - 'backend/python/app/sandbox_broker_main.py'
+      - 'backend/python/harness_core/**'
+      - 'backend/python/harness_engines/**'
+      - 'backend/python/pytest.ini'
+      - 'backend/python/tests/cohesion/**'
+      - 'backend/python/tests/support/**'
+      - 'backend/python/tests/unit/agent_loop_lib/sandbox/**'
+      - 'backend/python/tests/unit/harness/**'
+      - 'backend/python/tests/unit/harness_core/**'
+      - 'backend/python/tests/unit/harness_engines/**'
+      - 'backend/python/tests/unit/sandbox/**'
+      - 'contracts/harness/**'
+      - 'deployment/sandbox/**'
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/docker-compose.agent-harness.yml'
+      - 'deployment/docker-compose/install.sh'
+      - 'deployment/docker-compose/tests/agent_harness_replset_test.sh'
+      - 'deployment/docker-compose/tests/agent_harness_journal_failover_test.sh'
+      - 'deployment/docker-compose/tests/docker-compose.agent-harness.test.yml'
+      - 'deployment/docker-compose/tests/mongodb_replset_test.sh'
+      - '.github/workflows/agent-harness-infrastructure.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mongodb-replica-set:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Verify transactions, atomic admission, and restart
+        env:
+          AGENT_HARNESS_RUN_NODE_ADMISSION_TEST: 'true'
+          REDIS_IT_URL: redis://127.0.0.1:6379
+        run: deployment/docker-compose/tests/agent_harness_replset_test.sh
+
+  journal-failover:
+    name: Journal survives primary failover (3-member replica set, J-7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Kill the primary under committed journal load
+        run: deployment/docker-compose/tests/agent_harness_journal_failover_test.sh
+
+  mongodb-replica-set-default:
+    name: MongoDB replica set by default (fresh, standalone migration, rerun)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fresh start, in-place standalone conversion, and idempotent rerun
+        run: bash deployment/docker-compose/tests/mongodb_replset_test.sh
+
+  sandbox-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Compose names the image it builds from IMAGE_TAG; the contract tests and the steps below read the same
+      # name, so every step checks the image this job built and none a stale or pulled one.
+      IMAGE_TAG: local
+      SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Build the Compose-selected sandbox
+        run: docker compose --file deployment/docker-compose/docker-compose.yml build sandbox-image
+
+      # The image's Node is the major its Dockerfile copies from node:<major>-slim, so a Node upgrade there moves
+      # this check with it.
+      - name: Verify the sandbox Node dependency boundary
+        run: |
+          node_major="$(sed -n 's/^FROM node:\([0-9][0-9]*\)-slim@.*/\1/p' deployment/sandbox/Dockerfile)"
+          test -n "$node_major"
+          docker run --rm -e NODE_MAJOR="$node_major" --entrypoint sh "$SANDBOX_TEST_IMAGE" -lc '
+            node --version | grep "^v$NODE_MAJOR\." &&
+            test ! -e /home/sandbox/node_modules/image-size &&
+            cd /home/sandbox &&
+            npm ls uuid --all | grep "uuid@11\.1\.1 overridden"
+          '
+
+      - name: Run real Docker sandbox and VFS contracts
+        working-directory: backend/python
+        run: |
+          pytest -q \
+            tests/unit/agent_loop_lib/sandbox/test_docker_live.py \
+            tests/unit/agent_loop_lib/sandbox/contract/test_backend_contract.py \
+            -m docker --timeout=600 --timeout-method=thread
+
+      - name: Assert no sandbox containers leaked
+        if: always()
+        run: |
+          leaked="$(docker ps -aq --filter "ancestor=$SANDBOX_TEST_IMAGE")"
+          if [ -n "$leaked" ]; then
+            docker ps -a --filter "ancestor=$SANDBOX_TEST_IMAGE"
+            exit 1
+          fi
+
+  # The Docker security lane, C-13 and the QA14 canary scans: the same gate release-publish runs (C6.42).
+  harness-docker-lane:
+    name: Harness security gate
+    uses: ./.github/workflows/harness-security-gate.yml

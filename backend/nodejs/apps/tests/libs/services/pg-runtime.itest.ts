@@ -12,6 +12,7 @@ import { KeyAlreadyExistsError, KeyNotFoundError } from '../../../src/libs/error
 import { Logger } from '../../../src/libs/services/logger.service'
 import { configurePg } from '../../../src/libs/db'
 import { ensurePgRuntime } from '../../../src/libs/db/runtime-boot'
+import { Client } from 'pg'
 
 /**
  * The key-value store and the work queue on a real PostgreSQL. PG_RUNTIME_TEST_URL is the node login
@@ -162,6 +163,52 @@ async function until(cond: () => boolean, ms = 15000): Promise<void> {
       await sleep(1000)
       expect(flaky).to.equal(2)
       expect(always).to.equal(3)
+    })
+
+    describe('a handler whose database connection is cut', () => {
+      // a superuser ends the handler's backend, as a failover does; the service roles may not, so this needs PG_ADMIN_URL
+      const admin = process.env.PG_ADMIN_URL ?? ''
+      before(function () { if (!admin) this.skip() })
+      beforeEach(() => { process.env.PG_QUEUE_HANDBACK_BASE_S = '0.01' })
+      afterEach(() => { delete process.env.PG_QUEUE_HANDBACK_BASE_S; delete process.env.PG_QUEUE_HANDBACK_LIMIT })
+
+      const cutting = (cuts: number, runs: { n: number }) => async () => {
+        runs.n++
+        await ensurePgRuntime().withUow({ preOrg: true }, async (tx) => {
+          const pid = (await tx.query<{ pid: number }>('/* pipeshub:test.pid */ SELECT pg_backend_pid() AS pid')).rows[0]!.pid
+          if (runs.n <= cuts) {
+            const c = new Client({ connectionString: admin })
+            await c.connect()
+            try { await c.query('SELECT pg_terminate_backend($1)', [pid]) } finally { await c.end() }
+          }
+          await tx.query('/* pipeshub:test.after */ SELECT 1')
+        })
+      }
+      const status = async (group: string, t: string) => (await ensurePgRuntime().withUow({ preOrg: true }, (tx) =>
+        tx.query<{ status: string }>('/* pipeshub:test.status */ SELECT status FROM platform.queue_deliveries WHERE group_id = $1 AND topic = $2', [group, t]),
+      )).rows.map((r) => r.status)
+
+      it('does not dead-letter the event when the cuts outnumber MAX_DELIVERY_ATTEMPTS, and handles it once the database answers', async () => {
+        const t = topic()
+        const runs = { n: 0 }
+        await consume('cut', t, cutting(5, runs))
+        await new Producer(logger).publish(t, msg(1))
+        await until(() => runs.n === 6)
+        await sleep(500)
+        expect(await status('cut', t)).to.deep.equal([])   // acked
+      })
+
+      it('still dead-letters it when the database never answers, once the hand-backs pass PG_QUEUE_HANDBACK_LIMIT', async () => {
+        process.env.PG_QUEUE_HANDBACK_LIMIT = '3'
+        const t = topic()
+        const runs = { n: 0 }
+        await consume('gone', t, cutting(1000, runs))
+        await new Producer(logger).publish(t, msg(1))
+        const end = Date.now() + 20000
+        while ((await status('gone', t))[0] !== 'dead' && Date.now() < end) await sleep(100)
+        expect(await status('gone', t)).to.deep.equal(['dead'])
+        expect(runs.n).to.equal(6)                          // three refunded hand-backs, then the three attempts
+      })
     })
 
     it('shares one LISTEN connection among the store and every consumer', async () => {

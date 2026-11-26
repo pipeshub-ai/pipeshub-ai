@@ -1,0 +1,27 @@
+[
+  {
+    "description": "the body cannot name whose access is checked",
+    "instance": {
+      "references": [],
+      "userId": "u-owner"
+    }
+  },
+  {
+    "description": "a web page is not asked about",
+    "instance": {
+      "references": [
+        {
+          "kind": "web"
+        }
+      ]
+    }
+  },
+  {
+    "description": "artifact ids are strings",
+    "instance": {
+      "artifactIds": [
+        7
+      ]
+    }
+  }
+]

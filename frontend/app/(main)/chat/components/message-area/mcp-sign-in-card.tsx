@@ -17,7 +17,7 @@ import { useRenderSlotId } from './render-slot';
 import type { McpSignInServer } from '../../types';
 
 /** When the server's current sign-in was made (0 for a record from before that was kept), or null without one. */
-async function signedInAt(server: McpSignInServer): Promise<number | null> {
+export async function signedInAt(server: McpSignInServer): Promise<number | null> {
   const { instances } = server.agentKey
     ? await McpServersApi.getAgentMcpServers(server.agentKey, false)
     : await McpServersApi.getMyMcpServers(false);
@@ -166,7 +166,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
                     </Button>
                   )
                 ) : (
-                  <Text size="1" style={{ color: 'var(--slate-10)', textAlign: 'right' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'right' }}>
                     {t('chat.mcpSignIn.askAnEditor')}
                   </Text>
                 )}

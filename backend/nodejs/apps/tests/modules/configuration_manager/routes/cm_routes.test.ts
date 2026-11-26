@@ -465,7 +465,7 @@ describe('ConfigurationManager Routes', () => {
         (l: any) => l.route && l.route.path === '/connectors/sharepoint/config' && l.route.methods.post,
       )
       expect(layers.length).to.be.greaterThanOrEqual(1)
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       mockReq.user = undefined
@@ -479,7 +479,7 @@ describe('ConfigurationManager Routes', () => {
         (l: any) => l.route && l.route.path === '/connectors/onedrive/config' && l.route.methods.post,
       )
       expect(layers.length).to.be.greaterThanOrEqual(1)
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       mockReq.user = undefined
@@ -500,8 +500,8 @@ describe('ConfigurationManager Routes', () => {
       const routes = router.stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
-        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(1,
-          `Route ${routeLayer.route.path} should have at least 1 handler`)
+        expect(routeLayer.route!.stack.length).to.be.greaterThanOrEqual(1,
+          `Route ${routeLayer.route!.path} should have at least 1 handler`)
       }
     })
 
@@ -1200,8 +1200,8 @@ describe('AI Model Registry Proxy Routes', () => {
       expect(registryRoutes.length).to.equal(3)
 
       for (const routeLayer of registryRoutes) {
-        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(2,
-          `Route ${routeLayer.route.path} should have auth + handler middleware`)
+        expect(routeLayer.route!.stack.length).to.be.greaterThanOrEqual(2,
+          `Route ${routeLayer.route!.path} should have auth + handler middleware`)
       }
     })
   })
@@ -1217,7 +1217,7 @@ describe('AI Model Registry Proxy Routes', () => {
       const layers = router.stack.filter(
         (l: any) => l.route && l.route.path === '/ai-models/registry' && l.route.methods.get
       )
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -1238,7 +1238,7 @@ describe('AI Model Registry Proxy Routes', () => {
       const layers = router.stack.filter(
         (l: any) => l.route && l.route.path === '/ai-models/registry' && l.route.methods.get
       )
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       mockReq.query = { search: 'openai', capability: 'embedding' }
@@ -1256,7 +1256,7 @@ describe('AI Model Registry Proxy Routes', () => {
       const layers = router.stack.filter(
         (l: any) => l.route && l.route.path === '/ai-models/registry' && l.route.methods.get
       )
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -1283,7 +1283,7 @@ describe('AI Model Registry Proxy Routes', () => {
         (l: any) =>
           l.route && l.route.path === '/ai-models/registry/:providerId/schema' && l.route.methods.get
       )
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       mockReq.params = { providerId: 'openAI' }
@@ -1304,7 +1304,7 @@ describe('AI Model Registry Proxy Routes', () => {
         (l: any) =>
           l.route && l.route.path === '/ai-models/registry/:providerId/schema' && l.route.methods.get
       )
-      const handler = layers[0].route.stack[layers[0].route.stack.length - 1].handle
+      const handler = layers[0]!.route!.stack[layers[0]!.route!.stack.length - 1]!.handle
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       mockReq.params = { providerId: 'unknown' }

@@ -1,0 +1,19 @@
+# The legacy code sandbox's Python data-science and document-generation packages (deployment/sandbox/Dockerfile).
+# Resolved into requirements.lock by `python3 scripts/supply_chain.py lock`; the image installs only that lock.
+pandas
+matplotlib
+seaborn
+plotly
+kaleido
+openpyxl
+python-docx
+python-pptx
+Pillow
+reportlab
+fpdf2
+cairosvg
+numpy
+scipy
+tabulate
+xlsxwriter
+jinja2

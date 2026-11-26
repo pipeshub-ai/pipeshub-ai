@@ -691,8 +691,8 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation({ save: sinon.stub().rejects(new Error('write conflict')) })
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
-      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 } as any)
+      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as any)
       const reload = sinon.stub(ChatSession, 'findById')
 
       await handleRegenerationError(

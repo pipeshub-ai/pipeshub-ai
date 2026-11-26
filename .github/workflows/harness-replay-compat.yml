@@ -1,0 +1,91 @@
+name: Harness Replay Compatibility
+
+# N-1 read guarantee (P1b RU-3): journals and pins an earlier build wrote are
+# read and folded by this one. Replays the committed corpora
+# (contracts/harness/vectors/replay-corpus/) plus, recorded from git on the
+# fly, the goldens of the PR's base and of the latest release tag that has
+# them. Python folds each journal; Node projects it.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/python/harness_core/**'
+      - 'backend/python/app/harness/**'
+      - 'backend/python/tests/contracts/test_replay_compat.py'
+      - 'backend/nodejs/apps/src/modules/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/control-plane/**'
+      - 'backend/nodejs/apps/tests/contracts/replay-compat.test.ts'
+      - 'contracts/harness/**'
+      - '.github/workflows/harness-replay-compat.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Also replay the goldens of this git ref'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      # Recorded into the corpus directory of this checkout only (never committed); a ref without goldens is skipped.
+      - name: Record the earlier builds' goldens as corpora
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EXTRA_REF: ${{ github.event.inputs.ref }}
+        run: |
+          record() {
+            if git cat-file -e "$1:contracts/harness/vectors/journals" 2>/dev/null; then
+              python contracts/harness/record_replay_corpus.py "$2" --from-ref "$1"
+            else
+              echo "::notice::$1 has no golden journals; nothing to replay from it"
+            fi
+          }
+          if [ -n "$BASE_REF" ]; then record "origin/$BASE_REF" "ci-base"; fi
+          release="$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)"
+          if [ -n "$release" ]; then record "$release" "ci-release-$release"; fi
+          if [ -n "$EXTRA_REF" ]; then record "$EXTRA_REF" "ci-extra"; fi
+
+      - name: Python folds every corpus
+        working-directory: backend/python
+        run: python -m pytest tests/contracts/test_replay_compat.py -v --junitxml "$RUNNER_TEMP/replay-compat.xml"
+
+      - name: Node projects every corpus
+        working-directory: backend/nodejs/apps
+        run: >
+          npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config
+          --require reflect-metadata --require ts-node/register --extension ts --exit
+          tests/contracts/replay-compat.test.ts

@@ -1,0 +1,387 @@
+{
+  "description": "FR-38: one error model. Problems (problem.schema.json) as each language's reader takes them: accepted, or refused with the first rule broken, in this order: schema (problem.schema.json), unknown_code (not in errors.json), status, retryable (not the catalogue's for the code), remediation (an actor other than the catalogue's, or one for a code the catalogue names no actor for). Read by Python (app.control_plane.problems), Node (control-plane/domain/problem.ts) and the frontend (lib/contracts/control-plane/problem.ts); every catalogue code has an accepted entry.",
+  "accepted": [
+    {
+      "code": "CP_REVISION_CONFLICT",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": true,
+      "remediation": {
+        "action": "resolve",
+        "actor": "self"
+      },
+      "requestId": "req-7f3a"
+    },
+    {
+      "code": "CP_PRECONDITION_REQUIRED",
+      "status": 428,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "self"
+      }
+    },
+    {
+      "code": "CP_WIDENING",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "layer_admin"
+      }
+    },
+    {
+      "code": "CP_NOT_EXPOSED",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false
+    },
+    {
+      "code": "CP_OUTSIDE_CEILING",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "self"
+      }
+    },
+    {
+      "code": "CP_LOCKED",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "layer_admin"
+      }
+    },
+    {
+      "code": "CP_UNKNOWN_REFERENCE",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "self"
+      }
+    },
+    {
+      "code": "CP_INVALID_CONFIG",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "self"
+      }
+    },
+    {
+      "code": "CP_FORBIDDEN",
+      "status": 403,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_NOT_FOUND",
+      "status": 404,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false
+    },
+    {
+      "code": "CP_NOT_INSTALLED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_DISABLED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_NOT_APPROVED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_NOT_VISIBLE",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "team_admin"
+      }
+    },
+    {
+      "code": "CP_NOT_GRANTED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "builder"
+      }
+    },
+    {
+      "code": "CP_CREDENTIAL_MISSING",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "binding_owner"
+      }
+    },
+    {
+      "code": "CP_CREDENTIAL_EXPIRED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "binding_owner"
+      }
+    },
+    {
+      "code": "CP_CREDENTIAL_REVOKED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "binding_owner"
+      }
+    },
+    {
+      "code": "CP_POLICY_CEILING",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_APPROVAL_SUPERSEDED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "approver"
+      }
+    },
+    {
+      "code": "CP_DESCRIPTOR_CHANGED",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_EFFECTIVE_SET_TOO_LARGE",
+      "status": 422,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "builder"
+      }
+    },
+    {
+      "code": "CP_STALE",
+      "status": 409,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": true
+    },
+    {
+      "code": "CP_UNAVAILABLE",
+      "status": 503,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": true,
+      "remediation": {
+        "action": "resolve",
+        "actor": "operator"
+      }
+    },
+    {
+      "code": "CP_KILL_SWITCH",
+      "status": 503,
+      "message": "Something stopped this; see what to do next.",
+      "retryable": false,
+      "remediation": {
+        "action": "resolve",
+        "actor": "admin"
+      }
+    },
+    {
+      "code": "CP_WIDENING",
+      "status": 422,
+      "message": "The agent's budget is higher than the org allows.",
+      "retryable": false,
+      "subject": {
+        "scope": "agent:a7"
+      },
+      "dimension": "budgets.maxCostUsd",
+      "layer": "agent",
+      "remediation": {
+        "action": "ask_admin",
+        "actor": "layer_admin"
+      }
+    },
+    {
+      "code": "CP_NOT_EXPOSED",
+      "status": 422,
+      "message": "This setting cannot be changed here.",
+      "retryable": false,
+      "remediation": null,
+      "layer": null,
+      "dimension": null
+    }
+  ],
+  "refused": [
+    {
+      "reason": "schema",
+      "description": "a code outside the control plane's namespace",
+      "problem": {
+        "code": "AGENT_HARNESS_ENGINE_PROFILE_WIDENING",
+        "status": 403,
+        "message": "m",
+        "retryable": false
+      }
+    },
+    {
+      "reason": "schema",
+      "description": "no message",
+      "problem": {
+        "code": "CP_FORBIDDEN",
+        "status": 403,
+        "retryable": false
+      }
+    },
+    {
+      "reason": "schema",
+      "description": "an absolute remediation link",
+      "problem": {
+        "code": "CP_CREDENTIAL_MISSING",
+        "status": 409,
+        "message": "m",
+        "retryable": false,
+        "remediation": {
+          "action": "connect_account",
+          "actor": "binding_owner",
+          "href": "https://evil.example/connect"
+        }
+      }
+    },
+    {
+      "reason": "schema",
+      "description": "not an object",
+      "problem": "CP_FORBIDDEN"
+    },
+    {
+      "reason": "unknown_code",
+      "description": "a code in the namespace the catalogue does not list",
+      "problem": {
+        "code": "CP_TEAPOT",
+        "status": 418,
+        "message": "m",
+        "retryable": false
+      }
+    },
+    {
+      "reason": "status",
+      "description": "a catalogued code at another status",
+      "problem": {
+        "code": "CP_FORBIDDEN",
+        "status": 401,
+        "message": "m",
+        "retryable": false
+      }
+    },
+    {
+      "reason": "status",
+      "description": "a conflict answered as a server error",
+      "problem": {
+        "code": "CP_REVISION_CONFLICT",
+        "status": 500,
+        "message": "m",
+        "retryable": true
+      }
+    },
+    {
+      "reason": "retryable",
+      "description": "a retryable code marked final",
+      "problem": {
+        "code": "CP_UNAVAILABLE",
+        "status": 503,
+        "message": "m",
+        "retryable": false
+      }
+    },
+    {
+      "reason": "retryable",
+      "description": "a final code marked retryable",
+      "problem": {
+        "code": "CP_KILL_SWITCH",
+        "status": 503,
+        "message": "m",
+        "retryable": true
+      }
+    },
+    {
+      "reason": "remediation",
+      "description": "an actor other than the catalogue's",
+      "problem": {
+        "code": "CP_CREDENTIAL_MISSING",
+        "status": 409,
+        "message": "m",
+        "retryable": false,
+        "remediation": {
+          "action": "connect_account",
+          "actor": "admin"
+        }
+      }
+    },
+    {
+      "reason": "remediation",
+      "description": "a remediation for a code nobody can fix",
+      "problem": {
+        "code": "CP_STALE",
+        "status": 409,
+        "message": "m",
+        "retryable": true,
+        "remediation": {
+          "action": "retry",
+          "actor": "self"
+        }
+      }
+    }
+  ]
+}

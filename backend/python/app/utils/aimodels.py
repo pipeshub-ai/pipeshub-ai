@@ -418,6 +418,9 @@ class STTProvider(Enum):
     OPENROUTER = "openRouter"
 
 MAX_OUTPUT_TOKENS = 4096
+# Every chat model's client timeout (per read: a stream that trickles never trips it). Test rigs that call
+# live models build their clients with it too, so a stalled connection fails there as it does here (P4.9).
+DEFAULT_LLM_TIMEOUT_S = 360.0
 MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
@@ -2080,7 +2083,7 @@ def _get_generator_model_impl(
         f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )
 
-    DEFAULT_LLM_TIMEOUT = 360.0
+    DEFAULT_LLM_TIMEOUT = DEFAULT_LLM_TIMEOUT_S
     retries = _sdk_retry_kwargs(provider, sdk_retries)
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic

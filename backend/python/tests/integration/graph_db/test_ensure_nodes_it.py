@@ -12,8 +12,10 @@ Run against throwaway engines, never a stack with data in it:
       -e NEO4J_AUTH=neo4j/ensure-it-pass neo4j:5.26.0
   docker run -d --rm --name arango-ensure-it -p 18529:8529 \\
       -e ARANGO_ROOT_PASSWORD=ensure-it-pass arangodb:3.12
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \\
+      pytest tests/integration/graph_db/test_ensure_nodes_it.py -m integration
 
-Each test skips when its engine is not reachable.
+Each test skips when its engine's variable (NEO4J_IT_URI, ARANGO_IT_URL) is unset.
 """
 
 import asyncio
@@ -29,12 +31,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import collection_to_label
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 pytestmark = pytest.mark.integration
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 COLLECTION = CollectionNames.TOPICS.value
@@ -49,13 +50,14 @@ def _node(key: str, name: str) -> dict[str, str]:
 
 @pytest.fixture
 async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
     provider = Neo4jProvider(_logger, AsyncMock())
     if not await provider.connect():
-        pytest.skip(f"Neo4j not reachable at {NEO4J_URI}")
+        pytest.skip(f"Neo4j not reachable at {neo4j_uri}")
     assert provider.client is not None
     # The constraint the provider's schema bootstrap creates for every node label.
     await provider.client.execute_query(
@@ -71,13 +73,14 @@ async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]
 
 @pytest.fixture
 async def arango() -> AsyncIterator[ArangoHTTPProvider]:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config = AsyncMock()
     config.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": "ensure_it",
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": "ensure_it",
     })
     provider = ArangoHTTPProvider(_logger, config)
     if not await provider.connect():
-        pytest.skip(f"ArangoDB not reachable at {ARANGO_URL}")
+        pytest.skip(f"ArangoDB not reachable at {arango_url}")
     assert provider.http_client is not None
     if not await provider.http_client.has_collection(COLLECTION):
         await provider.http_client.create_collection(COLLECTION, edge=False, schema=None)

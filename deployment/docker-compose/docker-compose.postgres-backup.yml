@@ -1,0 +1,95 @@
+# Backups and point-in-time restore of the PostgreSQL profile, with pgBackRest (https://pgbackrest.org/user-guide.html).
+#
+# Use it with the `postgres` profile active, next to the other files you run, and with a `pgbackrest.env` beside this file (copy
+# pgbackrest.env.example, or name another file with PGBACKREST_ENV_FILE). That file says where the repository is: this host's
+# `pg_backup_repo` volume (or the host directory PG_BACKUP_REPO names), or S3, Azure or GCS.
+#
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml
+#   export COMPOSE_PROJECT_NAME=pipeshub-ai COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate
+#   docker compose up -d
+#
+# Later `docker compose` commands and scripts/pg-restore.sh need the same three settings (or put them in .env).
+#
+# What it adds:
+#   - postgres: archives every finished WAL segment to the repository (archive_mode=on, archive_command=pgbackrest-archive-push.sh, set by
+#     postgres/pg-entrypoint.sh because PGBACKREST_STANZA is set) and closes a segment at least every PG_ARCHIVE_TIMEOUT seconds
+#     (default 60), which is the most a restore can lose. Turning this on or off restarts the server (archive_mode is read at start).
+#     The archive queue is capped (PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX, 4GiB unless set): an unreachable repository makes the server drop
+#     WAL beyond it instead of filling the data volume (postgres/pgbackrest-archive-push.sh).
+#   - pg-backup: a full backup every PG_BACKUP_FULL_DAYS (default 7) and an incremental one every PG_BACKUP_INCR_HOURS (default 6); the
+#     first full backup starts as soon as the service does. It is healthy once the last attempt succeeded. After dropped WAL it is
+#     unhealthy and takes a full backup at once: until that succeeds, point-in-time restore cannot cross the gap.
+# Restore to a point in time: scripts/pg-restore.sh (postgres/README.md, "Backups and point-in-time restore").
+#
+# pgBackRest connects as the server's `postgres` user over the Unix socket, shared through the pg_backup_socket volume, and reads the data
+# volume read-only. Its options come from PGBACKREST_* variables (https://pgbackrest.org/command.html: "Any option may be set in an
+# environment variable using the PGBACKREST_ prefix"); the ones below are fixed by this layout and win over pgbackrest.env.
+services:
+  postgres:
+    env_file: ${PGBACKREST_ENV_FILE:-pgbackrest.env}
+    environment:
+      - PGBACKREST_STANZA=pipeshub
+      - PGBACKREST_PG1_PATH=/var/lib/postgresql/data
+      # archive-push runs every PG_ARCHIVE_TIMEOUT seconds at least; its console output already reaches the server log
+      - PGBACKREST_LOG_LEVEL_FILE=off
+      - PG_ARCHIVE_TIMEOUT=${PG_ARCHIVE_TIMEOUT:-60}
+    volumes:
+      - pg_backup_socket:/var/run/postgresql
+      - ${PG_BACKUP_REPO:-pg_backup_repo}:/var/lib/pgbackrest
+
+  pg-backup:
+    profiles: ["postgres"]
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    user: postgres
+    # Runs as postgres from the start, so it needs no capability and gains none.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # pgBackRest reads the cluster's files, as PostgreSQL does (OPS1).
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    command: ["pg-backup.sh"]
+    init: true   # the scheduler stops at once on `docker compose stop` instead of after the 10 s timeout
+    restart: always
+    env_file: ${PGBACKREST_ENV_FILE:-pgbackrest.env}
+    environment:
+      - PGBACKREST_STANZA=pipeshub
+      - PGBACKREST_PG1_PATH=/var/lib/postgresql/data
+      - PGBACKREST_LOG_LEVEL_FILE=off
+      - PGBACKREST_LOG_LEVEL_CONSOLE=${PGBACKREST_LOG_LEVEL_CONSOLE:-info}
+      - PG_BACKUP_FULL_DAYS=${PG_BACKUP_FULL_DAYS:-7}
+      - PG_BACKUP_INCR_HOURS=${PG_BACKUP_INCR_HOURS:-6}
+      - PG_BACKUP_RETRY_SECS=${PG_BACKUP_RETRY_SECS:-300}
+    # as in the postgres service: keeps the 18 image from creating an anonymous volume
+    tmpfs:
+      - /var/lib/postgresql:size=16m
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:ro
+      - pg_backup_socket:/var/run/postgresql
+      - ${PG_BACKUP_REPO:-pg_backup_repo}:/var/lib/pgbackrest
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_BACKUP_MEMORY_LIMIT:-1G}
+          pids: 1024
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeshub
+    healthcheck:
+      # the last backup succeeded, and no WAL was dropped since (pgbackrest-archive-push.sh adds a file per drop, even during a backup)
+      test: ["CMD-SHELL", 'test -f /tmp/pg-backup.ok && [ -z "$$(ls -A /var/run/postgresql/pgbackrest-wal-gap.d 2>/dev/null)" ]']
+      interval: 60s
+      timeout: 5s
+      retries: 1
+      # Failures in the start period are not counted until a check has passed ("if a health check succeeds during the start period, the
+      # container is considered started", https://docs.docker.com/reference/dockerfile/#healthcheck), so a long one would hide a drop
+      # right after a restart. Stanza creation takes seconds, and a first full backup counts as healthy while it runs (pg-backup.sh).
+      start_period: 10m
+
+volumes:
+  pg_backup_socket:
+  pg_backup_repo:

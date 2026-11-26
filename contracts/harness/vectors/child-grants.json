@@ -1,0 +1,1144 @@
+{
+  "description": "Grants of a child run are a subset of its parent's pinned grant (P6.3). One table for Node (domain/child-runs.ts) and Python (harness_core.journal.children). `parent` patches the base parent spec's grants (sandboxProfile, egress). `depth` is the child's (a root run is 0). A refusal names its code, the dimension and the requested items it refuses; dimensions are checked in registry order and the first refusal is reported. A1: the access dimension's items are the parent's pinned route ids (Node modelRouteId, Python PinnedRoute.route_id); a route that pins a model account carries it in its id, so a child can only take the parent's own accounts; the child's model policy is the parent's routes it was granted, in the parent's order.",
+  "maxDepth": 3,
+  "parentSpec": {
+    "schemaVersion": 3,
+    "harnessMajor": 2,
+    "foldVersion": 8,
+    "runKind": "interactive",
+    "executor": {
+      "kind": "loop"
+    },
+    "principalRef": "p_user-1",
+    "model": {
+      "policy": [
+        {
+          "provider": "anthropic",
+          "model": "claude-x"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "access": {
+            "route": "gateway",
+            "accountKind": "user_api_key",
+            "accountId": "users/user-1/openAI",
+            "pays": "user"
+          }
+        }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09",
+      "reasoningEffort": "medium"
+    },
+    "grants": {
+      "tools": [
+        {
+          "toolId": "jira@inst-42/search_issues",
+          "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+        },
+        {
+          "toolId": "mcp@mcp-9/list_prs",
+          "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+        },
+        {
+          "toolId": "web@serper/web_search",
+          "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+        }
+      ],
+      "sandboxProfile": "none",
+      "egress": "none"
+    },
+    "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5,
+      "maxChildren": 4,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2026-10-01T12:00:00.000Z"
+    },
+    "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933",
+    "extensions": {
+      "x.pipeshub": {
+        "agent": {
+          "agentKey": "agent-1",
+          "definitionVersion": 7,
+          "mode": "react"
+        },
+        "model": {
+          "modelKey": "model-2",
+          "modelName": "claude-x"
+        },
+        "knowledge": {
+          "apps": [
+            "app-drive",
+            "app-jira"
+          ],
+          "kb": [
+            "kb-1"
+          ],
+          "strictScope": true
+        },
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+          }
+        ],
+        "skills": [
+          {
+            "name": "xlsx",
+            "bundleDigest": "sha256:60120e5e125ee8715bfe17de4de8540124e6e4e1e2a30e3427f7ccfeb45b6a06"
+          }
+        ],
+        "mounts": [
+          "/workspace",
+          "/inputs"
+        ],
+        "via": "pat"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "CG-1",
+      "behaviour": "request omits every dimension: the parent grant, maxChildren 0",
+      "depth": 1,
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-2a",
+      "behaviour": "tools: a subset",
+      "depth": 1,
+      "request": {
+        "tools": [
+          "web@serper/web_search"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-2b",
+      "behaviour": "tools: the parent set, unsorted and repeated",
+      "depth": 1,
+      "request": {
+        "tools": [
+          "web@serper/web_search",
+          "jira@inst-42/search_issues",
+          "mcp@mcp-9/list_prs",
+          "jira@inst-42/search_issues"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-2c",
+      "behaviour": "tools: one the parent lacks",
+      "depth": 1,
+      "request": {
+        "tools": [
+          "jira@inst-42/search_issues",
+          "slack@inst-1/post_message"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "slack@inst-1/post_message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-2d",
+      "behaviour": "tools: none at all",
+      "depth": 1,
+      "request": {
+        "tools": []
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-3a",
+      "behaviour": "sandbox: parent none, child agent-code",
+      "depth": 1,
+      "request": {
+        "sandboxProfile": "agent-code"
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "sandboxProfile",
+          "items": [
+            "agent-code"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-3b",
+      "behaviour": "sandbox: parent agent-code, child none",
+      "depth": 1,
+      "parent": {
+        "sandboxProfile": "agent-code"
+      },
+      "request": {
+        "sandboxProfile": "none"
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-3c",
+      "behaviour": "sandbox: parent agent-code, child omits it",
+      "depth": 1,
+      "parent": {
+        "sandboxProfile": "agent-code"
+      },
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "agent-code",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-4a",
+      "behaviour": "egress: parent none, child an allowlist",
+      "depth": 1,
+      "request": {
+        "egress": "allowlist:x"
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "egress",
+          "items": [
+            "allowlist:x"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-4b",
+      "behaviour": "egress: parent allowlist:x, child allowlist:y",
+      "depth": 1,
+      "parent": {
+        "egress": "allowlist:x"
+      },
+      "request": {
+        "egress": "allowlist:y"
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "egress",
+          "items": [
+            "allowlist:y"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-4c",
+      "behaviour": "egress: parent allowlist:x, child none",
+      "depth": 1,
+      "parent": {
+        "egress": "allowlist:x"
+      },
+      "request": {
+        "egress": "none"
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-5a",
+      "behaviour": "mounts: a subset",
+      "depth": 1,
+      "request": {
+        "mounts": [
+          "/inputs"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-5b",
+      "behaviour": "mounts: one the parent lacks",
+      "depth": 1,
+      "request": {
+        "mounts": [
+          "/inputs",
+          "/skills"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "mounts",
+          "items": [
+            "/skills"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-5c",
+      "behaviour": "knowledge: a subset of apps, no KBs",
+      "depth": 1,
+      "request": {
+        "knowledge": {
+          "apps": [
+            "app-jira"
+          ],
+          "kb": []
+        }
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-jira"
+            ],
+            "kb": []
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-5d",
+      "behaviour": "knowledge: a KB the parent lacks",
+      "depth": 1,
+      "request": {
+        "knowledge": {
+          "kb": [
+            "kb-1",
+            "kb-9"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "knowledge",
+          "items": [
+            "kb:kb-9"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-5e",
+      "behaviour": "knowledge: an app the parent lacks",
+      "depth": 1,
+      "request": {
+        "knowledge": {
+          "apps": [
+            "app-slack"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "knowledge",
+          "items": [
+            "app:app-slack"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-5f",
+      "behaviour": "skills: none",
+      "depth": 1,
+      "request": {
+        "skills": []
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-5g",
+      "behaviour": "skills: one the parent lacks",
+      "depth": 1,
+      "request": {
+        "skills": [
+          "pptx"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "skills",
+          "items": [
+            "pptx"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-6a",
+      "behaviour": "turn budget: fewer turns",
+      "depth": 1,
+      "request": {
+        "maxTurns": 5
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 5,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-6b",
+      "behaviour": "turn budget: more turns than the parent",
+      "depth": 1,
+      "request": {
+        "maxTurns": 16
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "maxTurns",
+          "items": [
+            "16"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-6c",
+      "behaviour": "maxChildren: within the parent",
+      "depth": 1,
+      "request": {
+        "maxChildren": 2
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 2
+        }
+      }
+    },
+    {
+      "id": "CG-6d",
+      "behaviour": "maxChildren: above the parent",
+      "depth": 1,
+      "request": {
+        "maxChildren": 5
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "maxChildren",
+          "items": [
+            "5"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-6e",
+      "behaviour": "A1 CH-2: an access route the parent does not hold (another user's key) is refused",
+      "depth": 1,
+      "request": {
+        "access": [
+          "openai:gpt-5@user_api_key:users/user-2/openAI"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "access",
+          "items": [
+            "openai:gpt-5@user_api_key:users/user-2/openAI"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-6f",
+      "behaviour": "A1 CH-1: a child takes one of its parent's routes, with its pinned account",
+      "depth": 1,
+      "request": {
+        "access": [
+          "openai:gpt-5@user_api_key:users/user-1/openAI"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-6g",
+      "behaviour": "A1 CH-1: a child takes the parent's org-key route only",
+      "depth": 1,
+      "request": {
+        "access": [
+          "anthropic:claude-x"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-6h",
+      "behaviour": "A1 CH-2: the parent's model without its account is another route, refused",
+      "depth": 1,
+      "request": {
+        "access": [
+          "openai:gpt-5"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "access",
+          "items": [
+            "openai:gpt-5"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-7a",
+      "behaviour": "depth 3: a child may not delegate further",
+      "depth": 3,
+      "request": {
+        "maxChildren": 1
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_DEPTH_EXCEEDED",
+          "dimension": "maxChildren",
+          "items": [
+            "1"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-7b",
+      "behaviour": "depth 3: a leaf child is fine",
+      "depth": 3,
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-8",
+      "behaviour": "the first refused dimension in registry order is reported",
+      "depth": 1,
+      "request": {
+        "tools": [
+          "x@y/z"
+        ],
+        "egress": "allowlist:q"
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "x@y/z"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CG-9a",
+      "behaviour": "maxTokens: a share of the parent's (K-L's interim budget rule)",
+      "depth": 1,
+      "request": {
+        "maxTokens": 250000
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 250000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-9b",
+      "behaviour": "maxTokens: exactly the parent's",
+      "depth": 1,
+      "request": {
+        "maxTokens": 1000000
+      },
+      "expect": {
+        "refusal": null,
+        "grants": {
+          "tools": [
+            "jira@inst-42/search_issues",
+            "mcp@mcp-9/list_prs",
+            "web@serper/web_search"
+          ],
+          "sandboxProfile": "none",
+          "egress": "none",
+          "mounts": [
+            "/inputs",
+            "/workspace"
+          ],
+          "knowledge": {
+            "apps": [
+              "app-drive",
+              "app-jira"
+            ],
+            "kb": [
+              "kb-1"
+            ]
+          },
+          "skills": [
+            "xlsx"
+          ],
+          "access": [
+            "anthropic:claude-x",
+            "openai:gpt-5@user_api_key:users/user-1/openAI"
+          ],
+          "maxTurns": 15,
+          "maxTokens": 1000000,
+          "maxChildren": 0
+        }
+      }
+    },
+    {
+      "id": "CG-9c",
+      "behaviour": "maxTokens: above the parent's is refused, never narrowed",
+      "depth": 1,
+      "request": {
+        "maxTokens": 1000001
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "maxTokens",
+          "items": [
+            "1000001"
+          ]
+        },
+        "grants": null
+      }
+    }
+  ],
+  "childRunIds": [
+    {
+      "orgId": "org-1",
+      "parentRunId": "run-1",
+      "invocationId": "t1.0",
+      "childRunId": "9e4a2093-c2f7-023d-9284-76c5e72eb5ae"
+    },
+    {
+      "orgId": "org-1",
+      "parentRunId": "run-1",
+      "invocationId": "t1.1",
+      "childRunId": "f52eeaef-940e-11cf-edfc-74ee08594293"
+    },
+    {
+      "orgId": "org-2",
+      "parentRunId": "a9c2",
+      "invocationId": "t12.3",
+      "childRunId": "34db8c83-aece-2415-8fd1-e399c5a1d9ef"
+    }
+  ]
+}

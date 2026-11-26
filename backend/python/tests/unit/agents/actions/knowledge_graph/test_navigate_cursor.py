@@ -33,9 +33,10 @@ from app.connectors.api.router import knowledge_graph_navigate
 from tests.support.openapi_spec import openapi_spec
 
 
-def _config() -> AsyncMock:
-    config = AsyncMock()
-    config.get_config.return_value = {"scopedJwtSecret": "test-secret"}
+def _config() -> MagicMock:
+    # Only get_config is a coroutine: a synchronous accessor another build calls must not return an unawaited one.
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value={"scopedJwtSecret": "test-secret"})
     return config
 
 
@@ -231,8 +232,10 @@ async def _route(graph: AsyncMock, **params: object) -> dict:
         "created_before": None, "modified_after": None, "modified_before": None, "cursor": None,
     }
     kwargs.update(params)
+    # The org's config service as any build resolves it: an edition may wrap the container's per org.
     with patch("app.connectors.api.router.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
-         patch("app.connectors.api.router.refuse_outside_connection", AsyncMock()):
+         patch("app.connectors.api.router.refuse_outside_connection", AsyncMock()), \
+         patch("app.connectors.api.router.resolve_config_service", return_value=_config()):
         return await knowledge_graph_navigate(request=_request(), graph_provider=graph, **kwargs)
 
 

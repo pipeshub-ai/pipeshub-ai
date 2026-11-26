@@ -23,6 +23,12 @@ export interface IOrg extends Document {
   signupReferrerDomain?: string;
   /** Written during admin demotion txns to serialize last-admin checks. */
   adminRoleGuardAt?: Date;
+  /** Held by one admin-role change at a time on a standalone MongoDB (no transactions to serialise them). */
+  adminRoleLease?: { holder: string; until: Date };
+  /** The default chat's coding engine for the org (ENGPICK); absent: none. */
+  defaultCodingEngine?: string;
+  /** DEEPROUTE: false when the org turned off handing long work to the coding engine on its own; absent: on. */
+  codingEngineAutoRoute?: boolean;
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -76,6 +82,12 @@ const orgSchema = new Schema<IOrg>(
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
     adminRoleGuardAt: { type: Date },
+    adminRoleLease: {
+      type: { holder: { type: String }, until: { type: Date } },
+      default: undefined,
+    },
+    defaultCodingEngine: { type: String, maxlength: 64 },
+    codingEngineAutoRoute: { type: Boolean },
   },
   { timestamps: true },
 );

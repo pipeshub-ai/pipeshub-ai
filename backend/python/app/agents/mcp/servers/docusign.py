@@ -4,7 +4,13 @@ Production endpoint. A developer/demo account cannot use this card (different ho
 those testers add a custom server to https://mcp-d.docusign.com/mcp.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -42,6 +48,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["e-signature", "docs", "contracts"],
+        category=MCPCategory.FINANCE,
+        capabilities=[
+            "Send a document for signature",
+            "Check an envelope's status",
+            "Find signed agreements",
+        ],
     )
 )
 class DocuSignMCPServer:

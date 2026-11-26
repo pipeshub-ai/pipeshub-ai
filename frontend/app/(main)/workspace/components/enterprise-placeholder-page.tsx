@@ -98,7 +98,7 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
             backgroundColor: 'var(--slate-3)',
           }}
         >
-          <MaterialIcon name="workspace_premium" size={28} color="var(--slate-9)" />
+          <MaterialIcon name="workspace_premium" size={28} color="var(--slate-11)" />
         </Flex>
 
         <Flex direction="column" align="center" gap="2" style={{ maxWidth: '420px', textAlign: 'center' }}>

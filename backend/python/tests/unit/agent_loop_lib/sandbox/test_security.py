@@ -8,6 +8,7 @@ is in use.
 from __future__ import annotations
 
 import io
+import os
 import tarfile
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,7 +40,7 @@ def _empty_tar() -> bytes:
 class TestEnvironmentSanitisation:
 
     def test_local_env_no_secret_leak(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SECRET_KEY", "super_secret")
+        monkeypatch.setenv("SECRET_KEY", "5c0b62eb5fb3087afce7e9bac4e0661119bd6278530f56833f8ee18903436cae")
         env = sanitized_subprocess_env(str(tmp_path))
         assert "SECRET_KEY" not in env
 
@@ -245,16 +246,39 @@ class TestDockerContainerIsolation:
 
     def test_no_host_filesystem_is_mounted(self, tmp_path):
         """A bind mount would hand generated code the host filesystem; files
-        move in and out by tar archive instead."""
+        move in and out by tar archive instead. The writable directories under
+        the read-only root (SEC-A-04) are anonymous volumes: no source, no driver."""
         kwargs = self._run_kwargs(tmp_path, allow_network=False, request_network=False)
         assert not kwargs.get("volumes")
         assert not kwargs.get("binds")
-        assert not kwargs.get("mounts")
+        assert kwargs["read_only"] is True
+        assert kwargs["mounts"] and all(
+            m["Type"] == "volume" and not m.get("Source") and not m.get("VolumeOptions") for m in kwargs["mounts"]
+        )
 
     def test_resource_limits_are_applied(self, tmp_path):
         kwargs = self._run_kwargs(tmp_path, allow_network=False, request_network=False)
         assert kwargs.get("mem_limit")
         assert kwargs.get("nano_cpus")
+        assert kwargs.get("pids_limit")
+
+    def test_container_drops_privilege_escalation_paths(self, tmp_path) -> None:
+        kwargs = self._run_kwargs(tmp_path, allow_network=False, request_network=False)
+        assert kwargs["user"] == "sandbox"
+        assert kwargs["cap_drop"] == ["ALL"]
+        assert "no-new-privileges:true" in kwargs["security_opt"]
+        assert kwargs["init"] is True
+        assert "nosuid" in kwargs["tmpfs"]["/tmp"]
+
+    def test_container_is_labelled_with_its_sandbox_and_owner(self, tmp_path) -> None:
+        from app.agent_loop_lib.sandbox.coding.docker import (
+            SANDBOX_ID_LABEL,
+            SANDBOX_OWNER_PID_LABEL,
+        )
+
+        kwargs = self._run_kwargs(tmp_path, allow_network=False, request_network=False)
+        assert kwargs["labels"][SANDBOX_OWNER_PID_LABEL] == str(os.getpid())
+        assert kwargs["labels"][SANDBOX_ID_LABEL]
 
 
 class TestCrossRequestIsolation:

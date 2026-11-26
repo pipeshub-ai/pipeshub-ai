@@ -1,0 +1,458 @@
+[
+  {
+    "description": "every default is named",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      }
+    }
+  },
+  {
+    "description": "a deadline is positive",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 0
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      }
+    }
+  },
+  {
+    "description": "an offering is one the vendor rules know",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "cloud"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      }
+    }
+  },
+  {
+    "description": "the engine is the allowlist's, not a default",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ],
+        "engine": {
+          "kind": "opencode",
+          "version": "1",
+          "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      }
+    }
+  },
+  {
+    "description": "a commit carries at least one event",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 0
+      }
+    }
+  },
+  {
+    "description": "the release names the durable chat modes",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 10000000,
+        "loopMaxTokens": 2000000,
+        "maxCostUsd": 5,
+        "activeTimeS": null
+      },
+      "rollout": {
+        "durable": {
+          "modes": [],
+          "assistantModes": [
+            "internal_search",
+            "web_search"
+          ],
+          "modelFamilies": null
+        }
+      }
+    }
+  },
+  {
+    "description": "the release admits every model family; an org narrows it",
+    "instance": {
+      "schemaVersion": 1,
+      "engineProfile": {
+        "mode": "build",
+        "isolationMin": "docker",
+        "egress": "none",
+        "tools": {
+          "maxTools": null,
+          "effects": [
+            "execute",
+            "read",
+            "workspace",
+            "write"
+          ]
+        },
+        "limits": {
+          "maxSteps": 50,
+          "maxWallS": 1800,
+          "maxTokens": null,
+          "maxUsd": null
+        },
+        "subAgents": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        },
+        "reasoningEffort": null,
+        "approvals": {
+          "read": "allow",
+          "workspace": "allow",
+          "write": "ask",
+          "execute": "ask"
+        },
+        "skills": null,
+        "accountKinds": [
+          "org_api_key",
+          "org_cloud",
+          "user_api_key"
+        ]
+      },
+      "children": {
+        "maxPerRun": 16
+      },
+      "memory": {
+        "maxChars": 500
+      },
+      "models": {
+        "offering": "managed"
+      },
+      "runs": {
+        "deadlineMs": 3600000
+      },
+      "journal": {
+        "maxCommitEvents": 100
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 10000000,
+        "loopMaxTokens": 2000000,
+        "maxCostUsd": 5,
+        "activeTimeS": null
+      },
+      "rollout": {
+        "durable": {
+          "modes": [
+            "auto",
+            "deep",
+            "quick",
+            "react"
+          ],
+          "assistantModes": [
+            "internal_search",
+            "web_search"
+          ],
+          "modelFamilies": [
+            "openai"
+          ]
+        }
+      }
+    }
+  }
+]

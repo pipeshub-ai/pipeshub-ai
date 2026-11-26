@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AgentsApi,
   buildToolsCatalogFromToolsets,
@@ -13,6 +13,8 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { AgentDetail, KnowledgeHubAppNode } from '../../types';
 import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { usePagedCatalog, type PagedCatalog } from './use-paged-catalog';
+import type { CatalogPage } from './paged-catalog';
 import type { AgentToolsListRow, KnowledgeBaseForBuilder, SkillForBuilder } from '../../types';
 import { SkillsApi } from '../../../workspace/skills/personal/api';
 import { McpServersApi } from '../../../workspace/mcp-servers/api';
@@ -28,7 +30,8 @@ import {
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 
-const TOOLSETS_PAGE = 20;
+/** Actions per page of the palette's catalog: the builder's load reads one page whatever the org holds. */
+const TOOLSETS_PAGE = 100;
 
 /** Non-hook read for use inside plain async functions (not React components). */
 function isMcpEnabledNow(): boolean {
@@ -102,25 +105,16 @@ function mapNodesToConnectors(nodes: KnowledgeHubAppNode[]): Connector[] {
   });
 }
 
-/** Models, KB, knowledge-hub nodes, the skills catalog and API toolsets — fetched once per hook mount (route remount resets the ref). */
+/** Models, the skills catalog and API toolsets: fetched once per hook mount (route remount resets the ref). */
 async function fetchStaticBuilderResources() {
-  const [models, kbResult, appNodes, skills, apiToolsets] = await Promise.all([
+  const [models, skills, apiToolsets] = await Promise.all([
     fetchModelsForContext(ASSISTANT_CTX),
-    AgentsApi.getAllKnowledgeBasesForBuilder(),
-    AgentsApi.getAllKnowledgeHubAppNodes().catch((err) => {
-      console.error('Failed to fetch knowledge hub app nodes:', err);
-      return [] as KnowledgeHubAppNode[];
-    }),
     loadSkillsCatalog(),
     loadApiToolsets(),
   ]);
 
-  const configuredConnectors = mapNodesToConnectors(appNodes);
-
   return {
     models: models ?? [],
-    knowledgeBases: kbResult.knowledgeBases ?? [],
-    configuredConnectors,
     skills: skills.map<SkillForBuilder>((s) => ({
       name: s.name,
       description: s.description,
@@ -131,27 +125,51 @@ async function fetchStaticBuilderResources() {
   };
 }
 
-async function loadToolsetsForAgentContext(
-  agentDetails: AgentDetail | null,
-  editingAgentKey: string | null
-): Promise<BuilderSidebarToolset[]> {
-  if (!isActionsEnabledNow()) return [];
-  const isSvc = agentDetails?.isServiceAccount === true;
-  const keyForToolsets = agentDetails?._key || editingAgentKey || undefined;
-  if (isSvc && keyForToolsets) {
-    return ToolsetsApi.getAllAgentToolsets(keyForToolsets, {
-      includeRegistry: true,
-      limitPerPage: TOOLSETS_PAGE,
-    });
-  }
-  const { toolsets } = await ToolsetsApi.getAllMyToolsets({
-    includeRegistry: true,
-    limitPerPage: TOOLSETS_PAGE,
-  });
-  return toolsets;
+/** Whose actions the palette lists: a service-account agent's own credentials, otherwise the person's. */
+interface ToolsetScope {
+  agentKey: string | null;
+  isServiceAccount: boolean;
 }
 
-/** Same scoping rule as `loadToolsetsForAgentContext`: service-account agents use their own credentials. */
+function toolsetScopeOf(agentDetails: AgentDetail | null, editingAgentKey: string | null): ToolsetScope {
+  const agentKey = agentDetails?._key || editingAgentKey || null;
+  return { agentKey, isServiceAccount: agentDetails?.isServiceAccount === true && agentKey !== null };
+}
+
+async function readToolsetPage(
+  scope: ToolsetScope,
+  page: number | null,
+  query: string,
+): Promise<CatalogPage<BuilderSidebarToolset, number>> {
+  if (!isActionsEnabledNow()) return { items: [], next: null };
+  const at = page ?? 1;
+  const params = { page: at, limit: TOOLSETS_PAGE, search: query || undefined, includeRegistry: true };
+  const { toolsets, hasNext, pagination } =
+    scope.isServiceAccount && scope.agentKey
+      ? await ToolsetsApi.getAgentToolsets(scope.agentKey, params)
+      : await ToolsetsApi.getMyToolsets(params);
+  return { items: toolsets, next: hasNext ? at + 1 : null, total: pagination?.total ?? null };
+}
+
+const kbKey = (kb: KnowledgeBaseForBuilder) => kb.id;
+const appKey = (node: KnowledgeHubAppNode) => node.id;
+const toolsetKey = (ts: BuilderSidebarToolset) => ts.instanceId || `type:${ts.toolsetType || ts.name}`;
+
+/** One palette catalog's paging, as the sidebar offers it. */
+export interface BuilderCatalogPaging {
+  hasMore: boolean;
+  total: number | null;
+  loadingMore: boolean;
+  more: () => Promise<void>;
+}
+
+const pagingOf = <T,>(catalog: PagedCatalog<T>): BuilderCatalogPaging => ({
+  hasMore: catalog.hasMore,
+  total: catalog.total,
+  loadingMore: catalog.loadingMore,
+  more: catalog.more,
+});
+
 async function loadMcpServersForAgentContext(
   agentDetails: AgentDetail | null,
   editingAgentKey: string | null
@@ -166,36 +184,30 @@ async function loadMcpServersForAgentContext(
   return instances;
 }
 
-async function fetchAgentAndToolsets(editingAgentKey: string | null) {
-  const agentDetails = editingAgentKey
-    ? await AgentsApi.getAgent(editingAgentKey, { quiet: true }).then((r) => r.agent).catch(() => null)
-    : null;
-  const [allToolsets, mcpServers] = await Promise.all([
-    loadToolsetsForAgentContext(agentDetails, editingAgentKey),
-    loadMcpServersForAgentContext(agentDetails, editingAgentKey).catch((err) => {
-      console.error('Failed to fetch MCP servers:', err);
-      return null;
-    }),
-  ]);
-  return { agentDetails, allToolsets, mcpServers };
-}
-
 export function useAgentBuilderData(editingAgentKey: string | null) {
   const [availableTools, setAvailableTools] = useState<AgentToolsListRow[]>([]);
   const [availableModels, setAvailableModels] = useState<AvailableLlmModel[]>([]);
-  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<KnowledgeBaseForBuilder[]>(
-    []
-  );
   const [availableSkills, setAvailableSkills] = useState<SkillForBuilder[]>([]);
-  const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [apiToolsets, setApiToolsets] = useState<ApiToolset[]>([]);
-  const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
   const [mcpServers, setMcpServers] = useState<McpMyServerEntry[]>([]);
   // False until a list arrives, and after a failed load: an empty list isn't "no servers" then.
   const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // R30-LAT-FU-1: the org's catalogs a page at a time; the agent's own grants come named in its answer.
+  const knowledgeBases = usePagedCatalog(AgentsApi.knowledgeBasePage, kbKey, 'collections');
+  const apps = usePagedCatalog(AgentsApi.knowledgeHubAppPage, appKey, 'connected apps');
+  const toolsetScopeRef = useRef<ToolsetScope>({ agentKey: null, isServiceAccount: false });
+  const readToolsets = useCallback(
+    (page: number | null, query: string) => readToolsetPage(toolsetScopeRef.current, page, query),
+    []
+  );
+  const toolsetCatalog = usePagedCatalog(readToolsets, toolsetKey, 'actions');
+  const availableKnowledgeBases = knowledgeBases.items;
+  const configuredConnectors = useMemo(() => mapNodesToConnectors(apps.items), [apps.items]);
+  const toolsets = toolsetCatalog.items;
 
   const toolsetsSearchRef = useRef('');
   const staticResourcesLoadedRef = useRef(false);
@@ -211,31 +223,36 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     return () => window.removeEventListener('focus', refresh);
   }, []);
 
+  const { first: firstToolsets, clear: clearToolsets } = toolsetCatalog;
+  /** The first page of the actions for this agent, narrowed to `search` when given. */
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
       toolsetsSearchRef.current = search ?? '';
       if (!isActionsEnabledNow()) {
-        setToolsets([]);
+        clearToolsets();
         return;
       }
-      const svc = Boolean(isServiceAccount) && Boolean(agentKey);
-      const all = svc
-        ? await ToolsetsApi.getAllAgentToolsets(agentKey!, {
-            search: toolsetsSearchRef.current || undefined,
-            includeRegistry: true,
-            limitPerPage: TOOLSETS_PAGE,
-          })
-        : (
-            await ToolsetsApi.getAllMyToolsets({
-              search: toolsetsSearchRef.current || undefined,
-              includeRegistry: true,
-              limitPerPage: TOOLSETS_PAGE,
-            })
-          ).toolsets;
-      setToolsets(all);
+      const key = agentKey ?? null;
+      toolsetScopeRef.current = { agentKey: key, isServiceAccount: Boolean(isServiceAccount) && key !== null };
+      await firstToolsets(toolsetsSearchRef.current);
     },
-    []
+    [clearToolsets, firstToolsets]
   );
+
+  const { search: searchKnowledgeBases, rest: restKnowledgeBases } = knowledgeBases;
+  const { search: searchApps, rest: restApps } = apps;
+  const { search: searchToolsets } = toolsetCatalog;
+  /** A palette query: each catalog's first page of matches from the server, beside what is read. */
+  const searchCatalogs = useCallback(
+    async (query: string) => {
+      await Promise.all([searchKnowledgeBases(query), searchApps(query), searchToolsets(query)]);
+    },
+    [searchApps, searchKnowledgeBases, searchToolsets]
+  );
+  /** Every collection and app, for a whole group dropped on the canvas. */
+  const loadAllKnowledge = useCallback(async () => {
+    await Promise.all([restKnowledgeBases(), restApps()]);
+  }, [restApps, restKnowledgeBases]);
 
   const refreshMcpServers = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean) => {
@@ -282,57 +299,53 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   useEffect(() => {
     let cancelled = false;
 
+    /** The agent's actions and MCP servers, scoped to whose credentials it runs with. */
+    const loadAgentContext = async (agentDetails: AgentDetail | null) => {
+      const scope = toolsetScopeOf(agentDetails, editingAgentKey);
+      toolsetsSearchRef.current = '';
+      const [, mcpServerEntries] = await Promise.all([
+        refreshToolsets(scope.agentKey, scope.isServiceAccount, ''),
+        loadMcpServersForAgentContext(agentDetails, editingAgentKey).catch((err) => {
+          console.error('Failed to fetch MCP servers:', err);
+          return null;
+        }),
+      ]);
+      if (cancelled) return;
+      setLoadedAgent(agentDetails);
+      setMcpServers(mcpServerEntries ?? []);
+      setMcpServersLoaded(mcpServerEntries !== null);
+    };
+
     const run = async () => {
       try {
         setLoading(true);
         setError(null);
 
+        const agentRead = editingAgentKey
+          ? AgentsApi.getAgent(editingAgentKey, { quiet: true }).then((r) => r.agent).catch(() => null)
+          : Promise.resolve(null);
         if (!staticResourcesLoadedRef.current) {
-          const [staticRes, agentPromise] = await Promise.all([
+          const [staticRes, agentDetails] = await Promise.all([
             fetchStaticBuilderResources(),
-            editingAgentKey
-              ? AgentsApi.getAgent(editingAgentKey, { quiet: true }).then((r) => r.agent).catch(() => null)
-              : Promise.resolve(null),
-          ]);
-
-          if (cancelled) return;
-
-          setAvailableModels(staticRes.models);
-          setAvailableKnowledgeBases(staticRes.knowledgeBases);
-          setAvailableSkills(staticRes.skills);
-          setConfiguredConnectors(staticRes.configuredConnectors);
-          setApiToolsets(staticRes.apiToolsets);
-
-          toolsetsSearchRef.current = '';
-
-          const [allToolsets, mcpServerEntries] = await Promise.all([
-            loadToolsetsForAgentContext(agentPromise, editingAgentKey),
-            loadMcpServersForAgentContext(agentPromise, editingAgentKey).catch((err) => {
-              console.error('Failed to fetch MCP servers:', err);
-              return null;
+            agentRead,
+            knowledgeBases.first(),
+            apps.first().catch((err) => {
+              console.error('Failed to fetch knowledge hub app nodes:', err);
             }),
           ]);
 
           if (cancelled) return;
 
-          setLoadedAgent(agentPromise ?? null);
-          setToolsets(allToolsets);
-          setMcpServers(mcpServerEntries ?? []);
-          setMcpServersLoaded(mcpServerEntries !== null);
+          setAvailableModels(staticRes.models);
+          setAvailableSkills(staticRes.skills);
+          setApiToolsets(staticRes.apiToolsets);
+          await loadAgentContext(agentDetails);
+          if (cancelled) return;
           staticResourcesLoadedRef.current = true;
         } else {
-          toolsetsSearchRef.current = '';
-
-          const { agentDetails, allToolsets, mcpServers: mcpServerEntries } = await fetchAgentAndToolsets(
-            editingAgentKey
-          );
-
+          const agentDetails = await agentRead;
           if (cancelled) return;
-
-          setLoadedAgent(agentDetails);
-          setToolsets(allToolsets);
-          setMcpServers(mcpServerEntries ?? []);
-          setMcpServersLoaded(mcpServerEntries !== null);
+          await loadAgentContext(agentDetails);
         }
       } catch (e) {
         if (!cancelled) {
@@ -364,6 +377,13 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     availableSkills,
     activeAgentConnectors: configuredConnectors,
     configuredConnectors,
+    catalogs: {
+      knowledgeBases: pagingOf(knowledgeBases),
+      connectors: pagingOf(apps),
+      toolsets: pagingOf(toolsetCatalog),
+    },
+    searchCatalogs,
+    loadAllKnowledge,
     toolsets,
     apiToolsets,
     mcpServers,

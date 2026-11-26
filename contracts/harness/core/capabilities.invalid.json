@@ -1,0 +1,97 @@
+[
+  {
+    "description": "unknown isolation tier",
+    "instance": {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "compose-single",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": true,
+        "livebus": "redis",
+        "sandbox.isolation": "docker",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true
+      }
+    }
+  },
+  {
+    "description": "unknown capability",
+    "instance": {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "compose-single",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": true,
+        "livebus": "redis",
+        "sandbox.isolation": "container_gvisor",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true,
+        "gpu": true
+      }
+    }
+  },
+  {
+    "description": "missing capability",
+    "instance": {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "compose-single",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": true,
+        "sandbox.isolation": "container_gvisor",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true
+      }
+    }
+  },
+  {
+    "description": "journal.durable must be boolean",
+    "instance": {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "compose-single",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": "yes",
+        "livebus": "redis",
+        "sandbox.isolation": "container_gvisor",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true
+      }
+    }
+  },
+  {
+    "description": "unknown profile",
+    "instance": {
+      "processRole": "query",
+      "version": "2.0.0",
+      "profile": "laptop",
+      "ttlS": 180,
+      "caps": {
+        "journal.durable": true,
+        "livebus": "redis",
+        "sandbox.isolation": "container_gvisor",
+        "sandbox.egress": "allowlist",
+        "mcp.stdio": "isolated",
+        "blob.cas.gc": true,
+        "triggers.always_on": true,
+        "workers.dispatched": true
+      }
+    }
+  }
+]

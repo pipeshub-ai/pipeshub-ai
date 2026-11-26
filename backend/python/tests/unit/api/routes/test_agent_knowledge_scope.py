@@ -16,11 +16,18 @@ import pytest
 
 import app.modules.retrieval.selection_scope as selection_scope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.support.agent_versions import versions_beside
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
 ORG = "o1"
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
 
 
 @pytest.fixture(autouse=True)
@@ -380,4 +387,6 @@ class TestSavingALimit:
         graph.get_selection_nodes = AsyncMock(side_effect=RuntimeError("graph down"))
         sources = {"jira-1": {"connectorId": "jira-1", "filters": {"records": ["f1"]}}}
         await _refuse_limit_over_the_cap(sources, graph, ORG, logging.getLogger("t"))
-        assert "Could not size" in caplog.text
+        (record,) = [r for r in caplog.records if r.getMessage() == "agent.route.failed"]
+        assert record.op == "size_knowledge_limit"
+        assert "graph down" not in caplog.text

@@ -18,14 +18,10 @@ installMemoryStorage();
 const logoutAndRedirect = vi.fn();
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return {
-    useAuthStore: auth.useAuthStore,
-    readStoredRefreshToken: auth.readStoredRefreshToken,
-    logoutAndRedirect: () => logoutAndRedirect(),
-  };
+  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: () => logoutAndRedirect() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const {
   streamSSERequest,
   streamSSEUpload,
@@ -35,7 +31,7 @@ const {
   UploadHttpError,
   UPLOAD_STALLED_MESSAGE,
 } = await import('../streaming');
-const { CHAT_STREAM_ERROR_MESSAGES, STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('../stream-errors');
+const { CHAT_STREAM_ERROR_MESSAGES, STREAM_ERROR_MESSAGES, StreamIdleError, busyStreamMessage } = await import('../stream-errors');
 const { REFRESH_TOKEN_ENDPOINT } = await import('../token-refresh');
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -59,7 +55,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   logoutAndRedirect.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'refresh-1' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
@@ -227,7 +223,7 @@ describe('streamSSERequest frame parsing', () => {
 
 describe('token handshake before a stream', () => {
   it('refreshes a token about to expire, then streams with the new one', async () => {
-    useAuthStore.setState({ accessToken: jwtExpiringIn(30), refreshToken: 'refresh-1' });
+    useAuthStore.setState({ accessToken: jwtExpiringIn(30) });
     const fresh = jwtExpiringIn(3600);
     fetchMock
       .mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }))
@@ -237,13 +233,13 @@ describe('token handshake before a stream', () => {
     await streamSSERequest('/s', {}, sink);
 
     expect(fetchMock.mock.calls[0][0]).toBe(REFRESH_TOKEN_ENDPOINT);
-    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer refresh-1');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
     expect(requestHeaders(1).Authorization).toBe(`Bearer ${fresh}`);
     expect(sink.events).toHaveLength(1);
   });
 
   it('signs the person out and says so when the refresh is refused', async () => {
-    useAuthStore.setState({ accessToken: jwtExpiringIn(30), refreshToken: 'refresh-1' });
+    useAuthStore.setState({ accessToken: jwtExpiringIn(30) });
     fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
 
     const sink = collect();
@@ -447,8 +443,82 @@ describe('streamSSEGet', () => {
   it('uses the general (not chat) wording when it fails', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(500, {}));
     const sink = collect();
-    await streamSSEGet('/p', sink);
+    const onOpen = vi.fn();
+    await streamSSEGet('/p', { ...sink, onOpen });
     expect(sink.errors.map((e) => e.message)).toEqual([STREAM_ERROR_MESSAGES.unavailable]);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("hands each frame's id over, across chunk boundaries and with or without the space", async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'id: j:1.1/0.0.0\nevent: CUSTOM\ndata: {"a":1}\n\nid:d:2.1.1',
+        '.1/1.1\nevent: TEXT_MESSAGE_CONTENT\ndata: {"b":2}\n\n',
+        sseFrame('NO_ID', { c: 3 }),
+      ]),
+    );
+    const events: Array<{ event: string; id?: string }> = [];
+    const onOpen = vi.fn();
+    await streamSSEGet('/p', { onEvent: (e) => events.push(e), onError: vi.fn(), onOpen });
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(events.map((e) => [e.event, e.id])).toEqual([
+      ['CUSTOM', 'j:1.1/0.0.0'],
+      ['TEXT_MESSAGE_CONTENT', 'd:2.1.1.1/1.1'],
+      ['NO_ID', undefined],
+    ]);
+    expect('id' in (events[2] as object)).toBe(false);
+  });
+
+  function quietAfter(chunks: string[], heartbeats = 0, everyMs = 10) {
+    fetchMock.mockImplementationOnce(async (_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          chunks.forEach((chunk) => controller.enqueue(encoder.encode(chunk)));
+          signal.addEventListener('abort', () => controller.error(abortError()));
+          let sent = 0;
+          const beat = setInterval(() => {
+            if (sent++ >= heartbeats) {
+              clearInterval(beat);
+              if (heartbeats > 0) controller.close();
+              return;
+            }
+            controller.enqueue(encoder.encode(': keep-alive\n\n'));
+          }, everyMs);
+          signal.addEventListener('abort', () => clearInterval(beat));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+  }
+
+  it('fails with an idle error when the server stops sending bytes', async () => {
+    quietAfter([sseFrame('progress', { pct: 1 })]);
+    const sink = collect();
+    await streamSSEGet('/p', { ...sink, idleTimeoutMs: 30 });
+    expect(sink.events).toHaveLength(1);
+    expect(sink.errors).toHaveLength(1);
+    expect(sink.errors[0]).toBeInstanceOf(StreamIdleError);
+    expect(sink.errors[0].message).toBe(STREAM_ERROR_MESSAGES.interrupted);
+  });
+
+  it('treats heartbeat comments as a live connection', async () => {
+    quietAfter([sseFrame('progress', { pct: 1 })], 6, 10);
+    const sink = collect();
+    await streamSSEGet('/p', { ...sink, idleTimeoutMs: 30 });
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toHaveLength(1);
+  });
+
+  it('stays silent when the caller cancels an idle-watched stream', async () => {
+    const controller = new AbortController();
+    quietAfter([sseFrame('progress', { pct: 1 })]);
+    const sink = collect();
+    const done = streamSSEGet('/p', { ...sink, idleTimeoutMs: 1_000, signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await done;
+    expect(sink.errors).toEqual([]);
   });
 });
 

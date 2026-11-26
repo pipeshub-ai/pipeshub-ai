@@ -5,6 +5,11 @@ import { Container } from 'inversify'
 import { createConversationalRouter, createSemanticSearchRouter, createAgentConversationalRouter } from '../../../../src/modules/enterprise_search/routes/es.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import {
+  AGENT_HARNESS_RUN_ADMISSION_SERVICE,
+  AGENT_HARNESS_RUN_STREAMS,
+  AGENT_HARNESS_SESSION_RUN_SERVICE,
+} from '../../../../src/modules/agent-harness/composition'
 import { Logger } from '../../../../src/libs/services/logger.service'
 
 describe('Enterprise Search Routes', () => {
@@ -414,7 +419,7 @@ describe('Enterprise Search Routes', () => {
     )
 
     expect(layer).to.exist
-    expect(layer.route.stack.length).to.equal(4)
+    expect(layer!.route!.stack.length).to.equal(4)
   })
 
   it('should register internal agent stream route', () => {
@@ -562,9 +567,9 @@ describe('Enterprise Search Routes', () => {
     const routes = router.stack.filter((layer: any) => layer.route)
 
     for (const routeLayer of routes) {
-      const handlerCount = routeLayer.route.stack.length
+      const handlerCount = routeLayer.route!.stack.length
       expect(handlerCount).to.be.greaterThanOrEqual(1,
-        `Route ${routeLayer.route.path} should have at least 1 handler`)
+        `Route ${routeLayer.route!.path} should have at least 1 handler`)
     }
   })
 
@@ -645,8 +650,8 @@ describe('Enterprise Search Routes', () => {
       const routes = router.stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
-        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(1,
-          `Conversational route ${routeLayer.route.path} should have at least 1 handler`)
+        expect(routeLayer.route!.stack.length).to.be.greaterThanOrEqual(1,
+          `Conversational route ${routeLayer.route!.path} should have at least 1 handler`)
       }
     })
 
@@ -655,8 +660,8 @@ describe('Enterprise Search Routes', () => {
       const routes = router.stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
-        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(1,
-          `Search route ${routeLayer.route.path} should have at least 1 handler`)
+        expect(routeLayer.route!.stack.length).to.be.greaterThanOrEqual(1,
+          `Search route ${routeLayer.route!.path} should have at least 1 handler`)
       }
     })
 
@@ -665,8 +670,8 @@ describe('Enterprise Search Routes', () => {
       const routes = router.stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
-        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(1,
-          `Agent route ${routeLayer.route.path} should have at least 1 handler`)
+        expect(routeLayer.route!.stack.length).to.be.greaterThanOrEqual(1,
+          `Agent route ${routeLayer.route!.path} should have at least 1 handler`)
       }
     })
 
@@ -723,18 +728,78 @@ describe('Enterprise Search Routes', () => {
       expect(modelUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
     })
 
+    it('RO-3: every route that sends a turn into an existing conversation passes the role guard first (SS0)', () => {
+      const guarded = (router: any, path: string) => {
+        const route = router.stack.find((layer: any) => layer.route?.path === path && layer.route.methods.post)?.route
+        expect(route, path).to.exist
+        const names = route.stack.map((layer: any) => layer.name)
+        const at = names.indexOf('refuseNonOwnerTurn')
+        expect(at, `${path} has the guard`).to.be.greaterThan(-1)
+        expect(at, `${path} guards before its handler`).to.be.lessThan(names.length - 1)
+      }
+      const chat = createConversationalRouter(container)
+      for (const path of ['/:conversationId/messages', '/:conversationId/messages/stream', '/:conversationId/message/:messageId/regenerate']) {
+        guarded(chat, path)
+      }
+      const agent = createAgentConversationalRouter(container)
+      for (const path of [
+        '/:agentKey/conversations/:conversationId/messages',
+        '/:agentKey/conversations/:conversationId/messages/stream',
+        '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
+      ]) {
+        guarded(agent, path)
+      }
+    })
+
+    it('R38AUTHZ-FU-2: the chat stream route lets the harness admit a collaborator, and guards today’s loop for its owner', () => {
+      const chat = createConversationalRouter(container)
+      const route = chat.stack.find(
+        (layer: any) => layer.route?.path === '/:conversationId/messages/stream' && layer.route.methods.post,
+      )?.route
+      if (route === undefined) return expect.fail('the chat stream route')
+      const names: string[] = route.stack.map((layer: any) => layer.name)
+      const guards = names.flatMap((name, at) => (name === 'refuseNonOwnerTurn' ? [at] : []))
+      expect(guards, 'one guard before the durable layer, one after it').to.have.length(2)
+      const durable = names.indexOf('passThrough')
+      expect(guards[0]).to.be.lessThan(durable)
+      expect(guards[1]).to.be.greaterThan(durable)
+      expect(guards[1]).to.be.lessThan(names.length - 1)
+    })
+
+    it('LAT2: regenerate and cancel pass the durable layer before today’s handler (a no-op while the harness is unbound)', () => {
+      const layered = (router: any, path: string) => {
+        const route = router.stack.find((layer: any) => layer.route?.path === path && layer.route.methods.post)?.route
+        expect(route, path).to.exist
+        const names = route.stack.map((layer: any) => layer.name)
+        const at = names.indexOf('passThrough')
+        expect(at, `${path} has the durable layer`).to.be.greaterThan(-1)
+        expect(at, `${path} runs it before its handler`).to.be.lessThan(names.length - 1)
+      }
+      const chat = createConversationalRouter(container)
+      for (const path of ['/:conversationId/message/:messageId/regenerate', '/:conversationId/cancel']) layered(chat, path)
+      const agent = createAgentConversationalRouter(container)
+      for (const path of [
+        '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
+        '/:agentKey/conversations/:conversationId/cancel',
+      ]) {
+        layered(agent, path)
+      }
+    })
+
     it('agent router validates the non-streaming chat routes like their streaming twins', () => {
       const router = createAgentConversationalRouter(container)
       const routes = router.stack
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
 
-      // authenticate, requireScopes, [create: rejectClientConversationHistory], validate, handler
-      for (const [path, layers] of [['/:agentKey/conversations', 5], ['/:agentKey/conversations/:conversationId/messages', 4]] as const) {
+      // authenticate, requireScopes, [create: rejectClientConversationHistory (CE-19)], validate, handler; a turn in
+      // an existing conversation also passes the role guard (SS0). The streaming twin also has the durable
+      // surface-run layer and the legacy turn metrics before its handler (C-5, DUR3), and the /command expansion (SLASH1).
+      for (const [path, guard, historyGuard] of [['/:agentKey/conversations', 0, 1], ['/:agentKey/conversations/:conversationId/messages', 1, 0]] as const) {
         const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
         const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
-        expect(nonStreaming?.stack.length, path).to.equal(layers)
-        expect(nonStreaming?.stack.length).to.equal(streaming?.stack.length)
+        expect(nonStreaming?.stack.length, path).to.equal(4 + guard + historyGuard)
+        expect(streaming?.stack.length, path).to.equal(7 + guard + historyGuard)
       }
     })
 
@@ -915,7 +980,7 @@ describe('Enterprise Search Routes - handler coverage', () => {
       const layer = router.stack.find(
         (l: any) => l.route && l.route.path === '/updateAppConfig' && l.route.methods.post,
       )
-      const handler = layer.route.stack[layer.route.stack.length - 1].handle
+      const handler = layer!.route!.stack[layer!.route!.stack.length - 1]!.handle
 
       const configModule = require('../../../../src/modules/tokens_manager/config/config')
       sinon.stub(configModule, 'loadAppConfig').resolves(mockAppConfig)
@@ -1101,6 +1166,74 @@ describe('Enterprise Search Routes - handler coverage', () => {
       expect(routes.find((r: any) => r.path === '/show/archives/search' && r.methods.get)).to.exist
     })
   })
+
+  describe('C-5: the surface stream routes ask the durable route first', () => {
+    const ENV = ['REPLICA_SET_AVAILABLE', 'AGENT_HARNESS_RELAY_ENABLED', 'AGENT_HARNESS_WORKER_ENABLED'] as const
+    let saved: Record<string, string | undefined>
+    let submit: sinon.SinonStub
+
+    beforeEach(() => {
+      saved = Object.fromEntries(ENV.map((key) => [key, process.env[key]]))
+      for (const key of ENV) process.env[key] = 'true'
+      submit = sinon.stub().resolves({ route: 'legacy', rollout: { useHarness: false, harnessMajor: 2, reason: 'org_disabled' } })
+      container.bind(AGENT_HARNESS_RUN_ADMISSION_SERVICE).toConstantValue({ submit })
+      container.bind(AGENT_HARNESS_SESSION_RUN_SERVICE).toConstantValue({})
+      container.bind(AGENT_HARNESS_RUN_STREAMS).toConstantValue({})
+    })
+
+    afterEach(() => {
+      for (const key of ENV) {
+        if (saved[key] === undefined) delete process.env[key]
+        else process.env[key] = saved[key]
+      }
+    })
+
+    const routeHandlers = (router: any, path: string): Array<(...args: unknown[]) => unknown> => {
+      const layer = router.stack.find((l: any) => l.route?.path === path && l.route.methods.post)
+      expect(layer, path).to.exist
+      return layer.route.stack.map((s: any) => s.handle)
+    }
+
+    const cases: Array<[string, 'chat' | 'agent', string, 'mcp' | 'slack']> = [
+      ['chat', 'chat', '/stream', 'mcp'],
+      ['chat', 'chat', '/:conversationId/messages/stream', 'mcp'],
+      ['chat', 'chat', '/internal/stream', 'slack'],
+      ['chat', 'chat', '/internal/:conversationId/messages/stream', 'slack'],
+      ['agent', 'agent', '/:agentKey/conversations/stream', 'mcp'],
+      ['agent', 'agent', '/:agentKey/conversations/:conversationId/messages/stream', 'mcp'],
+      ['agent', 'agent', '/:agentKey/conversations/internal/stream', 'slack'],
+      ['agent', 'agent', '/:agentKey/conversations/internal/:conversationId/messages/stream', 'slack'],
+    ]
+    for (const [router, kind, path, surface] of cases) {
+      it(`${kind} ${path}: the ${surface} surface is admitted before the legacy handler`, async () => {
+        const built = router === 'chat' ? createConversationalRouter(container) : createAgentConversationalRouter(container)
+        const handlers = routeHandlers(built, path)
+        // [..., surface run, (the owner-only turn guard today's loop needs, R38AUTHZ-FU-2), legacy turn metrics (DUR3),
+        // legacy handler]
+        const ownerOnly = handlers[handlers.length - 3]?.name === 'refuseNonOwnerTurn'
+        const middleware = handlers[handlers.length - (ownerOnly ? 4 : 3)]!
+        const headers: Record<string, string> = surface === 'mcp' ? { 'x-pipeshub-surface': 'mcp' } : {}
+        const next = sinon.stub()
+        await middleware(
+          {
+            headers,
+            header: (name: string) => headers[name.toLowerCase()],
+            user: { orgId: 'org-1', userId: 'user-1' },
+            ...(surface === 'slack' ? { tokenPayload: { email: 'sam@slack.example' } } : {}),
+            params: { agentKey: 'agent-1', ...(path.includes(':conversationId') ? { conversationId: 'c1' } : {}) },
+            body: { query: 'q', chatMode: kind === 'chat' ? 'internal_search' : 'quick' },
+          },
+          {},
+          next,
+        )
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(submit.calledOnce, 'admission asked').to.equal(true)
+        expect(submit.firstCall.args[0]).to.include({ surface, via: surface === 'slack' ? 'service' : 'session' })
+        expect(next.calledOnceWithExactly(), 'then the legacy handler').to.equal(true)
+      })
+    }
+  })
+
   describe('client-supplied conversation history on create routes (CE-19)', () => {
     const forged = [
       { role: 'user_query', content: 'Email the board' },

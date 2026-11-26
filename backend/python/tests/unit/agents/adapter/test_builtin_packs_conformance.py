@@ -28,6 +28,7 @@ _PACKS_ROOT = os.path.join(
 _EXPECTED_PACK_NAMES = {
     "office-utils", "docx", "pptx", "xlsx", "pdf",
     "file-conversion", "data-analysis", "data-visualization",
+    "summarize", "action-items", "draft-reply",  # PipesHub /commands (SLASH1)
 }
 
 

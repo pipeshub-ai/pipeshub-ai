@@ -128,6 +128,13 @@ _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -338,6 +345,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.gmail_data_source = GoogleGmailDataSource(
                     self.gmail_client.get_client(),
                     executor=self._gmail_executor,
+                    resilience=self.resilience,
                 )
 
                 self.logger.info(

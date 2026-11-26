@@ -2,11 +2,12 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuthStore } from '@/config';
+import { takeSignInRefusal, useAuthStore } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { i18n } from '@/lib/i18n';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';
+import { peekReturnTo } from '@/lib/auth/post-sign-in-return';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -150,7 +151,12 @@ export function useAuthActions({
   /** Prevents overlapping Microsoft backend auth if onSuccess fired more than once. */
   const microsoftSignInInFlightRef = useRef(false);
 
-  const postAuthRedirectTo = redirectTo || '/chat';
+  // An address returnTo wins; else what the tab remembered (a session that expired on the page that asked).
+  // GuestGuard reads the same as the store flips to signed in, so this leaves it in place.
+  const afterSignIn = useCallback(
+    (): string => redirectTo || peekReturnTo() || '/chat',
+    [redirectTo],
+  );
   const clearError = useCallback(() => setError(null), []);
   const checkUserSession = useCallback(async (): Promise<boolean> => {
     return fetchAndSetCurrentUser();
@@ -167,7 +173,7 @@ export function useAuthActions({
       try {
         const response = await AuthApi.signInWithPassword(email, password);
 
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) {
             setUser(response.user);
@@ -176,7 +182,7 @@ export function useAuthActions({
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
@@ -185,6 +191,7 @@ export function useAuthActions({
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
@@ -225,7 +232,7 @@ export function useAuthActions({
         setLoading(false);
       }
     },
-    [email, loading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, loading, afterSignIn, router, setTokens, setUser],
   );
 
   // ── Forgot password ─────────────────────────────────────────────────────────
@@ -262,13 +269,13 @@ export function useAuthActions({
       setError(null);
       try {
         const response = await AuthApi.signInWithGoogle(credential);
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) setUser(response.user);
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
@@ -277,6 +284,7 @@ export function useAuthActions({
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
@@ -305,7 +313,7 @@ export function useAuthActions({
         setGoogleLoading(false);
       }
     },
-    [email, googleLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, googleLoading, afterSignIn, router, setTokens, setUser],
   );
 
   const sendLoginOtp = useCallback(async (): Promise<boolean> => {
@@ -341,7 +349,7 @@ export function useAuthActions({
       try {
         const response = await AuthApi.signInWithOtp(email.trim(), otp);
 
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) {
             setUser(response.user);
@@ -349,7 +357,7 @@ export function useAuthActions({
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email.trim());
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
           return;
         }
 
@@ -379,6 +387,7 @@ export function useAuthActions({
         });
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
@@ -414,7 +423,7 @@ export function useAuthActions({
         setOtpVerifyLoading(false);
       }
     },
-    [email, otpVerifyLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, otpVerifyLoading, afterSignIn, router, setTokens, setUser],
   );
 
   const signInWithMicrosoft = useCallback(
@@ -425,13 +434,13 @@ export function useAuthActions({
       setError(null);
       try {
         const response = await AuthApi.signInWithMicrosoft(credentials);
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) setUser(response.user);
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
@@ -440,6 +449,7 @@ export function useAuthActions({
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
@@ -469,7 +479,7 @@ export function useAuthActions({
         setMicrosoftLoading(false);
       }
     },
-    [email, microsoftLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, microsoftLoading, afterSignIn, router, setTokens, setUser],
   );
 
   return {

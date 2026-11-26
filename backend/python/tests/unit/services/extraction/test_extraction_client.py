@@ -8,6 +8,7 @@ import pytest
 
 from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.transformers.document_extraction import ExtractionContentFilteredError
 from app.services.base_client import ServiceUnavailableError
 from app.services.extraction.client import ExtractionClient, ExtractionClientError
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
@@ -542,3 +543,12 @@ async def test_the_services_own_500_with_usage_is_a_retry_charged_what_it_spent(
         with pytest.raises(ExtractionClientError):
             await client.classify(_bc(), "org-1")
     assert trace.requests == 1
+
+
+@pytest.mark.asyncio
+async def test_classify_maps_a_content_filter_refusal_to_its_typed_error() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {"success": False, "error": "refused", "error_code": "LLM_CONTENT_FILTERED"}
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=httpx.Response(424, json=body))):
+        with pytest.raises(ExtractionContentFilteredError):
+            await client.classify(_bc(), "org-1")

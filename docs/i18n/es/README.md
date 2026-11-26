@@ -57,6 +57,35 @@
 
 PipesHub construye una **capa de contexto unificada** sobre documentos, conversaciones, datos estructurados, wikis, tickets y código. Los conectores sincronizan cada fuente junto con sus permisos. El pipeline de indexación analiza, fragmenta y genera embeddings del contenido, y enlaza registros, personas y entidades en un grafo de conocimiento.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Las preguntas las responde un **bucle de agente**, no una única pasada de «recuperar y luego generar». El agente planifica, llama a herramientas, lee los resultados y continúa hasta reunir la evidencia:
 
 - **Búsqueda híbrida** — recuperación semántica y por palabras clave, para encontrar tanto el significado como los términos exactos.
@@ -66,6 +95,14 @@ Las preguntas las responde un **bucle de agente**, no una única pasada de «rec
 
 Cada llamada a una herramienta se filtra según los permisos del usuario que pregunta, y cada respuesta cita los bloques de los que procede.
 
+
+| | RAG top-k por fragmentos | PipesHub |
+| --- | --- | --- |
+| **Lo que el agente ve primero** | Unos pocos fragmentos de texto | El nombre, la ubicación, los metadatos y el resumen de cada registro, además de los bloques que coinciden |
+| **Cómo profundiza** | No puede: una recuperación por pregunta | Búsqueda híbrida, `grep`/`find` sobre registros, navegación por carpetas y consultas al grafo de conocimiento, en bucle |
+| **Estructura** | Se pierde al fragmentar | Cada fuente se convierte en Blocks: secciones, tablas con filas y celdas, hilos, código, tablas SQL con su esquema |
+| **Permisos** | A menudo aproximados al indexar | Comprobados contra los permisos del sistema de origen para el usuario que hace la consulta, en cada llamada a una herramienta |
+| **Citas** | Por fragmento, si las hay | Por bloque: la página, la celda, la fila, la diapositiva o la línea, sin citas inventadas |
 
 ## Funcionalidades
 

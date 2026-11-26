@@ -24,6 +24,7 @@ from app.modules.parse_engine.cost import (
 )
 from tests.support.eventually import done_without_waiting
 from tests.support.fake_member_budget import FakeMemberBudget
+from tests.support.settle import SETTLE_S
 
 S, L, H = CostClass.SMALL, CostClass.LARGE, CostClass.HUGE
 N = AdmissionNumbers()
@@ -86,7 +87,7 @@ async def test_small_goes_ahead_of_queued_large() -> None:
     sm = asyncio.create_task(go("S", req(S)))
     await settle()
     running[1].release()  # one token frees: the small waiter takes it, not a queued large
-    await asyncio.wait_for(sm, 1)
+    await asyncio.wait_for(sm, SETTLE_S)
     assert order[0] == "S"
     for p in running:
         p.release()
@@ -160,10 +161,10 @@ async def test_hand_back_keeps_first_seen_so_it_ages() -> None:
     old_big = asyncio.create_task(gate.acquire(req(L, first_seen_s=now[0] - 2000), deadline_s=50))
     await settle()
     first.release()
-    p = await asyncio.wait_for(old_big, 1)
+    p = await asyncio.wait_for(old_big, SETTLE_S)
     assert gate.grants[-1].rule == "A2" and p.cls is L
     p.release()
-    (await asyncio.wait_for(s_task, 1)).release()
+    (await asyncio.wait_for(s_task, SETTLE_S)).release()
 
 
 async def test_fresh_big_does_not_beat_small_at_capacity_one() -> None:
@@ -173,8 +174,8 @@ async def test_fresh_big_does_not_beat_small_at_capacity_one() -> None:
     big = asyncio.create_task(gate.acquire(req(L), deadline_s=50))
     await settle()
     first.release()
-    (await asyncio.wait_for(s_task, 1)).release()
-    (await asyncio.wait_for(big, 1)).release()
+    (await asyncio.wait_for(s_task, SETTLE_S)).release()
+    (await asyncio.wait_for(big, SETTLE_S)).release()
     assert [g.cls for g in gate.grants][-2:] == [S, L]
 
 

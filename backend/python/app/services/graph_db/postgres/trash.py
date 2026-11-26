@@ -41,6 +41,7 @@ from app.services.graph_db.push_claim import (
     PushExpect,
     PushSet,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 
@@ -175,11 +176,12 @@ class TrashMixin(PgBase):
 
         async def walk(tx: Tx) -> tuple[list[dict], int]:
             # A root's trashed parent is read by its key: probed in `tr` (a CTE, no index) it scanned every trashed record of the org per root.
+            # A batch's size is joined to its records once: as a subquery per root, `cnt` (inlined) counted every trashed record of the org again for each root.
             rows = await tx.fetch("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
                          WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
@@ -206,8 +208,8 @@ class TrashMixin(PgBase):
             total = await tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
-              WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
-                AND CASE WHEN $4 AND (SELECT c FROM cnt WHERE cnt.batch = r.doc->>'deleteBatchId') > 1 THEN false
+              LEFT JOIN cnt ON cnt.batch = r.doc->>'deleteBatchId' WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
+                AND CASE WHEN $4 AND cnt.c > 1 THEN false
                          WHEN EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'records' AND p.id = e.from_id AND coalesce((p.doc->>'isDeleted')::boolean, false) WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records'
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
@@ -445,7 +447,8 @@ class TrashMixin(PgBase):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -677,7 +680,8 @@ class TrashMixin(PgBase):
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                error_class.log_failure(self.logger, "graph.provider.failed", event_error, include_error_text=False,
+                                        op="reindex_single_record")
                 # Return success but indicate event data creation failed
                 return {
                     "success": True,
@@ -690,7 +694,8 @@ class TrashMixin(PgBase):
                 }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_single_record", record_id=record_id)
             return {"success": False, "code": 500, "reason": str(e)}
 
     async def reindex_record_group_records(
@@ -760,8 +765,9 @@ class TrashMixin(PgBase):
                 allowed = record_group_id in (await self.check_access(
                     user_key, org_id, node_ids=[record_group_id],
                 )).node_ids
-            except Exception:
-                self.logger.exception("❌ Access check failed for record group %s", record_group_id)
+            except Exception as exc:
+                error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                        op="reindex_record_group_records")
                 return {"success": False, "code": 500, "reason": action_failed("check access to this record group")}
             if not allowed:
                 return {
@@ -791,5 +797,6 @@ class TrashMixin(PgBase):
             }
 
         except Exception as e:
-            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="reindex_record_group_records")
             return {"success": False, "code": 500, "reason": str(e)}
