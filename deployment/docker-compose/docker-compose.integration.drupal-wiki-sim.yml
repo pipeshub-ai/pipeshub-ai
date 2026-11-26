@@ -1,0 +1,28 @@
+# Drupal Wiki simulator for the drupal_wiki_sim suite (integration-tests/connectors/drupal_wiki/
+# drupal_wiki_sim_*_test.py). An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.drupal-wiki-sim.yml up -d
+#
+# Drupal Wiki is self-hosted: the connector is configured with a wiki address and a personal access token, so it
+# reaches the simulator by a network alias (http://drupal-wiki-sim.internal) with no certificate. That name resolves
+# to a private address, which PipesHub accepts for a source an admin configures unless
+# PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. The simulator serves its seed wiki (the `small` preset) and every test
+# changes it through the control API on the published port (integration-tests/connectors/drupal_wiki_sim.env).
+services:
+  drupal-wiki-sim:
+    image: ${DRUPAL_WIKI_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["drupalwiki"]
+    environment:
+      CONNSIM_SOURCES: drupalwiki
+      # The wiki lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    networks:
+      default:
+        aliases:
+          - drupal-wiki-sim.internal
+    # 8108, the simulator's own port: 8089-8098, 8101-8103, 8106-8107, 8109-8110, 8112 and 8118 are the stack's
+    # other services'.
+    ports:
+      - "127.0.0.1:8108:80"
+    mem_limit: 512m

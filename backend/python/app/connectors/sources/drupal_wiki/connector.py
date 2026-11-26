@@ -18,6 +18,8 @@ Sync model (see the design page for the full rationale):
   until a full sync, which reports itself incomplete whenever it skipped anything
 * a member whose wiki account is disabled gets no grant on a private space; an
   org-wide grant on an open space cannot exclude them
+* a run that could not read part of the wiki (a phase, a space, a listing) still writes everything it
+  could read and reports the problems once, then ends as failed, never as succeeded
 * a token the wiki rejects fails the run with an auth notification
 * a wiki that refuses the GraphQL queries (Drupal Wiki 8.44 refuses them for tokens)
   keeps each private space synced under the access stored on an earlier run; a
@@ -51,6 +53,7 @@ from app.connectors.core.base.connector.connector_service import (
     ActionItem,
     BaseConnector,
     ConnectorInitError,
+    IncompleteSyncError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -214,6 +217,15 @@ class DrupalWikiSyncError(RuntimeError):
     """A sync phase failed; the run is reported as failed and no checkpoint moves."""
 
 
+class DrupalWikiIncompleteSync(DrupalWikiSyncError, IncompleteSyncError):
+    """Every phase ran and the problems were reported, but part of the wiki was not read: the run ends as failed.
+
+    It carries no notification of its own, because ``run_sync`` has sent the one that lists the problems. As an
+    ``IncompleteSyncError`` it tells the runner the run reached its end: a full sync that had a problem owes no full
+    sync, so one space that stays refused does not make every later run a full one.
+    """
+
+
 class DrupalWikiAuthError(RuntimeError):
     """The wiki rejected the token. Nothing else can be read, so the run fails.
 
@@ -334,6 +346,24 @@ def _edge_source_key(edge: dict[str, Any]) -> str | None:
         return str(edge["from_id"])
     source = edge.get("_from")
     return str(source).split("/", 1)[-1] if source else None
+
+
+def _listing_over(payload: dict[str, Any], what: str) -> bool:
+    """Whether a Spring listing has no window after this one.
+
+    An empty window ends the walk whatever it says. Any other that does not say (no boolean ``last``) could be one of
+    several, and an answer that holds no ``content`` list is no window at all: taking either for the last would silently
+    drop everything after it, so both fail the listing instead.
+    """
+    content, last = payload.get("content"), payload.get("last")
+    if content == []:
+        return True
+    if not isinstance(content, list) or not isinstance(last, bool):
+        raise DrupalWikiSyncError(
+            f"Drupal Wiki answered {what} without saying whether it is the last window, so the rest of the listing "
+            "could not be told from nothing"
+        )
+    return last
 
 
 def _as_int(value: object) -> int | None:
@@ -682,6 +712,14 @@ class DrupalWikiConnector(BaseConnector):
             self.logger.info(
                 "✅ Drupal Wiki sync finished with %d problem(s)", len(problems)
             )
+            if self._failures:
+                # Everything that could be read was written and the checkpoints of what could not stay put, but a
+                # run that left part of the wiki unread must not be recorded as a success.
+                raise DrupalWikiIncompleteSync(
+                    f"Drupal Wiki sync read only part of the wiki ({_plural(len(self._failures), 'problem')})"
+                )
+        except DrupalWikiIncompleteSync:
+            raise
         except DrupalWikiAuthError as e:
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
@@ -807,8 +845,7 @@ class DrupalWikiConnector(BaseConnector):
 
             if app_users:
                 await self.data_entities_processor.on_new_app_users(app_users)
-            # An absent ``last`` stops rather than loops.
-            if payload.get("last", True) or not content:
+            if _listing_over(payload, "the list of people"):
                 break
             page += 1
 
@@ -895,7 +932,7 @@ class DrupalWikiConnector(BaseConnector):
             if groups_with_members:
                 await self.data_entities_processor.on_new_user_groups(groups_with_members)
                 synced += len(groups_with_members)
-            if payload.get("last", True) or not content:
+            if _listing_over(payload, "the list of groups"):
                 break
             page += 1
 
@@ -1004,7 +1041,7 @@ class DrupalWikiConnector(BaseConnector):
             # Only once the grants read from the member list are written.
             for space_id in confirmed:
                 await self._confirm_space_access(space_id)
-            if payload.get("last", True) or not content:
+            if _listing_over(payload, "the list of spaces"):
                 break
             page += 1
 
@@ -1314,8 +1351,7 @@ class DrupalWikiConnector(BaseConnector):
                 if _as_int(page.get("homeSpace")) != space_id:
                     continue
                 yield page
-            # An absent ``last`` stops rather than loops.
-            if payload.get("last", True) or not content:
+            if _listing_over(payload, f"the pages of space {space_id}"):
                 return
             index += 1
 
