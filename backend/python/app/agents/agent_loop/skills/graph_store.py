@@ -47,6 +47,7 @@ documents per org, not millions, so this stays cheap.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import uuid
@@ -930,8 +931,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # One conditional insert: of two creators of a name, exactly one lands.
         if not await self._graph.create_node_if_absent(self._key(name), _SKILLS, doc):
             raise SkillAlreadyExistsError(name)
-        await self._create_owner_permission_edge(name, now)
-        await self._sync_relation_edges(name, skill.metadata, now)
+        try:
+            await self._create_owner_permission_edge(name, now)
+            await self._sync_relation_edges(name, skill.metadata, now)
+        except Exception:
+            # A skill without its edges would hold the name with nothing to finish it: undo this creation (and any
+            # edge it got) so the create can be retried. A failed undo must not hide why the create failed.
+            with contextlib.suppress(Exception):
+                await self._graph.delete_node_if_match(self._key(name), _SKILLS, self._bound_to(doc))
+            raise
         return skill.metadata
 
     async def update_skill(

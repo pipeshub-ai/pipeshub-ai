@@ -789,3 +789,30 @@ async def test_a_team_skill_keeps_the_history_its_other_editors_wrote_before_gen
     await manager.update_skill(_NAME, _OTHER_MD.replace("entirely", "completely"))
     _strip_generations(graph)
     assert {v.version for v in await owner.list_versions(_NAME)} == {"1.0.0", "1.0.1"}
+
+
+class _RelationEdgesFailOnce(FakeGraphProvider):
+    """The owner edge lands, then the relation edges fail once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str, transaction: str | None = None) -> bool:
+        if collection == "agentSkillRelation" and self.failures:
+            self.failures -= 1
+            raise RuntimeError("edge write failed")
+        return await super().batch_create_edges(edges, collection, transaction)
+
+
+class TestACreateWhoseEdgesFailIsUndone:
+    async def test_the_name_is_free_again_and_the_retry_completes_it(self) -> None:
+        graph = _RelationEdgesFailOnce()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        with pytest.raises(RuntimeError, match="edge write failed"):
+            await owner.create_skill(_NAME, _OWNER_MD)
+        assert _KEY not in graph._col("agentSkills")
+        assert not [e for edges in graph._edges.values() for e in edges if e.get("to_id") == _KEY]
+        await owner.create_skill(_NAME, _OWNER_MD)
+        assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
+        assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"requires", "related"}
