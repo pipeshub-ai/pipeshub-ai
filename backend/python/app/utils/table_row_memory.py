@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from app.models.blocks import BlocksContainer
 
-#: Where a table row block keeps its digest. Left out of the block's content hashes (``without_row_digest``).
+#: Where a table row block keeps its digest. Left out of the block's content hashes (``hashed_block_data``).
 ROW_DIGEST_KEY = "row_digest"
 # Changing it makes every stored digest a miss: the next update of each table describes its rows again.
 _DIGEST_VERSION = b"table-row-v2"
@@ -56,11 +56,16 @@ def with_row_digest(data: dict, digests: Sequence[Optional[str]], i: int) -> dic
     return data
 
 
-def without_row_digest(data: object) -> object:
-    """*data* as the content hashes read it: without the digest, so a row's id and fingerprint are what they were before rows
-    carried one, and a row that gains it keeps its id."""
-    if isinstance(data, dict) and ROW_DIGEST_KEY in data:
-        return {k: v for k, v in data.items() if k != ROW_DIGEST_KEY}
+#: Where a table row sits, not what it says. Left out of its content hash, so an inserted or deleted row leaves every other row's
+#: id alone; equal rows are still told apart, by occurrence (``BlockIdentity``), and a kept row's point is told its new place.
+_ROW_POSITION_KEYS = frozenset({"row_number", "row_end_number"})
+
+
+def hashed_block_data(data: object) -> object:
+    """*data* as the content hashes read it. A table row's leaves out its digest (so a row that gains one keeps its id) and its
+    position (``row_number``, Excel's ``row_end_number``); any other block's is *data* itself."""
+    if isinstance(data, dict) and (ROW_DIGEST_KEY in data or "row_natural_language_text" in data):
+        return {k: v for k, v in data.items() if k != ROW_DIGEST_KEY and k not in _ROW_POSITION_KEYS}
     return data
 
 
