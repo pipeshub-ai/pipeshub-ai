@@ -639,6 +639,17 @@ def _cypher_kh_edge_order(v: str) -> str:
             f" SET kh_oe.khFrom = startNode(kh_oe).id, kh_oe.khChild = {v}.id, kh_oe.khOrd = {ord_})")
 
 
+# The properties a node's listing state (`_cypher_kh_node_state`) and the children order stamps of its edges (`_cypher_kh_edge_order`) are
+# derived from. A write of any of them to a record or group rewrites both in the same statement: the browse reads a wide folder's children
+# from those stamps and trusts them (tests/unit/services/graph_db/test_neo4j_children_order_writers.py holds every writer to this).
+_KH_STATE_INPUTS = frozenset({"name", "recordName", "groupName", "isDeleted", "hideChildren", "isPlaceholder", "mimeType", "recordType"})
+
+
+def _cypher_kh_state_for(v: str, label: str, keys: Iterable[str]) -> str:
+    """`_cypher_kh_node_state` for a write of ``keys`` to ``v``, a ``label`` node: empty when the write cannot change that state."""
+    return _cypher_kh_node_state(v) if label in _KH_STATE_LABELS and _KH_STATE_INPUTS.intersection(keys) else ""
+
+
 def _cypher_kh_node_state(v: str) -> str:
     """Rewrite the property-derived listing state of Record or RecordGroup `v`: the
     lowercased sort name and one label per flag the listing tests."""
@@ -2733,6 +2744,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             REMOVE n.{_MATCH_LOCK}
             {run_with}
             SET n += {run_patch}, n += $updates
+            {_cypher_kh_state_for("n", collection_to_label(collection), updates)}
             RETURN n.id AS id
             """,
             parameters=parameters,
@@ -2972,6 +2984,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
     ) -> None:
         """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
+        if edge_collection_to_relationship(collection) in _KH_TREE_TYPES:
+            # Its ``SET r = ...`` rewrites a kept edge whole, which would drop a hierarchy edge's children order stamps, and it keeps no
+            # tree label: hierarchy and inherit edges go through the writers that keep both (batch_create_edges and the rest).
+            raise ValueError(f"replace_edges_to does not write {collection} edges")
         # One statement, so a failure deletes nothing: the code default of
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,
@@ -3242,6 +3258,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return 0 if count_created else None
 
             relationship_type = edge_collection_to_relationship(collection)
+            # A hierarchy or inherit edge keeps its ends' tree state and its children order stamps, as batch_create_edges does.
+            refresh = _cypher_kh_tree_refresh(relationship_type, "from", "to")
 
             for (from_label, to_label), group_edges in self._edges_by_labels(edges).items():
                 query = f"""
@@ -3250,6 +3268,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (to:{to_label} {{id: edge.to_key}})
                 MERGE (from)-[r:{relationship_type}]->(to)
                 ON CREATE SET r = edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, from, to, r {refresh}" if refresh else ""}
                 {f"WITH edge, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
                 {f"REMOVE r.{_EDGE_NEW}" if report else ""}
                 {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
@@ -5557,6 +5576,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET n += $props, n.{_CREATED_MARK} = true
                 WITH n, coalesce(n.{_CREATED_MARK}, false) AS created
                 REMOVE n.{_CREATED_MARK}
+                {_cypher_kh_state_for("n", label, props)}
                 RETURN created
                 """,
                 parameters={"key": key, "props": props},
@@ -5637,6 +5657,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                      THEN n[row.fields[i]] IS NULL
                      ELSE n[row.fields[i]] = row.values[i] END)
             SET n += row.updates
+            {_cypher_kh_state_for("n", label, {k for row in params for k in row["updates"]})}
             RETURN n.id AS id
             """,
             parameters={"rows": params},
@@ -7547,6 +7568,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError(f"{stale} hierarchy edge(s) carry an order the graph disagrees with")
         return {"stamped": (rows or [{}])[0].get("stamped", 0)}
 
+    async def _kh_stamp_unstamped_children_order(self, rel_type: str) -> None:
+        """Stamp the children order on the edges into a record or group that carry none: a migration that moved edges onto the hierarchy
+        type without the writers. Nothing when ``rel_type`` is no hierarchy type."""
+        if rel_type != Neo4jRelationshipType.NODE_RELATIONS.value:
+            return
+        await self.client.execute_query(f"""
+            MATCH ()-[e:NODE_RELATION]->(n) WHERE (n:Record OR n:RecordGroup) AND e.khFrom IS NULL
+            CALL (e, n) {{
+                SET e.khFrom = startNode(e).id, e.khChild = n.id, e.khOrd = {_cypher_kh_child_ord("n")}
+            }} IN TRANSACTIONS OF 5000 ROWS
+            """)
+
     async def count_stale_kh_children_order(self) -> int:
         """Edges into a record or group whose order stamps disagree with their ends. Zero on a consistent graph; anything else is a write
         path that skipped the rewrite."""
@@ -7832,6 +7865,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"{still_legacy} still carry '{legacy_relationship_type}'"
                     )
                 self.logger.info(f"Renamed {migrated} edge(s) to '{current}' via APOC")
+                await self._kh_stamp_unstamped_children_order(current)
                 return {"migrated": migrated, "already_current": False}
 
             migrated = 0
@@ -7852,6 +7886,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not done:
                     break
             self.logger.info(f"Recreated {migrated} edge(s) as '{current}'")
+            await self._kh_stamp_unstamped_children_order(current)
             return {"migrated": migrated, "already_current": False}
 
         except Exception:
@@ -8634,6 +8669,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{label} {{id: node_data.id}})
             WHERE n.indexingStatus = 'QUEUED' AND n.refreshIntentId IS NULL
             SET n += node_data
+            {_cypher_kh_state_for("n", label, {k for node in nodes for k in node})}
             RETURN n.id AS id
             """,
             parameters={"nodes": _in_lock_order(nodes, _by_id)},
@@ -9563,6 +9599,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
         label = collection_to_label(collection)
+        if label in _KH_STATE_LABELS and field in _KH_STATE_INPUTS:
+            raise ValueError(f"{field} is not a counter: the listing state is derived from it")
         self.validator.validate_node_update(collection, {field: 1})
         # The write lock is taken first (the same trick as the other match locks), so the value read next is the latest committed one
         rows = await self.client.execute_query(
@@ -17055,6 +17093,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {run_with}
                 SET n.indexingStatus = $status, n += {run_patch}
                 {"SET n += $fields" if fields else ""}
+                {_cypher_kh_state_for("n", label, fields or {})}
                 """,
                 parameters={"ids": unique_ids, "status": status, "now": get_epoch_timestamp_in_ms(), **({"fields": dict(fields)} if fields else {})},
                 txn_id=None,
@@ -17080,6 +17119,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{label})
             WHERE n.id IN $ids AND coalesce(n.isInternal, false) = false AND coalesce(n.isPlaceholder, false) = false
             SET n += $fields
+            {_cypher_kh_state_for("n", label, fields)}
             RETURN count(n) AS written
             """,
             parameters={"ids": unique_ids, "fields": dict(fields)},
@@ -22811,7 +22851,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[dict[str, Any]]:
         """`_kh_split_window` for the name order, ascending: the start's edges read from the children order index (`KH_CHILDREN_ORDER_INDEX`)
         in its order from the boundary, so a window reads about ``n`` edges whatever the start holds. Its order (stamp, then child id) is the
-        page's: nullRank, the lowercased name, the id. A child whose stamp disagrees with it raises `_KhOrderStale`. The boundary is one range
+        page's: nullRank, the lowercased name, the id. The stamps are trusted (every writer keeps them, docs/knowledge-hub-browse.md): a child
+        whose stamp disagrees with it among the rows read raises `_KhOrderStale`, a check that cannot see a stale child outside them. The boundary is one range
         on the index and a list comparison past it, never an OR (nor a negated AND, which the planner rewrites into one): with an OR the
         planner seeks twice and sorts every child. The seek is a hint (`_KH_WINDOW_ORDER_HINT`)."""
         e = edge or {}

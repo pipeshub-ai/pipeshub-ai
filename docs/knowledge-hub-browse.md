@@ -96,9 +96,14 @@ It is not needed for the cost: the check is a fixed statement already.
   lowercased name, `'1'` with no name, `'2'` for a stub). The node and tree state writers rewrite it in the same statement as the change
   (`_cypher_kh_edge_order`), and the children order migration (`KH_CHILDREN_ORDER_FLAG`) stamps older edges and checks that none is
   stale. Once that flag is set, a wide start sorted by name ascending reads each window from the index in order, from the page's boundary,
-  and its stubs from the `'2'` range alone. A window or stub read that meets an edge whose stamp disagrees with its child reads the request
-  again without the index and logs `kh.browse.children_order_stale`. What a page still reads in proportion to something other than its
-  window is the viewer's own grants, not the folder.
+  and its stubs from the `'2'` range alone. The browse trusts the stamps: a child whose stamp is stale sorts out of its place, and no read
+  short of every child can find it there, so a stale stamp must not exist. Every Cypher writer of the provider either rewrites the stamps
+  in the statement that changes their inputs (a record's or group's name or stub flag, or a hierarchy edge) or cannot change them, and
+  `tests/unit/services/graph_db/test_neo4j_children_order_writers.py` holds the closed set of writers to that; a generic field or edge
+  write rewrites them when it carries an input (`_cypher_kh_state_for`), and `replace_edges_to` refuses hierarchy edges. A stamp that
+  disagrees with its child in a row a window or the stub read returns (a write made outside the provider) reads the request again without
+  the index and logs `kh.browse.children_order_stale`. What a page still reads in proportion to something other than its window is the
+  viewer's own grants, not the folder.
 - **Children read per row:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A row's arrow asks about that many children; one admitted among
   them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.

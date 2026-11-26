@@ -49,10 +49,12 @@ class KhListingStateMigrationService:
 
         stamped = (result or {}).get("stamped", 0)
         try:
-            await self.config_service.set_config(
+            written = await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,
                 {"done": True, "stamped": stamped, "timestamp": get_epoch_timestamp_in_ms()},
             )
+            if written is False:      # the store refused the write without raising
+                raise RuntimeError("the configuration store did not write the flag")
         except Exception as e:
             # The flag is what the reads wait for: a step whose flag is unwritten has not finished, so the caller retries it (the stamp
             # writes the same values again).

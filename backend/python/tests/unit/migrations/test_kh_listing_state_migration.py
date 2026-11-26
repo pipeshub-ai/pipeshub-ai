@@ -29,3 +29,21 @@ async def test_a_flag_that_could_not_be_written_fails_the_step_so_it_is_retried(
     config.set_config.side_effect = None
     assert await migration.migrate() == {"success": True, "stamped": 3}
     assert getattr(provider, stamp).await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("service", "stamp"), [(KhListingStateMigrationService, "stamp_kh_listing_state"),
+                                                (KhChildrenOrderMigrationService, "stamp_kh_children_order")])
+async def test_a_flag_the_store_refused_to_write_fails_the_step_so_it_is_retried(service, stamp) -> None:
+    # ConfigurationService.set_config answers False, without raising, when the store did not take the write.
+    provider = AsyncMock()
+    getattr(provider, stamp).return_value = {"stamped": 3}
+    config = AsyncMock()
+    config.get_config.return_value = None
+    config.set_config.return_value = False
+    migration = service(provider, config, logging.getLogger("test"))
+
+    assert (await migration.migrate())["success"] is False
+
+    config.set_config.return_value = True
+    assert await migration.migrate() == {"success": True, "stamped": 3}

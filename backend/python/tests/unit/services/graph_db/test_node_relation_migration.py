@@ -73,7 +73,7 @@ class TestNeo4jLegacyRelationMigration:
         self, neo4j: Neo4jProvider
     ) -> None:
         neo4j.client.execute_query = AsyncMock(side_effect=[
-            [{"n": 10}], [{"n": 10}], [{"n": 0}],
+            [{"n": 10}], [{"n": 10}], [{"n": 0}], [],
         ])
 
         result = await neo4j.migrate_legacy_relation_edge(
@@ -82,9 +82,11 @@ class TestNeo4jLegacyRelationMigration:
         )
 
         assert result == {"migrated": 10, "already_current": False}
-        assert neo4j.client.execute_query.await_count == 3, (
+        assert neo4j.client.execute_query.await_count == 4, (
             "the verification probe must run before success is reported"
         )
+        # The moved edges carry no children order stamps yet: the last statement writes them.
+        assert "e.khFrom IS NULL" in neo4j.client.execute_query.await_args_list[-1].args[0]
 
     @pytest.mark.asyncio
     async def test_falls_back_to_batches_when_apoc_is_absent(
@@ -96,6 +98,7 @@ class TestNeo4jLegacyRelationMigration:
             Exception("Unknown procedure 'apoc.refactor.rename.type'"),
             [{"n": 2}],  # first batch recreated
             [{"n": 0}],  # nothing left, loop terminates
+            [],          # the children order stamps of the moved edges
         ])
 
         result = await neo4j.migrate_legacy_relation_edge(
@@ -104,6 +107,7 @@ class TestNeo4jLegacyRelationMigration:
         )
 
         assert result == {"migrated": 2, "already_current": False}
+        assert "e.khFrom IS NULL" in neo4j.client.execute_query.await_args_list[-1].args[0]
 
     @pytest.mark.asyncio
     async def test_an_unsafe_relationship_type_is_refused(

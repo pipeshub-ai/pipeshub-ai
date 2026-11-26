@@ -181,6 +181,13 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
     await p.batch_update_nodes([{"id": "ls-g2", "hideChildren": False}], G)
     await fresh("node updates")
     assert "KhFolder" not in await _labels(neo4j_settings, "ls-r2")
+    # The field writers that can carry a name or a stub flag, and an edge write that only creates what is missing.
+    assert await p.update_record_fields_for_ids(["ls-r1"], {"recordName": "Renamed"}) == 1
+    await fresh("update_record_fields_for_ids")
+    assert await p.update_nodes_fields_if_match(R, [("ls-r1", {"recordName": "Again"}, {"recordName": "Renamed"})]) == ["ls-r1"]
+    await fresh("update_nodes_fields_if_match")
+    await p.create_edges_if_absent([_edge("ls-g2", G, "ls-r3", R, **parent_child)], NR)
+    await fresh("create_edges_if_absent")
 
     await p.delete_edge("ls-g2", G, "ls-r1", R, NR)
     await fresh("delete_edge")

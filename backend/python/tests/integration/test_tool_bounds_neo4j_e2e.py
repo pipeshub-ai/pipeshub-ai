@@ -327,6 +327,38 @@ async def test_a_stub_whose_order_stamp_is_stale_is_still_listed(w, monkeypatch)
     assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))
 
 
+@pytest.mark.parametrize("write", ["rename", "new_edge"])
+async def test_a_child_a_writer_moves_to_the_front_is_on_the_first_page(w, monkeypatch, write: str) -> None:
+    """A write that moves a child of the wide folder to the front of the name order, through the provider: a record renamed by a field
+    write, or a new record hung under the folder by an edge write that only creates what is missing. The first page must list it first:
+    the windows read the children from their order stamps, so a writer that left the old stamp (or none) would leave it out of the page."""
+    await w.g.stamp_kh_children_order()
+    now = get_epoch_timestamp_in_ms()
+    if write == "rename":
+        first = w.n("c4999")
+        assert await w.g.update_record_fields_for_ids([first], {"recordName": f"a first {w.run}"}) == 1
+    else:
+        first = w.n("A0")
+        assert await w.g.create_node_if_absent(first, REC, _rec(w, first).to_arango_base_record() | {"recordName": f"a first {w.run}"})
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.n("BIG"), "from_collection": REC, "to_id": first, "to_collection": REC, "relationshipType": "PARENT_CHILD",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.NODE_RELATIONS.value)
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.user, "from_collection": USR, "to_id": first, "to_collection": REC, "role": "READER", "type": "USER",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.PERMISSION.value)
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=20,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items][:1] == [first], [i.id for i in page.items][:3]
+    assert await w.g.count_stale_kh_children_order() == 0
+
+
 # A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it
 # because the statement tests the org or App next to its match by id, and with other statistics it seeks the org or App index alone.
 # A paged read (`id > $after`) on such an index is not one: only an equality or IN on the id is.
