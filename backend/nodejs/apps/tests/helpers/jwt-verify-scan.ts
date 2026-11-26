@@ -44,6 +44,7 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       !n ||
       !ts.isCallExpression(n) ||
       n.arguments.length !== 1 ||
+      !n.arguments[0] ||
       !ts.isStringLiteralLike(n.arguments[0])
     ) {
       return undefined;
@@ -121,10 +122,8 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       ts.isStringLiteral(node.moduleReference.expression) &&
       node.moduleReference.expression.text in VERIFY_NAMES
     ) {
-      modules.set(
-        node.name.text,
-        VERIFY_NAMES[node.moduleReference.expression.text],
-      );
+      const names = VERIFY_NAMES[node.moduleReference.expression.text];
+      if (names) modules.set(node.name.text, names);
     }
     if (ts.isVariableDeclaration(node) && node.initializer) {
       const init = unwrap(node.initializer);
@@ -218,6 +217,7 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       const clause = node.exportClause;
       if (!clause || ts.isNamespaceExport(clause)) report(node, '(re-export)');
       else if (
+        names &&
         clause.elements.some((el) =>
           names.has((el.propertyName ?? el.name).text),
         )
