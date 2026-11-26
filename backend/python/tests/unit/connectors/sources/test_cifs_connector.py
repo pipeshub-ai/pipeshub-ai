@@ -28,6 +28,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
     ShareWalkIncompleteError,
 )
+from app.connectors.sources.network_share.permissions import share_permissions
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
@@ -931,3 +932,56 @@ class TestCifsFolderPatterns:
         assert report.unmatched_patterns_item() is None
         report = await walk(("customer/*/drafts",))
         assert report.unmatched_patterns_item().params["values"] == '"customer/*/drafts"'
+
+
+class TestShareGrantsWithoutACreator:
+    """A personal connector whose creator lookup succeeds but names no one
+    grants its shares to nobody, not the organisation."""
+
+    @pytest.mark.parametrize("user", [None, {"email": None}, {}], ids=["deleted", "no-email", "empty"])
+    async def test_a_personal_connector_with_no_creator_email_grants_nobody(
+        self, user, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value=user)
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        assert [r.getMessage() for r in caplog.records] == [
+            "Personal connector cifs-1 has no creator email; its shares are shared with no one"
+        ]
+
+    async def test_a_personal_connector_whose_creator_is_found_grants_them_without_a_warning(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(cifs_connector)
+        assert [(p.type, p.entity_type, p.email, p.external_id) for p in perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com", "user-1")
+        ]
+        assert caplog.records == []
+
+    async def test_a_personal_connector_with_no_created_by_grants_nobody(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        cifs_connector.created_by = None
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert "cifs-1" in caplog.text
+
+    async def test_a_team_connector_still_grants_the_organisation(
+        self, mock_logger, mock_processor, mock_data_store_provider, mock_config_service, caplog
+    ):
+        team = _connector(
+            mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
+        )
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(team)
+        assert [(p.type, p.entity_type, p.external_id) for p in perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert caplog.records == []
