@@ -1,0 +1,160 @@
+{
+  "comment": "ADR-KEY-02 (SEC-D-03): the component key derivations and Redis ACL rules both languages must agree on (component_key.py, component-keys.ts, redis-component-logins.ts); and the etcd role of each component (R38IDENT-FU-9): the user is the CN of its client certificate (internal_tls.py, the chart), the role reads only its own document.",
+  "subkeys": {
+    "key": "57edc2846d35be64cee5a3154429fce5723c57f195c878cb46cda81cd274a3bc",
+    "egress-proxy": {
+      "config": "5778a4180687dc2412b1b82331a01a3cc4f73ac38640610cfdd5e77158941b74",
+      "redis": "64f130d6fe4c48c7e6dc65fda0c4bc02bbdc99b0b59853128a5666137818841b"
+    },
+    "sandbox-broker": {
+      "config": "bb5b3680db60d4c63b0817ac0e89c3e3d60575989b9ab1ed8e914099c36f6344",
+      "redis": "c8e9f0cdc33e3aa56c2896331e7b9f71e70dd10143fdb8422af152f514b8a86d"
+    }
+  },
+  "acl": [
+    {
+      "component": "egress-proxy",
+      "namespace": "",
+      "kvPrefix": "pipeshub:kv:",
+      "rules": [
+        "~pipeshub:kv:/services/agentHarness/components/egressProxy",
+        "~harness:egress:*",
+        "&pipeshub:cache:invalidate",
+        "-@all",
+        "+get",
+        "+mget",
+        "+exists",
+        "+ttl",
+        "+pttl",
+        "+scan",
+        "+ping",
+        "+hello",
+        "+auth",
+        "+select",
+        "+client|setname",
+        "+subscribe",
+        "+unsubscribe",
+        "+psubscribe",
+        "+punsubscribe",
+        "+quit",
+        "+reset",
+        "+set",
+        "+del",
+        "+eval",
+        "+evalsha"
+      ]
+    },
+    {
+      "component": "egress-proxy",
+      "namespace": "tenant-a",
+      "kvPrefix": "lane-x:kv:",
+      "rules": [
+        "~tenant-a:lane-x:kv:/services/agentHarness/components/egressProxy",
+        "~tenant-aharness:egress:*",
+        "&tenant-a:pipeshub:cache:invalidate",
+        "-@all",
+        "+get",
+        "+mget",
+        "+exists",
+        "+ttl",
+        "+pttl",
+        "+scan",
+        "+ping",
+        "+hello",
+        "+auth",
+        "+select",
+        "+client|setname",
+        "+subscribe",
+        "+unsubscribe",
+        "+psubscribe",
+        "+punsubscribe",
+        "+quit",
+        "+reset",
+        "+set",
+        "+del",
+        "+eval",
+        "+evalsha"
+      ]
+    },
+    {
+      "component": "sandbox-broker",
+      "namespace": "",
+      "kvPrefix": "pipeshub:kv:",
+      "rules": [
+        "~pipeshub:kv:/services/agentHarness/components/sandboxBroker",
+        "&pipeshub:cache:invalidate",
+        "-@all",
+        "+get",
+        "+mget",
+        "+exists",
+        "+ttl",
+        "+pttl",
+        "+scan",
+        "+ping",
+        "+hello",
+        "+auth",
+        "+select",
+        "+client|setname",
+        "+subscribe",
+        "+unsubscribe",
+        "+psubscribe",
+        "+punsubscribe",
+        "+quit",
+        "+reset"
+      ]
+    },
+    {
+      "component": "sandbox-broker",
+      "namespace": "tenant-a",
+      "kvPrefix": "lane-x:kv:",
+      "rules": [
+        "~tenant-a:lane-x:kv:/services/agentHarness/components/sandboxBroker",
+        "&tenant-a:pipeshub:cache:invalidate",
+        "-@all",
+        "+get",
+        "+mget",
+        "+exists",
+        "+ttl",
+        "+pttl",
+        "+scan",
+        "+ping",
+        "+hello",
+        "+auth",
+        "+select",
+        "+client|setname",
+        "+subscribe",
+        "+unsubscribe",
+        "+psubscribe",
+        "+punsubscribe",
+        "+quit",
+        "+reset"
+      ]
+    }
+  ],
+  "etcd": [
+    {
+      "component": "egress-proxy",
+      "user": "egress-proxy",
+      "role": "pipeshub-egress-proxy",
+      "permissions": [
+        {
+          "key": "/services/agentHarness/components/egressProxy",
+          "rangeEnd": "",
+          "permission": "Read"
+        }
+      ]
+    },
+    {
+      "component": "sandbox-broker",
+      "user": "sandbox-broker",
+      "role": "pipeshub-sandbox-broker",
+      "permissions": [
+        {
+          "key": "/services/agentHarness/components/sandboxBroker",
+          "rangeEnd": "",
+          "permission": "Read"
+        }
+      ]
+    }
+  ]
+}

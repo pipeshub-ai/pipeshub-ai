@@ -18,7 +18,9 @@ export enum BrokerTopic {
   HEALTH_CHECK = 'health-check',
   TOKEN_EVENTS = 'token-events',
   NOTIFICATION = 'notification',
+  AGENT_RUN_EVENTS = 'agent-run-events',
   MAIL_EVENTS = 'mail-events',
+  CONTROL_PLANE_EVENTS = 'control-plane-events',
 }
 
 /**
@@ -38,7 +40,9 @@ export interface BrokerTopicPayloadMap {
   [BrokerTopic.HEALTH_CHECK]: { type: string; timestamp: number };
   [BrokerTopic.TOKEN_EVENTS]: Record<string, unknown>;
   [BrokerTopic.NOTIFICATION]: Record<string, unknown>;
+  [BrokerTopic.AGENT_RUN_EVENTS]: string;
   [BrokerTopic.MAIL_EVENTS]: Record<string, unknown>;
+  [BrokerTopic.CONTROL_PLANE_EVENTS]: string;
 }
 
 export interface MessageBrokerConfig {
@@ -83,6 +87,34 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
   // Entries fetched per read or reclaim. Every fetched entry starts idling in
   // the pending list at once, so a slow handler wants a small batch.
   readCount?: number;
+  /** How long one read waits for a message; also how long a stop waits for the loop. */
+  blockMs?: number;
+  /** Deliveries of one message (the first read and each reclaim) before it is set aside. */
+  maxDeliveries?: number;
+}
+
+/** A consumer-group name an earlier build created, and the consumer name that build read the group with. */
+export interface HistoricalGroupFormat {
+  name: RegExp;
+  consumer(group: string): string;
+}
+
+/**
+ * Leftover consumer groups of one topic. A group is removed only when it is
+ * provably an earlier build's (its name has one of `formats` and every
+ * consumer it has carries that format's name) and every consumer is idle for
+ * `idleMs`.
+ */
+export interface IdleGroupSweep {
+  topic: string;
+  formats: readonly HistoricalGroupFormat[];
+  idleMs: number;
+}
+
+/** `left`: the topic's groups that could not be proven an earlier build's, which are never touched. */
+export interface IdleGroupSweepResult {
+  removed: string[];
+  left: string[];
 }
 
 export interface StreamMessage<T> {
@@ -129,4 +161,10 @@ export interface IMessageConsumer {
 export interface IMessageAdmin {
   ensureTopicsExist(topics?: TopicDefinition[]): Promise<void>;
   listTopics(): Promise<string[]>;
+  /**
+   * Removes the consumer groups of `sweep.topic` that an earlier build left
+   * and no process reads any more. A broker that expires such groups itself
+   * (Kafka) removes nothing here.
+   */
+  removeIdleGroups(sweep: IdleGroupSweep): Promise<IdleGroupSweepResult>;
 }

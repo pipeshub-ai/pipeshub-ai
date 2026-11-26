@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.command.expanded.schema.json",
+  "title": "PipeshubCommandExpandedEvent",
+  "description": "The run's input is a /command the user typed (SLASH1 D8). Node expands the command before admission and writes this with run.admitted, so every executor starts from the same text: the run input's query is the expanded text, and this names the command, version and arguments that produced it. The chat shows it as the run's first step. Audit and presentation only (non-critical); folds ignore it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.command.expanded"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubCommandExpandedData"
+    }
+  },
+  "$defs": {
+    "PipeshubCommandExpandedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "contentDigest",
+        "args",
+        "expandedDigest",
+        "expandedChars",
+        "owner"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "maxLength": 64
+        },
+        "version": {
+          "description": "The command's skill version at admission.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "contentDigest": {
+          "$ref": "../../../core/common.schema.json#/$defs/Digest",
+          "description": "The command's SKILL.md at admission."
+        },
+        "args": {
+          "description": "Each declared argument's value as expanded.",
+          "type": "object",
+          "maxProperties": 20,
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "expandedDigest": {
+          "$ref": "../../../core/common.schema.json#/$defs/Digest",
+          "description": "The run input's text (UTF-8)."
+        },
+        "expandedChars": {
+          "description": "Its length in UTF-16 code units, as the chat routes count a query.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "owner": {
+          "description": "Whose command it is, as the menu showed it.",
+          "enum": [
+            "you",
+            "team",
+            "org",
+            "pipeshub"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 2,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.command.expanded",
+      "data": {
+        "name": "triage",
+        "version": "1.0.3",
+        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "args": {
+          "incident": "INC-4211",
+          "depth": "quick"
+        },
+        "expandedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expandedChars": 312,
+        "owner": "you"
+      }
+    }
+  ]
+}

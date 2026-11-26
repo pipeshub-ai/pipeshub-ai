@@ -1,0 +1,803 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/run-spec.schema.json",
+  "title": "RunSpec",
+  "description": "Pinned run specification, product-neutral core (REPORT 6.1.1). Product data lives under extensions keyed by namespace (x.<ns>); the core never interprets it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "harnessMajor",
+    "foldVersion",
+    "runKind",
+    "principalRef",
+    "model",
+    "grants",
+    "budgets",
+    "capabilitiesDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "description": "3 adds executor. A reader of 3 also reads 2, whose spec has no executor and runs on the loop.",
+      "enum": [
+        2,
+        3
+      ]
+    },
+    "harnessMajor": {
+      "const": 2
+    },
+    "foldVersion": {
+      "$ref": "common.schema.json#/$defs/PosInt"
+    },
+    "runKind": {
+      "description": "Opaque to the core.",
+      "$ref": "common.schema.json#/$defs/RunKind"
+    },
+    "executor": {
+      "description": "How the run executes; runKind says why it exists. Absent (every v2 spec): the loop.",
+      "$ref": "#/$defs/Executor"
+    },
+    "principalRef": {
+      "$ref": "common.schema.json#/$defs/PrincipalRef"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelPolicy"
+    },
+    "grants": {
+      "$ref": "#/$defs/Grants"
+    },
+    "budgets": {
+      "$ref": "#/$defs/Budgets"
+    },
+    "capabilitiesDigest": {
+      "description": "Digest of the effective capabilities at admission (REPORT 11).",
+      "$ref": "common.schema.json#/$defs/Digest"
+    },
+    "pins": {
+      "$ref": "#/$defs/Pins"
+    },
+    "extensions": {
+      "description": "Namespaced extension payloads keyed x.<namespace>; each namespace owns its own schema.",
+      "type": "object",
+      "patternProperties": {
+        "^x\\.[a-z][a-z0-9-]*$": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "gates": {
+      "description": "Run gates (G-03..G-05), enforced by the harness, never by the prompt. Absent: no gate. Only a worker advertising run_gates claims a run that carries them.",
+      "$ref": "#/$defs/RunGates"
+    }
+  },
+  "$defs": {
+    "ModelRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "common.schema.json#/$defs/Name"
+        },
+        "model": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "transport": {
+          "$ref": "common.schema.json#/$defs/Name"
+        },
+        "on": {
+          "description": "Failures that move to this fallback route.",
+          "type": "array",
+          "items": {
+            "enum": [
+              "5xx",
+              "429_exhausted",
+              "content_filter",
+              "timeout"
+            ]
+          }
+        },
+        "access": {
+          "$ref": "#/$defs/PinnedAccess"
+        }
+      }
+    },
+    "PinnedAccess": {
+      "description": "The access route admission pinned for this model (A1): the route, whose account, the model account when one is pinned, and who pays. Absent on routes pinned before A1 and on loop runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route",
+        "accountKind",
+        "pays"
+      ],
+      "properties": {
+        "route": {
+          "$ref": "common.schema.json#/$defs/AccessRouteKind"
+        },
+        "accountKind": {
+          "$ref": "common.schema.json#/$defs/AccessAccountKind"
+        },
+        "accountId": {
+          "description": "The pinned model account: users/<userId>/<provider> (a user's own key) or cloud/<accountId> (an org cloud account). Absent: the org's configured key.",
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^(?:users/[A-Za-z0-9._:@-]{1,128}/[A-Za-z0-9._:@-]{1,128}|cloud/[A-Za-z0-9._:@-]{1,128})$"
+        },
+        "pays": {
+          "enum": [
+            "org",
+            "user",
+            "vendor_plan"
+          ]
+        }
+      }
+    },
+    "ModelPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "promptVersion"
+      ],
+      "properties": {
+        "policy": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ModelRoute"
+          }
+        },
+        "promptVersion": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "reasoningEffort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      }
+    },
+    "ToolGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolId",
+        "descriptorDigest"
+      ],
+      "properties": {
+        "toolId": {
+          "$ref": "common.schema.json#/$defs/ToolId"
+        },
+        "descriptorDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "digestVersion": {
+          "description": "2: descriptorDigest is the digest of the tool's descriptor (name, description and input schema, RFC 8785) its granter bound at admission, and a claim verifies it. Absent: an unverified identity digest (pins before version 2, or a tool with no descriptor to bind).",
+          "type": "integer",
+          "enum": [
+            2
+          ]
+        }
+      }
+    },
+    "Grants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tools",
+        "sandboxProfile",
+        "egress"
+      ],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolGrant"
+          }
+        },
+        "sandboxProfile": {
+          "enum": [
+            "agent-code",
+            "none"
+          ]
+        },
+        "egress": {
+          "type": "string",
+          "pattern": "^(?:none|allowlist:[A-Za-z0-9_-]{1,64})$"
+        }
+      }
+    },
+    "Budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTurns",
+        "maxTokens",
+        "maxCostUsd",
+        "activeTimeS",
+        "calendarDeadline",
+        "maxChildren"
+      ],
+      "properties": {
+        "maxTurns": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxTokens": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxCostUsd": {
+          "$ref": "common.schema.json#/$defs/Usd"
+        },
+        "activeTimeS": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "calendarDeadline": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "maxChildren": {
+          "$ref": "common.schema.json#/$defs/UInt"
+        }
+      }
+    },
+    "Pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "sandboxImage": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "sdk": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "source": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        }
+      },
+      "description": "Code runs only."
+    },
+    "EngineRef": {
+      "description": "The engine build a run is pinned to. Every field is an opaque id from release data; the core never interprets them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "version",
+        "binaryDigest",
+        "profileDigest"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "common.schema.json#/$defs/Name"
+        },
+        "version": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "binaryDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "profileDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "profile": {
+          "description": "The resolved profile the run executes under (E4a); its canonical digest is profileDigest. Absent only on specs pinned before profiles existed.",
+          "$ref": "engine-profile.schema.json"
+        }
+      }
+    },
+    "LoopExecutor": {
+      "description": "The in-process durable loop.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "loop"
+        }
+      }
+    },
+    "EngineExecutor": {
+      "description": "An external engine in a sandbox, pinned to one build.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "engine"
+      ],
+      "properties": {
+        "kind": {
+          "const": "engine"
+        },
+        "engine": {
+          "$ref": "#/$defs/EngineRef"
+        }
+      }
+    },
+    "Executor": {
+      "description": "The variants are disjoint by kind; anyOf rather than oneOf so the generated zod type is a typed union.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoopExecutor"
+        },
+        {
+          "$ref": "#/$defs/EngineExecutor"
+        }
+      ]
+    },
+    "RunGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dryRun": {
+          "description": "G-03 (GA-02): reads run; every write, send, delete or other outside effect is intercepted where calls are executed (the effect runner both the loop and the Tool Gateway use) and recorded as what the run would have done (tool.outcome shadow), never made. The run's sandbox has no egress beyond the gateways and a repository is never pushed.",
+          "const": true
+        },
+        "planApproval": {
+          "description": "G-04 (GA-03): every tool but a read is refused until a person approves the plan the run submits (submit_plan); a declined plan ends the run.",
+          "const": "required"
+        },
+        "verify": {
+          "$ref": "#/$defs/VerifyGate"
+        }
+      }
+    },
+    "VerifyGate": {
+      "description": "G-05 (GA-04): deterministic checks run when the run says it is done; the result is journaled as verification.recorded.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checks",
+        "onFail"
+      ],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/VerifyCheck"
+          }
+        },
+        "onFail": {
+          "description": "flag: the run ends unverified, with reasons. continue: the run is told what failed and works on, up to maxRounds times, then ends unverified if it still fails.",
+          "enum": [
+            "flag",
+            "continue"
+          ]
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      }
+    },
+    "WorkspacePath": {
+      "description": "A path in the run's workspace: relative, at most 16 segments, none of them '.' or '..'.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:\\.?[A-Za-z0-9_-][A-Za-z0-9_. -]{0,127}/){0,15}\\.?[A-Za-z0-9_-][A-Za-z0-9_. -]{0,127}$"
+    },
+    "VerifyCheck": {
+      "oneOf": [
+        {
+          "title": "FileCheck",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "file"
+            },
+            "path": {
+              "$ref": "#/$defs/WorkspacePath"
+            },
+            "format": {
+              "description": "What the file must open as; absent: it exists and is not empty.",
+              "enum": [
+                "json",
+                "csv",
+                "pdf",
+                "docx",
+                "xlsx",
+                "pptx",
+                "png",
+                "jpeg",
+                "zip",
+                "text"
+              ]
+            }
+          }
+        },
+        {
+          "title": "JsonSchemaCheck",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "schema"
+          ],
+          "properties": {
+            "kind": {
+              "const": "json_schema"
+            },
+            "path": {
+              "$ref": "#/$defs/WorkspacePath"
+            },
+            "schema": {
+              "description": "A JSON Schema (2020-12) the file's JSON must validate against.",
+              "type": "object"
+            }
+          }
+        },
+        {
+          "title": "CitationsCheck",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "citations",
+              "description": "Every passage the answer cites by refN is a source the run read, and every text the answer quotes beside a citation is in that source's text."
+            }
+          }
+        },
+        {
+          "title": "CommandCheck",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "argv"
+          ],
+          "properties": {
+            "kind": {
+              "const": "command",
+              "description": "Tests pass: the command exits 0 in the run's own sandbox, on its workspace, with no network."
+            },
+            "argv": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "timeoutS": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600
+            }
+          }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "workflow_code",
+      "executor": {
+        "kind": "engine",
+        "engine": {
+          "kind": "engine-a",
+          "version": "1.2.3",
+          "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "profileDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "profile": {
+            "engine": {
+              "kind": "engine-a",
+              "version": "1.2.3",
+              "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            "mode": "build",
+            "isolationMin": "docker",
+            "egress": "none",
+            "tools": {
+              "maxTools": null,
+              "effects": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ]
+            },
+            "limits": {
+              "maxSteps": 50,
+              "maxWallS": 1800,
+              "maxTokens": null,
+              "maxUsd": null
+            },
+            "subAgents": {
+              "enabled": false,
+              "maxDepth": 1,
+              "maxConcurrent": 1
+            },
+            "reasoningEffort": null,
+            "approvals": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "skills": null,
+            "accountKinds": [
+              "org_api_key",
+              "org_cloud",
+              "user_api_key"
+            ]
+          }
+        }
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native",
+            "access": {
+              "route": "gateway",
+              "accountKind": "user_api_key",
+              "accountId": "users/u1/openAI",
+              "pays": "user"
+            }
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "pins": {
+        "sandboxImage": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sdk": "1.4.0",
+        "source": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      }
+    },
+    {
+      "schemaVersion": 3,
+      "harnessMajor": 2,
+      "foldVersion": 1,
+      "runKind": "interactive",
+      "executor": {
+        "kind": "loop"
+      },
+      "principalRef": "p_u42",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x",
+            "transport": "anthropic-native"
+          },
+          {
+            "provider": "openai",
+            "model": "gpt-x",
+            "on": [
+              "5xx",
+              "429_exhausted",
+              "content_filter"
+            ]
+          }
+        ],
+        "promptVersion": "p-2026-10-01",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst_42/search_issues",
+            "descriptorDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "sandboxProfile": "agent-code",
+        "egress": "allowlist:pypi"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 400000,
+        "maxCostUsd": 2.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-03T00:00:00Z",
+        "maxChildren": 4
+      },
+      "capabilitiesDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "extensions": {
+        "x.acme": {
+          "anything": [
+            "the core never interprets extension payloads"
+          ]
+        }
+      },
+      "gates": {
+        "dryRun": true,
+        "planApproval": "required",
+        "verify": {
+          "checks": [
+            {
+              "kind": "file",
+              "path": "out/report.pdf",
+              "format": "pdf"
+            },
+            {
+              "kind": "json_schema",
+              "path": "out/data.json",
+              "schema": {
+                "type": "object",
+                "required": [
+                  "rows"
+                ]
+              }
+            },
+            {
+              "kind": "citations"
+            },
+            {
+              "kind": "command",
+              "argv": [
+                "pytest",
+                "-q"
+              ],
+              "timeoutS": 120
+            }
+          ],
+          "onFail": "continue",
+          "maxRounds": 2
+        }
+      }
+    }
+  ]
+}

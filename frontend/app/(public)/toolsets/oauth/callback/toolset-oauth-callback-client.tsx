@@ -175,7 +175,7 @@ export function ToolsetOAuthCallbackClient() {
               size="3"
               style={{
                 margin: 0,
-                color: 'var(--gray-10)',
+                color: 'var(--gray-11)',
                 lineHeight: '24px',
                 maxWidth: 432,
               }}
@@ -222,7 +222,7 @@ export function ToolsetOAuthCallbackClient() {
               key="toolset-oauth-success-body"
               as="p"
               size="3"
-              style={{ margin: 0, color: 'var(--gray-10)', lineHeight: '24px' }}
+              style={{ margin: 0, color: 'var(--gray-11)', lineHeight: '24px' }}
             >
               {message}
             </Text>
@@ -255,7 +255,7 @@ export function ToolsetOAuthCallbackClient() {
               weight="medium"
               style={{
                 margin: 0,
-                color: 'var(--red-10)',
+                color: 'var(--red-11)',
                 letterSpacing: '-0.04px',
                 lineHeight: '26px',
               }}
@@ -268,7 +268,7 @@ export function ToolsetOAuthCallbackClient() {
               size="3"
               style={{
                 margin: 0,
-                color: 'var(--gray-10)',
+                color: 'var(--gray-11)',
                 lineHeight: '24px',
                 wordBreak: 'break-word',
               }}

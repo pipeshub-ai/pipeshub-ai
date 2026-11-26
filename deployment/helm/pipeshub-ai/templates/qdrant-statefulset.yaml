@@ -75,8 +75,10 @@ spec:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
         app.kubernetes.io/component: qdrant
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
-        {{- toYaml .Values.qdrant.podSecurityContext | nindent 8 }}
+        {{- include "pipeshub-ai.qdrantPodSecurityContext" . | nindent 8 }}
       terminationGracePeriodSeconds: 120
       {{- if .Values.qdrant.affinity }}
       affinity:
@@ -108,21 +110,24 @@ spec:
       {{- end }}
       containers:
         - name: qdrant
-          image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.qdrant.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
-          {{- if gt (int .Values.qdrant.replicaCount) 1 }}
-          # P2P__PEERS is not a Qdrant setting. Nodes join only via --uri/--bootstrap.
           command:
             - /bin/sh
             - -c
             - |
+              {{- include "pipeshub-ai.raiseOpenFiles" .Values.qdrant.openFiles | nindent 14 }}
+              {{- if gt (int .Values.qdrant.replicaCount) 1 }}
+              # P2P__PEERS is not a Qdrant setting. Nodes join only via --uri/--bootstrap.
               uri="http://${HOSTNAME}.{{ include "pipeshub-ai.fullname" . }}-qdrant-headless.{{ .Release.Namespace }}.svc.cluster.local:6335"
               ordinal="${HOSTNAME##*-}"
               if [ "$ordinal" = "0" ]; then
                 exec ./qdrant --uri "$uri"
               fi
               exec ./qdrant --uri "$uri" --bootstrap "http://{{ include "pipeshub-ai.fullname" . }}-qdrant-0.{{ include "pipeshub-ai.fullname" . }}-qdrant-headless.{{ .Release.Namespace }}.svc.cluster.local:6335"
-          {{- end }}
+              {{- else }}
+              exec ./entrypoint.sh
+              {{- end }}
           ports:
             - name: http
               containerPort: 6333
@@ -177,7 +182,7 @@ spec:
           resources:
             {{- toYaml .Values.qdrant.resources | nindent 12 }}
           securityContext:
-            {{- toYaml .Values.qdrant.securityContext | nindent 12 }}
+            {{- include "pipeshub-ai.qdrantSecurityContext" . | nindent 12 }}
       {{- with .Values.qdrant.nodeSelector }}
       {{- $selector := include "pipeshub-ai.compactMap" . }}
       {{- if $selector }}

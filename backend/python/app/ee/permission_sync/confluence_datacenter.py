@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.core.confluence_access import (
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    Record,
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -93,6 +94,7 @@ class ConfluenceDataCenterPermissionsMixin:
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -122,6 +124,7 @@ class ConfluenceDataCenterPermissionsMixin:
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Create user group
@@ -138,6 +141,7 @@ class ConfluenceDataCenterPermissionsMixin:
                                 f"Keeping the stored members of group {group_name}: "
                                 f"its members could not be looked up ({lookup_error})"
                             )
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Save group with members
@@ -148,6 +152,7 @@ class ConfluenceDataCenterPermissionsMixin:
 
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        self._sync_read_incomplete = True
                         continue
 
                 next_start = v1_next_start(response_data, start, len(groups_data), batch_size, use_link_offset=False)
@@ -160,6 +165,39 @@ class ConfluenceDataCenterPermissionsMixin:
         except Exception as e:
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
+
+    async def _keep_group_as_stored(self, external_group_id: str) -> None:
+        """Note a group whose members could not be read kept as stored, so a full sync leaves its links."""
+        try:
+            await self.data_entities_processor.note_kept_user_group(self.connector_id, external_group_id)
+        except Exception as e:
+            self.logger.warning(f"Could not note group {external_group_id} kept; this full sync unlinks nothing: {e}")
+            self._sync_read_incomplete = True
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Write an archived page's restrictions as the audit pass does; the search never re-reads it."""
+        permissions = await self._fetch_page_permissions(page.external_record_id)
+        if permissions is None:
+            return False
+        record = await self.data_entities_processor.get_typed_record_by_external_id(
+            self.connector_id, page.external_record_id
+        )
+        if record is None:
+            return False
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
+        record.access_rule = (
+            AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
+        )
+        record.rewrite_permissions = True
+        await self.data_entities_processor.on_new_records([(record, permissions)])
+        await apply_page_access_to_dependents(
+            self.data_entities_processor,
+            self.connector_id,
+            page.external_record_id,
+            permissions,
+            inherits_space=record.inherit_permissions,
+        )
+        return True
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
@@ -901,6 +939,8 @@ class ConfluenceDataCenterPermissionsMixin:
                     if not pseudo_group:
                         # Create pseudo-group on-the-fly
                         pseudo_group = await self._create_pseudo_group(principal_id)
+                    else:
+                        self.data_entities_processor.note_kept_user_groups(self.connector_id, [pseudo_group])
 
                     if pseudo_group:
                         self.logger.debug(

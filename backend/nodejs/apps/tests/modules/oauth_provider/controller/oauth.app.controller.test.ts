@@ -3,10 +3,18 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { OAuthAppController } from '../../../../src/modules/oauth_provider/controller/oauth.app.controller'
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service'
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
+import { createMockLogger } from '../../../helpers/mock-logger'
+import { Types } from 'mongoose'
+import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
+import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
+import { OAuthApp, OAuthAppStatus } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
+import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
+import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 
 describe('OAuthAppController', () => {
   let controller: OAuthAppController
-  let mockLogger: any
   let mockOAuthAppService: any
   let mockOAuthTokenService: any
   let mockScopeValidatorService: any
@@ -16,7 +24,6 @@ describe('OAuthAppController', () => {
 
   beforeEach(() => {
     sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
-    mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
       listApps: sinon.stub(),
       createApp: sinon.stub(),
@@ -37,7 +44,6 @@ describe('OAuthAppController', () => {
       getScopesGroupedByCategoryForRole: sinon.stub().returns({}),
     }
     controller = new OAuthAppController(
-      mockLogger,
       mockOAuthAppService,
       mockOAuthTokenService,
       mockScopeValidatorService,
@@ -181,22 +187,86 @@ describe('OAuthAppController', () => {
   })
 
   describe('deleteApp', () => {
-    it('should delete app and revoke tokens', async () => {
-      mockOAuthAppService.getAppById.resolves({ clientId: 'cid' })
+    // OAuthAppService.deleteApp revokes the tokens once the app can no longer mint any; a revoke here would be a second one.
+    it('leaves revoking the app\'s tokens to the service', async () => {
       mockOAuthAppService.deleteApp.resolves()
       mockReq.params = { appId: 'app-1' }
       await controller.deleteApp(mockReq, mockRes, mockNext)
-      expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('cid')).to.be.true
+      expect(mockOAuthAppService.deleteApp.calledOnce).to.be.true
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.be.false
+      expect(mockOAuthAppService.getAppById.called).to.be.false
       expect(mockRes.json.calledOnce).to.be.true
     })
 
     it('lets an org admin delete any app of the org', async () => {
-      mockOAuthAppService.getAppById.resolves({ clientId: 'cid' })
       mockOAuthAppService.deleteApp.resolves()
       mockReq.params = { appId: 'app-1' }
       await controller.deleteApp(mockReq, mockRes, mockNext)
-      expect(mockOAuthAppService.getAppById.firstCall.args[3]).to.equal(true)
       expect(mockOAuthAppService.deleteApp.firstCall.args).to.deep.equal(['app-1', 'org-1', 'user-1', true])
+    })
+
+    it('passes an app it may not manage to the error handler, revoking nothing', async () => {
+      const notFound = new NotFoundError('OAuth app not found')
+      mockOAuthAppService.deleteApp.rejects(notFound)
+      mockReq.params = { appId: 'app-1' }
+      await controller.deleteApp(mockReq, mockRes, mockNext)
+      expect(mockNext.calledOnceWithExactly(notFound)).to.be.true
+      expect(mockOAuthTokenService.revokeAllTokensForApp.called).to.be.false
+      expect(mockRes.json.called).to.be.false
+    })
+
+    // Real controller, app service and token service; only the Mongo models are stubbed.
+    describe('through the real services', () => {
+      let app: any
+      let statusAtRevoke: string[]
+      let tokenLogger: ReturnType<typeof createMockLogger>
+      let wired: OAuthAppController
+      let req: any
+
+      beforeEach(() => {
+        ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+        const orgId = new Types.ObjectId().toString()
+        const userId = new Types.ObjectId().toString()
+        const appId = new Types.ObjectId().toString()
+        app = {
+          _id: new Types.ObjectId(appId), clientId: 'cid', createdBy: new Types.ObjectId(userId),
+          isDeleted: false, status: OAuthAppStatus.ACTIVE, save: sinon.stub().resolves(),
+        }
+        sinon.stub(OAuthApp, 'findOne').resolves(app)
+        statusAtRevoke = []
+        sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
+        tokenLogger = createMockLogger()
+        const tokens = new OAuthTokenService(tokenLogger as any, { secret: 'x'.repeat(40) } as any, 'http://issuer')
+        wired = new OAuthAppController(new OAuthAppService(createMockLogger() as any, {} as any, {} as any, tokens), tokens, {} as any)
+        req = { user: { orgId, userId }, params: { appId } }
+      })
+
+      it('revokes the tokens once, after the app stops minting new ones', async () => {
+        sinon.stub(OAuthAccessToken, 'updateMany').callsFake((() => {
+          statusAtRevoke.push(app.status)
+          return Promise.resolve({})
+        }) as any)
+
+        await wired.deleteApp(req, mockRes, mockNext)
+
+        expect(mockNext.called).to.be.false
+        expect(mockRes.json.calledOnce).to.be.true
+        expect(statusAtRevoke).to.deep.equal([OAuthAppStatus.REVOKED])
+        expect(tokenLogger.info.args.filter(([message]) => message === 'All tokens revoked for app')).to.have.length(1)
+        expect(app.isDeleted).to.be.true
+      })
+
+      it('leaves the app as it was when its tokens cannot be revoked', async () => {
+        const down = new Error('token store down')
+        sinon.stub(OAuthAccessToken, 'updateMany').rejects(down)
+
+        await wired.deleteApp(req, mockRes, mockNext)
+
+        expect(mockNext.calledOnceWithExactly(down)).to.be.true
+        expect(mockRes.json.called).to.be.false
+        expect(app.status).to.equal(OAuthAppStatus.ACTIVE)
+        expect(app.isDeleted).to.be.false
+      })
     })
   })
 
@@ -278,5 +348,39 @@ describe('OAuthAppController', () => {
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('cid')).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
     })
+  })
+
+  // The service that makes the write logs the event (OAuthAppService, OAuthTokenService); the controller adds only the
+  // config.oauth_client.* audit line, which the settings-audit routes test checks field by field.
+  describe('a change that succeeds', () => {
+    const changes: Array<[string, string, (c: OAuthAppController) => Promise<void>]> = [
+      ['createApp', 'create', (c) => c.createApp(mockReq, mockRes, mockNext)],
+      ['setTokenIdentity', 'update', (c) => c.setTokenIdentity(mockReq, mockRes, mockNext)],
+      ['updateApp', 'update', (c) => c.updateApp(mockReq, mockRes, mockNext)],
+      ['deleteApp', 'delete', (c) => c.deleteApp(mockReq, mockRes, mockNext)],
+      ['regenerateSecret', 'update', (c) => c.regenerateSecret(mockReq, mockRes, mockNext)],
+      ['suspendApp', 'update', (c) => c.suspendApp(mockReq, mockRes, mockNext)],
+      ['activateApp', 'update', (c) => c.activateApp(mockReq, mockRes, mockNext)],
+      ['revokeAllTokens', 'update', (c) => c.revokeAllTokens(mockReq, mockRes, mockNext)],
+    ]
+    for (const [name, action, run] of changes) {
+      it(`${name} writes no log line of its own but the audit line`, async () => {
+        for (const stub of Object.values(mockOAuthAppService) as sinon.SinonStub[]) {
+          stub.resolves({ id: 'app-1', clientId: 'cid', clientSecret: 's' })
+        }
+        mockReq.params = { appId: 'app-1' }
+        mockReq.body = { name: 'n5a7-app-label', serviceAccountId: 'svc-1' }
+        const records = captureLogRecords()
+        const id = newRequestId('oauth-app')
+
+        await inRequestContext(id, () => run(controller))
+
+        expect(mockNext.called).to.be.false
+        expect(mockRes.json.calledOnce).to.be.true
+        expect(recordsOf(records, id).map((r) => [r.service, r.message])).to.deep.equal([
+          ['audit', `config.oauth_client.${action}`],
+        ])
+      })
+    }
   })
 })

@@ -45,13 +45,22 @@ class PoolTimeout(DbTimeout):
 
 
 class ConnectionLost(DbError):
-    """The server connection went away. ``retry_safe`` is true only when re-running cannot repeat an effect."""
+    """The server connection went away or could not be opened. ``retry_safe`` is true only when re-running cannot repeat an
+    effect and may succeed at once (never for a full server: :class:`TooManyConnections`)."""
 
     log_error_class = "unavailable"
 
     def __init__(self, message: str, *, retry_safe: bool) -> None:
         super().__init__(message)
         self.retry_safe = retry_safe
+
+
+class TooManyConnections(ConnectionLost):
+    """The server has no connection slot left (53300). Never retried, by ``KernelDB.run`` or a search: every attempt forks a backend
+    on a server that is already full."""
+
+    def __init__(self) -> None:
+        super().__init__("cannot connect", retry_safe=False)
 
 
 class CommitOutcomeUnknown(DbError):

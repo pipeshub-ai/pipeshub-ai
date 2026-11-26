@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/turn.started.schema.json",
+  "title": "TurnStartedEvent",
+  "description": "Kernel turn started. An engine run's turn also pins the input artifacts it was given (E1b).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "turn.started"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/TurnStartedData"
+    }
+  },
+  "$defs": {
+    "TurnStartedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn"
+      ],
+      "properties": {
+        "turn": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "inputs": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/TurnInput"
+          },
+          "description": "The artifacts the run's input named, as this turn took them (resolved and authorized for the run's actor when the turn started), placed under in/<name> in the workspace. A re-driven turn seeds these exact bytes again and never resolves them anew."
+        },
+        "skippedInputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/TurnSkippedInput"
+          },
+          "description": "The artifacts the run's input named that the run refused on its own and went on without (R36COVER-FU-3): over the per-input cap, or no longer available since they were handed over. Written only when the claim's Node names skipped_inputs; the engine is told in its first task and the answer names each one."
+        }
+      }
+    },
+    "TurnInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "artifactId",
+        "version",
+        "objectId",
+        "contentHash",
+        "sizeBytes",
+        "mimeType"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "The file name under in/."
+        },
+        "artifactId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "version": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "objectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Where the bytes are, in the session's object scope."
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sizeBytes": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        },
+        "mimeType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "TurnSkippedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "reason",
+        "words"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "reason": {
+          "enum": [
+            "too_large",
+            "unavailable"
+          ],
+          "description": "too_large: over the per-input cap; unavailable: deleted, without that version or no longer readable by the run's actor."
+        },
+        "words": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Why, in plain English words the person and the model read."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "The file's name, only when the refusal may say it (never for an artifact the actor may not read)."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.started",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "turn": 1
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.started",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "turn": 1,
+        "inputs": [
+          {
+            "name": "budget-2026.xlsx",
+            "artifactId": "art_1",
+            "version": 2,
+            "objectId": "obj_1",
+            "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 5120,
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

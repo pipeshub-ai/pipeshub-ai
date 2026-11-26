@@ -66,7 +66,7 @@ export function ProviderRow({ provider, onConfigure, hideCapabilityBadges = fals
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {provider.name}
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.aiModels.modelProviderKind')}
             </Text>
           </Flex>

@@ -104,7 +104,7 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
           ) : visible.length === 0 ? (
             <Text
               size="1"
-              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
+              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-11)' }}
             >
               {t('chat.noAgentsFound')}
             </Text>

@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Callout, Flex, Separator, Text } from '@radix-ui/themes';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, WorkspaceRightPanel } from '../../components';
+import { FormField, FormFieldTextField, WorkspaceRightPanel } from '../../components';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../mcp-servers/hooks/use-mcp-oauth-popup';
 import { ApiToolsetsApi } from '../api';
 import {
@@ -21,7 +22,6 @@ import {
 } from '../toolset-form';
 import type { ApiToolset, ApiToolsetTestResult } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledSecretTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 interface ApiActionConnectionPanelProps {
@@ -188,7 +188,7 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
           {canSave
             ? fields.map((field, index) => (
                 <FormField key={field} label={t(`workspace.apiToolsets.connect.fields.${field}`)} required>
-                  <LabeledSecretTextField
+                  <SecretTextField
                     size="2"
                     masked={isSecretField(field)}
                     autoFocus={index === 0 && !toolset.isConnected}
@@ -253,7 +253,7 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
               ) : null}
             </Flex>
           ) : (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t(status === 'notConnected' ? 'workspace.apiToolsets.connect.testNeedsConnection' : 'workspace.apiToolsets.connect.testIdle')}
             </Text>
           )}

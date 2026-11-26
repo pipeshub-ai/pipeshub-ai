@@ -1,0 +1,90 @@
+[
+  {
+    "description": "a job's pinned spec leaking into the view",
+    "instance": {
+      "request": {
+        "runId": "run_1",
+        "sessionId": "ses_1",
+        "state": "working",
+        "status": "running",
+        "ask": "Compare four competitors' pricing"
+      },
+      "jobs": [
+        {
+          "runId": "run_2",
+          "title": "Fix the failing payment test",
+          "state": "finished",
+          "status": "completed",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": 1762679400000,
+          "continuesRunId": null,
+          "spec": {}
+        }
+      ],
+      "total": 2,
+      "back": 1
+    }
+  },
+  {
+    "description": "a job state that is not a list word",
+    "instance": {
+      "request": {
+        "runId": "run_1",
+        "sessionId": "ses_1",
+        "state": "working",
+        "status": "running",
+        "ask": "Compare four competitors' pricing"
+      },
+      "jobs": [
+        {
+          "runId": "run_2",
+          "title": "Fix the failing payment test",
+          "state": "done",
+          "status": "completed",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": 1762679400000,
+          "continuesRunId": null
+        }
+      ],
+      "total": 2,
+      "back": 1
+    }
+  },
+  {
+    "description": "a request without its count of jobs back",
+    "instance": {
+      "request": {
+        "runId": "run_1",
+        "sessionId": "ses_1",
+        "state": "working",
+        "status": "running",
+        "ask": "Compare four competitors' pricing"
+      },
+      "jobs": [
+        {
+          "runId": "run_2",
+          "title": "Fix the failing payment test",
+          "state": "finished",
+          "status": "completed",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": 1762679400000,
+          "continuesRunId": null
+        },
+        {
+          "runId": "run_3",
+          "title": null,
+          "state": "working",
+          "status": "running",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": null,
+          "continuesRunId": "run_2"
+        }
+      ],
+      "total": 2
+    }
+  }
+]

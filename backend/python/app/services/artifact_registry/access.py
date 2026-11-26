@@ -27,6 +27,7 @@ __all__ = [
     "AccessPolicy",
     "AccessDeniedError",
     "ArtifactNotFoundError",
+    "ArtifactNotVisibleError",
     "is_direct_share",
     "reader_edge",
 ]
@@ -77,6 +78,13 @@ class ArtifactNotFoundError(LookupError):
     """Raised when the artifact/record does not exist (or its org does not
     match `actor.org_id` — deliberately indistinguishable from "not found"
     so a cross-org probe cannot use the error message to enumerate IDs)."""
+
+
+class ArtifactNotVisibleError(ArtifactNotFoundError, AccessDeniedError):
+    """A user of the artifact's org holds no permission edge on it (SEC-AZ-07).
+    It is a not-found to every caller that maps errors to answers, so a guessed
+    or leaked id tells a colleague no more than it tells another org; it stays
+    an `AccessDeniedError` for the callers that refuse on either."""
 
 
 class AccessPolicy:
@@ -137,7 +145,7 @@ class AccessPolicy:
                 "Access denied: user=%s has no permission edge for artifact=%s",
                 actor.user_id, artifact_id,
             )
-            raise AccessDeniedError(f"Not authorized for artifact: {artifact_id}")
+            raise ArtifactNotVisibleError(f"Artifact not found: {artifact_id}")
         if require_owner and edge.get("role") != "OWNER":
             logger.warning(
                 "Write denied: user=%s holds role=%s (not OWNER) on artifact=%s",

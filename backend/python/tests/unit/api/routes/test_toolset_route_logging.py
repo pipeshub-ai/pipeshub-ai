@@ -6,6 +6,8 @@ the client got, which this change must not alter.
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -21,7 +23,7 @@ from app.agents.tools.factories.base import ToolsetAuthError
 from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import toolsets as routes
 from app.connectors.core.base.token_service import oauth_service
-from app.containers.connector import ConnectorAppContainer
+from app.edition_containers import ConnectorAppContainer
 from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.refusing_token_endpoint import RefusingTokenEndpoint
@@ -232,6 +234,11 @@ def _nothing(_monkeypatch: pytest.MonkeyPatch, _store: _Store) -> None:
     return None
 
 
+def _sign_in_restarted(_monkeypatch: pytest.MonkeyPatch, store: _Store) -> None:
+    # A newer sign-in replaced the state this callback carries: the real handle_callback raises OAuthStateError.
+    store.values[USER_AUTH_PATH] = {"oauth": {"state": "newer-state"}}
+
+
 def _connect_error() -> aiohttp.ClientConnectorError:
     """A fresh one per case: a logged exception carries the level it was logged at."""
     return aiohttp.ClientConnectorError(
@@ -240,6 +247,7 @@ _INVALID_GRANT = '{"error":"invalid_grant","error_description":"code expired for
 _CODE = {"code": "auth-code"}
 
 # (arrange, query, level, error_class, reason the line and the body's "error" share, oauth_error, toolset_id, agent_id)
+# The ids are on the line only once the instance is found: before that they are the state's, the caller's own text.
 CALLBACK_CASES = {
     "token-invalid-grant": (_token_endpoint(400, _INVALID_GRANT), {**_CODE, "state": _state()},
                             logging.WARNING, "auth_expired", "server_error", None, "i1", None),
@@ -249,16 +257,12 @@ CALLBACK_CASES = {
                   logging.WARNING, "upstream_5xx", "server_error", None, "i1", None),
     "token-endpoint-down": (_token_endpoint(0, raises=_connect_error), {**_CODE, "state": _state()},
                             logging.WARNING, "unavailable", "server_error", None, "i1", None),
-    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
-    "token-malformed-created-at": (_token_endpoint(200, '{"access_token": "at", "created_at": "' + SENTINEL + '"}'),
-                                   {**_CODE, "state": _state()},
-                                   logging.ERROR, "internal", "server_error", None, "i1", None),
     "instances-unreadable": (_instances_unreadable, {**_CODE, "state": _state()},
-                             logging.WARNING, "unavailable", "auth_failed", None, "i1", None),
+                             logging.WARNING, "unavailable", "auth_failed", None, None, None),
     "other-users-state": (_nothing, {**_CODE, "state": _state(user_id="65f0a1b2c3d4e5f6a7b8c9ff")},
-                          logging.WARNING, "forbidden", "auth_failed", None, "i1", None),
+                          logging.WARNING, "forbidden", "auth_failed", None, None, None),
     "deleted-instance": (_nothing, {**_CODE, "state": _state(instance_id="gone")},
-                         logging.WARNING, "not_found", "auth_failed", None, "gone", None),
+                         logging.WARNING, "not_found", "auth_failed", None, None, None),
     "undecodable-state": (_nothing, {**_CODE, "state": "not-a-state"},
                           logging.WARNING, "bad_request", "OAuthConfigError", None, None, None),
     "no-oauth-app-linked": (_no_oauth_app_linked, {**_CODE, "state": _state()},
@@ -275,10 +279,12 @@ CALLBACK_CASES = {
                               logging.WARNING, "forbidden", "provider_error", "other", None, None),
     "missing-code": (_nothing, {"state": _state()},
                      logging.WARNING, "bad_request", "missing_parameters", None, None, None),
+    "stale-state": (_sign_in_restarted, {**_CODE, "state": _state()},
+                    logging.WARNING, "bad_request", "server_error", None, "i1", None),
     "agent-no-edit-access": (_agent_check(404), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},
-                             logging.WARNING, "forbidden", "agent_permission_denied", None, "i1", "agent-1"),
+                             logging.WARNING, "forbidden", "agent_permission_denied", None, None, None),
     "agent-sign-in-expired": (_agent_check(401), {**_CODE, "state": _state(user_id="agent-1", is_agent=True)},
-                              logging.WARNING, "auth_expired", "agent_auth_error", None, "i1", "agent-1"),
+                              logging.WARNING, "auth_expired", "agent_auth_error", None, None, None),
 }
 _NO_EXCEPTION = {"provider-access-denied", "provider-server-error", "provider-invalid-request",
                  "provider-unknown-code", "missing-code"}
@@ -307,6 +313,110 @@ def test_each_toolset_callback_failure_is_one_line_with_its_class_and_no_provide
     assert "error_message" not in fields
     for logged in (r for r in caplog.records if r.name.startswith("app.")):
         assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged) and "://" not in _text(logged)
+
+
+# --- the state is the caller's own text: its ids reach a line only once the server has found them --------------------
+
+# Built at run time, as SENTINEL is.
+EMAIL = "ada.lovelace" + "@example.com"
+
+
+def _b64(value: object) -> str:
+    return base64.urlsafe_b64encode(json.dumps(value).encode()).decode()
+
+
+def _crafted(instance_id: object, user_id: object = USER, *, is_agent: bool = False) -> str:
+    """A state the caller wrote: ``_encode_state_with_instance`` would only take strings."""
+    return _b64({"state": "orig-state", "instance_id": instance_id, "user_id": user_id, **({"is_agent": True} if is_agent else {})})
+
+
+def _agent_allowed(monkeypatch: pytest.MonkeyPatch, store: _Store) -> None:
+    monkeypatch.setattr(routes, "_require_agent_edit_access", AsyncMock(return_value={"_key": "agent-1"}))
+    store.values[routes._get_agent_auth_path("i1", "agent-1")] = {"oauth": {"state": "orig-state"}}
+    _token_endpoint(503)(monkeypatch, store)
+
+
+# (arrange, state, reason, toolset_id, agent_id)
+CRAFTED_STATES = {
+    "email-as-instance": (_nothing, _crafted(EMAIL), "auth_failed", None, None),
+    "email-as-instance-other-user": (_nothing, _crafted(EMAIL, "65f0a1b2c3d4e5f6a7b8c9ff"), "auth_failed", None, None),
+    "object-as-instance": (_nothing, _crafted({"owner": EMAIL}), "OAuthConfigError", None, None),
+    "email-as-agent-denied": (_agent_check(404), _crafted("i1", EMAIL, is_agent=True), "agent_permission_denied", None, None),
+    "email-as-instance-agent-allowed": (_agent_allowed, _crafted(EMAIL, "agent-1", is_agent=True), "auth_failed", None, None),
+    # Control: an allowed agent and a found instance are still on the line.
+    "agent-allowed-instance-found": (_agent_allowed, _crafted("i1", "agent-1", is_agent=True), "server_error", "i1", "agent-1"),
+}
+
+
+@pytest.mark.parametrize("case", list(CRAFTED_STATES))
+def test_a_crafted_states_ids_are_not_on_any_line_until_the_server_found_them(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str,
+) -> None:
+    arrange, state, reason, toolset_id, agent_id = CRAFTED_STATES[case]
+    arrange(monkeypatch, store)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": state})
+
+    assert response.json()["error"] == reason
+    _record, fields = _end(caplog)
+    assert (fields["reason"], fields.get("toolset_id"), fields.get("agent_id")) == (reason, toolset_id, agent_id)
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "ada.lovelace" not in _text(logged) and "owner" not in _text(logged)
+
+
+# States that are not a dict of string fields: the decoder refuses them, as an undecodable state.
+NOT_A_DICT_OF_STRINGS = {
+    "json-string": _b64("state instance_id user_id"),  # passed the old `in` check as a substring
+    "json-list": _b64(["state", "instance_id", "user_id"]),
+    "int-user": _crafted("i1", 123),
+    "dict-agent-key": _crafted("i1", {"owner": EMAIL}, is_agent=True),
+}
+
+
+@pytest.mark.parametrize("case", list(NOT_A_DICT_OF_STRINGS))
+def test_a_state_that_is_not_a_dict_of_strings_is_a_bad_request_warning(
+    client: TestClient, caplog: pytest.LogCaptureFixture, case: str,
+) -> None:
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": NOT_A_DICT_OF_STRINGS[case]})
+
+    assert response.json()["error"] == "OAuthConfigError"
+    record, fields = _end(caplog)
+    assert _loud(caplog) == [record]
+    assert (record.levelno, fields["error_class"], fields["reason"]) == (logging.WARNING, "bad_request", "OAuthConfigError")
+    assert (fields.get("toolset_id"), fields.get("agent_id")) == (None, None)
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "ada.lovelace" not in _text(logged) and "owner" not in _text(logged)
+
+
+# (token answer, level, error_class, error_type): the class a refresh gives the same answer, except a refused code.
+TOKEN_ANSWERS = {
+    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
+    "malformed-created-at": ('{"access_token": "at", "created_at": "' + SENTINEL + '"}',
+                             logging.ERROR, "misconfigured", "MalformedTokenError"),
+    "no-access-token": ('{"token_type": "bearer", "error_description": "' + SENTINEL + '"}',
+                        logging.ERROR, "misconfigured", "TokenResponseError"),
+    "slack-other-code": ('{"ok": false, "error": "bad_redirect_uri"}', logging.ERROR, "misconfigured", "OAuthTokenRequestError"),
+    "slack-invalid-code": ('{"ok": false, "error": "invalid_code"}', logging.WARNING, "bad_request", "OAuthTokenRequestError"),
+}
+
+
+@pytest.mark.parametrize("case", list(TOKEN_ANSWERS))
+def test_a_token_answer_on_the_callback_is_classed_as_its_refresh_classes_it(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str,
+) -> None:
+    body, level, cls, error_type = TOKEN_ANSWERS[case]
+    _token_endpoint(200, body)(monkeypatch, store)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert response.json()["error"] == "server_error"  # the body is unchanged
+    record, fields = _end(caplog)
+    assert _loud(caplog) == [record]
+    assert (record.levelno, fields["error_class"], fields["error_type"], fields["reason"]) == (
+        level, cls, error_type, "server_error")
+    assert "error_message" not in fields
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "SENTINEL" not in _text(logged) and "://" not in _text(logged)
 
 
 # --- pattern D: a step the route swallows ----------------------------------------------------------------------------
@@ -376,3 +486,28 @@ def test_the_setup_check_after_a_sign_in_logs_once_without_the_providers_text(
     assert end["outcome"] == ("success" if body_error is None else "failure")
     for logged in (r for r in caplog.records if r.name.startswith("app.")):
         assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged)
+
+
+def test_a_sign_in_whose_tokens_were_not_saved_is_not_marked_authenticated(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The real OAuthProvider.handle_callback: only the write that carries the new tokens fails, the route's own would not.
+    monkeypatch.setattr(oauth_service.OAuthProvider, "exchange_code_for_token", AsyncMock(
+        return_value=oauth_service.OAuthToken(access_token="at-new", refresh_token="rt-new")))
+    monkeypatch.setattr("app.connectors.core.base.token_service.startup_service.startup_service",
+                        MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))
+    save = store.set_config
+
+    async def tokens_not_saved(key: str, value: Any, **kw: Any) -> bool:  # noqa: ANN401
+        return False if isinstance(value, dict) and value.get("credentials") else await save(key, value, **kw)
+
+    monkeypatch.setattr(store, "set_config", tokens_not_saved)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert (response.json()["success"], response.json()["error"]) == (False, "server_error")
+    assert "try again" in response.json()["error_message"]
+    assert store.values[USER_AUTH_PATH] == {"oauth": {"state": "orig-state"}}  # neither tokens nor isAuthenticated
+    record, fields = _end(caplog)
+    assert (record.levelno, fields["error_class"], fields["error_type"]) == (
+        logging.WARNING, "unavailable", "OAuthStoreUnavailableError")

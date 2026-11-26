@@ -437,7 +437,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
       it('lineage: true sets app.org_lineage from the real kernel.org_lineage (comma list, the org first)', async () => {
         const r = await inOrg(A, () => kernelRt().withUow({ lineage: true }, (tx) => tx.query(Q('t.lin', "SELECT current_setting('app.org_lineage') AS l"))))
-        expect(r.rows[0].l).to.equal(A)
+        expect(r.rows[0]!.l).to.equal(A)
       })
 
       it('the profile epoch is read through the fence function and a stale one is DbFenced (55000)', async () => {

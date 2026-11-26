@@ -8,6 +8,7 @@ down_revision = "platform_data_0004"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds one nullable column without a default and one index; older code never names the column, so its inserts leave it NULL and its queries keep working. Older code does not know scheduling: after a rollback, or on an old pod during a rolling deploy, a row stored with a future visible_at is listed, counted and marked read as if visible now. Only its own recipient sees it, so no access changes; an early notice is accepted rather than refusing every rollback past this revision"
+blocking_index_ok = "the index keys visible_at, which this revision adds, so it cannot be built before its transaction"
 
 
 def upgrade():

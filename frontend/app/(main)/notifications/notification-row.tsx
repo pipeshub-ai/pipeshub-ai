@@ -83,15 +83,15 @@ function severityIcon(severity: NotificationSeverity): string {
 function severityColor(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
-      return 'var(--blue-9)';
+      return 'var(--blue-11)';
     case 'warning':
-      return 'var(--amber-9)';
+      return 'var(--amber-11)';
     case 'critical':
       return 'var(--red-11)';
     case 'success':
-      return 'var(--green-9)';
+      return 'var(--green-11)';
     default:
-      return 'var(--red-9)';
+      return 'var(--red-11)';
   }
 }
 

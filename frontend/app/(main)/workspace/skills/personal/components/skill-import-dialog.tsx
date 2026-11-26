@@ -3,14 +3,15 @@
 import { asRecord } from '@/lib/utils/safe';
 import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, Dialog, Flex, Tabs, Text, TextField, VisuallyHidden } from '@radix-ui/themes';
+import { Badge, Box, Button, Dialog, Flex, Tabs, Text, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { FormField } from '../../../components';
+import { FormField, FormFieldTextField } from '../../../components';
 import { toast } from '@/lib/store/toast-store';
 import { useSkillsStore } from '../store';
 import { SkillsApi } from '../api';
 import type { ImportPreview, ImportSourceTab } from '../types';
+import { SkillFindings } from './skill-findings';
 
 const SKILL_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_SKILL_NAME_LENGTH = 64;
@@ -122,21 +123,21 @@ export function SkillImportDialog() {
 
           <Tabs.Content value="npm">
             <FormField label={t('workspace.skills.import.npmLabel')}>
-              <TextField.Root
+              <FormFieldTextField
                 size="2"
                 placeholder="npm install @acme/pdf-skill  ·  or just: pdf-skill"
                 value={npmCommand}
                 onChange={(e) => setNpmCommand(e.target.value)}
               />
             </FormField>
-            <Text size="1" style={{ color: 'var(--gray-9)', marginTop: 4, display: 'block' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', marginTop: 4, display: 'block' }}>
               {t('workspace.skills.import.npmHint')}
             </Text>
           </Tabs.Content>
 
           <Tabs.Content value="url">
             <FormField label={t('workspace.skills.import.urlLabel')}>
-              <TextField.Root
+              <FormFieldTextField
                 size="2"
                 placeholder="https://example.com/my-skill.zip"
                 value={url}
@@ -236,33 +237,33 @@ function ImportPreviewCard({
     >
       <Flex align="center" justify="between">
         <Flex align="center" gap="2">
-          <MaterialIcon name="psychology" size={16} color="var(--gray-10)" />
+          <MaterialIcon name="psychology" size={16} color="var(--gray-11)" />
           <Badge size="1" color="gray">v{preview.version}</Badge>
         </Flex>
-        <Button variant="ghost" color="gray" size="1" onClick={onDiscard} style={{ cursor: 'pointer' }}>
-          <MaterialIcon name="close" size={14} color="var(--gray-10)" />
+        <Button aria-label={t('common.discard')} variant="ghost" color="gray" size="1" onClick={onDiscard} style={{ cursor: 'pointer' }}>
+          <MaterialIcon name="close" size={14} color="var(--gray-11)" />
         </Button>
       </Flex>
 
       <FormField label={t('workspace.skills.form.name')} required error={nameError}>
-        <TextField.Root
+        <FormFieldTextField
           size="2"
           value={importName}
           placeholder={t('workspace.skills.form.namePlaceholder')}
           onChange={(e) => onImportNameChange(e.target.value.trim())}
         />
       </FormField>
-      <Text size="1" style={{ color: 'var(--gray-9)' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.skills.import.nameHint')}
       </Text>
       {importName && importName !== preview.name && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.skills.import.originalName', { name: preview.name })}
         </Text>
       )}
 
       <Text size="1" style={{ color: 'var(--gray-11)' }}>{preview.description}</Text>
-      <Text size="1" style={{ color: 'var(--gray-9)' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.skills.import.source', { source: preview.sourceLabel })} · {t('workspace.skills.import.resourceCount', { count: resourceCount })}
       </Text>
 
@@ -281,6 +282,9 @@ function ImportPreviewCard({
           ))}
         </Flex>
       )}
+
+      <SkillFindings findings={preview.findings ?? []} />
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.scan.importNote')}</Text>
     </Flex>
   );
 }

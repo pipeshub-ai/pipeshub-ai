@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UXINT interaction cards</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f3f4f1; --border: #dfe2dc; --text: #1d211c; --muted: #646b62;
+  --accent: #0f7a5c; --accent-ink: #ffffff; --accent-soft: #e2f3ec; --warn: #9a5b00; --warn-soft: #fdf1dc;
+  --danger: #b4231f; --rail: #c9cec5; --focus: #2b6cd8; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+  --bad-soft: #fde8e8; --bad: #a41d1d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+    --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+    --danger: #f06b66; --rail: #3d443c; --focus: #7aa7ff; --shadow: none; --bad-soft: #3a1b1b; --bad: #ff9a9a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+  --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+  --danger: #f06b66; --rail: #3d443c; --focus: #7aa7ff; --shadow: none; --bad-soft: #3a1b1b; --bad: #ff9a9a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header.top { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header.top h1 { font-size: 17px; margin: 0; flex: 1 1 260px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button, .tool button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+main { padding: 16px; max-width: 1180px; margin: 0 auto; }
+.intro { color: var(--muted); max-width: 820px; margin: 0 0 12px; }
+.panel[hidden] { display: none; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.frame { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+.frame > .cap { padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.frame.phone { max-width: 390px; margin: 0 auto; }
+.chat { padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 420px; position: relative; }
+.user { align-self: flex-end; background: var(--surface-2); border-radius: 12px; padding: 8px 12px; max-width: 85%; }
+.summary { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.chip { font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border); }
+.chip.wait { background: var(--warn-soft); color: var(--warn); border-color: transparent; font-weight: 600; }
+.chip.ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.tl { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 2px solid var(--rail); display: flex; flex-direction: column; gap: 8px; }
+.tl > li { position: relative; }
+.tl > li::before { content: ""; position: absolute; left: -24px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid var(--rail); }
+.tl > li.done::before { background: var(--accent); border-color: var(--accent); }
+.tl > li.waiting::before { background: var(--warn); border-color: var(--warn); }
+.row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.row .t { font-weight: 500; }
+.row .m { color: var(--muted); font-size: 12px; }
+.card { margin-top: 6px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+.card.active { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+.card h3 { margin: 0 0 4px; font-size: 14px; }
+.card .why { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+.card .what { background: var(--surface-2); border-radius: 8px; padding: 6px 8px; font-size: 12px; margin-bottom: 8px; }
+.card .what ol { margin: 0; padding-left: 18px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.btn { font: inherit; min-height: 44px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.link { border: 0; background: none; color: var(--accent); padding: 0 6px; }
+.kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; color: var(--muted); }
+.receipt { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.receipt .ok { color: var(--accent); font-weight: 600; }
+.queue { font-size: 12px; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; padding: 6px 10px; margin-top: 6px; }
+.answer { padding-top: 6px; border-top: 1px solid var(--border); }
+.composer { margin-top: auto; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; color: var(--muted); background: var(--surface); }
+.tray { border: 1px solid var(--warn); background: var(--warn-soft); border-radius: 12px; padding: 10px 12px; }
+.tray .head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--warn); font-weight: 600; margin-bottom: 4px; }
+.pill { align-self: center; background: var(--warn); color: var(--surface); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; border: 0; min-height: 32px; }
+.anchor { font-size: 11px; color: var(--warn); font-weight: 600; }
+/* "Before": today's layout, reproduced from the screenshots */
+.old-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--surface); font-size: 13px; }
+.old-card .ttl { font-weight: 600; }
+.old-card .args { background: var(--surface-2); border-radius: 6px; padding: 6px; margin: 6px 0; font-size: 12px; }
+.old-card .btns { display: flex; justify-content: flex-end; gap: 6px; }
+.old-card .btns span { border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 12px; }
+.old-card .btns span.p { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.issue { font-size: 11px; color: var(--bad); background: var(--bad-soft); border-radius: 6px; padding: 2px 6px; display: inline-block; margin-top: 4px; }
+.stack { display: flex; flex-direction: column; gap: 6px; }
+.note { font-size: 13px; color: var(--muted); }
+.reco { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 10px 12px; border-radius: 6px; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+@media (max-width: 480px) { main { padding: 12px 16px; } .chat { padding: 10px; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>UXINT: questions and approvals in the chat, before and after</h1>
+  <div class="tabs" role="tablist" aria-label="View">
+    <button role="tab" aria-selected="true" data-p="before">Before (today)</button>
+    <button role="tab" aria-selected="false" data-p="a">A: inline</button>
+    <button role="tab" aria-selected="false" data-p="b">B: tray</button>
+    <button role="tab" aria-selected="false" data-p="c">C: hybrid (recommended)</button>
+    <button role="tab" aria-selected="false" data-p="details">Engine, receipts, phone</button>
+  </div>
+  <div class="tool"><button id="theme" type="button">Toggle dark</button></div>
+</header>
+<main>
+<p class="intro">Every frame renders the owner's request "Can we create picture of all 7 wonders and then create pptx". The run first
+asked a question, then asked for approval of 1 image, 3 web searches, 2 more searches, 1 page fetch and 7 images (query.log, runs
+5aaae7f1 and 0ba643e6). That is 14 approval cards before the pptx step, and 17 interactions in all once the question and the two code runs are counted. The mock shows the moment the 7 images wait. None of the directions adds
+a new screen: everything stays in the existing message, its timeline and the existing composer, as CHAT-TL decided.</p>
+
+<section class="panel" id="before">
+  <div class="cols">
+    <div class="frame"><div class="cap">Today, while the 7 image approvals wait (desktop). From evidence s10, s4 and the replay w-*.</div>
+      <div class="chat">
+        <div class="user">Can we create picture of all 7 wonders and then create pptx</div>
+        <div class="summary">⌃ Used Internaltools: Ask User Question · Image Generator · generate_image · Web · web_search (5) · Used 14 tools · View activity</div>
+        <div class="old-card"><div class="ttl">MCP · Ran 9 tools</div></div>
+        <div class="stack">
+          <div class="old-card"><div class="ttl">Image Generator · generate_image? <span class="chip ok">Approved</span></div>Your organization requires approval before an agent does this. Nothing happens until you decide.<div class="args">Prompt: A photorealistic picture of the Seven Wonders…</div></div>
+          <div class="old-card"><div class="ttl">Web · web_search? <span class="chip ok">Approved</span></div>Earlier in this conversation the agent used content from a connected app or tool whose origin cannot be checked, and this would send something outside your organization…<div class="args">Query: new seven wonders of the world list</div></div>
+          <div class="note">… 4 more decided cards, each full size …</div>
+          <div class="old-card"><div class="ttl">Image Generator · generate_image?</div>Your organization requires approval…<div class="args">Prompt: A photorealistic picture of Great Wall of China</div><div class="btns"><span>Deny</span><span class="p">Allow once</span></div></div>
+          <div class="note">… 6 more identical cards, each with its own Deny / Allow once …</div>
+          <span class="issue">7 cards for one step · decided cards stay full size · no count · below the timeline, not at the step</span>
+        </div>
+        <div class="old-card"><div class="ttl">Question: <span class="chip ok">Answered</span></div>1. Which set of wonders should I draw? ◉ Ancient seven ○ New seven ○ Both sets</div>
+        <span class="issue">asked first, shown last</span>
+        <div class="composer">Ask anything…</div>
+      </div>
+    </div>
+    <div class="frame"><div class="cap">What is wrong, in order of harm</div>
+      <div class="chat">
+        <table>
+          <tr><th>#</th><th>Problem</th></tr>
+          <tr><td>1</td><td>The question asked first renders under the later approvals (fixed slots in <code>chat-response.tsx:710-775</code>).</td></tr>
+          <tr><td>2</td><td>Cards sit under the timeline, not at the step that asked; when the run ends they jump into the collapsed section.</td></tr>
+          <tr><td>3</td><td>A batch of N identical calls gives N cards and N clicks; nothing groups them.</td></tr>
+          <tr><td>4</td><td>Deciding the 2nd card of a batch first does nothing visible: the run waits on the 1st (<code>driver.py:2963-2972</code>).</td></tr>
+          <tr><td>5</td><td>Decided cards stay full size until the run ends; after a run, a decided card disappears from view.</td></tr>
+          <tr><td>6</td><td>A read (web search) is asked under "would send something outside your organization", which reads as a write.</td></tr>
+          <tr><td>7</td><td>No count of what waits, no focus move, no announcement; buttons are 36px on phones.</td></tr>
+          <tr><td>8</td><td>The hold expires after 120 s with no sign on the card; the run is suspended while the UI still shows "running".</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="a" hidden>
+  <p class="note"><b>A: inline cards at the step.</b> Each request is a row of the timeline. The row that waits opens a card under itself.
+  Only the first waiting card is open; later ones show as one queued line. Decided cards fold to a one-line receipt. Simple and
+  close to Claude.ai, but the open card can scroll out of view on a long run.</p>
+  <div class="cols">
+    <div class="frame"><div class="cap">A, desktop</div>
+      <div class="chat">
+        <div class="user">Can we create picture of all 7 wonders and then create pptx</div>
+        <div class="summary">Working · 2m 10s <span class="chip wait">1 of 2 waiting for you</span></div>
+        <ol class="tl">
+          <li class="done"><div class="row"><span class="t">Asked you which wonders</span></div>
+            <div class="receipt"><span class="ok">✓</span> You answered: Ancient seven · 11:46</div></li>
+          <li class="done"><div class="row"><span class="t">Generated a collage</span><span class="m">Image Generator</span></div>
+            <div class="receipt"><span class="ok">✓</span> Allowed by you · 11:46</div></li>
+          <li class="done"><div class="row"><span class="t">Searched the web 5 times, read 1 page</span></div>
+            <div class="receipt"><span class="ok">✓</span> Allowed 5 searches and 1 page by you</div></li>
+          <li class="waiting"><div class="row"><span class="t">Generate 7 images</span><span class="anchor">Waiting for you</span></div>
+            <div class="card active" role="region" aria-label="Generate 7 images? 1 of 2 waiting">
+              <h3>Generate 7 images?</h3>
+              <p class="why">Your organization asks before an agent creates content. Nothing is created until you decide.</p>
+              <div class="what"><ol><li>Great Wall of China</li><li>Petra</li><li>Christ the Redeemer</li><li>Machu Picchu</li><li>Chichén Itzá</li><li>Colosseum</li><li>Taj Mahal</li></ol></div>
+              <div class="actions"><button class="btn link">Review each</button><button class="btn">Deny</button><button class="btn primary">Allow all 7</button></div>
+            </div></li>
+          <li><div class="row"><span class="t">Build the pptx</span><span class="m">queued, will ask to run code</span></div></li>
+        </ol>
+        <div class="composer">Ask anything… (typing steers the run)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="b" hidden>
+  <p class="note"><b>B: one tray above the composer.</b> The timeline only marks the step that waits. A single tray above the
+  composer steps through everything waiting in causal order, with a count. Always in view and fast with the keyboard, but the
+  decision is apart from its step, the tray is a new surface, and a second waiting run would compete for it.</p>
+  <div class="cols">
+    <div class="frame"><div class="cap">B, desktop</div>
+      <div class="chat">
+        <div class="user">Can we create picture of all 7 wonders and then create pptx</div>
+        <div class="summary">Working · 2m 10s</div>
+        <ol class="tl">
+          <li class="done"><div class="row"><span class="t">Asked you which wonders</span><span class="m">· Ancient seven</span></div></li>
+          <li class="done"><div class="row"><span class="t">Generated a collage</span></div></li>
+          <li class="done"><div class="row"><span class="t">Searched the web 5 times, read 1 page</span></div></li>
+          <li class="waiting"><div class="row"><span class="t">Generate 7 images</span><span class="anchor">⟵ waiting (1 of 2)</span></div></li>
+          <li><div class="row"><span class="t">Build the pptx</span><span class="m">queued</span></div></li>
+        </ol>
+        <div class="tray" role="region" aria-label="Needs your input, 1 of 2">
+          <div class="head"><span>Needs your input · 1 of 2</span><span>Generate 7 images</span></div>
+          <div class="note">Your organization asks before an agent creates content. Great Wall, Petra, Christ the Redeemer, Machu Picchu, Chichén Itzá, Colosseum, Taj Mahal.</div>
+          <div class="actions"><button class="btn link">Review each</button><button class="btn">Deny</button><button class="btn primary">Allow all 7 <span class="kbd">⏎</span></button></div>
+        </div>
+        <div class="composer">Answer above, or type to steer…</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel" id="c" hidden>
+  <div class="reco"><b>Recommended: C.</b> The card lives at its step, as in A, so the order on screen is the order the run asked and
+  the receipt stays where it happened. When the open card is off screen, a small pill above the composer says how many wait and jumps
+  to the first. It reuses the existing timeline and composer, adds no screen and no tray, and keeps one call to action.</div>
+  <div class="cols">
+    <div class="frame"><div class="cap">C, desktop, scrolled to the card</div>
+      <div class="chat">
+        <div class="user">Can we create picture of all 7 wonders and then create pptx</div>
+        <div class="summary">Working · 2m 10s <span class="chip wait">2 waiting for you</span> · View activity</div>
+        <ol class="tl">
+          <li class="done"><div class="row"><span class="t">Asked you which wonders</span></div>
+            <div class="receipt"><span class="ok">✓</span> You answered: Ancient seven</div></li>
+          <li class="done"><div class="row"><span class="t">Generated a collage</span></div>
+            <div class="receipt"><span class="ok">✓</span> Allowed once by you</div></li>
+          <li class="done"><div class="row"><span class="t">Searched the web 5 times, read 1 page</span></div>
+            <div class="receipt"><span class="ok">✓</span> Allowed for this conversation by you</div></li>
+          <li class="waiting"><div class="row"><span class="t">Generate 7 images</span></div>
+            <div class="card active" role="region" aria-labelledby="c-h" tabindex="-1">
+              <h3 id="c-h">Generate 7 images?</h3>
+              <p class="why">Your organization asks before an agent creates content. Nothing is created until you decide.</p>
+              <div class="what"><ol><li>Great Wall of China</li><li>Petra</li><li>Christ the Redeemer</li><li>Machu Picchu</li><li>Chichén Itzá</li><li>Colosseum</li><li>Taj Mahal</li></ol></div>
+              <div class="actions"><button class="btn link">Review each</button><button class="btn">Deny</button><button class="btn primary">Allow all 7</button></div>
+            </div>
+            <div class="queue">Next: Run code to build the pptx</div></li>
+        </ol>
+        <div class="composer">Ask anything… (typing steers the run; the card stays)</div>
+      </div>
+    </div>
+    <div class="frame"><div class="cap">C, desktop, scrolled away from the card</div>
+      <div class="chat">
+        <div class="note">… the conversation above …</div>
+        <div class="summary">Working · 2m 14s</div>
+        <div style="flex:1"></div>
+        <button class="pill" type="button">2 waiting for you · Go to first ↓</button>
+        <div class="composer">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+  <h2 style="font-size:15px">Web search under the flow guard, as C words it</h2>
+  <div class="frame" style="max-width:640px"><div class="chat" style="min-height:0">
+    <ol class="tl"><li class="waiting"><div class="row"><span class="t">Search the web 3 times</span></div>
+      <div class="card active">
+        <h3>Search the web 3 times?</h3>
+        <p class="why">These searches send words to duckduckgo.com. An earlier step brought in content we could not check, so we ask
+        before anything leaves. Searching does not change anything.</p>
+        <div class="what"><ol><li>new seven wonders of the world list</li><li>seven wonders photos public domain</li><li>seven wonders facts</li></ol></div>
+        <div class="actions"><button class="btn link">Review each</button><button class="btn">Deny</button><button class="btn">Allow once</button><button class="btn primary">Allow web search for this chat</button></div>
+      </div></li></ol>
+  </div></div>
+</section>
+
+<section class="panel" id="details" hidden>
+  <div class="cols">
+    <div class="frame"><div class="cap">Engine child: the approval nests under its "Code task" step (C)</div>
+      <div class="chat">
+        <div class="user">Build the deck as a pptx</div>
+        <ol class="tl">
+          <li class="waiting"><div class="row"><span class="t">Code task · Codex</span><span class="m">running</span></div>
+            <ol class="tl" style="margin-top:6px">
+              <li class="done"><div class="row"><span class="t">Ran <code>python make_deck.py</code></span></div></li>
+              <li class="waiting"><div class="row"><span class="t">Create a ticket in E2E SaaS</span></div>
+                <div class="card active">
+                  <h3>Codex wants to create a ticket in E2E SaaS</h3>
+                  <p class="why">Your organization asks before an agent writes to a connected app.</p>
+                  <div class="what">Title: Wonders deck ready · Body: …</div>
+                  <div class="actions"><button class="btn">Deny</button><button class="btn primary">Allow once</button></div>
+                </div></li>
+            </ol></li>
+        </ol>
+      </div>
+    </div>
+    <div class="frame"><div class="cap">Receipts after the run (collapsed timeline, expanded)</div>
+      <div class="chat">
+        <div class="summary">⌄ Asked 1 question, 16 approvals · Used 14 tools · 6m 02s · View activity</div>
+        <ol class="tl">
+          <li class="done"><div class="row"><span class="t">Asked you which wonders</span></div><div class="receipt"><span class="ok">✓</span> Ancient seven</div></li>
+          <li class="done"><div class="row"><span class="t">Generated 8 images</span></div><div class="receipt"><span class="ok">✓</span> Allowed by you (2 decisions)</div></li>
+          <li class="done"><div class="row"><span class="t">Searched the web 5 times, read 1 page</span></div><div class="receipt"><span class="ok">✓</span> Allowed by you</div></li>
+          <li class="done"><div class="row"><span class="t">Ran code: built seven-wonders.pptx</span></div><div class="receipt"><span class="ok">✓</span> Allowed once</div></li>
+          <li><div class="row"><span class="t">Denied example</span></div><div class="receipt" style="color:var(--danger)">✕ Denied by you · nothing was sent</div></li>
+        </ol>
+        <div class="answer">Here are the seven wonders and a 9-slide deck: seven-wonders.pptx.</div>
+      </div>
+    </div>
+    <div class="frame phone"><div class="cap">C at 390 px</div>
+      <div class="chat">
+        <div class="user">Can we create picture of all 7 wonders and then create pptx</div>
+        <div class="summary">Working <span class="chip wait">2 waiting</span></div>
+        <ol class="tl">
+          <li class="done"><div class="row"><span class="t">3 steps done</span></div></li>
+          <li class="waiting"><div class="row"><span class="t">Generate 7 images</span></div>
+            <div class="card active"><h3>Generate 7 images?</h3><p class="why">Your organization asks before an agent creates content.</p>
+              <div class="what">Great Wall, Petra, Christ the Redeemer, Machu Picchu, Chichén Itzá, Colosseum, Taj Mahal</div>
+              <div class="actions" style="justify-content:stretch"><button class="btn primary" style="flex:1 1 100%">Allow all 7</button><button class="btn" style="flex:1">Deny</button><button class="btn" style="flex:1">Review each</button></div>
+            </div></li>
+        </ol>
+        <div class="composer">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+<script>
+const tabs = document.querySelectorAll('[role=tab]');
+tabs.forEach((t) => t.addEventListener('click', () => {
+  tabs.forEach((x) => x.setAttribute('aria-selected', String(x === t)));
+  document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.id !== t.dataset.p; });
+}));
+document.getElementById('theme').addEventListener('click', () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

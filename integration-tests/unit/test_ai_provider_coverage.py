@@ -1,7 +1,8 @@
 """Which AI providers a run is held to, and which it may skip.
 
-The workflows pass both OpenAI's and Azure OpenAI's keys and name one of them in
-the repository variable TEST_AI_MODEL_PROVIDER (openAI when unset). The named
+The workflows pass OpenAI's, Azure OpenAI's and an OpenAI-compatible gateway's
+settings and name one of them in the repository variable TEST_AI_MODEL_PROVIDER
+(openAI when unset). The named
 provider must fail rather than skip when its key is gone — a rotated key
 otherwise reads as a passing run — and every other provider skips, even with a
 key set, because that key may belong to an account nobody is paying for.
@@ -53,6 +54,8 @@ def _clear_keys(monkeypatch) -> None:
         "TEST_OPENAI_API_KEY", "OPENAI_API_KEY", "TEST_GROQ_API_KEY",
         "TEST_GEMINI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
         "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
+        "TEST_OPENAI_COMPATIBLE_API_KEY", "TEST_OPENAI_COMPATIBLE_ENDPOINT",
+        "TEST_OPENAI_COMPATIBLE_LLM_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -63,10 +66,17 @@ def _set_azure(monkeypatch) -> None:
     monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "d")
 
 
+def _set_compatible(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_OPENAI_COMPATIBLE_API_KEY", "k")
+    monkeypatch.setenv("TEST_OPENAI_COMPATIBLE_ENDPOINT", "https://gateway.example.com/v1")
+    monkeypatch.setenv("TEST_OPENAI_COMPATIBLE_LLM_MODEL", "openai/gpt-5.6-luna")
+
+
 @pytest.mark.parametrize(
     ("run_provider", "key"),
     [(None, "TEST_OPENAI_API_KEY"), ("openAI", "TEST_OPENAI_API_KEY"),
-     ("azureOpenAI", "TEST_AZURE_OPENAI_API_KEY")],
+     ("azureOpenAI", "TEST_AZURE_OPENAI_API_KEY"),
+     ("openAICompatible", "TEST_OPENAI_COMPATIBLE_API_KEY")],
 )
 def test_a_missing_key_for_the_run_s_provider_fails_the_run(monkeypatch, run_provider, key) -> None:
     """The provider TEST_AI_MODEL_PROVIDER names (OpenAI when unset) must not skip."""
@@ -84,12 +94,17 @@ def test_a_missing_key_for_the_run_s_provider_fails_the_run(monkeypatch, run_pro
     assert key in str(caught.value)
 
 
-@pytest.mark.parametrize(("run_provider", "other"), [("openAI", "azureOpenAI"), ("azureOpenAI", "openAI")])
+@pytest.mark.parametrize(
+    ("run_provider", "other"),
+    [("openAI", "azureOpenAI"), ("azureOpenAI", "openAI"), ("openAICompatible", "openAI"),
+     ("openAI", "openAICompatible")],
+)
 def test_the_other_provider_skips_even_with_its_key_set(monkeypatch, run_provider, other) -> None:
-    """Both providers' keys are passed; only the named one may be used."""
+    """Every provider's keys are passed; only the named one may be used."""
     suite = _suite()
     _clear_keys(monkeypatch)
     _set_azure(monkeypatch)
+    _set_compatible(monkeypatch)
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "k")
     monkeypatch.setenv(REQUIRE_ENV, "1")
     monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", run_provider)
@@ -136,6 +151,13 @@ def test_an_ordinary_run_skips_every_provider(monkeypatch) -> None:
 _PROVIDER_FROM_VARIABLE = "${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}"
 # gpt-5.4-nano (the helper's local default) skipped tools in the agent tests.
 _OPENAI_MODEL_FROM_VARIABLE = "${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}"
+# The gateway's ids for the same models (Bifrost names them provider/model).
+_COMPATIBLE_MODELS_FROM_VARIABLES = {
+    "TEST_OPENAI_COMPATIBLE_LLM_MODEL": "${{ vars.TEST_OPENAI_COMPATIBLE_LLM_MODEL || 'openai/gpt-5.6-luna' }}",
+    "TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL": (
+        "${{ vars.TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL || 'openai/text-embedding-3-small' }}"
+    ),
+}
 
 
 def _env_blocks(doc: dict):
@@ -155,7 +177,7 @@ def _env_blocks(doc: dict):
 
 def test_switching_provider_is_one_repository_variable() -> None:
     """Every job that names an AI provider takes it from the repository variable
-    and gets both providers' keys, so switching needs no workflow change.
+    and gets every provider's settings, so switching needs no workflow change.
 
     The Ollama workflow runs a local model and is the one exception.
     """
@@ -171,7 +193,7 @@ def test_switching_provider_is_one_repository_variable() -> None:
                 problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
             if "TEST_AI_MODEL_PROVIDER" not in env:
                 # A key with no provider named sends the helpers back to Azure-first.
-                if {"TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"} & env.keys() and (
+                if {"TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY", "TEST_OPENAI_COMPATIBLE_API_KEY"} & env.keys() and (
                     "TEST_AI_MODEL_PROVIDER" not in inherited
                 ):
                     problems.append(f"{path.name} {where}: passes an AI key without TEST_AI_MODEL_PROVIDER")
@@ -182,10 +204,15 @@ def test_switching_provider_is_one_repository_variable() -> None:
             for key in (
                 "TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
                 "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
+                "TEST_OPENAI_COMPATIBLE_API_KEY", "TEST_OPENAI_COMPATIBLE_ENDPOINT",
+                "TEST_OPENAI_COMPATIBLE_LLM_MODEL", "TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL",
             ):
                 if key not in env:
                     problems.append(f"{path.name} {where}: does not pass {key}")
             if env.get("TEST_OPENAI_LLM_MODEL") != _OPENAI_MODEL_FROM_VARIABLE:
                 problems.append(f"{path.name} {where}: TEST_OPENAI_LLM_MODEL is {env.get('TEST_OPENAI_LLM_MODEL')!r}")
+            for key, expected in _COMPATIBLE_MODELS_FROM_VARIABLES.items():
+                if env.get(key) != expected:
+                    problems.append(f"{path.name} {where}: {key} is {env.get(key)!r}")
     assert checked, "no workflow sets TEST_AI_MODEL_PROVIDER"
     assert problems == [], "\n".join(problems)

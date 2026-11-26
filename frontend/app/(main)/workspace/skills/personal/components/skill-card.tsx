@@ -5,8 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Switch, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import type { SkillMetadata } from '../types';
+import { CONTENT_FLAGGED, type SkillMetadata, type SkillTrustStanding } from '../types';
 import { canToggleSkillAvailability } from '../skill-availability';
+import { skillReviewNoticeKey } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
 
@@ -86,7 +87,7 @@ export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardPr
               flexShrink: 0,
             }}
           >
-            <MaterialIcon name={SOURCE_ICON[skill.source] ?? 'psychology'} size={16} color="var(--gray-10)" />
+            <MaterialIcon name={SOURCE_ICON[skill.source] ?? 'psychology'} size={16} color="var(--gray-11)" />
           </Flex>
           <Flex align="center" gap="2">
             {canToggleAvailability && (
@@ -149,10 +150,11 @@ export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardPr
           >
             {skill.description}
           </Text>
+          {skill.review && skill.review.state !== 'trusted' && <ReviewNotice standing={skill.review} />}
           <Flex align="center" gap="2" style={{ marginTop: 4 }}>
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>v{skill.version}</Text>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>v{skill.version}</Text>
             {skill.category && (
-              <Text size="1" style={{ color: 'var(--gray-9)' }}>· {skill.category}</Text>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>· {skill.category}</Text>
             )}
           </Flex>
         </Flex>
@@ -166,6 +168,20 @@ export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardPr
 // ========================================
 // Sub-components
 // ========================================
+
+/** Why agents cannot use an imported skill's current content (ADR-SEC-01), in the reader's language. */
+function ReviewNotice({ standing }: { standing: SkillTrustStanding }) {
+  const { t } = useTranslation();
+  const flagged = standing.reasonCode === CONTENT_FLAGGED;
+  return (
+    <Flex align="start" gap="1" data-testid="skill-review-notice" style={{ marginTop: 4 }}>
+      <MaterialIcon name={standing.state === 'denied' ? 'block' : flagged ? 'warning' : 'hourglass_top'} size={14} color="var(--amber-11)" />
+      <Text size="1" style={{ color: 'var(--amber-11)' }}>
+        {t(skillReviewNoticeKey(standing) ?? (flagged ? 'workspace.skills.scan.flagged' : 'workspace.skills.scan.notUsable'))}
+      </Text>
+    </Flex>
+  );
+}
 
 function ManageButton({ onClick, readOnly }: { onClick: () => void; readOnly: boolean }) {
   const { t } = useTranslation();

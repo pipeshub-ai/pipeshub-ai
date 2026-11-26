@@ -24,6 +24,7 @@ from app.connectors.core.base.user_access import delete_all_connections
 from app.connectors.services.connector_intents import ConnectorIntentStore
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
@@ -316,17 +317,20 @@ def _connector_finisher(
                 result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
             finally:
                 await notify_principals_changed(org_id)
-            if not result.get("success"):
-                # gone already (a redelivery finished it): nothing left to do here
-                gone = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None
-                return {"success": gone}
-            events = build_connector_cleanup_events(
-                org_id=org_id, connector_id=connector_id,
-                vector_membership_backfilled=result.get("vector_membership_backfilled", False),
-                vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
-                connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
-                virtual_record_ids=result.get("virtual_record_ids", []),
-            )
+            if result.get("success"):
+                events = build_connector_cleanup_events(
+                    org_id=org_id, connector_id=connector_id,
+                    vector_membership_backfilled=result.get("vector_membership_backfilled", False),
+                    vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
+                    connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
+                    virtual_record_ids=result.get("virtual_record_ids", []),
+                )
+            elif await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None:
+                # Gone already (its answer was lost, or a redelivery finished it). No app doc to name it by: the name only picks
+                # a collection, and the purge spans them all.
+                events = build_gone_connector_cleanup_events(org_id=org_id, connector_id=connector_id, connector_name=None)
+            else:
+                return {"success": False}
             for event in events:
                 try:
                     if await kafka_service.publish_event("record-events", event) is False:

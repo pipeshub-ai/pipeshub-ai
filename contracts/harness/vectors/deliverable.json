@@ -1,0 +1,96 @@
+{
+ "description": "ADR-RUN-01 D1 cross-language vectors: the deliverable a request asks for, as admission pins it in x.pipeshub.deliverable (Node resolveDeliverable) and as a run admitted before the pin resolves it once (harness_core.engines.outcome.deliverable.resolve_deliverable). partialName: the text file a cut-short run saves its partial result as (Deliverable.partial_name); absent for an answer. Hand-written; both test suites read this file.",
+ "cases": [
+  {
+   "id": "named",
+   "request": "Write the final report as one Markdown file named report.md in your output folder: out/",
+   "deliverable": {
+    "kind": "file",
+    "name": "report.md"
+   },
+   "partialName": "report.md"
+  },
+  {
+   "id": "named-text",
+   "request": "Save it as summary.txt please",
+   "deliverable": {
+    "kind": "file",
+    "name": "summary.txt"
+   },
+   "partialName": "summary.txt"
+  },
+  {
+   "id": "named-backticks",
+   "request": "make a file `PP-security-bugs-for-claude-code.md` for them",
+   "deliverable": {
+    "kind": "file",
+    "name": "PP-security-bugs-for-claude-code.md"
+   },
+   "partialName": "PP-security-bugs-for-claude-code.md"
+  },
+  {
+   "id": "binary",
+   "request": "save it as report.docx",
+   "deliverable": {
+    "kind": "file",
+    "name": "report.docx"
+   },
+   "partialName": "report-partial.md"
+  },
+  {
+   "id": "csv",
+   "request": "Make location-summary.csv from it.",
+   "deliverable": {
+    "kind": "file",
+    "name": "location-summary.csv"
+   },
+   "partialName": "location-summary-partial.md"
+  },
+  {
+   "id": "first-named",
+   "request": "Write plan.md, then notes.txt",
+   "deliverable": {
+    "kind": "file",
+    "name": "plan.md"
+   },
+   "partialName": "plan.md"
+  },
+  {
+   "id": "asks-unnamed",
+   "request": "gather the bugs and make a file for them",
+   "deliverable": {
+    "kind": "file"
+   },
+   "partialName": "partial-result.md"
+  },
+  {
+   "id": "asks-markdown",
+   "request": "Create a markdown document comparing the two",
+   "deliverable": {
+    "kind": "file"
+   },
+   "partialName": "partial-result.md"
+  },
+  {
+   "id": "answer",
+   "request": "which tickets are security bugs?",
+   "deliverable": {
+    "kind": "answer"
+   }
+  },
+  {
+   "id": "url-is-no-file",
+   "request": "Read https://example.com/docs/index.html and tell me what it says",
+   "deliverable": {
+    "kind": "answer"
+   }
+  },
+  {
+   "id": "continue",
+   "request": "continue",
+   "deliverable": {
+    "kind": "answer"
+   }
+  }
+ ]
+}

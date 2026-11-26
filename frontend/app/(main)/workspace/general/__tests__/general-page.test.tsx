@@ -6,12 +6,18 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const addToast = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
-vi.mock('@/lib/store/toast-store', () => ({
+vi.mock('@/lib/store/toast-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/store/toast-store')>()),
   useToastStore: (select: (s: { addToast: typeof addToast }) => unknown) => select({ addToast }),
 }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
+}));
+// The general page's extra cards as this repository binds them, whatever `@/config` a build supplies.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  GeneralSettingsExtras: (await import('../components/general-settings-extras')).GeneralSettingsExtras,
 }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -30,6 +36,8 @@ function OrgReader() {
 }
 import { useGeneralStore } from '../store';
 import { useUserStore } from '@/lib/store/user-store';
+import { useFeatureFlagsStore, type AgentHarnessRollout } from '@/lib/store/feature-flags-store';
+import { HARNESS_ORG_ANSWERS, SURFACES_SHOWN } from '@/lib/store/__tests__/harness-org-answers';
 import { clearSessionCache } from '@/lib/api/session-cache';
 
 const ORG = {
@@ -87,7 +95,27 @@ describe('General settings page', () => {
     signedIn(true);
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    useFeatureFlagsStore.setState({ agentHarness: null });
+  });
+
+  for (const [answer, rollout] of Object.entries(HARNESS_ORG_ANSWERS) as Array<[keyof typeof HARNESS_ORG_ANSWERS, AgentHarnessRollout | null]>) {
+    it(`GATE ${answer}: organisation deletion is ${SURFACES_SHOWN[answer] ? 'offered' : 'not offered'} (ADR-OPS-08)`, async () => {
+      useFeatureFlagsStore.setState({ agentHarness: rollout });
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+      expect(screen.queryByTestId('delete-org-section') !== null).toBe(SURFACES_SHOWN[answer]);
+    });
+  }
+
+  it('with the agent harness on, an admin sees no policy webhook card and the page asks for no such setting', async () => {
+    useFeatureFlagsStore.setState({ agentHarness: { useHarness: true } as never });
+    await renderPage();
+    await screen.findByDisplayValue('Acme Inc');
+    expect(screen.queryByText('securityIntegrations.webhook.title')).toBeNull();
+    expect(api.get.mock.calls.some(([url]) => String(url).includes('policy-webhook'))).toBe(false);
+  });
 
   it('a revisit shows the cached org and makes no org or logo request', async () => {
     (await renderPage()).unmount();

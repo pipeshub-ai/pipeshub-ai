@@ -67,6 +67,20 @@ class TestAcquireGateWithBackpressure:
         assert admitted is False
         assert gate.in_use == 1  # only the original acquire, no leaked permit
 
+    async def test_a_gate_timeout_shorter_than_the_warn_threshold_is_a_refusal(self) -> None:
+        gate = _gate(limit=1)
+        await gate.acquire(cost=1)  # saturates the gate for the whole test
+
+        admitted = await acquire_gate_with_backpressure(
+            gate, 1, ParseTier.HEAVY, "msg-short",
+            logger=_LOGGER, log_prefix="test",
+            queue_wait_warn_seconds=5.0,
+            gate_timeout_seconds=0.05,
+        )
+
+        assert admitted is False
+        assert gate.in_use == 1
+
     async def test_admitted_within_warn_window_skips_warn_branch(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:

@@ -1,0 +1,230 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "turn.aborted",
+      "data": {
+        "commandId": "inv_1",
+        "source": "run_code",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.command.finished",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.command.finished",
+      "data": {
+        "commandId": "inv_1",
+        "source": "run_code",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.command.finished",
+      "data": {
+        "commandId": "inv_1",
+        "source": "run_code",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false,
+        "unexpected": true
+      }
+    }
+  },
+  {
+    "description": "commandId is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.command.finished",
+      "data": {
+        "source": "run_code",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false
+      }
+    }
+  },
+  {
+    "description": "unknown source",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.command.finished",
+      "data": {
+        "commandId": "inv_1",
+        "source": "shell",
+        "invocationId": "inv_1",
+        "command": "print('hello')",
+        "language": "python",
+        "status": "completed",
+        "exitCode": 0,
+        "startedAt": 1759320000000,
+        "durationMs": 412,
+        "stdout": {
+          "tail": "hello\n",
+          "bytes": 6,
+          "truncated": false
+        },
+        "stderr": {
+          "tail": "",
+          "bytes": 0,
+          "truncated": false
+        },
+        "liveDropped": 0,
+        "log": {
+          "ref": "cas/sha256/ab",
+          "hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "size": 6
+        },
+        "logTruncated": false
+      }
+    }
+  }
+]

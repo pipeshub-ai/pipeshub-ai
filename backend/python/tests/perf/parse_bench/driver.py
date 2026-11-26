@@ -898,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
     apply_onnx_threads(args.onnx_threads)
     # The default of the code under test is "on"; make the setting explicit either way.
     os.environ["ENABLE_PDFPLUMBER_PROCESSOR"] = "true" if args.pdf_parser == "pdfplumber" else "false"
-    os.environ.setdefault("SECRET_KEY", "bench-only-not-a-secret-0123456789abcdef")
+    os.environ.setdefault("SECRET_KEY", "0495805f29099e4e52a46b4d0f4ca628766a7c8af0eb91f23424076c8f0a438c")
     os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "false")
     if args.cgroup == "auto":
         own = report.in_own_cgroup(Path("/proc/self/cgroup").read_text())

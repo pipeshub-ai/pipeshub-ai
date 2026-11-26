@@ -132,13 +132,13 @@ async def test_a_request_without_org_context_is_refused() -> None:
 async def test_the_owner_removes_their_own_attachment() -> None:
     provider = _provider(ATTACHMENT, permission={"role": "OWNER"})
 
-    await delete_chat_attachment(RECORD_ID, _request(), provider)
+    await delete_chat_attachment(RECORD_ID, _request(), provider, MagicMock())
 
     provider.get_edge.assert_awaited_once()
     assert provider.get_edge.await_args.kwargs["from_id"] == "user-key-a"
     assert provider.get_edge.await_args.kwargs["to_id"] == RECORD_ID
-    provider.delete_nodes_and_edges.assert_awaited_once()
-    provider.delete_nodes.assert_awaited_once()
+    # The FILES node, then the RECORDS node with its edges (CLEANUP-G5: stored bytes go first).
+    assert [c.args[1] for c in provider.delete_nodes_and_edges.await_args_list] == ["files", "records"]
 
 
 @pytest.mark.asyncio

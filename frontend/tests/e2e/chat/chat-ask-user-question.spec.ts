@@ -21,7 +21,7 @@
  *       a second stream fires to the existing agent conversation endpoint
  *       with the formatted answer as the query (agent context) but no new
  *       user bubble — the follow-up answer streams on the same assistant row
- *  6. Card collapses into the 'submitted' read-only view ("Question :", "Show more")
+ *  6. Card closes to its one-line receipt ("You answered: …", UXINT-2)
  *
  * ── i18n key → English string map (from en-US.json) ─────────────────────
  *   askUserQuestion.quickQuestionSingular  → "Quick question :"
@@ -321,7 +321,7 @@ test.describe('Ask User Question — single-select card', () => {
     await sendMessage(page, 'Help me write a report');
 
     // Wait for the card to appear
-    await page.locator('text=Which department are you in?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('Which department are you in?').first().waitFor({ timeout: 20_000 });
   });
 
   test('card heading "Quick question :" is visible', async ({ page }) => {
@@ -438,19 +438,19 @@ test.describe('Ask User Question — single-select card', () => {
 
     await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
 
-    // The submitted card renders synchronously when Submit is clicked
+    // UXINT-2: the card closes to its one-line receipt as Submit is clicked
     // (before the delayed follow-up stream resolves).
-    await expect(
-      page.getByText(/Question\s*:/).first(),
-    ).toBeVisible({ timeout: 4_000 });
+    const receipt = page.getByTestId('interaction-receipt');
+    await expect(receipt).toHaveText(/You answered: Engineering$/, { timeout: 4_000 });
+    await expect(receipt).toHaveAttribute('data-status', 'answered');
+    await expect(page.locator('button').filter({ hasText: /^Submit$/ })).toHaveCount(0);
 
     // Clean up in-flight routes before the test tears down.
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
-  test('"Show more" toggle in submitted state expands the selected answers', async ({ page }) => {
-    // Same delayed-response trick: keep the submitted card visible while we
-    // interact with the "Show more" toggle.
+  test('in the submitted state the receipt names the selected answers whole (UXINT-2, was "Show more")', async ({ page }) => {
+    // Same delayed-response trick: keep the turn open while the receipt is read.
     await page.route(
       `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
       async (route) => {
@@ -468,18 +468,9 @@ test.describe('Ask User Question — single-select card', () => {
     await radios.first().click();
     await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
 
-    // Wait for the submitted card heading — real regex literal, no string escaping.
-    await page.getByText(/Question\s*:/).first().waitFor({ timeout: 4_000 });
-
-    // Click "Show more" to expand the answers summary
-    const showMoreBtn = page.locator('button').filter({ hasText: /show more/i }).first();
-    if (await showMoreBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await showMoreBtn.click();
-
-      // Selected option label should now be visible in the summary
-      const engineeringBadge = page.locator('text=Engineering');
-      await expect(engineeringBadge.first()).toBeVisible({ timeout: 3_000 });
-    }
+    // UXINT-2: the receipt names the selected answer whole; nothing is folded behind a "Show more".
+    await expect(page.getByTestId('interaction-receipt')).toHaveText(/You answered: Engineering$/, { timeout: 4_000 });
+    await expect(page.locator('button').filter({ hasText: /show more/i })).toHaveCount(0);
 
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
@@ -544,7 +535,7 @@ test.describe('Ask User Question — "Something else" custom input', () => {
     });
     await gotoAgentChat(page);
     await sendMessage(page, 'What can you help me with?');
-    await page.locator('text=What is your primary goal?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('What is your primary goal?').first().waitFor({ timeout: 20_000 });
   }
 
   test('"Something else" option is always present regardless of payload options', async ({
@@ -658,7 +649,7 @@ test.describe('Ask User Question — multi-select card', () => {
     });
     await gotoAgentChat(page);
     await sendMessage(page, 'Search for project updates');
-    await page.locator('text=Which data sources should I check?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('Which data sources should I check?').first().waitFor({ timeout: 20_000 });
   }
 
   test('options render as checkboxes (role="checkbox")', async ({ page }) => {
@@ -788,7 +779,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
     });
     await gotoAgentChat(page);
     await sendMessage(page, 'Generate a report for me');
-    await page.locator('text=What type of report do you need?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('What type of report do you need?').first().waitFor({ timeout: 20_000 });
   }
 
   test('card heading shows "Quick questions :" for multiple questions', async ({ page }) => {
@@ -864,7 +855,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
     const radios = page.locator('[role="radio"]');
     await radios.first().click();
     await page.locator('button').filter({ hasText: /^Next$/ }).first().click();
-    await page.locator('text=What time period should the report cover?').waitFor({ timeout: 5_000 });
+    await page.getByTestId('question-card').getByText('What time period should the report cover?').first().waitFor({ timeout: 5_000 });
 
     // Go back
     const backBtn = page.locator('button').filter({ hasText: /^Back$/ }).first();
@@ -901,7 +892,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
     await page.locator('button').filter({ hasText: /^Next$/ }).first().click();
 
     // Step 2: wait for new radios to render, select first option
-    await page.locator('text=What time period').waitFor({ timeout: 5_000 });
+    await page.getByTestId('question-card').getByText('What time period').first().waitFor({ timeout: 5_000 });
     await page.locator('[role="radio"]').first().click();
 
     await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
@@ -945,6 +936,11 @@ test.describe('Ask User Question — agent endpoint routing', () => {
           body: JSON.stringify(MOCK_AGENT_CONVERSATIONS_EMPTY),
         });
       }
+      // Only a turn's POST is a stream: the chat's other writes under this path (its `PUT …/seen` mark once the
+      // turn has made the conversation, ADR-UI-01 D2) go on to the handlers before this one.
+      if (route.request().method() !== 'POST' || !/\/stream(\?|$)/.test(new URL(route.request().url()).pathname)) {
+        return route.fallback();
+      }
       agentStreamUrl = route.request().url();
       return route.fulfill({
         status: 200,
@@ -956,7 +952,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
     await gotoAgentChat(page);
     await sendMessage(page, 'Help me code something');
 
-    await page.locator('text=Which language do you prefer?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('Which language do you prefer?').first().waitFor({ timeout: 20_000 });
 
     // The initial stream must use /agents/:id/conversations/stream (not /messages/stream)
     expect(agentStreamUrl).toContain(`/api/v1/agents/${AGENT_ID}/conversations`);
@@ -997,7 +993,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
 
     await gotoAgentChat(page);
     await sendMessage(page, 'Build a feature for me');
-    await page.locator('text=Which language do you prefer?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('Which language do you prefer?').first().waitFor({ timeout: 20_000 });
 
     await page.locator('[role="radio"]').first().click();
     await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
@@ -1035,7 +1031,7 @@ test.describe('Ask User Question — agent endpoint routing', () => {
 
     await gotoAgentChat(page);
     await sendMessage(page, 'Agent test message');
-    await page.locator('text=Which language do you prefer?').waitFor({ timeout: 20_000 });
+    await page.getByTestId('question-card').getByText('Which language do you prefer?').first().waitFor({ timeout: 20_000 });
 
     expect(mainStreamCalled).toBe(false);
   });

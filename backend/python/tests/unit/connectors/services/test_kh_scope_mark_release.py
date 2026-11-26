@@ -9,6 +9,7 @@ import pytest
 
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
+from tests.support.settle import settle
 
 
 @pytest.mark.asyncio
@@ -62,5 +63,5 @@ async def test_a_cancel_while_the_mark_is_taken_still_finalizes() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    await asyncio.wait_for(released.wait(), timeout=1)
+    await settle(released.wait())
     coordinator.end.assert_awaited_once_with(lease)

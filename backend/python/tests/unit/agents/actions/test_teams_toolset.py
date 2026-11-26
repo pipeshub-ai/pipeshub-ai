@@ -1680,3 +1680,41 @@ class TestLimitsAcrossPages:
                  {"value": [{"id": f"m{i}"} for i in range(20)], "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams/t1/channels/c1/messages?$skiptoken=p2"},
                  {"value": [{"id": f"m{i}"} for i in range(20, 40)]})
         assert ok(await teams.get_channel_messages("t1", "c1", top=30))["count"] == 30
+
+
+class TestWp56SignInRejectedWithdrawsTheConnection:
+    """WP56-DEAUTH-2: Microsoft Graph's 401 to a Teams call is noted where the call's scope collects it
+    (``watching_sign_in``), so the saved credential is withdrawn and the next run shows the connect card (WP62-TS).
+    A refusal of the call itself (403), a throttle or an outage notes nothing."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["get_teams", "send_channel_message", "create_event", "get_chat"])
+    async def test_wp56_deauth_2_a_rejected_sign_in_is_noted(self, teams, graph, case) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        call, method, path = _call_and_route(case)
+        graph.on(method, path, graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."))
+        with watching_sign_in() as noted:
+            message = err(await call(teams))
+        assert noted, case
+        assert "Reconnect Teams under Your actions" in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 404, 429, 503])
+    async def test_wp56_deauth_2_other_failures_note_nothing(self, teams, graph, status) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        graph.on("GET", r"/me/joinedTeams", graph_error(status, "Other", "Something else"))
+        with watching_sign_in() as noted:
+            _ = err(await teams.get_teams())
+        assert not noted, status
+
+    def test_wp56_deauth_2_an_exception_carrying_a_401_is_noted(self, teams) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        with watching_sign_in() as noted:
+            _ = teams._handle_error(graph_error(401, "InvalidAuthenticationToken", "Unauthorized"), "get teams")
+        assert noted
+        with watching_sign_in() as noted:
+            _ = teams._handle_error(RuntimeError("the client is not set up: get_client failed"), "get teams")
+        assert not noted

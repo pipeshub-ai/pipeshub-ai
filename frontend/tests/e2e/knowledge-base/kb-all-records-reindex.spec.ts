@@ -40,6 +40,12 @@ test.describe('All Records reindex', () => {
   const fileName = `broken-${Date.now()}.json`;
 
   test.beforeAll(async ({ apiContext }) => {
+    // A record only reaches FAILED through the indexing service; on a stack without it (the harness lane) the
+    // wait would run out instead of testing anything (WP-71).
+    const health = await apiContext.get('/api/v1/health/services');
+    expect(health.ok(), `reading the services' health: ${health.status()}`).toBe(true);
+    const indexing = ((await health.json()) as { services?: Record<string, string> }).services?.indexing;
+    test.skip(indexing !== 'healthy', `the indexing service is ${indexing ?? 'absent'} on this stack, so no record can fail indexing`);
     kb = await createTestKb(apiContext, makeKbName('reindex'));
     recordId = await uploadFileByApi(kb.id, { name: fileName, mimeType: 'application/json', buffer: BROKEN_JSON });
     recordName = await waitForFailed(apiContext, recordId);
