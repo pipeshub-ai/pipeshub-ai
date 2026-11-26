@@ -390,7 +390,7 @@ class KhBrowseMixin(PgBase):
         return kept, None
 
     async def _kh_browse_once(self, p: kgl.Params, where: str, links: str | None, limit: int, sort_field: str, order: str, after: dict[str, Any] | None, direction: str,
-                              sets: dict[str, Any], gset: set[str], walk: tuple) -> tuple[list[Any], tuple[list[Any], list[dict[str, Any]]]]:
+                              sets: dict[str, Any], gset: set[str], walk: tuple) -> tuple[list[Any] | None, tuple[list[Any], list[dict[str, Any]]]]:
         """A wide node's first window (as :meth:`_kh_browse_wide` reads it) and what :meth:`_kh_browse_total` reads by the classes (its undecided children and its count), in
         one read of the children (``kgl.browse_once_sql``) instead of three: each child is read once, by its own range or key."""
         org, transaction = walk[2], walk[3]
@@ -403,6 +403,8 @@ class KhBrowseMixin(PgBase):
 
         got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
         und = list(got[0]["undecided"])
+        if len(und) > UNDECIDED_MAX:      # too many for the classes to count (mid-sync): the bounded paths, the window by the index and the total of a sample; only their number counts
+            return None, (und, [])
         left = list(await self._kq(lambda tx: tx.fetch(kgl.BROWSE_UP, org, und), transaction)) if und else []
         counts = [{"kind": k, "folder": f, "n": n} for k, f, n in json.loads(got[0]["counts"])]
         return [r for r in got if r["sk"] is not None], (left, counts)

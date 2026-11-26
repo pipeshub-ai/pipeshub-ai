@@ -1258,3 +1258,39 @@ async def test_a_sidebar_page_reads_each_records_children_once_and_within_the_re
     listed = [r["id"] for r in page["rows"]]
     assert listed and listed == recs[:len(listed)] and all(r["hasChildren"] for r in page["rows"]) and page["hasMore"], listed
     assert max(reads.values()) <= 200 and sum(reads.values()) <= 1000 + 200, reads
+
+
+async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count_keeps_the_bounded_paths(pg_db, monkeypatch) -> None:
+    """A folder too wide to hold whose undecided children (here: copied without their stamp, as mid-sync) are more than the classes count: its page and total are the walk's
+    (the total of a sample, capped), and the one read of the children stops at the undecided ones the limit takes: no count and no window of the whole folder."""
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", 3)
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(30)]
+    await seed_folder(p, pg_db, org, 30, readable_kids=kids)
+    await _admin("UPDATE kg.records SET path = NULL WHERE org_id = $1 AND id = ANY($2::text[])", org, kids[:10])
+
+    def shown(page: dict) -> tuple:
+        return [(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")
+    got = shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4))
+    monkeypatch.setenv("PG_KG_READ", "0")
+    assert shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4)) == got
+    monkeypatch.delenv("PG_KG_READ")
+    assert got[1] is not None and len(got[0]) == 4
+
+    from asyncpg import connect
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'fold'", org)
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        base, where = kh_listing.where_of(org, app_sk, {}, {}, [], browse=True)
+        base.values[1], base.values[2] = sk, 20
+        sql = kgl.browse_once_sql("name", "ASC", "next", where, None, None, (base.add([]), base.add(app_sk), base.add(4)),
+                                  (base.add([]), base.add([]), base.add([]), base.add([]), base.add(app_sk), base.add(10_001)))
+        await con.execute("SELECT set_config('app.org_id', $1, false)", org)
+        plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
+        assert len((await con.fetch(sql, *base.values))[0]["undecided"]) == 4
+    finally:
+        await con.close()
+    read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
+    assert read and max(n.get("Actual Rows", 0) * max(1, n.get("Actual Loops", 1)) for n in read) <= 10, read      # every read of the children (the undecided, the count, the window) stops by the fourth undecided child, not at the folder's 30

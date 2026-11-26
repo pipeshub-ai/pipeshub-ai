@@ -363,16 +363,18 @@ def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, bran
     """A wide node's first window, its undecided children and its count in one read of its children: the children (as :func:`browse_scopes` reads them, each by its own range or
     key) are read once into a materialized set, and the three are taken from it: ``undecided`` (:func:`browse_undecided_sql`: the unvouched classes, the connector, the limit)
     as an array of sks, ``admitted`` (:func:`browse_count_sql`: plain, own, granted, unvouched, the connector, the cap) as counts by type, and the window past ``branches`` in
-    the sort order, ``$3`` rows, one row each (none when the window is empty: the arrays then come on one row of NULLs)."""
+    the sort order, ``$3`` rows, one row each (none when the window is empty: the arrays then come on one row of NULLs). When the undecided children reach the limit (the
+    caller then takes the bounded paths: the window by the children index, the count of a sample) neither the count nor the window is read: the children are read only up to
+    the undecided ones the limit takes, as :func:`browse_undecided_sql` reads them."""
     unv, app, ulim = undecided
     plain, own, granted, unvouched, capp, cap = admitted
     past = f"({') OR ('.join(branches)})" if branches else "true"
     return (f"/* pipeshub:kg.browse_once */ WITH r AS MATERIALIZED ({_children(COLS, where, links, _FENCE)}) "
-            f"SELECT x.undecided, x.counts, w.* FROM (SELECT "
-            f"(SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app)} LIMIT {ulim}) u) AS undecided, "
+            f"SELECT x.undecided, x.counts, w.* FROM (SELECT u.undecided, CASE WHEN cardinality(u.undecided) < {ulim} THEN "
             f"(SELECT coalesce(json_agg(json_build_array(t.kind, t.folder, t.n)), '[]') FROM (SELECT z.kind, z.folder, count(*) AS n FROM "
-            f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) AS counts) x "
-            f"LEFT JOIN LATERAL (SELECT r.* FROM r WHERE {past} ORDER BY {order(field_, sort_dir, direction)} LIMIT $3) w ON true")
+            f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) END AS counts FROM "
+            f"(SELECT (SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app)} LIMIT {ulim}) u) AS undecided) u) x "
+            f"LEFT JOIN LATERAL (SELECT r.* FROM r WHERE cardinality(x.undecided) < {ulim} AND ({past}) ORDER BY {order(field_, sort_dir, direction)} LIMIT $3) w ON true")
 
 
 def children_of_sql(only: str = "", *, total: bool = False) -> str:
