@@ -135,7 +135,7 @@ describe('UXR-B1: plan steps on the stream and in the timeline', () => {
       ...revisionEvents(0),
     ]);
     const shared = frames
-      .map((f) => frameFor('shared', f.frame, { checkedCitations: () => ({ citations: (c) => c, messages: (m) => m }), checkedArtifacts: () => ({ card: (c) => c, text: (t) => t, messages: (m) => m, completion: (c) => c }), asksUser: () => false }))
+      .map((f) => frameFor('shared', f.frame, { checkedCitations: () => ({ citations: (c) => c, messages: (m) => m }), checkedArtifacts: () => ({ card: (c) => c, text: (t) => t, messages: (m) => m, completion: (c) => c }), answer: () => 'shown', asksUser: () => false }))
       .filter((f) => f !== null);
     expect(shared.filter((f) => (f as Record<string, unknown>)['name'] === PLAN_FRAME)).to.deep.equal([]);
   });
