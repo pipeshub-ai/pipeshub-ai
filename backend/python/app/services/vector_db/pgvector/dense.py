@@ -358,9 +358,11 @@ class Sizer:
         except DbTimeout:
             # The count could not reach its cap within its budget: too many candidates to count, so far too many for an exact scan,
             # which reads each of them. Remembered as capped, so the index serves the filter and the next queries of the minute do not
-            # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known.
+            # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known, and
+            # the count's deadline: an expired one would send the next query back to the count.
             telemetry.TIMEOUT.inc("sizing", "assumed")
-            leaf = self._leaves.setdefault(lkey, (now + self._t.estimate_ttl_s, False, 0))
+            old = self._leaves.get(lkey)
+            leaf = self._leaves[lkey] = (now + self._t.estimate_ttl_s, *(old[1:] if old else (False, 0)))
             known = leaf if leaf[2] > 0 else None
             count = self._counts[ckey] = (now + self._t.estimate_ttl_s, count_cap(self._t, known and (known[1], known[2])), True,
                                           self._t.tombstone_hash_max + 1, True)
@@ -446,6 +448,8 @@ async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool
             # An index answer short of the leg means few rows pass the filter: the count was slow for another reason (many admitted
             # groups holding few points). The exact path by groups reads just those candidates.
             leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True, band=band)
+            if leg.degraded == "overload":
+                leg = Leg(rows, plan, "overload")       # the exact read could not run: the index's rows stand, flagged
             telemetry.observe_leg("degraded", q.leg, started)
             return leg, sz
         telemetry.observe_leg(plan.tier.value, q.leg, started)

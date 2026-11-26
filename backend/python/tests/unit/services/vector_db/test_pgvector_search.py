@@ -723,13 +723,60 @@ async def test_a_count_that_runs_out_of_its_budget_is_remembered_as_too_many_and
     assert db.answers == []                                                           # one count for both queries
 
 
-async def test_a_short_index_answer_after_an_assumed_count_is_read_exactly_by_groups() -> None:
-    q = query()
-    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), _rows(5))          # the count, the index tier, the exact path
-    leg, _ = await dense.search(db, dense.Sizer(db, T), q, T)
+async def test_a_short_index_answer_after_an_assumed_count_is_read_exactly_by_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    narrow: list[bool] = []
+    real = dense._bounded
+
+    async def spy(tx, q, t, *, narrow: bool) -> list:
+        narrow_seen.append(narrow)
+        return await real(tx, q, t, narrow=narrow)
+
+    narrow_seen = narrow
+    monkeypatch.setattr(dense, "_bounded", spy)
+
+    class _Tx:
+        async def fetch(self, sql: str, *a: object) -> list:
+            return [{"point_sk": i, "point_id": f"p{i}"} for i in range(5)]
+
+    class _Db(_AnswersDb):
+        async def run(self, fn: object, **_: object) -> object:
+            answer = self.answers.pop(0)
+            if answer is _Tx:
+                return await fn(_Tx())                                                # the exact path runs its own statement
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    db = _Db(DbTimeout("statement timeout"), _rows(2), _Tx)                           # the count, the index tier, the exact path
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
     assert leg.rows == _rows(5) and leg.degraded == "sizing"                          # flagged: the size was never counted
-    assert db.answers == []
-    assert "p.group_key IN (" in dense.bounded_sql(q, narrow=True)                    # by groups: only the few candidates are read
+    assert db.answers == [] and narrow == [True]                                      # by groups: only the few candidates are read
+
+
+async def test_a_short_index_answer_is_kept_when_the_exact_read_cannot_run() -> None:
+    """The exact read after a short index answer ran out of time: the leg answered nothing, though the index had found rows."""
+    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), PoolTimeout("no connection"))
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.rows == _rows(2) and leg.degraded == "overload"
+    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), _lost())
+    with pytest.raises(ConnectionLost):
+        await dense.search(db, dense.Sizer(db, T), query(), T)
+
+
+async def test_an_assumed_count_is_reused_for_its_ttl_even_when_the_leaf_it_keeps_is_older(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leaf read earlier and expired since kept its old deadline, so every query of the minute ran the count again."""
+    clock = [1000.0]
+    monkeypatch.setattr(dense.time, "monotonic", lambda: clock[0])
+    q = query()
+    db = _AnswersDb((("points_o_x", 5_000_000), 10, False, 0), _rows(q.leg))         # first: counted, ten candidates
+    sizer = dense.Sizer(db, T)
+    await dense.search(db, sizer, q, T)
+    clock[0] += T.leaf_ttl_s + 1                                                      # leaf and count expired
+    db.answers = [DbTimeout("statement timeout"), _rows(q.leg), _rows(q.leg)]          # the count runs out of time once
+    for _ in range(2):
+        leg, sz = await dense.search(db, sizer, q, T)
+        assert sz.assumed and sz.own_leaf and sz.leaf_rows == 5_000_000               # the leaf keeps what was known
+    assert db.answers == []                                                           # the second query reused the assumed count
 
 
 @pytest.mark.parametrize("busy", [PoolTimeout("no connection"), DbError("other")], ids=["pool", "error"])
