@@ -230,12 +230,17 @@ class TableSupervisor:
         self._seq += 1
         frame_id = self._seq
         raw = json.dumps({"op": "predict", "id": frame_id, "spec": spec}, separators=(",", ":"), sort_keys=True).encode()
-        try:
+        async def send_and_read() -> tuple[dict[str, Any], bytes] | None:
+            assert proc.stdin is not None and proc.stdout is not None
             proc.stdin.write(struct.pack(">II", len(raw), len(png)) + raw + png)
             await proc.stdin.drain()
+            return await _aread_frame(proc.stdout)
+
+        # One timeout for the request and its answer: a child that stops reading blocks the write's drain.
+        try:
+            frame = await asyncio.wait_for(send_and_read(), timeout_s)
         except (BrokenPipeError, ConnectionResetError):
             return None
-        frame = await asyncio.wait_for(_aread_frame(proc.stdout), timeout_s)
         if frame is None:
             return None
         if frame[0].get("id") != frame_id:

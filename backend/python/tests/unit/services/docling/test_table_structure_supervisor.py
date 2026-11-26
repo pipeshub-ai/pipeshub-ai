@@ -301,3 +301,21 @@ def test_an_image_whose_header_is_too_large_is_refused_before_it_is_decoded(monk
     monkeypatch.undo()
     small = cv2.imencode(".png", np.zeros((8, 6, 3), np.uint8))[1].tobytes()
     assert child._decode_png(small).shape == (8, 6, 3)
+
+
+async def test_a_child_that_stops_reading_its_input_times_out_and_is_killed() -> None:
+    s = supervisor(model_timeout_ceiling=1.0)
+    stuck = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+    )
+    s._proc = stuck
+    try:
+        big = b"\0" * (4 * 1024 * 1024)  # far more than a pipe holds: the write cannot drain
+        r = await asyncio.wait_for(s.run_unlocked(spec("a"), big), 20)
+        assert r == {"status": "error", "err": "timeout"}
+        assert not alive(stuck.pid) or stuck.returncode is not None
+    finally:
+        if stuck.returncode is None:
+            stuck.kill()
+            await stuck.wait()
+        await s.shutdown()
