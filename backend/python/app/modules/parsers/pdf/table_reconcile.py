@@ -416,7 +416,7 @@ def drop_title_line(
     running across two or more of its cells, above a line of labels, that line is the table's title (a caption set
     inside the top band), not a label; the row is read again without it."""
     if not row_of or row_of[0] != 0 or (len(row_of) > 1 and row_of[1] == 0):
-        return grid
+        return grid, []
     top, bot = _row_boxes(t)[0]
     cells = [c for c in t.rows[0].cells if c is not None]
     words = [w for w in own if top - 1 <= (float(w["top"]) + float(w["bottom"])) / 2 <= bot + 1]

@@ -644,3 +644,9 @@ def test_a_title_line_set_in_the_header_band_is_not_a_header_label(monkeypatch) 
         assert [r[0] for r in ts[0].table_grid[1:]] == ["Row0", "Row1", "Row2"]
     finally:
         pdf.close()
+
+
+def test_a_header_row_read_as_several_grid_rows_keeps_its_grid_and_drops_no_title() -> None:
+    # Row 0 read as a header band plus its first line (row_of [0, 0, ...]): the title check does not apply.
+    grid = [["Year", "2012"], ["Total", "2,647"], ["Other", "1"]]
+    assert tr.drop_title_line(None, grid, [0, 0, 1], []) == (grid, [])  # type: ignore[arg-type]
