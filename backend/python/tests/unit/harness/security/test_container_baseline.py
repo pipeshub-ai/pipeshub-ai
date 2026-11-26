@@ -49,6 +49,7 @@ NOT_SHIPPED = ("docker-compose.build.neo4j.yml", "docker-compose.prod-legacy.yml
                "docker-compose.integration.redis-cluster.yml", "docker-compose.integration.salesforce-sim.yml",
                "docker-compose.integration.servicenow-sim.yml", "docker-compose.integration.sharepoint-sim.yml",
                "docker-compose.integration.vector-db.yml", "docker-compose.integration.zammad-sim.yml",
+               "docker-compose.integration.zendesk-sim.yml",
                # Main's cost-class benchmark stack, started only by integration-tests/perf.
                "docker-compose.bench.yml")
 

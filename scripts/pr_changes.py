@@ -283,7 +283,7 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 CONNECTOR_SHARDS = {
     "connectors-1": (
         "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "local_fs", "local_fs_sim", "github",
-        "sharepoint",
+        "sharepoint", "zendesk_sim",
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
@@ -391,7 +391,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
     "zammad": ("zammad", "zammad_sim"),
-    "zendesk": ("zendesk",),
+    "zendesk": ("zendesk", "zendesk_sim"),
 }
 CONNECTOR_TESTS = "integration-tests/connectors"
 # A connector test folder's markers, where they differ from its name.
@@ -400,6 +400,7 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
+    "zendesk": ("zendesk", "zendesk_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

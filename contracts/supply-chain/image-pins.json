@@ -87,7 +87,8 @@
         "deployment/docker-compose/docker-compose.integration.salesforce-sim.yml",
         "deployment/docker-compose/docker-compose.integration.servicenow-sim.yml",
         "deployment/docker-compose/docker-compose.integration.sharepoint-sim.yml",
-        "deployment/docker-compose/docker-compose.integration.zammad-sim.yml"
+        "deployment/docker-compose/docker-compose.integration.zammad-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.zendesk-sim.yml"
       ],
       "localDigest": null,
       "note": "Built and tagged by PipesHub releases or locally; pin the release digest when the release pipeline signs images (SEC-SC-01)."
