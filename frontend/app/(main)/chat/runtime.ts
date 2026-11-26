@@ -390,6 +390,9 @@ export function buildStreamChatRequestForSlot(
     ...newChatRepositoryField(currentSlot.convId, effectiveAgentId ?? null),
     // G-03..G-05: the gates the person turned on for this message; an approval's answer carries none of its own.
     ...(toolApproval ? {} : turnGatesField(useRunGatesStore.getState().turn, effectiveAgentId ? currentState.agentGates : null)),
+    ...(!currentSlot.convId && currentSlot.isTemporaryChat
+      ? { temporary: true }
+      : {}),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,

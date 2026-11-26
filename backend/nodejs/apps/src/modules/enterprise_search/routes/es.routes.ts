@@ -54,6 +54,7 @@ import {
   archiveConversation,
   archiveSearch,
   deleteConversationByIdWith,
+  purgeTemporaryConversation,
   deleteSearchById,
   deleteSearchHistory,
   getAllConversations,
@@ -115,6 +116,7 @@ import {
   forkArtifactCopier,
   unshareAgentConversation,
 } from '../controller/es_controller';
+import { isTemporaryConversation } from '../utils/temporary-chat';
 import {
   deleteArtifactById,
   deleteConversationArtifacts,
@@ -297,6 +299,7 @@ export function createConversationalRouter(container: Container): Router {
   const chatTurn = createChatTurnMiddleware(container, {
     kind: 'chat',
     surface: webSurface,
+    legacyOnly: isTemporaryConversation,
   });
   // A /command becomes the turn's text before validation and routing (SLASH1).
   const chatCommand = expandChatCommand(
@@ -306,6 +309,7 @@ export function createConversationalRouter(container: Container): Router {
   const chatRegenerate = createChatTurnMiddleware(container, {
     kind: 'chat',
     surface: webSurface,
+    legacyOnly: isTemporaryConversation,
     turn: 'regenerate',
   });
   // A run id naming a running durable turn stops it; any other is today's cancel (LAT2).
@@ -541,6 +545,19 @@ export function createConversationalRouter(container: Container): Router {
         sessionRunStopper(container),
       ),
     ),
+  );
+
+  /**
+   * @route DELETE /api/v1/conversations/:conversationId/temporary
+   * @desc Hard-delete a temporary chat, its messages, citations, artifacts and chat attachments
+   */
+  router.delete(
+    '/:conversationId/temporary',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- used as a method reference by every route in this file
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    purgeTemporaryConversation(appConfig),
   );
 
   /**

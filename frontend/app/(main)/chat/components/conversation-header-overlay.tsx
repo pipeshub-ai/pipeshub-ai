@@ -14,16 +14,25 @@ export interface ConversationHeaderOverlayProps {
   backgroundAgents?: ReactNode;
   /** "Permissions in this chat"; null unless the owner's chat holds an "Allow for this chat". */
   grants?: ReactNode;
+  /** Temporary-chat toggle; only before the first message of a plain chat. */
+  temporaryToggle?: ReactNode;
 }
 
 /** Top-right items over the conversation, in one row. Editions plug in via config.ts. */
-export function ConversationHeaderOverlay({ agentChip, shareGroup, backgroundAgents = null, grants = null }: ConversationHeaderOverlayProps) {
+export function ConversationHeaderOverlay({
+  agentChip,
+  shareGroup,
+  backgroundAgents = null,
+  grants = null,
+  temporaryToggle,
+}: ConversationHeaderOverlayProps) {
   // No room on a phone; the agent header menu shows the creator instead.
   const showChip = !useIsMobile() && !!agentChip;
-  if (!showChip && !shareGroup && !backgroundAgents && !grants) return null;
+  if (!showChip && !shareGroup && !backgroundAgents && !grants && !temporaryToggle) return null;
   return (
     // gap 4 matches ShareHeaderGroup; the ghost Share button's negative margin eats part of it.
     <Flex align="center" gap="4" style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
+      {temporaryToggle}
       {grants}
       {backgroundAgents}
       {showChip && agentChip}

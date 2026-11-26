@@ -509,10 +509,22 @@ export class Application {
       this.outboxDispatcher.start();
 
       // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
-      // The consumer inbox needs it too: it prunes the inbox past the replay window.
-      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
-        this.ttlSweeper = new TtlSweeper(this.logger);
+      // The consumer inbox needs the jobs pool too: it prunes the inbox past the replay window.
+      // On Mongo the sweeper runs only the temporary-chat pass, which Mongo's TTL indexes cannot do because
+      // artifacts and attachments must be deleted before the row (hence appConfig).
+      const pgJobs = docStore() === 'postgres' && !!process.env.PG_JOBS_URL;
+      if (docStore() === 'mongo' || pgJobs) {
+        this.ttlSweeper = new TtlSweeper(
+          this.logger,
+          undefined,
+          undefined,
+          undefined,
+          appConfig,
+          docStore() === 'postgres',
+        );
         this.ttlSweeper.start();
+      }
+      if (pgJobs) {
         configureInbox(new PgInbox());
       } else {
         // shortcut: MESSAGE_BROKER=postgres or KV_STORE_TYPE=postgres with MongoDB documents has no jobs pool here, so no inbox; add one when that layout ships

@@ -156,6 +156,8 @@ export interface ConversationChatSessions {
   coding_engine_pin: string | null;
   repository: unknown;
   harness_seen: unknown;
+  is_temporary: Generated<boolean>;
+  expires_at: Date | null;
 }
 
 export interface ConversationCitations {

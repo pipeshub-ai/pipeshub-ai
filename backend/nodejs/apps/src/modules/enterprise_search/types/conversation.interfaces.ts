@@ -408,6 +408,9 @@ export interface IChatSession {
   lastActivityAt?: Number;
   /** Owner's pin. `true` when pinned, absent otherwise (never stored as `false`). */
   isPinned?: boolean;
+  /** Hidden from history. Default false; old rows without the field read as false. */
+  isTemporary?: boolean;
+  expiresAt?: Date;
   activeRunId?: string;
   tags?: Types.ObjectId[];
   createdAt?: Date;

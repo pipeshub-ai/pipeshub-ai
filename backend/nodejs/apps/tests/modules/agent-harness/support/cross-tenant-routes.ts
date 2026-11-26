@@ -305,6 +305,8 @@ const CONVERSATION_ROWS = (base: string, agent: boolean): Record<string, CrossTe
         // Main's pinned chats (#4363): the owner's own sidebar.
         [`PATCH ${base}/pin`]: { guard: 'owner' },
         [`PATCH ${base}/unpin`]: { guard: 'owner' },
+        // The temporary chat's hard delete: the owner only.
+        [`DELETE ${base}/temporary`]: { guard: 'owner' },
         // Main's model compare (#5358, behind ENABLE_CHAT_COMPARE): the conversation's owner only.
         [`POST ${base}/compare/branch`]: { guard: 'owner', body: () => ({ userMessageId: new Types.ObjectId().toHexString() }) },
         [`GET ${base}/compare`]: { guard: 'owner' },

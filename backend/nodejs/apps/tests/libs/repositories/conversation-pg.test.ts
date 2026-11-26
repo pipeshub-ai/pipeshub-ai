@@ -52,6 +52,21 @@ describe('PostgreSQL session list statements', () => {
     })
   }
 
+  it('excludes temporary chats from every list statement', () => {
+    const text = (pageStatement(base(), true) as { text: string }).text
+    expect(text).to.include('NOT s.is_temporary')
+    expect(countStatement(base()).text).to.include('NOT s.is_temporary')
+  })
+
+  it('reaches a temporary chat only when looking up that one id', () => {
+    const byId = (pageStatement(base({ id: P, includeTemporary: true }), true) as { text: string }).text
+    expect(byId).to.not.include('NOT s.is_temporary')
+    expect((pageStatement(base({ includeTemporary: true }), true) as { text: string }).text).to.include(
+      'NOT s.is_temporary',
+    )
+    expect((pageStatement(base({ id: P }), true) as { text: string }).text).to.include('NOT s.is_temporary')
+  })
+
   it('reaches agent chats only for a shared-with-me list that asks for them', () => {
     const sql = (q: SessionListQuery) => (pageStatement(q, true) as { text: string }).text
     expect(sql(base({ owned: false, sharedIncludesAgentChats: true }))).to.include("s.session_type IN ('chat', 'agent')")

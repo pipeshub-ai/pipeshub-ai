@@ -3,7 +3,10 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
-import { deleteConversationArtifacts } from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
+import {
+  deleteArtifactById,
+  deleteConversationArtifacts,
+} from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { InternalServerError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
@@ -101,5 +104,29 @@ describe('deleteConversationArtifacts', () => {
 
     expect(await caught(deleteConversationArtifacts(appConfig, CONVERSATION, request()))).to.be.instanceOf(InternalServerError)
     expect(await caught(deleteConversationArtifacts(appConfig, CONVERSATION, request()))).to.be.instanceOf(ServiceUnavailableError)
+  })
+})
+
+describe('deleteArtifactById', () => {
+  afterEach(() => sinon.restore())
+
+  it('deletes one artifact the caller owns through the connectors service', async () => {
+    const exec = sinon
+      .stub(connectorUtils, 'executeConnectorCommand')
+      .resolves({ statusCode: 204 })
+    await deleteArtifactById(appConfig, 'art-1', request())
+    const [uri, method, headers] = exec.firstCall.args
+    expect(uri).to.equal('http://connector.local/api/v1/artifacts/art-1')
+    expect(method).to.equal('DELETE')
+    expect(headers).to.deep.equal({ authorization: 'Bearer user-token' })
+  })
+
+  it('fails when the connectors service rejects the delete', async () => {
+    sinon
+      .stub(connectorUtils, 'executeConnectorCommand')
+      .resolves({ statusCode: 503, data: { detail: 'retry' } })
+    expect(
+      await caught(deleteArtifactById(appConfig, 'art-1', request())),
+    ).to.be.instanceOf(ServiceUnavailableError)
   })
 })

@@ -180,6 +180,13 @@ import {
   markErasureRequested,
 } from '../../../libs/repositories/agent-harness/session-fields';
 import { deleteConversationArtifacts } from '../../artifacts/services/conversation-artifacts.service';
+import {
+  assertNotTemporary,
+  isTemporarySession,
+  TEMPORARY_CHAT_TITLE,
+  temporaryExpiry,
+} from '../utils/temporary-chat';
+import { purgeTemporaryChatSideEffects } from '../utils/temporary-chat-cleanup';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -1065,6 +1072,12 @@ export const streamChat =
       throw new BadRequestError('Query is required');
     }
 
+    const isTemporary =
+      (req.body as Record<string, unknown>).temporary === true;
+    if (isTemporary && (req.body as Record<string, unknown>).projectId) {
+      throw new BadRequestError('Temporary chats cannot be added to a project');
+    }
+
     let projectLink: ResolvedProjectLink;
     try {
       // Before the stream opens, so a project the caller cannot use is refused
@@ -1105,13 +1118,18 @@ export const streamChat =
         orgId: String(orgId),
         userId: String(userId),
         initiator: String(userId),
-        title: conversationTitleFromQuery(String(req.body.query)),
+        title: isTemporary
+          ? TEMPORARY_CHAT_TITLE
+          : conversationTitleFromQuery(String(req.body.query)),
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
-        ...(projectLink.projectId
+        ...(isTemporary
+          ? { isTemporary: true, expiresAt: temporaryExpiry() }
+          : {}),
+        ...(!isTemporary && projectLink.projectId
           ? {
               projectId: projectLink.projectId,
               projectVisibility: projectLink.projectVisibility,
@@ -2231,6 +2249,7 @@ export const getConversationById =
         userId: String(userId),
         scope: CHAT_SCOPE,
         id: conversationId,
+        includeTemporary: true,
         owned: true,
         shared: true,
         contentMatchIds,
@@ -2467,9 +2486,16 @@ const deleteConversation = async (
     // The chat's artifacts go first, outside the transaction (a network call
     // would hold it open): if they cannot be deleted the chat stays, so a
     // retry finishes the cleanup instead of orphaning them.
-    if (!(await convRepo().findDeletable(conversationId as string, actor))) {
+    const deletable = await convRepo().findDeletable(
+      conversationId as string,
+      actor,
+    );
+    if (!deletable) {
       throw new NotFoundError('Conversation not found');
     }
+    // Soft-delete would leave a temporary chat stuck: the TTL sweep only
+    // hard-deletes non-deleted rows. Owners must use DELETE …/temporary.
+    assertNotTemporary(deletable);
     await deleteConversationArtifacts(appConfig, String(conversationId), req);
 
     const result = await unitOfWork.run(async (tx) => {
@@ -2542,6 +2568,59 @@ const deleteConversation = async (
     next(error);
   }
 };
+
+export const purgeTemporaryConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next?: NextFunction,
+  ): Promise<void> => {
+    const requestId = req.context?.requestId;
+    const conversationId = req.params.conversationId ?? '';
+    try {
+      const userId = req.user?.userId as string | undefined;
+      const orgId = req.user?.orgId as string | undefined;
+      const actor = actorOf(orgId, userId);
+      const existing = await convRepo().findOwned(
+        CHAT_SCOPE,
+        conversationId,
+        actor,
+      );
+      if (!existing) {
+        throw new NotFoundError('Conversation not found');
+      }
+      if (!isTemporarySession(existing)) {
+        throw new BadRequestError('Not a temporary chat');
+      }
+      // Artifacts first (strict); then this chat's attachment recordIds only
+      // (best-effort). A normal chat that uploaded the same file has a different
+      // recordId, so that copy is not touched.
+      await purgeTemporaryChatSideEffects(appConfig, conversationId, {
+        authorization:
+          typeof req.headers.authorization === 'string'
+            ? req.headers.authorization
+            : '',
+        orgId: orgId ?? '',
+        userId: userId ?? '',
+      });
+      const result = await unitOfWork.run((tx) =>
+        convRepo().hardDeleteTemporary(conversationId, actor, tx),
+      );
+      if (!result) {
+        throw new NotFoundError('Conversation not found');
+      }
+      res.status(HTTP_STATUS.NO_CONTENT).end();
+    } catch (error: unknown) {
+      logger.error('Error purging temporary conversation', {
+        requestId,
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (next) next(error);
+      else throw error;
+    }
+  };
 
 /**
  * DELETE a conversation: soft-deletes it and, in the same transaction,
@@ -2654,6 +2733,7 @@ const createShareConversationHandler =
       if (!ownedConversation) {
         throw new NotFoundError('Conversation not found or unauthorized');
       }
+      assertNotTemporary(ownedConversation);
       // Read before the merge below, which edits the shares in place.
       const before = sessionParticipantsOf(ownedConversation);
 
@@ -2883,6 +2963,7 @@ const createUnshareConversationHandler =
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
         }
+        assertNotTemporary(conversation);
         const before = sessionParticipantsOf(conversation);
 
         // Remove specified users from sharedWith
@@ -3041,6 +3122,7 @@ export const setConversationProject = async (
     if (!conversation) {
       throw new NotFoundError('Conversation not found or unauthorized');
     }
+    assertNotTemporary(conversation);
 
     let link: {
       projectId: string;
@@ -3122,6 +3204,7 @@ export const setConversationProjectVisibility = async (
     if (!conversation) {
       throw new NotFoundError('Conversation not found or unauthorized');
     }
+    assertNotTemporary(conversation);
     if (!conversation.projectId) {
       throw new BadRequestError('Conversation is not linked to a project');
     }
@@ -4253,6 +4336,7 @@ export const updateTitle = async (
       if (!found) {
         throw new NotFoundError('Conversation not found');
       }
+      assertNotTemporary(found);
 
       const conv = await convRepo().setTitle(found._id, req.body.title, tx);
       if (!conv) {
@@ -4498,6 +4582,7 @@ export const forkConversation =
           conversationId,
           actorOf(orgId, userId),
         );
+        if (source) assertNotTemporary(source);
         return source?.isArchived ? null : (source ?? null);
       },
     });
@@ -4764,6 +4849,7 @@ export const archiveConversation = async (
           'Conversation not found or no archive permission',
         );
       }
+      assertNotTemporary(conversation);
 
       if (conversation.isArchived) {
         throw new BadRequestError('Conversation already archived');
@@ -4849,6 +4935,7 @@ export const unarchiveConversation = async (
           'Conversation not found or no unarchive permission',
         );
       }
+      assertNotTemporary(conversation);
 
       if (!conversation.isArchived) {
         throw new BadRequestError('Conversation is not archived');
@@ -4924,6 +5011,18 @@ const setConversationPinned =
       if (!userId || !orgId) {
         throw new BadRequestError('User ID and Organization ID are required');
       }
+
+      const owned = await convRepo().findOwned(
+        CHAT_SCOPE,
+        conversationId as string,
+        actorOf(orgId, userId),
+      );
+      if (!owned) {
+        throw new NotFoundError(
+          'Conversation not found or not owned by caller',
+        );
+      }
+      assertNotTemporary(owned);
 
       const updated = await convRepo().setPinned(
         conversationId as string,
@@ -7771,6 +7870,7 @@ export const getAgentConversationById =
           userId: String(userId),
           scope: agentScope(agentKey),
           id: conversationId,
+          includeTemporary: true,
           contentMatchIds,
           accessibleProjectIds: accessibleProjectIds.map(String),
           sharedAccess: 'read',

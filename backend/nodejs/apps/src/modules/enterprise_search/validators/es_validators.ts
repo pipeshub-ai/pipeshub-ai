@@ -377,14 +377,20 @@ export const newChatRepositorySchema = sessionRepositorySchema.optional();
 export const turnGatesSchema = contract(runGatesSchema).optional();
 
 export const enterpriseSearchStreamCreateSchema = z.object({
-  body: enterpriseSearchCreateBodySchema.extend({
-    chatMode: assistantChatModeSchema,
-    compareTurn: compareTurnSchema,
-    harness: assistantHarnessSchema,
-    gates: turnGatesSchema,
-    codingEngine: newChatCodingEngineSchema,
-    repository: newChatRepositorySchema,
-  }),
+  body: enterpriseSearchCreateBodySchema
+    .extend({
+      chatMode: assistantChatModeSchema,
+      compareTurn: compareTurnSchema,
+      harness: assistantHarnessSchema,
+      gates: turnGatesSchema,
+      codingEngine: newChatCodingEngineSchema,
+      repository: newChatRepositorySchema,
+      temporary: z.boolean().optional(),
+    })
+    .refine((body) => !(body.temporary && body.projectId), {
+      message: 'Temporary chats cannot be added to a project',
+      path: ['temporary'],
+    }),
 });
 
 /**

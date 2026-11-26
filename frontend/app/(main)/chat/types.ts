@@ -1893,6 +1893,11 @@ export interface StreamChatRequest {
   repository?: { url: string; baseRef?: string; toolsetInstanceId: string };
   /** This message's run gates (G-03..G-05) from the composer's "+" menu; only the agent harness serves them. */
   gates?: TurnGatesRequest;
+  /**
+   * Only on a brand-new plain chat. The server hides the conversation from
+   * history and deletes it when the client purges it or when it expires.
+   */
+  temporary?: boolean;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
   /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
@@ -2037,6 +2042,11 @@ export interface ChatSlot {
   projectId: string | null;
   /** True until the server assigns a real convId. */
   isTemp: boolean;
+  /**
+   * Incognito/temporary chat: hidden from history and purged on exit.
+   * Not the same as `isTemp` (which only means the server has not assigned an id yet).
+   */
+  isTemporaryChat: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
   isInitialized: boolean;
   /**
