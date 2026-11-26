@@ -184,7 +184,7 @@ export async function plainFollowUpContext(
     deps.feed
       .historyBefore(conversation._id, userRow.seq, { withLabels: true })
       .then((rows) => {
-        // What the stored history read, as main's follow-up reads it: every row before the question.
+        // What the stored history read (FG2): every row before the question, as regenerate reads it.
         label = historyLabel(rows);
         return historyForSender(deps, turn, rows);
       }),
