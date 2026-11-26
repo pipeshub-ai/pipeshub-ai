@@ -478,6 +478,7 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
     """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
     inputs: no sequential scan, and the index conditions (a bitmap heap scan's are its bitmap index scans') are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
@@ -485,6 +486,8 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, 50000000 + g, 1, 60000000 + g FROM generate_series(1, $2) g", c.org, N)
+    # pages are counted per probe: dead index entries (the rows earlier tests and runs deleted, before autovacuum reaches them) would be counted too
+    await _admin("VACUUM kg.records, kg.node_keys, kg.scope_classes, kg.links")
     ids = [*c.ids, *(f"plans-r{j}" for j in range(1, N, 240))]
     sks = [c.lit, c.x_sk, *(50000000 + j for j in range(1, N, 240))]
     wants = {
@@ -509,6 +512,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(layer, pg_provider, pg_db) -> None:
     """The reader's statements are seeks, never worth compiling: under the reader's profile a full chunk of ids (``CHUNK``) is read without JIT, even with ``jit_above_cost``
     at 0 (whatever the version's cost model makes of the estimate: on PostgreSQL 17 it passes the default threshold at a full chunk, on 18 it does not). Without the profile
