@@ -25,23 +25,21 @@ import {
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
-import { createSlackAGUIEventHandler } from "./utils/agui-stream";
+import { slackLink } from "./utils/slack-escape";
+import { createSlackAGUIEventHandler, type SlackHandOff } from "./utils/agui-stream";
+import { handOffText } from "./utils/hand-off";
 import {
   SlackActivityBuilder,
+  slackActivityCallbacks,
   stripSlackActivityTimeline,
 } from "./utils/activity-ui";
 import {
   formatAskUserQuestionMrkdwn,
   type AskUserQuestionEvent,
 } from "./utils/ask-user-format";
-import {
-  toolActivityLabel,
-  toolStatusLabel,
-} from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
+import { finishedAnswer, newestBotResponse } from "./utils/finished-answer";
 import {
-  rewriteCitationsForSlack,
-  stripFragmentDirective,
   stripTinyRefCitationLinks,
 } from "./utils/citations";
 
@@ -49,9 +47,15 @@ import {
   type SlackBotConfig,
   getCurrentMatchedSlackBot,
 } from "./botRegistry";
+import { WebClient } from "@slack/web-api";
+import { slackClientOptions } from "./utils/web-api";
+import { setSlackRefusalNotifier } from "./receiver";
+import { resolveSlackActor, type SlackActor } from "./identity/actor";
+import { dropPreOrgSlackUserLinkIndex } from "../../../libs/repositories/slack-user-link/mongo";
+import { asBotOrg, slackBotEdition } from "./edition";
+import { SLACK_REFUSAL_TEXT } from "./caller-identity";
 
 import {
-  type CitationData,
   type ConversationData,
   type StreamStartResult,
   type SlackMessagePayload,
@@ -73,8 +77,6 @@ import {
   truncateForSlackStreamMarkdown,
   splitByLengthPreferringNewlines,
   hasMarkdownTableStartOutsideCodeFences,
-  buildFinalSlackChunks,
-  splitSlackBlocksByLimit,
   classifySlackFiles,
   resolveSkippedAttachmentsAfterUpload,
   uploadSlackAttachments,
@@ -103,10 +105,8 @@ import {
   threadHasOtherParticipants,
   formatUntrustedThreadContextQuery,
   removeContinuousDuplicateMarkdownLinks,
-  addSpaceBetweenMarkdownLinks,
   resolveSlackArtifactLink,
   getFrontendBaseUrl,
-  buildFrontendRecordUrl,
 } from "./helpers";
 
 interface TypedSlackContext {
@@ -257,107 +257,6 @@ async function uploadThreadFiles(
   }
 }
 
-function getCitationWebUrl(webUrl?: string): string {
-  if (!webUrl) {
-    return "";
-  }
-  if (/^https?:\/\//i.test(webUrl)) {
-    return webUrl;
-  }
-  return `${getFrontendBaseUrl()}${webUrl}`;
-}
-
-function rewriteInlineRecordCitationsForSlack(
-  answerBody: string,
-  citations?: CitationData[],
-): string {
-  return rewriteCitationsForSlack(
-    answerBody,
-    citations,
-    getFrontendBaseUrl(),
-  );
-}
-
-function buildCitationSources(citations?: CitationData[]): any[]  {
-
-  // Deduplicate by recordId, keeping the first occurrence per unique record
-  const seenRecordIds = new Set<string>();
-  const uniqueRecords: Array<{ name: string; url: string }> = [];
-
-  for (const citation of citations || []) {
-    const recordId = citation.citationData.metadata.recordId;
-    if (!recordId) continue;
-
-    let webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    if (!webUrl) {
-      webUrl = buildFrontendRecordUrl(recordId);
-    }
-
-    if (seenRecordIds.has(recordId)) continue;
-    seenRecordIds.add(recordId);
-
-    const recordName = citation.citationData.metadata.recordName || "Source";
-    // Slack does not implement text fragments, and sources are deduped per record
-    const recordUrl = stripFragmentDirective(webUrl);
-    uniqueRecords.push({ name: recordName, url: recordUrl });
-  }
-
-  let blocks: any[] = [];
-  let elements: any[] = [];
-
-  for (const record of uniqueRecords) {
-    elements.push({
-      "type": "link",
-      "url": record.url,
-      "text": ` ${record.name}`,
-    });
-    elements.push({
-      "type": "text",
-      "text": `\n`,
-    });
-
-    if (elements.length === 20) {
-      blocks.push({
-        "type": "rich_text",
-        "elements": [
-          {
-            "type": "rich_text_section",
-            "elements": [
-              ...elements,
-            ]
-          }
-        ]
-      });
-      elements = [];
-    }
-  }
-
-  if (elements.length > 0) {
-    blocks.push({
-      "type": "rich_text",
-      "elements": [
-        {
-          "type": "rich_text_section",
-          "elements": [
-            ...elements,
-          ]
-        }
-      ]
-    });
-  }
-
-  if (blocks.length > 0) {
-    blocks = [ {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Sources:*",
-      },
-    }, ...blocks];
-  }
-  return blocks;
-}
-
 // Middleware setup
 receiver.router.use(json());
 receiver.router.use(urlencoded());
@@ -378,44 +277,67 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
 
 export { removeContinuousDuplicateMarkdownLinks };
 
+/** Who the bot answers as, once admitted (ADR-SLACKID-01). `email` is the linked PipesHub account's own address,
+ * or, for a workspace member with no link, a stand-in made of their Slack ids (only a service-account agent answers
+ * them). */
+type AdmittedSlackCaller = SlackActor;
+
+/** The organisation the bot serves is the edition's answer (`./edition`); a bot that serves none answers nobody. */
+async function admitSlackCaller(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  typedContext: TypedSlackContext,
+  bot: SlackBotConfig | null,
+): Promise<AdmittedSlackCaller | null> {
+  if (!bot) return null;
+  return resolveSlackActor({
+    bot,
+    client: typedClient,
+    message: typedMessage,
+    orgId: await slackBotEdition().orgOfBot(bot),
+    eventTeamId: typedContext.teamId,
+    botUserId: typedContext.botUserId,
+  });
+}
+
+setSlackRefusalNotifier(async ({ bot, refusal, event }) => {
+  if (refusal === "bot") return;
+  const channel = typeof event.channel === "string" ? event.channel : "";
+  const user = typeof event.user === "string" ? event.user : "";
+  if (!channel || !user) return;
+  const client = new WebClient(bot.botToken, slackClientOptions());
+  await client.chat.postEphemeral({
+    channel,
+    user,
+    text: SLACK_REFUSAL_TEXT[refusal],
+    ...(typeof event.thread_ts === "string" ? { thread_ts: event.thread_ts } : {}),
+  });
+});
+
 async function processSlackMessage(
   typedMessage: SlackMessagePayload,
   typedClient: TypedSlackClient,
   typedContext: TypedSlackContext,
   query: string,
   resolvedSlackBot: SlackBotConfig | null,
+  caller: AdmittedSlackCaller,
   threadFiles: SlackFile[] = [],
 ): Promise<void> {
 
   if (!typedMessage.user || !typedMessage.channel) {
     return;
   }
+  const handOffChannel = typedMessage.channel;
 
   const threadId = resolveThreadId(typedMessage);
 
-  const lookupResult = await typedClient.users.info({
-    user: typedMessage.user,
-  });
-
-
-
-  if (!lookupResult.user?.profile?.email) {
-    console.error("Failed to get user email");
-    await sendUserFacingSlackErrorMessage(
-      typedClient,
-      typedMessage,
-      "I couldn't verify your Slack profile details right now. Please try again in a moment.",
-    );
-    return;
-  }
-
-  const email = lookupResult.user.profile.email;
-  const callerDisplayName = slackCallerDisplayName(lookupResult.user);
+  const email = caller.email;
+  const callerDisplayName = slackCallerDisplayName(caller.person);
   // Slack returns the user's IANA timezone (e.g. "America/Los_Angeles") on
   // users.info. Forward it to the AI backend so build_llm_time_context can
   // localize the LLM's time-relative answers to the user's actual zone
   // instead of falling back to the server clock.
-  const userTimezone = lookupResult.user.tz || undefined;
+  const userTimezone = caller.person.tz || undefined;
   const configService = ConfigService.getInstance();
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
@@ -425,17 +347,17 @@ async function processSlackMessage(
   }
 
   const accessToken = slackJwtGenerator(
-    email,
+    caller.linked ? email : "",
     await configService.getScopedJwtSecret(),
     undefined,
-    { configId: currentBotId },
+    { configId: currentBotId, orgId: caller.orgId, slackTeamId: caller.teamId, slackUserId: caller.slackUserId },
   );
 
-  const conversation = await getFromDatabase(
+  const conversation = await asBotOrg(caller.orgId, () => getFromDatabase(
     threadId,
     currentBotId,
     email,
-  );
+  ));
   let streamTs: string | null = null;
   let streamStopped = false;
   let streamCharCount = 0;
@@ -651,10 +573,15 @@ async function processSlackMessage(
       {
         query,
         chatMode: currentAgentId? "quick" : "agent",
+        // The default assistant's Agent mode asks for the agent harness as the web app's does (ASSIST1); the server
+        // decides from the org's rollout, and a thread that began on the classic loop stays there.
+        ...(currentAgentId ? {} : { harness: "durable" }),
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
         ...(callerDisplayName ? { callerDisplayName } : {}),
-        callerEmail: email,
+        ...(caller.linked ? { callerEmail: email } : {}),
+        // Where Node posts the run's end if this stream ends first (ADR-OWD-09 D-SLACK-ASK).
+        slackThread: { channel: typedMessage.channel, threadTs: threadId },
         ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
       },
       {
@@ -676,6 +603,8 @@ async function processSlackMessage(
     let lastActivityAt = 0;
     let streamErrorMessage: string | null = null;
     let completionConversation: ConversationData["conversation"] | null = null;
+    // Set from the stream's onHandOff callback, which control-flow narrowing does not see.
+    let handOff = null as SlackHandOff | null;
     // Answer appends and activity updates use separate queues so chat.update
     // latency cannot stall chat.appendStream mid-answer.
     let queuedStreamAppend: Promise<void> = Promise.resolve();
@@ -804,12 +733,12 @@ async function processSlackMessage(
         return;
       }
       try {
-        await saveToDatabase({
+        await asBotOrg(caller.orgId, () => saveToDatabase({
           threadId: threadId,
           conversationId,
           botId: currentBotId,
           email: email,
-        });
+        }));
         conversationPersisted = true;
       } catch (error) {
         console.error("Error persisting Slack conversation mapping:", error);
@@ -962,7 +891,7 @@ async function processSlackMessage(
       }
       postedArtifactKeys.add(dedupeKey);
       postedArtifactKeys.add(link);
-      const text = `*Artifact:* <${link}|${fileName}>`;
+      const text = `*Artifact:* ${slackLink(link, fileName)}`;
       queuedStreamAppend = queuedStreamAppend
         .then(async () => {
           await typedClient.chat.postMessage({
@@ -989,20 +918,7 @@ async function processSlackMessage(
     };
 
     const aguiHandler = createSlackAGUIEventHandler({
-      onStatus: (message) => {
-        activityBuilder.setStatus(message);
-        scheduleActivityUpdate();
-      },
-      onReasoning: (delta, done) => {
-        if (delta) {
-          activityBuilder.appendReasoning(delta);
-          scheduleActivityUpdate();
-        }
-        if (done) {
-          activityBuilder.finishReasoning();
-          scheduleActivityUpdate();
-        }
-      },
+      ...slackActivityCallbacks(activityBuilder, scheduleActivityUpdate),
       onModelCallDiscarded: () => {
         activityBuilder.dropTrailingReasoning();
         scheduleActivityUpdate();
@@ -1023,33 +939,6 @@ async function processSlackMessage(
         streamTableProbeText = '';
         tablePauseHintSent = false;
       },
-      onNarration: (text) => {
-        activityBuilder.appendNarration(text);
-        scheduleActivityUpdate();
-      },
-      onToolStart: (toolName, displayName) => {
-        activityBuilder.startTool(
-          toolName,
-          toolStatusLabel(toolName, displayName),
-        );
-        scheduleActivityUpdate();
-      },
-      onToolResult: (toolName, displayName, status) => {
-        activityBuilder.finishTool(
-          toolName,
-          toolActivityLabel(toolName, displayName),
-          status === "failed" || status === "blocked",
-        );
-        scheduleActivityUpdate();
-      },
-      onSubAgent: (role, phase) => {
-        if (phase === "started") {
-          activityBuilder.startSubAgent(role);
-        } else {
-          activityBuilder.finishSubAgent(role, phase);
-        }
-        scheduleActivityUpdate();
-      },
       onAnswerAccumulated: handleAnswerAccumulated,
       onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
@@ -1059,6 +948,9 @@ async function processSlackMessage(
       },
       onComplete: (conv) => {
         completionConversation = conv as ConversationData["conversation"];
+      },
+      onHandOff: (waiting) => {
+        handOff = waiting;
       },
       onError: (message) => {
         streamErrorMessage = resolveSlackErrorMessage(message);
@@ -1227,6 +1119,32 @@ async function processSlackMessage(
       }
     };
 
+    /**
+     * The run stopped for an approval (D-SLACK-ASK): the thread says what waits and links the conversation in
+     * PipesHub; the activity stays above it and nothing streamed is left half-written. Node posts the answer here
+     * once the run goes on.
+     */
+    const postHandOff = async (waiting: SlackHandOff): Promise<void> => {
+      await persistConversationId(waiting.conversationId);
+      await conversationPersistPromise;
+      if (streamTs) {
+        await deleteStreamMessages();
+      }
+      const words = handOffText(waiting, getFrontendBaseUrl());
+      if (activityBuilder.hasTimeline()) {
+        activityBuilder.setStatus("");
+        await updateActivityMessage(activityBuilder.format());
+        await typedClient.chat.postMessage({
+          channel: handOffChannel,
+          thread_ts: threadId,
+          text: truncateForSlack(words),
+          ...NO_UNFURL_OPTIONS,
+        });
+      } else {
+        await sendOrUpdateNonStreamMessage(words);
+      }
+    };
+
     await new Promise<void>((resolve, reject) => {
       responseStream.setEncoding("utf8");
       let settled = false;
@@ -1313,6 +1231,11 @@ async function processSlackMessage(
       return;
     }
 
+    if (handOff !== null) {
+      await postHandOff(handOff);
+      return;
+    }
+
     const conversationData =
       completionConversation as ConversationData["conversation"] | null;
 
@@ -1351,10 +1274,7 @@ async function processSlackMessage(
       return;
     }
 
-    const botResponses = conversationData.messages;
-    const botResponse =
-      [...botResponses].reverse().find((msg) => msg.messageType === "bot_response") ??
-      null;
+    const botResponse = newestBotResponse(conversationData.messages);
     if (!botResponse) {
       const invalidResponseMessage =
         "Received an unexpected response format from the backend. Please try again later.";
@@ -1393,19 +1313,9 @@ async function processSlackMessage(
       await pushTextToSlackStream(botResponse.content);
     }
 
-    const citationBlocks = buildCitationSources(botResponse.citations);
-    const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
-    // Frontend strips ::artifact markers into an Artifacts panel; Slack must
-    // not show the raw wire syntax in the final answer body.
-    const { text: contentWithoutArtifacts, artifacts: contentArtifacts } =
-      parseArtifactMarkers(botResponse.content || "");
-    let answerBody = rewriteInlineRecordCitationsForSlack(
-      contentWithoutArtifacts,
-      botResponse.citations,
-    );
-    answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
-    answerBody = addSpaceBetweenMarkdownLinks(answerBody);
-    const finalChunks = await buildFinalSlackChunks(answerBody);
+    // The same composition Node posts when a run ends after its stream handed off (ADR-OWD-09 D-SLACK-ASK).
+    const finished = await finishedAnswer(botResponse);
+    const finalChunks = finished.answer;
 
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
 
@@ -1496,29 +1406,25 @@ async function processSlackMessage(
         for (const remainingChunk of remainingFinalChunks) {
           await postThreadChunkMessage(remainingChunk);
         }
-        for (const citationChunk of citationBlockChunks) {
-          await postThreadChunkMessage(citationChunk);
+        // A limit's cut-short notice (BUDGETEND), then the sources.
+        for (const followUp of finished.followUps) {
+          await postThreadChunkMessage(followUp);
         }
       }
     }
 
     // Post artifact record links after the answer (mirrors frontend Artifacts panel).
     // Markers often use `record:<id>` placeholders rather than signed download URLs.
-    for (const artifact of contentArtifacts) {
-      const link = resolveSlackArtifactLink(artifact);
-      if (!link) {
+    for (const artifact of finished.artifacts) {
+      if (postedArtifactKeys.has(artifact.key) || postedArtifactKeys.has(artifact.link)) {
         continue;
       }
-      const dedupeKey = artifact.recordId || link;
-      if (postedArtifactKeys.has(dedupeKey) || postedArtifactKeys.has(link)) {
-        continue;
-      }
-      postedArtifactKeys.add(dedupeKey);
-      postedArtifactKeys.add(link);
+      postedArtifactKeys.add(artifact.key);
+      postedArtifactKeys.add(artifact.link);
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: truncateForSlack(`*Artifact:* <${link}|${artifact.fileName}>`),
+        text: truncateForSlack(artifact.text),
         ...NO_UNFURL_OPTIONS,
       });
     }
@@ -1559,6 +1465,15 @@ app.message(async ({ message, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  let caller: AdmittedSlackCaller | null;
+  try {
+    caller = await admitSlackCaller(typedClient, typedMessage, typedContext, resolvedSlackBot);
+  } catch (error) {
+    console.error("Error admitting Slack DM sender:", error instanceof Error ? error.message : String(error));
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, SLACK_REFUSAL_TEXT.unverified);
+    return;
+  }
+  if (!caller) return;
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,
@@ -1579,6 +1494,7 @@ app.message(async ({ message, client, context }) => {
       typedContext,
       query,
       resolvedSlackBot,
+      caller,
     );
   } catch (error) {
     console.error("Error handling DM message:", error);
@@ -1596,6 +1512,15 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
+  let caller: AdmittedSlackCaller | null;
+  try {
+    caller = await admitSlackCaller(typedClient, typedMessage, typedContext, resolvedSlackBot);
+  } catch (error) {
+    console.error("Error admitting Slack mention sender:", error instanceof Error ? error.message : String(error));
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, SLACK_REFUSAL_TEXT.unverified);
+    return;
+  }
+  if (!caller) return;
   const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
     typedClient,
     typedMessage,
@@ -1631,6 +1556,7 @@ app.event("app_mention", async ({ event, client, context }) => {
       typedContext,
       contextualQuery,
       resolvedSlackBot,
+      caller,
       threadFiles,
     );
   } catch (error) {
@@ -1654,6 +1580,7 @@ app.event("app_mention", async ({ event, client, context }) => {
 
   // Drop legacy threadId + botId index if it exists
   if (usesMongo()) await dropLegacyThreadBotIndex();
+  if (usesMongo()) await dropPreOrgSlackUserLinkIndex();
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");

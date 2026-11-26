@@ -1,0 +1,30 @@
+{"kind": "warmup", "runtime": "runc", "room": {"cpu": 21, "mem": 36, "load1": 7.1}, "git_clone": 10.273433440015651, "npm_ci": 10.155898789002094, "pytest": 46.069871442974545}
+{"kind": "warmup", "runtime": "runsc", "room": {"cpu": 20, "mem": 36, "load1": 6.88}, "git_clone": 14.422239487999999, "npm_ci": 16.044866925999997, "pytest": 57.925684806}
+{"kind": "io", "i": 0, "runtime": "runc", "room": {"cpu": 16, "mem": 37, "load1": 7.86}, "git_clone": 9.439091551001184, "npm_ci": 7.74625536298845, "pytest": 48.25678323401371}
+{"kind": "io", "i": 0, "runtime": "runsc", "room": {"cpu": 12, "mem": 35, "load1": 7.9}, "git_clone": 15.218278645, "npm_ci": 17.796499321, "pytest": 58.765509496}
+{"kind": "io", "i": 1, "runtime": "runsc", "room": {"cpu": 13, "mem": 35, "load1": 7.37}, "git_clone": 15.058214651, "npm_ci": 16.273358277, "pytest": 56.405360038000005}
+{"kind": "io", "i": 1, "runtime": "runc", "room": {"cpu": 6, "mem": 33, "load1": 4.71}, "git_clone": 9.694834350026213, "npm_ci": 9.931463148037437, "pytest": 43.160671348974574}
+{"kind": "io", "i": 2, "runtime": "runc", "room": {"cpu": 8, "mem": 33, "load1": 4.38}, "git_clone": 9.693147704005241, "npm_ci": 10.239825904020108, "pytest": 46.1196568349842}
+{"kind": "io", "i": 2, "runtime": "runsc", "room": {"cpu": 18, "mem": 35, "load1": 6.12}, "git_clone": 15.072818025999998, "npm_ci": 17.058632104, "pytest": 56.168184536000005}
+{"kind": "io", "i": 3, "runtime": "runsc", "room": {"cpu": 7, "mem": 36, "load1": 7.51}, "git_clone": 14.415613282, "npm_ci": 18.324931006, "pytest": 55.871361323}
+{"kind": "io", "i": 3, "runtime": "runc", "room": {"cpu": 11, "mem": 34, "load1": 6.97}, "git_clone": 9.701152633992024, "npm_ci": 9.056355389009696, "pytest": 48.559811051003635}
+{"kind": "io", "i": 4, "runtime": "runc", "room": {"cpu": 20, "mem": 36, "load1": 7.75}, "git_clone": 9.886219058011193, "npm_ci": 10.896050609997474, "pytest": 45.39325027301675}
+{"kind": "io", "i": 4, "runtime": "runsc", "room": {"cpu": 17, "mem": 36, "load1": 7.37}, "git_clone": 14.8582606, "npm_ci": 17.278143674, "pytest": 61.139160528000005}
+{"kind": "io", "i": 5, "runtime": "runsc", "room": {"cpu": 19, "mem": 37, "load1": 7.51}, "git_clone": 14.089585522, "npm_ci": 16.293041717, "pytest": 54.424280554}
+{"kind": "io", "i": 5, "runtime": "runc", "room": {"cpu": 6, "mem": 33, "load1": 4.87}, "git_clone": 9.602466431970242, "npm_ci": 9.664513508963864, "pytest": 48.667401233979035}
+{"kind": "io", "i": 6, "runtime": "runc", "room": {"cpu": 18, "mem": 35, "load1": 9.61}, "git_clone": 9.81360992701957, "npm_ci": 9.479166554985568, "pytest": 45.66787555499468}
+{"kind": "io", "i": 6, "runtime": "runsc", "room": {"cpu": 13, "mem": 36, "load1": 7.41}, "git_clone": 15.003881289, "npm_ci": 16.829406003, "pytest": 56.874111936}
+{"kind": "cold", "i": 0, "runtime": "runc", "room": {"cpu": 24, "mem": 37, "load1": 7.44}, "cold_start": 0.44820624199928716}
+{"kind": "cold", "i": 0, "runtime": "runsc", "room": {"cpu": 18, "mem": 37, "load1": 7.41}, "cold_start": 0.3964819990214892}
+{"kind": "cold", "i": 1, "runtime": "runsc", "room": {"cpu": 24, "mem": 37, "load1": 7.41}, "cold_start": 0.4360388269997202}
+{"kind": "cold", "i": 1, "runtime": "runc", "room": {"cpu": 13, "mem": 37, "load1": 7.14}, "cold_start": 0.5009630230488256}
+{"kind": "cold", "i": 2, "runtime": "runc", "room": {"cpu": 16, "mem": 37, "load1": 7.14}, "cold_start": 0.4479946449864656}
+{"kind": "cold", "i": 2, "runtime": "runsc", "room": {"cpu": 27, "mem": 37, "load1": 6.96}, "cold_start": 0.4418680510134436}
+{"kind": "cold", "i": 3, "runtime": "runsc", "room": {"cpu": 18, "mem": 37, "load1": 6.96}, "cold_start": 0.38406665000366047}
+{"kind": "cold", "i": 3, "runtime": "runc", "room": {"cpu": 28, "mem": 37, "load1": 6.97}, "cold_start": 0.4306212980300188}
+{"kind": "cold", "i": 4, "runtime": "runc", "room": {"cpu": 26, "mem": 37, "load1": 6.97}, "cold_start": 0.41540428501321003}
+{"kind": "cold", "i": 4, "runtime": "runsc", "room": {"cpu": 19, "mem": 37, "load1": 6.97}, "cold_start": 0.5373238180181943}
+{"kind": "cold", "i": 5, "runtime": "runsc", "room": {"cpu": 21, "mem": 37, "load1": 6.97}, "cold_start": 0.4675042430171743}
+{"kind": "cold", "i": 5, "runtime": "runc", "room": {"cpu": 19, "mem": 37, "load1": 7.13}, "cold_start": 0.4373686210019514}
+{"kind": "cold", "i": 6, "runtime": "runc", "room": {"cpu": 17, "mem": 37, "load1": 7.13}, "cold_start": 0.4336725219618529}
+{"kind": "cold", "i": 6, "runtime": "runsc", "room": {"cpu": 19, "mem": 37, "load1": 7.04}, "cold_start": 0.46115406102035195}

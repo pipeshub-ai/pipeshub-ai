@@ -10,6 +10,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -54,7 +55,7 @@ class GetTablesSchemaInput(BaseModel):
 
     tables: list[str] = Field(..., description="List of table names to fetch schema for")
 
-@ToolsetBuilder("MariaDB")\
+@ToolsetBuilder("MariaDB", provider=ToolProvider.CONNECTOR)\
     .in_group("Database")\
     .with_description("MariaDB toolset for schema introspection and SQL execution")\
     .with_category(ToolsetCategory.DATABASE)\
@@ -152,7 +153,7 @@ class MariaDB:
         short_description="List tables in the default MariaDB database",
         description="List tables in the default MariaDB database configured in connector auth.",
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_tables(
         self,
@@ -196,7 +197,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -245,7 +246,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -316,7 +317,7 @@ class MariaDB:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -413,7 +414,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def execute_query(
         self,

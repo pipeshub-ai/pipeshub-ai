@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/inbox-preferences.schema.json",
+  "title": "InboxPreferences",
+  "description": "`GET` and `PATCH /api/v1/agent-harness/inbox/preferences` (G2): muted workflows (a muted workflow's successful runs are not told; its failures and asks are), the pause (notices land in the Inbox but are not pushed; asks never pause), and the channels beyond the Inbox the person's finished-run notices go to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mutedSchedules",
+    "pause",
+    "runNotices"
+  ],
+  "properties": {
+    "mutedSchedules": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "pause": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "until"
+          ],
+          "properties": {
+            "until": {
+              "$ref": "../../../core/common.schema.json#/$defs/UInt"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "untilResumed"
+          ],
+          "properties": {
+            "untilResumed": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "runNotices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "email",
+        "slack"
+      ],
+      "properties": {
+        "email": {
+          "type": "boolean"
+        },
+        "slack": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "mutedSchedules": [
+        "s1"
+      ],
+      "pause": {
+        "untilResumed": true
+      },
+      "runNotices": {
+        "email": true,
+        "slack": false
+      }
+    }
+  ]
+}

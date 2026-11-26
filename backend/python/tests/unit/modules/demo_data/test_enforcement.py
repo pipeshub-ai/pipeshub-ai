@@ -24,6 +24,8 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 from app.modules.demo_data.chat import EXCLUDED_APP_IDS_STATE_KEY
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.utils.fetch_full_record import UNAVAILABLE, _RecordResolver
+from harness_core.knowledge.publications import ReadGrant
+from tests.support.record_access import InMemoryRecordAccess
 
 OFF = frozenset({"demo-1"})
 
@@ -143,14 +145,24 @@ async def test_a_real_folder_still_opens() -> None:
 
 # --- Tools that open records by id --------------------------------------------
 
+
+class _OwnAccess:
+    """The reader's own access (H1: fetch_full_record decides every id with a read gate)."""
+
+    async def decide(self, record_id: str) -> str:
+        return "own"
+
+    async def decide_grants(self, record_ids: list[str]) -> dict[str, ReadGrant]:
+        return dict.fromkeys(record_ids, ReadGrant("own"))
+
 @pytest.mark.asyncio
 async def test_fetch_record_treats_a_demo_record_as_unavailable() -> None:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"ok": True})
+    _demo_record_owned().serve(graph)
     graph.get_document = AsyncMock(return_value={"connectorId": "demo-1", "indexingStatus": "COMPLETED"})
     resolver = _RecordResolver(
         virtual_record_id_to_result={}, graph_provider=graph, blob_store=MagicMock(),
-        config_service=MagicMock(), org_id="org", user_id="u1", frontend_url=None,
+        config_service=MagicMock(), org_id="org", user_id="u1", frontend_url=None, gate=_OwnAccess(),
     )
     with patch("app.utils.fetch_full_record.excluded_demo_connector_ids", AsyncMock(return_value=OFF)):
         _, record, reason = await resolver.resolve("rec-1")
@@ -173,6 +185,7 @@ async def test_lookup_record_drops_a_demo_match() -> None:
         graph_provider=graph, catalog=MagicMock(), org_id="org", user_id="u1", user_key="k",
         folder_mime_types=[], excluded_app_ids=OFF,
     )
+    resolver._by_weburl = AsyncMock(return_value=[_match("d", "PR #211"), _match("j", "Real")])
     resolver._execute_strategy = AsyncMock(return_value=[_match("d", "PR #211"), _match("j", "Real")])
     matches, _ = await resolver._resolve_one("https://github.acme-demo.example/svc-export/pull/211")
     assert [m.id for m in matches] == ["j"]
@@ -203,6 +216,11 @@ async def test_the_source_catalog_never_lists_switched_off_demo_data() -> None:
 _HIDE = "app.modules.demo_data.access.excluded_demo_connector_ids"
 
 
+def _demo_record_owned() -> InMemoryRecordAccess:
+    """User ``u1`` of ``org`` owns ``rec-1``, a record of the demo connector."""
+    return InMemoryRecordAccess().readable("u1", "org", "rec-1", connectorId="demo-1")
+
+
 def _http_request() -> MagicMock:
     request = MagicMock()
     request.state.user = {"userId": "u1", "orgId": "org"}
@@ -215,7 +233,9 @@ def _http_request() -> MagicMock:
 @pytest.mark.parametrize(("excluded", "expect_404"), [(OFF, True), (frozenset(), False)])
 async def test_the_record_page_hides_a_switched_off_demo_record(excluded, expect_404) -> None:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {"id": "rec-1"}})
+    # The access check answers the record document, connector included (H4: the route reads it from there).
+    access = _demo_record_owned().serve(graph)
+    details = await access.check_record_access_with_details("u1", "org", "rec-1")
     graph.get_document = AsyncMock(return_value={"connectorId": "demo-1"})
     with patch(_HIDE, AsyncMock(return_value=excluded)):
         if expect_404:
@@ -225,7 +245,7 @@ async def test_the_record_page_hides_a_switched_off_demo_record(excluded, expect
         else:
             result = await connector_router.get_record_by_id(record_id="rec-1", request=_http_request(), graph_provider=graph)
             # Shown, with the stage track the record page reads (empty: no revision yet).
-            assert result == {"record": {"id": "rec-1"}, "stageStates": []}
+            assert result == {**details, "stageStates": []}
 
 
 @pytest.mark.asyncio
@@ -235,7 +255,7 @@ async def test_the_file_stream_hides_a_switched_off_demo_record(excluded, expect
     record = MagicMock(org_id="org", connector_id="demo-1")
     graph.get_document = AsyncMock(return_value={"_key": "org"})
     graph.get_record_by_id = AsyncMock(return_value=record)
-    graph.check_record_access_with_details = AsyncMock(return_value={"ok": True})
+    _demo_record_owned().serve(graph)
     content = AsyncMock(return_value="bytes")
     with patch(_HIDE, AsyncMock(return_value=excluded)), \
             patch.object(connector_router, "_resolve_record_content_response", content), \
@@ -280,11 +300,11 @@ async def test_the_source_filter_does_not_offer_switched_off_demo_data() -> None
 @pytest.mark.asyncio
 async def test_concurrent_reads_all_wait_for_the_setting() -> None:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"ok": True})
+    _demo_record_owned().serve(graph)
     graph.get_document = AsyncMock(return_value={"connectorId": "demo-1", "indexingStatus": "COMPLETED"})
     resolver = _RecordResolver(
         virtual_record_id_to_result={}, graph_provider=graph, blob_store=MagicMock(),
-        config_service=MagicMock(), org_id="org", user_id="u1", frontend_url=None,
+        config_service=MagicMock(), org_id="org", user_id="u1", frontend_url=None, gate=_OwnAccess(),
     )
     resolver._download = AsyncMock(return_value={"id": "leak"})
 

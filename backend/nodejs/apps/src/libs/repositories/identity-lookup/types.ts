@@ -15,6 +15,7 @@ export type ResolvedAccessToken = Pick<
   | 'scopes'
   | 'expiresAt'
   | 'lastUsedAt'
+  | 'knowledgeLimit'
 >;
 
 export type ResolvedRefreshToken = Pick<

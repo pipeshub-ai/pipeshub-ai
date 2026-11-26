@@ -4,7 +4,13 @@ Instantly advertises OAuth with Dynamic Client Registration (RFC 7591) and PKCE 
 and also accepts an API key sent as `Authorization: Bearer <key>`.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -35,6 +41,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["email", "campaigns", "sales", "crm", "outreach"],
+        category=MCPCategory.SALES,
+        capabilities=[
+            "Run cold email campaigns",
+            "Manage leads",
+            "Check campaign results",
+        ],
     )
 )
 class InstantlyMCPServer:

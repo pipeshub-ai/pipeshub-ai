@@ -165,21 +165,11 @@ async def test_build_oauth_flow_config_not_found_does_not_log_id(caplog) -> None
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stored_id", [OAUTH_ID, None])
-@pytest.mark.parametrize("existing_ids", [[OAUTH_ID], []])
-async def test_pre_validation_debug_lines_do_not_log_id_or_name(
-    stored_id, existing_ids, caplog
-) -> None:
-    log = logging.getLogger("test.oauth-log-hygiene.prevalidate")
-    config = {
-        "auth": {
-            "clientId": "cid",
-            "clientSecret": SECRET,
-            "oauthInstanceName": INSTANCE_NAME,
-        }
-    }
+@pytest.mark.parametrize("personal", [True, False])
+async def test_oauth_app_write_lines_do_not_log_id_or_name(personal, caplog) -> None:
+    log = logging.getLogger("test.oauth-log-hygiene.app-write")
     existing = [
-        {"_id": i, "orgId": "org-1", "oauthInstanceName": "Other"} for i in existing_ids
+        {"_id": OAUTH_ID, "orgId": "org-1", "oauthInstanceName": INSTANCE_NAME, "config": {"clientId": "cid"}}
     ]
     config_service = AsyncMock()
     config_service.get_config = AsyncMock(return_value=existing)
@@ -188,10 +178,22 @@ async def test_pre_validation_debug_lines_do_not_log_id_or_name(
         patch.object(
             router_module, "_get_oauth_field_names_from_registry", return_value=["clientId"]
         ),
-        patch.object(router_module, "_check_oauth_name_conflict"),
+        caplog.at_level(logging.DEBUG),
     ):
-        with caplog.at_level(logging.DEBUG):
-            await router_module._validate_admin_oauth_config_before_creation(
-                "Dropbox", config, stored_id, "inst", "org-1", config_service, log
-            )
-    _assert_clean(caplog, expect="Pre-validation")
+        # A member repeating an org app's own values: nothing is written, the link stays.
+        result = await router_module._handle_oauth_config_creation(
+            "Dropbox",
+            {"oauthConfigId": OAUTH_ID, "clientId": "cid"},
+            "inst",
+            "user-1",
+            "org-1",
+            is_admin=False,
+            config_service=config_service,
+            oauth_config_id=None,
+            auth_type="OAUTH",
+            base_url="",
+            logger=log,
+            connector_scope="personal" if personal else "team",
+        )
+    assert result == (OAUTH_ID, False)
+    _assert_clean(caplog, expect="nothing to write")

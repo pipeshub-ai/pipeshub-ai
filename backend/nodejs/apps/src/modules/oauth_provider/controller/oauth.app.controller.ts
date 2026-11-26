@@ -1,6 +1,5 @@
 import { injectable, inject } from 'inversify'
 import { Response, NextFunction } from 'express'
-import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
@@ -11,14 +10,26 @@ import {
 } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service'
+import {
+  auditSettingsChange,
+  ConfigAction,
+} from '../../configuration_manager/utils/config-audit';
 
 const callerIsAdmin = (userId: unknown, orgId: unknown): Promise<boolean> =>
   isUserOrgAdmin(userId as string, orgId as string);
 
+/** One `config.oauth_client.*` audit line for a change the service saved (it threw otherwise). */
+const auditAppChange = (
+  action: ConfigAction,
+  appId: string,
+  reason?: string,
+): void => {
+  auditSettingsChange('oauth_client', action, { target: appId, reason });
+};
+
 @injectable()
 export class OAuthAppController {
   constructor(
-    @inject('Logger') private logger: Logger,
     @inject('OAuthAppService') private oauthAppService: OAuthAppService,
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('ScopeValidatorService')
@@ -75,13 +86,7 @@ export class OAuthAppController {
       const data: CreateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
-
-      this.logger.info('OAuth app created', {
-        appId: app.id,
-        orgId,
-        userId,
-        name: data.name,
-      })
+      auditAppChange('create', app.id);
 
       res.status(201).json({
         message: 'OAuth app created successfully',
@@ -145,12 +150,7 @@ export class OAuthAppController {
         userId,
         serviceAccountId,
       )
-
-      this.logger.info('OAuth app token identity changed via API', {
-        appId,
-        orgId,
-        serviceAccountId,
-      })
+      auditAppChange('update', appId, 'token_identity');
 
       res.json({
         message:
@@ -177,11 +177,7 @@ export class OAuthAppController {
       const data: UpdateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.updateApp(appId, orgId, userId, isAdmin, data)
-
-      this.logger.info('OAuth app updated via API', {
-        appId,
-        orgId,
-      })
+      auditAppChange('update', appId, 'settings');
 
       res.json({
         message: 'OAuth app updated successfully',
@@ -206,24 +202,9 @@ export class OAuthAppController {
       const appId = req.params.appId!
 
       const isAdmin = await callerIsAdmin(userId, orgId);
-
-      // Revoke all tokens first
-      const app = await this.oauthAppService.getAppById(
-        appId,
-        orgId,
-        userId,
-        isAdmin,
-      );
-      await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
-
-      // Then delete the app
+      // The service revokes the app's tokens after marking it revoked.
       await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin);
-
-      this.logger.info('OAuth app deleted via API', {
-        appId,
-        orgId,
-        userId,
-      })
+      auditAppChange('delete', appId);
 
       res.json({
         message: 'OAuth app deleted successfully',
@@ -247,11 +228,7 @@ export class OAuthAppController {
       const appId = req.params.appId!
 
       const app = await this.oauthAppService.regenerateSecret(appId, orgId, userId)
-
-      this.logger.info('OAuth app secret regenerated via API', {
-        appId,
-        orgId,
-      })
+      auditAppChange('update', appId, 'secret_rotate');
 
       res.json({
         message: 'Client secret regenerated successfully',
@@ -284,11 +261,7 @@ export class OAuthAppController {
         userId,
         isAdmin,
       );
-
-      this.logger.info('OAuth app suspended via API', {
-        appId,
-        orgId,
-      })
+      auditAppChange('update', appId, 'suspend');
 
       res.json({
         message: 'OAuth app suspended successfully',
@@ -320,11 +293,7 @@ export class OAuthAppController {
         userId,
         isAdmin,
       );
-
-      this.logger.info('OAuth app activated via API', {
-        appId,
-        orgId,
-      })
+      auditAppChange('update', appId, 'activate');
 
       res.json({
         message: 'OAuth app activated successfully',
@@ -412,12 +381,7 @@ export class OAuthAppController {
         isAdmin,
       );
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
-
-      this.logger.info('All tokens revoked for OAuth app via API', {
-        appId,
-        clientId: app.clientId,
-        orgId,
-      })
+      auditAppChange('update', appId, 'tokens_revoked');
 
       res.json({
         message: 'All tokens revoked successfully',

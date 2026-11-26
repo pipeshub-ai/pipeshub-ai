@@ -51,6 +51,11 @@ export interface CitationData {
   boundingBox?: Array<{ x: number; y: number }>;
   /** ISO timestamp of when the citation chunk was last updated (used for "Synced X ago") */
   updatedAt?: string;
+  /**
+   * The viewer of a shared conversation cannot read this source now: the
+   * backend sent only the `[N]` number, nothing about the record.
+   */
+  unavailable?: boolean;
 }
 
 /**
@@ -77,6 +82,8 @@ export interface CitationMaps {
 export interface StreamingCitationData {
   content: string;
   chunkIndex: number;
+  /** A source the shared viewer cannot read; it carries no content or metadata. */
+  unavailable?: boolean;
   metadata: {
     orgId: string;
     recordId: string;

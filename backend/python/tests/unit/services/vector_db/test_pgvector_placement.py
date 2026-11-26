@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Never
 
 import pytest
 
 from app.core import org_context
+from app.services.vector_db.pgvector import placement
 from app.services.vector_db.pgvector.errors import OrgMismatch, PgVectorError
 from app.services.vector_db.pgvector.placement import OwnLeafPolicy
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -139,15 +142,20 @@ async def test_a_policy_shared_by_two_event_loops_gives_each_loop_a_task_of_its_
     assert errors == [] and {k[0] for k in policy._asking} <= {asyncio.get_running_loop()}
 
 
-@pytest.mark.asyncio
-async def test_the_wait_counts_the_request_and_cuts_a_slow_call_at_the_deadline() -> None:
+def test_the_wait_counts_the_request_and_cuts_a_slow_call_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     class Slow(FakeRun):
         async def run(self, fn, **opts) -> object:
             await asyncio.sleep(5)                                                # a request that outlasts the whole wait
             return await super().run(fn, **opts)
 
-    policy = OwnLeafPolicy(Slow([{"placed": True, "note": None}]), wait=0.1, poll=0.01)
-    t0 = asyncio.get_running_loop().time()
-    with pytest.raises(PgVectorError, match="placement did not finish"):
-        await policy.before_first_write(ORG)
-    assert asyncio.get_running_loop().time() - t0 < 1
+    # The policy's deadline and the loop's timers on one clock, so the cut is exact and costs no real time.
+    monkeypatch.setattr(placement, "time", SimpleNamespace(monotonic=lambda: asyncio.get_running_loop().time()))
+
+    async def main() -> None:
+        policy = OwnLeafPolicy(Slow([{"placed": True, "note": None}]), wait=0.1, poll=0.01)
+        t0 = asyncio.get_running_loop().time()
+        with pytest.raises(PgVectorError, match="placement did not finish"):
+            await policy.before_first_write(ORG)
+        assert asyncio.get_running_loop().time() - t0 == pytest.approx(0.1)
+
+    run_on_virtual_time(main)

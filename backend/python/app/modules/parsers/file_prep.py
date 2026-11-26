@@ -31,6 +31,20 @@ class PreparedFile:
     truncated: bool = False  # only the first and last part of a .log/.cfg is kept
 
 
+def prepared_labels(file_type: FileType | None, extension: str | None, mime_type: str | None) -> tuple[str | None, str | None]:
+    """The ``(extension, mime)`` a file is read under once :func:`prepare_file` has prepared it (the labels it returns)."""
+    if file_type is None:
+        return extension, mime_type
+    if file_type.prep is Prep.OOXML_WORD:
+        return "docx", _DOCX_MIME
+    if file_type.prep is Prep.OOXML_SLIDES:
+        return "pptx", _PPTX_MIME
+    if file_type.prep is Prep.CAPPED_TEXT:
+        # With no extension of its own (the event's "unknown"), the parsing service still has to find the log/cfg reader.
+        return (extension if extension and extension != "unknown" else file_type.extensions[0]), _OCTET
+    return extension, mime_type
+
+
 def needs_preparing(file_type: FileType | None) -> bool:
     return file_type is not None and (file_type.prep is not Prep.NONE or file_type.odf_container)
 
@@ -49,20 +63,16 @@ async def prepare_file(
     if file_type.odf_container:
         await asyncio.to_thread(raise_if_odf_encrypted, data)
     if file_type.prep is Prep.OOXML_WORD:
-        return PreparedFile(await asyncio.to_thread(as_plain_package, data, "word", label=label), "docx", _DOCX_MIME)
+        return PreparedFile(await asyncio.to_thread(as_plain_package, data, "word", label=label), *prepared_labels(file_type, extension, mime_type))
     if file_type.prep is Prep.OOXML_SLIDES:
-        return PreparedFile(await asyncio.to_thread(as_plain_package, data, "slides", label=label), "pptx", _PPTX_MIME)
+        return PreparedFile(await asyncio.to_thread(as_plain_package, data, "slides", label=label), *prepared_labels(file_type, extension, mime_type))
     if file_type.prep is Prep.CAPPED_TEXT:
         prepared = await asyncio.to_thread(prepare_capped_text, data)
         if isinstance(prepared, BinaryFile):
             return None
         # The bytes are now the capped text only the log/cfg reader reads; no stored mime may
         # send them to another parser.
-        # With no extension of its own (the event's "unknown"), the parsing service still has to
-        # find the log/cfg reader.
-        if not extension or extension == "unknown":
-            extension = label
-        return PreparedFile(prepared.text.encode("utf-8"), extension, _OCTET, prepared.truncated)
+        return PreparedFile(prepared.text.encode("utf-8"), *prepared_labels(file_type, extension, mime_type), prepared.truncated)
     return PreparedFile(content, extension, mime_type)
 
 

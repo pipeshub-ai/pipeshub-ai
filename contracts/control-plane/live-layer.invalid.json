@@ -1,0 +1,76 @@
+[
+  {
+    "description": "no revision",
+    "instance": {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "layers": [],
+      "revokedBindings": []
+    }
+  },
+  {
+    "description": "a layer that is not a policy layer",
+    "instance": {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 2,
+      "layers": [
+        {
+          "layer": {
+            "approvals": {
+              "writes": "ask"
+            }
+          }
+        }
+      ],
+      "revokedBindings": []
+    }
+  },
+  {
+    "description": "an unknown member beside the layers",
+    "instance": {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 2,
+      "layers": [],
+      "revokedBindings": [],
+      "approvers": {
+        "users": [
+          "u1"
+        ]
+      }
+    }
+  },
+  {
+    "description": "a binding that is not a binding reference",
+    "instance": {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 2,
+      "layers": [],
+      "revokedBindings": [
+        "key-123"
+      ]
+    }
+  },
+  {
+    "description": "a value beside a layer",
+    "instance": {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "revision": 2,
+      "layers": [
+        {
+          "layer": {
+            "schemaVersion": 1,
+            "scope": {
+              "kind": "live"
+            }
+          },
+          "apiKey": "k"
+        }
+      ],
+      "revokedBindings": []
+    }
+  }
+]

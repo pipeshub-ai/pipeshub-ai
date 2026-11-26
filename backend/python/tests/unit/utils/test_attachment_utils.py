@@ -18,6 +18,7 @@ from app.utils.attachment_utils import (
     resolve_attachments,
 )
 from app.utils.image_admission import ImageOrigin
+from tests.support.record_access import InMemoryRecordAccess
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -564,7 +565,7 @@ class TestAttachmentContentRequiresAccess:
         blob = AsyncMock()
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.return_value = ["rec-1"]
-        graph.check_record_access_with_details.return_value = None
+        InMemoryRecordAccess().user("user-1", "org1").record("rec-1", "org1").serve(graph)
         att = {
             "mimeType": "application/pdf",
             "recordName": "secret.pdf",
@@ -583,7 +584,7 @@ class TestAttachmentContentRequiresAccess:
         blob = AsyncMock()
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.return_value = ["rec-1"]
-        graph.check_record_access_with_details.return_value = {"id": "rec-1"}
+        InMemoryRecordAccess().readable("user-1", "org1", "rec-1").serve(graph)
         att = {
             "mimeType": "text/plain",
             "recordName": "notes.txt",

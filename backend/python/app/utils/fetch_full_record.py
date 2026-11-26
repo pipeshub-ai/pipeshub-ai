@@ -12,6 +12,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.harness.knowledge.read_gate import RecordReadGate
 from app.models.entities import (
     USER_EMAIL_PLACEHOLDER,
     Record,
@@ -42,6 +43,8 @@ from app.utils.chat_helpers import (
 from app.utils.logger import create_logger
 from app.utils.not_indexed import record_metadata_lines
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from harness_core.knowledge.errors import PublicationAnswerOnly
+from harness_core.knowledge.publications import ReadGrant
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -246,6 +249,9 @@ _RESOLVE_CONCURRENCY = 5
 UNAVAILABLE = "not_available"
 NOT_INDEXED_YET = "not_indexed_yet"
 STORAGE_ERROR = "storage_error"
+# The record reached this reader only through an answer_only publication (D21): it may shape an answer, never be
+# read in full. Telling the model why leaks nothing it was not already shown.
+PUBLICATION_ANSWER_ONLY = PublicationAnswerOnly.reason_code
 # Being parsed for this read: it was not ready in time, or this call asked for
 # more records to be parsed than it may.
 PREPARING = "content_being_prepared"
@@ -255,6 +261,15 @@ _POLL_STEPS = (1, 1, 2, 2)
 _POLL_THEN_EVERY = 3
 _GONE = "gone"
 _FINISH_GRACE_SECONDS = 2.0  # past the wait budget, for reading what became ready
+
+
+def _carrying_publication(record: dict[str, Any], grant: ReadGrant) -> dict[str, Any]:
+    """``record`` naming the `full` publication it is served through, as retrieval's entries do (P2.13), so the
+    turn's label names it and a shared view decides it by that publication's audience (H4). Own access names none."""
+    if grant.decision == "published_full" and grant.publication_id and not record.get("publicationId"):
+        record["publicationId"] = grant.publication_id
+        record["publicationMode"] = "full"
+    return record
 
 
 class _RecordResolver:
@@ -274,15 +289,15 @@ class _RecordResolver:
         org_id: str | None,
         user_id: str | None,
         frontend_url: str | None,
-        accessible: set[str] | None = None,
+        gate: RecordReadGate | None,
+        known_own: set[str] | None = None,
         connection_sources: Mapping[str, Iterable[str]] | None = None,
         parse_now: ParseNow | None = None,
     ) -> None:
         self._map = virtual_record_id_to_result
         self._connection_sources = connection_sources
-        # The batch check's answer for this call's ids. None only without a graph
-        # provider: nothing can check then, and only map entries are served.
-        self._accessible = accessible
+        self._gate = gate
+        self._known_own = known_own or set()
         self._graph_provider = graph_provider
         self._blob_store = blob_store
         self._config_service = config_service
@@ -292,6 +307,7 @@ class _RecordResolver:
         self._endpoints_read = False
         self._excluded: asyncio.Future[frozenset[str]] | None = None
         self._viewer_email: asyncio.Future[str | None] | None = None
+        self._decided: dict[str, ReadGrant] | Exception | None = None
         # Records the caller may read that exist but have no indexed content,
         # by id: their status and metadata, so "not indexed" can name them.
         self.not_indexed: dict[str, dict[str, Any]] = {}
@@ -301,6 +317,27 @@ class _RecordResolver:
         self._parse_outcomes: dict[str, str] = {}
         # Records this call asked indexing to parse, by id: the document as last read.
         self.waiting: dict[str, dict[str, Any]] = {}
+
+    async def decide(self, record_ids: list[str]) -> None:
+        """Decides every id of the fetch in one batch (H2), before any is resolved."""
+        if self._gate is None or not record_ids:
+            return
+        known = {rid: ReadGrant("own") for rid in record_ids if rid in self._known_own}
+        rest = [rid for rid in record_ids if rid not in known]
+        try:
+            self._decided = known | (await self._gate.decide_grants(rest) if rest else {})
+        except Exception as exc:
+            logger.warning("Access check failed for %d record(s)", len(record_ids), exc_info=True)
+            self._decided = exc
+
+    async def _grant(self, record_id: str) -> ReadGrant:
+        decided = self._decided
+        if isinstance(decided, Exception):
+            raise decided
+        if decided is not None and record_id in decided:
+            return decided[record_id]
+        assert self._gate is not None
+        return (await self._gate.decide_grants([record_id]))[record_id]
 
     async def _excluded_apps(self) -> frozenset[str]:
         """The Acme Corp demo, when this person switched it off; read once per fetch.
@@ -349,20 +386,34 @@ class _RecordResolver:
         return user.get("email") if isinstance(user, dict) else None
 
     async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
-        # The map is not only retrieval's: attachment and FK enrichment write
-        # to it too, so an entry proves nothing where the batch check has run.
-        if self._accessible is not None and record_id not in self._accessible:
-            return record_id, None, UNAVAILABLE
         cached = self._from_map(record_id)
+        # Every id is checked now, the map's too: more than retrieval writes the map, and an entry
+        # outlives a revocation. Without a user to check against, nothing is served.
+        if self._gate is None:
+            return record_id, None, UNAVAILABLE
+        try:
+            grant = await self._grant(record_id)
+        except Exception:
+            if not isinstance(self._decided, Exception):
+                logger.warning("Access check failed for %s", record_id, exc_info=True)
+            return record_id, None, STORAGE_ERROR
+        decision = grant.decision
+        if decision == "denied":
+            return record_id, None, UNAVAILABLE
+        if decision == "published_answer_only":
+            logger.warning(
+                "publications.raw_read_refused reason=%s surface=fetch_full_record publicationId=%s",
+                PUBLICATION_ANSWER_ONLY, grant.publication_id,
+            )
+            return record_id, None, PUBLICATION_ANSWER_ONLY
+        if cached is not None and "record_name" in cached:
+            return record_id, await self._enrich(_carrying_publication(cached, grant)), None
         if cached is not None:
-            if "record_name" in cached:
-                return record_id, await self._enrich(cached), None
-            # Raw graph metadata (e.g. from pattern match) — fetch blob content.
-            # ACL was already verified when the entry was added to the map.
+            # Raw graph metadata (a pattern match's entry): the content is still in the blob store.
             if not cached.get("virtualRecordId"):
                 cached["virtualRecordId"] = cached.get("virtual_record_id")
             try:
-                record = await self._download(await self._with_viewer_link(cached))
+                record = await self._download(_carrying_publication(await self._with_viewer_link(cached), grant))
             except Exception:
                 logger.warning("Blob read failed for map entry %s", record_id, exc_info=True)
                 return record_id, None, STORAGE_ERROR
@@ -370,8 +421,8 @@ class _RecordResolver:
                 return record_id, None, UNAVAILABLE
             return record_id, await self._enrich(record), None
 
-        # Without a user to check against, an id is never served.
-        if not (self._org_id and self._graph_provider and self._user_id):
+        # By id outside the map: the reader's own record, or one a `full` publication discloses to them (H2).
+        if self._graph_provider is None:
             return record_id, None, UNAVAILABLE
 
         try:
@@ -390,13 +441,13 @@ class _RecordResolver:
             return record_id, None, UNAVAILABLE
         if not is_readable_record(graph_record):
             return await self._not_readable(record_id, graph_record)
-        return await self._read_stored(record_id, graph_record)
+        return await self._read_stored(record_id, graph_record, grant)
 
     async def _read_stored(
-        self, record_id: str, graph_record: dict[str, Any],
+        self, record_id: str, graph_record: dict[str, Any], grant: ReadGrant,
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         try:
-            record = await self._download(graph_record)
+            record = await self._download(_carrying_publication(dict(graph_record), grant))
         except Exception:
             logger.warning("Blob read failed for %s", record_id, exc_info=True)
             return record_id, None, STORAGE_ERROR
@@ -411,7 +462,10 @@ class _RecordResolver:
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         # Past the access check, so describing it reveals nothing.
         self.not_indexed[record_id] = {
-            "status": status, "context": await self._metadata(record_id, graph_record), **extra,
+            "status": status,
+            "name": str(graph_record.get("recordName") or ""),
+            "context": await self._metadata(record_id, graph_record),
+            **extra,
         }
         return record_id, None, reason
 
@@ -485,7 +539,7 @@ class _RecordResolver:
         graph_record = await self._with_viewer_link(self.waiting[record_id])
         outcome = self._parse_outcomes.get(record_id)
         if outcome == READY:
-            return await self._read_stored(record_id, graph_record)
+            return await self._read_stored(record_id, graph_record, await self._grant(record_id))
         if outcome == _GONE:
             return record_id, None, UNAVAILABLE
         if outcome is not None:
@@ -587,6 +641,8 @@ async def _fetch_multiple_records_impl(
     connection_sources: Mapping[str, Iterable[str]] | None = None,
     accessible: set[str] | None = None,
     parse_now: ParseNow | None = None,
+    caller_user_id: str | None = None,
+    gate: RecordReadGate | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -595,9 +651,10 @@ async def _fetch_multiple_records_impl(
     named beside a record (foreign keys, address links) keep to it.
     For SQL_TABLE records, also enriches with FK parent/child record IDs.
 
-    Every id is first checked in one batch (map entries included); an id the
-    user may not read is skipped. If a record_id is not found in the map,
-    attempts to:
+    Every id is first checked in one batch with ``RecordReadGate`` (the check
+    retrieval applies; ``caller_user_id`` is a service-account agent's caller),
+    the ids already in the map too. If a record_id is not found in the map, it
+    then attempts to:
     1. Fetch the Record from graph_provider to get virtual_record_id
     2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
@@ -606,9 +663,10 @@ async def _fetch_multiple_records_impl(
     for it, up to the configured time, shared by all the ids; without it such a record is
     described as not indexed.
 
-    Without `user_id` the check cannot run, so the id-resolution path is
-    skipped entirely rather than served unchecked. A caller that already ran
-    the check passes its answer as `accessible`, so it is not asked twice.
+    Without `user_id` the check cannot run, so nothing is served. A route
+    that already ran the reader's own-access check passes its answer as
+    `accessible`: those ids read as the reader's own without a second check,
+    and the gate decides only the rest (a publication may disclose them).
 
     Returns:
     {
@@ -636,19 +694,8 @@ async def _fetch_multiple_records_impl(
 
     config_service = graph_provider.config_service if graph_provider else None
 
-    if accessible is None and graph_provider is not None:
-        try:
-            accessible = await accessible_node_ids(
-                graph_provider, set(record_ids), user_id or "", org_id or "",
-            )
-        except Exception:
-            logger.warning("Access check failed for %s", record_ids, exc_info=True)
-            return {
-                "ok": False,
-                "error": "None of the requested records were available.",
-                "not_available_ids": list(record_ids),
-                "unavailable_reasons": dict.fromkeys(record_ids, STORAGE_ERROR),
-            }
+    if gate is None and graph_provider is not None and org_id and user_id:
+        gate = RecordReadGate(graph_provider, org_id, user_id, caller_user_id=caller_user_id)
 
     wait_seconds = await parse_now_wait_seconds(parse_now.config_service) if parse_now is not None else 0
     if not wait_seconds:
@@ -664,10 +711,13 @@ async def _fetch_multiple_records_impl(
         org_id=org_id,
         user_id=user_id,
         frontend_url=frontend_url,
-        accessible=accessible,
+        gate=gate,
+        # Only the reader's own answer: a service-account agent's creator's access never opens a record alone.
+        known_own=accessible if caller_user_id is None else None,
         connection_sources=connection_sources,
         parse_now=parse_now,
     )
+    await resolver.decide(list(dict.fromkeys(record_ids)))
 
     # Records resolve concurrently -- each miss costs an ACL check, a graph
     # read and a blob download, and ten ids were thirty sequential round
@@ -763,6 +813,7 @@ def create_fetch_full_record_tool(
     user_id: str | None = None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
     parse_now: ParseNow | None = None,
+    caller_user_id: str | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
@@ -773,9 +824,10 @@ def create_fetch_full_record_tool(
                         with FK parent/child relations and resolving record IDs
         blob_store: Optional blob storage for fetching records not in the map
         org_id: Optional organization ID for blob storage lookups
-        user_id: Requesting user, required to resolve a record ID that is not
-                 already in the (ACL-filtered) map — see
-                 `_fetch_multiple_records_impl`
+        user_id: The retrieval principal; nothing is served without one —
+                 see `_fetch_multiple_records_impl`
+        caller_user_id: A service-account agent's caller, whose access bounds
+                 its creator's
         parse_now: Asks indexing to parse a record that is not indexed and waits
                    for it; None reads what is indexed and nothing more
     """
@@ -832,6 +884,7 @@ def create_fetch_full_record_tool(
                 user_id=user_id,
                 connection_sources=connection_sources,
                 parse_now=parse_now,
+                caller_user_id=caller_user_id,
             )
         except Exception as e:
             # Return error as dict

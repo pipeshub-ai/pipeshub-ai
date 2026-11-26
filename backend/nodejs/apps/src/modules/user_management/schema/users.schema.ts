@@ -56,6 +56,10 @@ export interface User extends Document, Address {
   address?: Address;
   isDeleted?: boolean;
   deletedBy?: string;
+  /** The default chat's coding engine (ENGPICK): an engine kind or `none`; absent: the org's default. */
+  codingEngine?: string;
+  /** The person turned their own agent memory off; absent: on. */
+  harnessMemoryOff?: boolean;
 }
 
 export const userSchema = new Schema<User>(
@@ -92,6 +96,8 @@ export const userSchema = new Schema<User>(
     },
     isDeleted: { type: Boolean, default: false },
     deletedBy: { type: String },
+    codingEngine: { type: String, maxlength: 64 },
+    harnessMemoryOff: { type: Boolean },
   },
   { timestamps: true },
 );

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/turn.completed.schema.json",
+  "title": "TurnCompletedEvent",
+  "description": "Kernel turn completed.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "turn.completed"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/TurnCompletedData"
+    }
+  },
+  "$defs": {
+    "TurnCompletedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn"
+      ],
+      "properties": {
+        "turn": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "turn": 1
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

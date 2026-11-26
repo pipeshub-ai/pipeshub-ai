@@ -1,9 +1,8 @@
-"""How many tool schemas one model request can carry."""
+"""Legacy import path; this module lives in ``harness_core.tools.budget``."""
 
-from __future__ import annotations
+import sys
 
-# OpenAI refuses more ("Invalid 'tools': array too long ... maximum length 128"), the strictest
-# limit of the providers in use. Two large MCP servers loaded whole (Linear 68 + ClickUp 61) pass it.
-MAX_TOOLS_PER_REQUEST = 128
+from harness_core.tools import budget as _moved
+from harness_core.tools.budget import *  # noqa: F403
 
-__all__ = ["MAX_TOOLS_PER_REQUEST"]
+sys.modules[__name__] = _moved

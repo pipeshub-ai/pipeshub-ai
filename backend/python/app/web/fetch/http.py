@@ -13,6 +13,9 @@ import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import urlsplit
+
+import aiohttp
 
 from app.connectors.sources.web.address_guard import create_guarded_session
 from app.connectors.sources.web.fetch_strategy import (
@@ -66,8 +69,20 @@ class FetchedBody:
     content: bytes
 
 
+def has_credentials(url: str) -> bool:
+    """Whether ``url`` carries user-info, which every HTTP client in the chain sends as ``Authorization``."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.username is not None or parts.password is not None or "@" in parts.netloc
+
+
 async def check_public(url: str) -> None:
-    """Raise ``UnsafeUrl`` unless every address ``url``'s host resolves to is public."""
+    """Raise ``UnsafeUrl`` unless every address ``url``'s host resolves to is public, and ``InvalidUrl`` for a URL
+    that carries credentials: a page is read as a stranger reads it."""
+    if has_credentials(url):
+        raise InvalidUrl(f"{redact_url(url)} carries credentials; only public pages can be read")
     try:
         await asyncio.to_thread(resolve_public_http_target, url)
     except UnresolvableHostError as e:
@@ -111,7 +126,8 @@ async def fetch_public(
     try:
         async with asyncio.timeout(deadline.remaining()):
             await check_public(url)
-            async with create_guarded_session() as session:
+            # No cookie jar: a cookie one hop sets is never sent on the next (G-23), nor is any other.
+            async with create_guarded_session(cookie_jar=aiohttp.DummyCookieJar()) as session:
                 response: FetchResponse | None = await fetch_url_with_fallback(
                     url,
                     session,
@@ -123,6 +139,7 @@ async def fetch_public(
                     # and would spend the whole fetch deadline.
                     rate_limit_wait_s=0,
                     allow_hop=_public_hops(allow_hop),
+                    keep_cookies=False,
                 )
     except TimeoutError as e:
         raise TimedOut(f"{redact_url(url)} did not answer in time") from e

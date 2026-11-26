@@ -175,7 +175,7 @@ export function ConnectorDetailsLayout({
             {scopeLabel}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {connectorName}
         </Text>
@@ -327,7 +327,7 @@ export function ConnectorDetailsLayout({
           gap="2"
           style={{ paddingTop: 80 }}
         >
-          <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.noInstances')}
           </Text>

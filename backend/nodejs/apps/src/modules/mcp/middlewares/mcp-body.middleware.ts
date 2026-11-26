@@ -45,7 +45,6 @@ const answerBodyTooLarge: ErrorRequestHandler = (error, req, res, next) => {
   logger.warn('MCP request body over the limit', {
     limitBytes: MCP_JSON_BODY_LIMIT_BYTES,
     contentLength: req.headers['content-length'],
-    requestId,
   });
   res.status(413).json({
     jsonrpc: '2.0',

@@ -1,0 +1,129 @@
+[
+  {
+    "description": "unknown effect class",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "delete",
+      "sink": "self",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b"
+    }
+  },
+  {
+    "description": "missing input schema",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "effect": "write",
+      "sink": "self",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b"
+    }
+  },
+  {
+    "description": "digest not sha256",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "write",
+      "sink": "self",
+      "digest": "md5:abc"
+    }
+  },
+  {
+    "description": "unknown provider",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "write",
+      "sink": "self",
+      "provider": "mcp",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b"
+    }
+  },
+  {
+    "description": "an annotation that is not a behaviour hint",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "write",
+      "sink": "self",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b",
+      "annotations": {
+        "title": "Tickets"
+      }
+    }
+  },
+  {
+    "description": "a behaviour hint that is not a boolean",
+    "instance": {
+      "name": "create_ticket",
+      "description": "Create a ticket.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Title"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "effect": "write",
+      "sink": "self",
+      "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b",
+      "annotations": {
+        "readOnlyHint": "yes"
+      }
+    }
+  }
+]

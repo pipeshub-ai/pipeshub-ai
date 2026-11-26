@@ -119,7 +119,7 @@ export function StepSmtp({
         <Text
           as="div"
           size="1"
-          style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
+          style={{ color: 'var(--gray-11)', marginBottom: '4px', letterSpacing: '0.02em' }}
         >
           {t('onboarding.systemConfig')}
         </Text>
@@ -217,7 +217,7 @@ export function StepSmtp({
                 >
                   <span
                     className="material-icons-outlined"
-                    style={{ fontSize: '14px', color: 'var(--gray-9)' }}
+                    style={{ fontSize: '14px', color: 'var(--gray-11)' }}
                   >
                     {showPassword ? 'visibility_off' : 'visibility'}
                   </span>
@@ -238,7 +238,7 @@ export function StepSmtp({
           style={{
             width: '100%',
             backgroundColor: submitting || !isFormValid ? 'var(--gray-4)' : 'var(--accent-9)',
-            color: submitting || !isFormValid ? 'var(--gray-9)' : 'white',
+            color: submitting || !isFormValid ? 'var(--gray-11)' : 'white',
             cursor: submitting || !isFormValid ? 'not-allowed' : 'pointer',
             height: '40px',
             opacity: 1,

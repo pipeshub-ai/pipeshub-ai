@@ -22,7 +22,7 @@ def outputs_across_hash_seeds(script: str, *, timeout: float = 150) -> set[str]:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=_ROOT,
             env={
                 "PYTHONHASHSEED": seed, "PYTHONPATH": str(_ROOT), "PATH": "",
-                "SECRET_KEY": "test-secret-key-for-unit-tests-only-0123456789abcdef",
+                "SECRET_KEY": "78aa78e734a5383b62cd145ce0e7037fa5496d3b899200385dd1cc44b2f70421",
             },
         )
         for seed in _SEEDS

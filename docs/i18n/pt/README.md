@@ -57,6 +57,35 @@
 
 O PipesHub constrói uma **camada de contexto unificada** sobre documentos, conversas, dados estruturados, wikis, tickets e código. Os conectores sincronizam cada fonte junto com suas permissões. O pipeline de indexação analisa, fragmenta e gera embeddings do conteúdo, e conecta registros, pessoas e entidades em um grafo de conhecimento.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 As perguntas são respondidas por um **loop de agente**, e não por uma única passada de "recuperar e depois gerar". O agente planeja, chama ferramentas, lê os resultados e continua até ter as evidências:
 
 - **Busca híbrida** — recuperação semântica e por palavras-chave, para encontrar tanto o significado quanto os termos exatos.
@@ -66,6 +95,14 @@ As perguntas são respondidas por um **loop de agente**, e não por uma única p
 
 Cada chamada de ferramenta é filtrada pelas permissões do usuário que pergunta, e cada resposta cita os blocos de onde veio.
 
+
+| | RAG com trechos top-k | PipesHub |
+| --- | --- | --- |
+| **O que o agente vê primeiro** | Alguns trechos de texto | Nome, localização, metadados e resumo de cada registro, mais os blocos encontrados |
+| **Como ele se aprofunda** | Não consegue: uma recuperação por pergunta | Busca híbrida, `grep`/`find` sobre registros, navegação por pastas e consultas ao grafo de conhecimento, em loop |
+| **Estrutura** | Perdida na divisão em trechos | Toda fonte vira Blocks: seções, tabelas com linhas e células, threads, código, tabelas SQL com seu esquema |
+| **Permissões** | Muitas vezes aproximadas na indexação | Verificadas contra as permissões do sistema de origem para o usuário solicitante, em cada chamada de ferramenta |
+| **Citações** | Por trecho, quando há | Por bloco: a página, célula de tabela, linha, slide ou linha de código, com citações inventadas removidas |
 
 ## Funcionalidades
 

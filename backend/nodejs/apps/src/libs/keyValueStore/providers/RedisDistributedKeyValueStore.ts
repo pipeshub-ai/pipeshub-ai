@@ -25,6 +25,10 @@ const CACHE_INVALIDATION_CHANNEL = 'pipeshub:cache:invalidate';
  * empty buffer": Lua's `redis.call('GET', ...)` returns `false` for a
  * missing key, which cannot be produced any other way from a Lua string
  * comparison against `ARGV[1]`.
+ *
+ * A replace keeps the key's expiry (`KEEPTTL`, Redis 6+), as PostgreSQL's and
+ * etcd's do: a compare-and-set changes the value, never how long it lives, so
+ * re-encrypting a lease under a new key cannot make it permanent (ADR-KEY-01).
  */
 const COMPARE_AND_SET_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
@@ -35,7 +39,7 @@ if ARGV[3] == '1' then
   end
 else
   if current ~= false and current == ARGV[1] then
-    redis.call('SET', KEYS[1], ARGV[2])
+    redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
     return 1
   end
 end

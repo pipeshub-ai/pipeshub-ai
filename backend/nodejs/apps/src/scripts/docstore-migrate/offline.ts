@@ -6,9 +6,12 @@
 import { Log, bulk } from './bulk';
 import { clearMarkers } from './follow';
 import {
+  AppWritesReport,
   appClients,
+  appWritesNote,
   describeClients,
   readMongoFence,
+  revokeAppWrites,
   setMongoFence,
 } from './fence';
 import {
@@ -37,6 +40,8 @@ export interface OfflineReport {
   preflight?: PreflightReport;
   postLoad?: { ok: boolean; problems: string[] };
   verify?: VerifyReport;
+  /** The write roles taken from the application's MongoDB users once MongoDB was retired. */
+  mongoAppWrites?: AppWritesReport;
   message: string;
 }
 
@@ -152,6 +157,7 @@ export async function migrateOffline(
       `platform.store_epoch has ${String(flip.rowCount)} rows, not one: PostgreSQL was not made the store and MongoDB is not retired (it stays read-only; run rollback to reopen it)`,
     );
   await setMongoFence(rt, 'retired', fenceBefore.epoch + 1);
+  const writes = await revokeAppWrites(rt);
   js.progress.phase = 'done';
   js.progress.flip = { at: new Date().toISOString(), backend: 'postgres' };
   await js.checkpoint();
@@ -163,7 +169,7 @@ export async function migrateOffline(
     preflight: pre,
     postLoad: pl,
     verify: v,
-    message:
-      'copied and verified; set DOC_STORE=postgres and start the application',
+    mongoAppWrites: writes,
+    message: `copied and verified; set DOC_STORE=postgres and start the application.${appWritesNote(writes)}`,
   };
 }

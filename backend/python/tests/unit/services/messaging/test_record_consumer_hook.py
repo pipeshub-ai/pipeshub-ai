@@ -480,6 +480,7 @@ async def test_a_read_pass_with_no_stream_left_by_the_budget_neither_reads_nor_b
             await consumer._IndexingRedisStreamsConsumer__read_phase()
         elapsed = time.monotonic() - started
     assert asked and all(set(streams) <= set(SWEEP_BASE) for streams in asked)
+    # wall-clock-ok: 16 read phases; the earlier behaviour slept 1.5 s in each extra-stream window, 6 s or more
     assert elapsed < 1.4, elapsed  # the earlier behaviour sleeps 1.5 s for each of those windows
 
 

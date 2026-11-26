@@ -695,7 +695,7 @@ export function NotificationsPanel() {
               gap="2"
               style={{ paddingTop: 'var(--space-8)' }}
             >
-              <MaterialIcon name="inbox" size={40} color="var(--slate-8)" />
+              <MaterialIcon name="inbox" size={40} color="var(--slate-11)" />
               <Text size="2" color="gray">
                 {listFilter === 'unread'
                   ? t('notifications.emptyUnread')

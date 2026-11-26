@@ -576,10 +576,11 @@ class TestPool:
         port = site._server.sockets[0].getsockname()[1]
         try:
             task = make_task(tmp_path, store, [ref_for(store, 1, PNG)], storage_url=f"http://127.0.0.1:{port}", request_timeout_s=60)
-            started = time.monotonic()
             with pytest.raises(PushRefusal) as e:
                 await pool.run(task)
-            assert (e.value.status, e.value.reason) == (503, "PUSH_TIMEOUT") and time.monotonic() - started < 10
+            assert (e.value.status, e.value.reason) == (503, "PUSH_TIMEOUT")
+            # "overrun" is the wall budget's poll running out, not the request timeout or a dead child.
+            assert events == ["overrun"]
             assert (await pool.run(make_task(tmp_path, store, [ref_for(store, 2, PNG)]))).size > 0
         finally:
             await runner.cleanup()

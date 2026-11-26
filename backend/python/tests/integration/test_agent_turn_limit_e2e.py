@@ -31,7 +31,8 @@ from pydantic import Field
 
 from app.agents.agent_loop.factory import _MAX_TURNS
 from app.api.routes.chatbot import askAI, askAIStream
-from tests.integration.test_chat_stream_agent_loop_e2e import (
+from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (fixture)
+    _bound_as_auth,
     _drain,
     _events_by_name,
     _mock_cancellation_registry,

@@ -630,13 +630,13 @@ class PgVectorService(IVectorDBService):
                     t.cancel()
                 await asyncio.gather(*legs, return_exceptions=True)
                 raise
-            dense_rows, degraded = answers[0]
-            rows = [[pid for _, pid in dense_rows]]
-            if sparse is not None:
-                rows.append([pid for _, pid in answers[1][0]])
-                degraded = degraded or answers[1][1]
-            if degraded:
-                degraded_notice.note(degraded)          # the provider contract: an empty answer is flagged too
+            rows = [[pid for _, pid in leg_rows] for leg_rows, _ in answers]
+            # the provider contract: an empty answer is flagged too. Every leg's reason is noted: an exact dense leg (quantization, complete) must not hide a
+            # word search that ran out of time beside it. The hits carry the first one.
+            reasons = [reason for _, reason in answers if reason]
+            for reason in reasons:
+                degraded_notice.note(reason)
+            degraded = reasons[0] if reasons else None
             ranked = fusion.rrf(rows, req.limit)
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]

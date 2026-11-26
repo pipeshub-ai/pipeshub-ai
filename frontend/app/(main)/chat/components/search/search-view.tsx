@@ -48,6 +48,8 @@ function isAbortOrCancelError(err: unknown): boolean {
 interface ChatSearchProps {
   open: boolean;
   onClose: () => void;
+  /** The text the search opens with (`/resume text`); empty by default. */
+  initialQuery?: string;
 }
 
 /**
@@ -56,7 +58,7 @@ interface ChatSearchProps {
  * Lists come from `ChatApi.fetchConversations` (browse: no search; query: `search` param).
  * Rendered via React Portal to avoid z-index issues.
  */
-export function ChatSearch({ open, onClose }: ChatSearchProps) {
+export function ChatSearch({ open, onClose, initialQuery = '' }: ChatSearchProps) {
   const isMobile = useIsMobile();
   const { appearance } = useThemeAppearance();
   const { t } = useTranslation();
@@ -97,8 +99,8 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
   // Reset input when overlay opens (debounced value follows via useDebouncedSearch; empty clears immediately)
   useEffect(() => {
     if (!open) return;
-    setSearchQuery('');
-  }, [open]);
+    setSearchQuery(initialQuery);
+  }, [open, initialQuery]);
 
   // Browse (no search) vs search: same API; param omitted when debounced query is empty
   useEffect(() => {
@@ -327,7 +329,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                 </Flex>
               ) : (
                 <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-                  <Text size="2" style={{ color: 'var(--slate-a9)' }}>
+                  <Text size="2" style={{ color: 'var(--slate-a11)' }}>
                     {t('message.noResults')}
                   </Text>
                 </Flex>
@@ -348,7 +350,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
                       <Text
                         size="1"
                         style={{
-                          color: 'var(--slate-a9)',
+                          color: 'var(--slate-a11)',
                           fontWeight: 400,
                         }}
                       >
@@ -371,7 +373,7 @@ export function ChatSearch({ open, onClose }: ChatSearchProps) {
 
                 {timeGroups.length === 0 && !conversationsLoading && (
                   <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-                    <Text size="2" style={{ color: 'var(--slate-a9)' }}>
+                    <Text size="2" style={{ color: 'var(--slate-a11)' }}>
                       {t('chat.noChatsYet')}
                     </Text>
                   </Flex>
