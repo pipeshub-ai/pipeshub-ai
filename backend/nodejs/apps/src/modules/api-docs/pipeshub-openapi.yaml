@@ -62578,18 +62578,14 @@ paths:
         The registry contains all connector types that can be configured as instances.
         Each type has specific authentication requirements, supported scopes, and capabilities.
 
-        **Connector Types Include:**
-
-        - **Google Workspace:** Drive, Gmail, Calendar, etc.
-        - **Microsoft 365:** OneDrive, Outlook, SharePoint, etc.
-        - **Cloud Storage:** Dropbox, Box, AWS S3
-        - **Collaboration:** Slack, Confluence, Notion, Jira
-        - **Databases:** PostgreSQL, MySQL, MongoDB
+        Each entry's `appGroup` (for example Google Workspace or Microsoft 365) and
+        `appCategories` say what kind of system it connects to.
 
         **Filtering:**
 
         Use `scope` to filter by team or personal connectors.
-        Use `search` for full-text search across connector names.
+        Use `search` to match words against the name, type, app group, description,
+        auth types and categories. The list is paged with `page` and `limit`.
       operationId: getConnectorRegistry
       x-pipeshub-sdk: true
       security:
