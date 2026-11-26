@@ -4,9 +4,11 @@ back, and every retry gets the same plan, so the drain never finishes."""
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres.kg import drainer, grant_marks, stampgraph
@@ -18,6 +20,9 @@ from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
 from .test_kg_read import _admin, flip
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
 FOLDERS = 50
 FILES = 100                                     # per folder: 5,000 files, each with its own grant
@@ -25,6 +30,33 @@ CHUNK = 1000
 # kg's tables with no statistics, as on a new install (pg_statistic rows gone, the table never analysed): what the planner of the drain's unit sees for rows it wrote itself.
 NO_STATS = """DELETE FROM pg_statistic WHERE starelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'kg'::regnamespace);
     UPDATE pg_class SET reltuples = -1, relpages = 0, relallvisible = 0 WHERE relnamespace = 'kg'::regnamespace AND relkind IN ('r', 'p', 'i')"""
+
+
+# Back to what the session's other tests plan with: every kg table analysed again (an index's pages and rows with its table's).
+RESTORE = """DO $$ DECLARE t regclass; BEGIN
+    FOR t IN SELECT c.oid::regclass FROM pg_class c WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p') LOOP EXECUTE format('ANALYZE %s', t); END LOOP; END $$"""
+# A kg table never analysed, or kg.records without its column statistics.
+UNANALYSED = """SELECT array_agg(c.relname::text ORDER BY c.relname) FILTER (WHERE c.reltuples < 0)
+      || CASE WHEN EXISTS (SELECT 1 FROM pg_statistic WHERE starelid = 'kg.records'::regclass) THEN '{}'::text[] ELSE '{records: no column statistics}' END
+    FROM pg_class c WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind = 'r'"""
+
+
+async def _unanalysed() -> list[str]:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return list(await con.fetchval(UNANALYSED) or [])
+    finally:
+        await con.close()
+
+
+@pytest.fixture
+async def no_stats() -> AsyncIterator[Callable[[], Awaitable[None]]]:
+    """Clears kg's statistics when called; analyses every kg table again at teardown, whatever the test did, so no later test of the session plans with none."""
+    try:
+        yield lambda: _admin(NO_STATS)
+    finally:
+        await _admin(RESTORE)
+        assert await _unanalysed() == [], "kg's statistics are back after the test"
 
 
 def _rec(org: str, key: str, *, folder: bool = False) -> dict:
@@ -57,13 +89,13 @@ async def _world(p, org: str) -> None:
             await p.batch_create_edges([edge(u, "users", k, "records", type="USER", role="READER") for _, k in part for u in ("u1", "u2")], "permission")
 
 
-async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_under_a_short_statement_timeout(pg_provider, pg_db, monkeypatch) -> None:
+async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_under_a_short_statement_timeout(pg_provider, pg_db, monkeypatch, no_stats) -> None:
     """One page drains the whole world (every node, grant and mark written and read in one unit) with kg's statistics cleared and every statement of the unit held to 5 s
     after the projection starts. On the plans the planner made of the marks' lookups with no statistics (a record's own row and its parents' rows found by a scan of the
     organisation or the connector per grant) the page did not finish in that time; by its keys it takes well under a second per statement."""
     p, org = pg_provider, new_org()
     await _world(p, org)
-    await _admin(NO_STATS)
+    await no_stats()
     project = drainer.project
 
     async def bounded(tx, *args, **kwargs) -> object:
@@ -107,7 +139,7 @@ def _not_seeks(plan: dict[str, Any]) -> list[str]:
     return bad
 
 
-async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db) -> None:
+async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
     """EXPLAIN gate: on the world above (drained and promoted), with kg's statistics cleared and then analysed, the statements a drain unit runs per grant or node (the marks of the grants on
     nodes, the children of parents, the stamp's kg rows), as the unit runs them (under reader.seeks, custom plans), read kg.records, kg.links and kg.scope_members only by
     their key's index, bounded by the org and the key, a folder's rows at most per probe. Run on every PostgreSQL version of the suite."""
@@ -125,7 +157,7 @@ async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statisti
     wants = {"marks on nodes": (grant_marks.ON_NODES, [nodes]), "children of parents": (grant_marks.CHILDREN, [folders]),
              "stamp kg rows": (stampgraph.KG_GRANTED, [colls, ids, CODE_EPOCH])}
     for state in ("no statistics", "analysed"):
-        await _admin(NO_STATS if state == "no statistics" else "ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.scope_members")
+        await (no_stats() if state == "no statistics" else _admin(RESTORE))
         for name, (sql, args) in wants.items():
             async def go(tx, sql=sql, args=args) -> tuple[int, dict[str, Any]]:
                 async with seeks(tx):
@@ -137,3 +169,9 @@ async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statisti
             assert n > 0, f"{state} {name}: the statement found nothing, so the gate judged no probe"
             if bad := _not_seeks(ran):
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
+
+
+async def test_clearing_kg_statistics_is_undone_at_teardown(no_stats) -> None:
+    """The fixture's own check (its teardown asserts the same for every test that uses it): cleared here, so the teardown has to bring them back."""
+    await no_stats()
+    assert "records" in await _unanalysed()
