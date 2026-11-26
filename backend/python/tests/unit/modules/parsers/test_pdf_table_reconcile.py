@@ -663,3 +663,13 @@ def test_a_header_row_read_as_several_grid_rows_keeps_its_grid_and_drops_no_titl
     # Row 0 read as a header band plus its first line (row_of [0, 0, ...]): the title check does not apply.
     grid = [["Year", "2012"], ["Total", "2,647"], ["Other", "1"]]
     assert tr.drop_title_line(None, grid, [0, 0, 1], []) == (grid, [])  # type: ignore[arg-type]
+
+
+def test_notes_is_a_whole_word() -> None:
+    assert tr.NOTES.match("NOTE: values") and tr.NOTES.match("Notes: values") and tr.NOTES.match("NOTES")
+    assert not tr.NOTES.match("Notebook models")
+
+
+def test_a_bridging_rule_joins_every_span_it_touches() -> None:
+    assert tr._merge([[100.0, 300.0, 340.0], [100.0, 360.0, 400.0], [102.0, 335.0, 365.0]]) == [[100.0, 300.0, 400.0]]
+    assert tr._merge([[100.0, 300.0, 340.0], [100.0, 360.0, 400.0]]) == [[100.0, 300.0, 340.0], [100.0, 360.0, 400.0]]

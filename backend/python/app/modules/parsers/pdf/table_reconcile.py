@@ -76,7 +76,7 @@ BAND_ABOVE = 1.5  # a column-aligned line above/below the first/last rule joins 
 
 BULLET = re.compile(r"^[•●▪◦‣∙·–—\-\*■□⁃]$")
 ENUM = re.compile(r"^\(?([0-9]{1,2}|[a-z])[.)]$")
-NOTES = re.compile(r"^\s*(NOTES?\s*:?|\d+\.\s|\*|[†‡§])", re.I)
+NOTES = re.compile(r"^\s*(NOTES?\b\s*:?|\d+\.\s|\*|[†‡§])", re.I)
 DOTS = re.compile(r"\.{4,}|(\. ){3,}")
 PAGENO = re.compile(r"^[A-Z]{0,3}-?\d{1,4}$")
 TAG = re.compile(r"^[A-Z][A-Z0-9_]{1,11}$")
@@ -142,13 +142,15 @@ def segments(ln: dict[str, Any]) -> list[tuple[float, float, list[dict[str, Any]
 def _merge(segs: list[list[float]]) -> list[list[float]]:
     out: list[list[float]] = []
     for p, a, b in sorted(segs):
-        for o in out:
-            if abs(o[0] - p) <= SNAP and a <= o[2] + SNAP and b >= o[1] - SNAP:
-                o[1] = min(o[1], a)
-                o[2] = max(o[2], b)
-                break
-        else:
+        hit = [o for o in out if abs(o[0] - p) <= SNAP and a <= o[2] + SNAP and b >= o[1] - SNAP]
+        if not hit:
             out.append([p, a, b])
+            continue
+        # a segment that bridges two spans joins them all
+        keep = hit[0]
+        keep[1] = min(a, *(o[1] for o in hit))
+        keep[2] = max(b, *(o[2] for o in hit))
+        out = [o for o in out if not any(o is h for h in hit[1:])]
     return out
 
 
