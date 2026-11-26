@@ -14,8 +14,17 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
-from app.services.ai_models.discovery.http import MAX_MODELS, MAX_PAGES, DiscoveryHttp, bearer
-from app.services.ai_models.discovery.types import DiscoveryErrorCode, DiscoveryHttpError, RawModel
+from app.services.ai_models.discovery.http import (
+    MAX_MODELS,
+    MAX_PAGES,
+    DiscoveryHttp,
+    bearer,
+)
+from app.services.ai_models.discovery.types import (
+    DiscoveryErrorCode,
+    DiscoveryHttpError,
+    RawModel,
+)
 
 _SHOW_TTL_S = 300
 _show_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -943,9 +952,19 @@ class BedrockStrategy(DiscoveryStrategy):
 
 def list_bedrock_pages(configuration: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Sync control-plane reads. Patched in tests so discovery does not call AWS."""
-    from app.utils.aimodels import _create_bedrock_client
+    from app.utils.aimodels import (
+        _ambient_cloud_credentials_allowed,
+        _create_bedrock_client,
+    )
 
-    client = _create_bedrock_client(configuration, service_name="bedrock")
+    # A request body carries no model entry, so it is unstamped.
+    client = _create_bedrock_client(
+        configuration,
+        allow_ambient=_ambient_cloud_credentials_allowed(
+            {"provider": "bedrock", "configuration": configuration}
+        ),
+        service_name="bedrock",
+    )
     summaries = list((client.list_foundation_models() or {}).get("modelSummaries") or [])
     profiles: list[dict[str, Any]] = []
     token = None

@@ -507,14 +507,23 @@ def _bedrock_client_config(sdk_retries: int | None = None) -> "BotocoreConfig":
     )
 
 
+_BEDROCK_KEYS_REQUIRED = "Enter an AWS access key and secret for this model."
+
+
+class CredentialsRequiredError(ValueError):
+    """The admin has to enter credentials; the message is safe to show them."""
+
+
 def _create_bedrock_client(
-    configuration: dict[str, Any], service_name: str = "bedrock-runtime", sdk_retries: int | None = None,
+    configuration: Mapping[str, Any], *, allow_ambient: bool, service_name: str = "bedrock-runtime",
+    sdk_retries: int | None = None,
 ) -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
 
-    Tries credentials in this order:
-      1. Explicit keys from configuration (awsAccessKeyId / awsAccessSecretKey)
-      2. boto3 default credential chain (env vars, ~/.aws, EC2 IAM role, ECS task role)
+    Explicit keys from the configuration (awsAccessKeyId / awsAccessSecretKey)
+    are used when both are set. Otherwise, including when only one is set, the
+    boto3 default credential chain (env vars, ~/.aws, EC2 IAM role, ECS task role)
+    is used when the caller passes ``allow_ambient``; without it the model is refused.
     """
     import boto3
 
@@ -530,6 +539,10 @@ def _create_bedrock_client(
             region_name=region,
         )
     else:
+        if not allow_ambient:
+            raise CredentialsRequiredError(_BEDROCK_KEYS_REQUIRED)
+        if aws_access_key or aws_secret_key:
+            logger.warning("Only one of the AWS access key and secret is set for this Bedrock model.")
         logger.info(
             "No explicit AWS credentials provided for Bedrock; "
             "using default credential chain (env vars AWS_ACCESS_KEY_ID / "
@@ -687,7 +700,7 @@ NON_KEY_PROVIDERS = frozenset(
 )
 _KEYLESS_PLACEHOLDER = "not-needed"
 # Multimodal providers whose SDKs read a key from the environment on a blank key.
-AMBIENT_MULTIMODAL_PROVIDERS = frozenset({"gemini", "cohere"})
+AMBIENT_MULTIMODAL_PROVIDERS = frozenset({"gemini", "cohere", "bedrock"})
 
 
 def _ambient_cloud_credentials_allowed(model_config: Mapping[str, Any]) -> bool:
@@ -762,7 +775,7 @@ def require_explicit_api_key(
     if provider in KEYLESS_PROVIDERS or (provider == "openAI" and leaves):
         result["apiKey"] = _KEYLESS_PLACEHOLDER
         return result
-    raise ValueError("Save an API key for this model.")
+    raise CredentialsRequiredError("Save an API key for this model.")
 
 
 def _ollama_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, Any]:
@@ -960,7 +973,9 @@ def _get_embedding_model_impl(
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
         from langchain_aws import BedrockEmbeddings
 
-        bedrock_client = _create_bedrock_client(configuration, sdk_retries=sdk_retries)
+        bedrock_client = _create_bedrock_client(
+            configuration, allow_ambient=_ambient_cloud_credentials_allowed(config), sdk_retries=sdk_retries,
+        )
         return BedrockEmbeddings(
             model_id=model_name,
             client=bedrock_client,
@@ -2238,11 +2253,18 @@ def _get_generator_model_impl(
             additional_fields=additional_fields,
         )
 
-        bedrock_client = _create_bedrock_client(configuration, sdk_retries=sdk_retries)
+        allow_ambient = _ambient_cloud_credentials_allowed(config)
+        bedrock_client = _create_bedrock_client(configuration, allow_ambient=allow_ambient, sdk_retries=sdk_retries)
+        # Without this, langchain_aws builds its own control-plane client from the
+        # default credential chain to resolve inference profiles.
+        bedrock_control_client = _create_bedrock_client(
+            configuration, allow_ambient=allow_ambient, service_name="bedrock", sdk_retries=sdk_retries,
+        )
 
         bedrock_kwargs: Dict[str, Any] = dict(
             model_id=model_name,
             client=bedrock_client,
+            bedrock_client=bedrock_control_client,
             region_name=configuration.get("region"),
             provider=provider_in_bedrock,
         )
