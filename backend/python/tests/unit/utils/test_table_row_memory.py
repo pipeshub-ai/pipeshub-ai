@@ -36,12 +36,12 @@ from app.utils.table_row_memory import (
     ROW_DIGEST_KEY,
     PreviousRows,
     end_previous_rows,
+    hashed_block_data,
     offer_previous_rows,
     previous_row_texts,
     row_digest,
     row_texts_of,
     with_row_digest,
-    without_row_digest,
 )
 from tests.support.table_model import HEAD, FakeTableModel, by_first_row, make_rows
 
@@ -316,9 +316,13 @@ class TestTheDigestLeavesBlockIdsAlone:
     def test_the_classification_fingerprint_does_not_change(self) -> None:
         assert content_facts(self._container(digest=True)) == content_facts(self._container(digest=False))
 
-    def test_only_the_digest_is_left_out(self) -> None:
-        assert without_row_digest({"a": 1, ROW_DIGEST_KEY: "d"}) == {"a": 1}
-        assert without_row_digest("text") == "text"
+    def test_only_the_digest_and_the_rows_position_are_left_out(self) -> None:
+        row = {"row_natural_language_text": "t", "row_number": 3, "row_end_number": 3, "row_count": 1, ROW_DIGEST_KEY: "d"}
+        assert hashed_block_data(row) == {"row_natural_language_text": "t", "row_count": 1}
+        assert hashed_block_data({"a": 1, ROW_DIGEST_KEY: "d"}) == {"a": 1}
+        # Only a table row's position is left out: another block's fields are all hashed.
+        assert hashed_block_data({"text": "t", "row_number": 3}) == {"text": "t", "row_number": 3}
+        assert hashed_block_data("text") == "text"
 
 
 class TestWhichDeliveriesKeepRowText:

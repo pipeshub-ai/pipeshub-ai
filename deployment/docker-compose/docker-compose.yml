@@ -989,6 +989,8 @@ services:
       - POSTGRES_DB=pipeshub
       - POSTGRES_PASSWORD=${PG_ADMIN_PASSWORD:-}
       - PG_SHARED_BUFFERS=${PG_SHARED_BUFFERS:-1GB}
+      # the most role setup waits for recovery to end after a point-in-time restore (postgres/pg-entrypoint.sh)
+      - PG_ROLES_RECOVERY_WAIT_SECS=${PG_ROLES_RECOVERY_WAIT_SECS:-21600}
       # The cluster lives in the named volume on both majors. The 18 image would put it in 18/docker under its own anonymous volume
       # (and refuses a mount at .../data unless PGDATA names it); the 17 image declares .../data as a volume itself.
       - PGDATA=/var/lib/postgresql/data

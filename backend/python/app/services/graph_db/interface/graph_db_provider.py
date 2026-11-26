@@ -8647,7 +8647,8 @@ class IGraphDBProvider(ABC):
         while left:
             ask, left = left[:window], left[window:]
             window = min(most, window * 8)
-            ok = await self._kh_v3_admitted([u["id"] for u in ask], org_id=org_id, access=access, transaction=transaction)
+            # A child the browse hides by navigation (``hidden``) is passed over: the check would admit it, and no browse lists it.
+            ok = await self._kh_v3_admitted([u["id"] for u in ask if not u.get("hidden")], org_id=org_id, access=access, transaction=transaction)
             fresh += [u for u in ask if u["id"] in ok]
             admitted += [u["id"] for u in ask if u["id"] in ok]
             cut = ask[-1] if left or beyond else None
