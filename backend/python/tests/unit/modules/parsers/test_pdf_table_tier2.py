@@ -34,10 +34,19 @@ def page_of(draw: Callable[[canvas.Canvas], None]) -> tuple[pdfplumber.PDF, pdfp
 
 
 def evidence_tables(page: pdfplumber.page.Page, box: tuple[float, float, float, float], monkeypatch) -> list:
+    """The tables of the page in evidence mode; the box's decision must be tier 2 (not the legacy fallback)."""
     monkeypatch.setenv(tr.ENV_MODE, "evidence")
     model = {"table": [((box[0] / W, box[1] / H, box[2] / W, box[3] / H), 0.98)], "picture": []}
-    with patch.object(ola, "_detect_model_boxes", return_value=model):
+    decisions: list = []
+    real = tr.reconcile
+
+    def recording(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        decisions.extend(out := real(*args, **kwargs))
+        return out
+
+    with patch.object(ola, "_detect_model_boxes", return_value=model), patch.object(tr, "reconcile", recording):
         rs = ola.extract_layout_regions(page)
+    assert [d.kind for d in decisions] == ["ruled_rows"], [(d.kind, d.reason) for d in decisions]
     return sorted((r for r in rs if r.type == LayoutRegionType.TABLE), key=lambda r: r.bbox[1])
 
 
