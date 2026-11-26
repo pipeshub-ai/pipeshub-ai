@@ -17,6 +17,7 @@ from app.services.graph_db.neo4j.neo4j_provider import (
     Neo4jProvider,
     _KhSplitUndecided,
 )
+from tests.support.log_capture import failure_line
 
 LEGACY = {"rows": [{"id": "secret-a", "hasChildren": True}, {"id": "secret-b", "hasChildren": False}], "total": 2, "counts": {"r": 2}}
 
@@ -95,14 +96,18 @@ async def test_a_page_split_would_answer_with_legacy_is_not_compared(caplog: pyt
     p, _ = _provider(_KhSplitUndecided("the start has more children than the split browse reads"))
     with caplog.at_level(logging.INFO):
         await p._kh_shadow_compare(LEGACY, {})
-    assert "not compared" in caplog.text and "agree" not in caplog.text and "split failed" not in caplog.text
+    skipped = [r for r in caplog.records if r.getMessage() == "kh.browse.shadow_skipped"]
+    assert [r.reason for r in skipped] == ["split_undecided"]
+    assert "agree" not in caplog.text and "graph.provider.step_failed" not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_a_split_failure_is_logged_and_kept_from_the_viewer(caplog: pytest.LogCaptureFixture) -> None:
     p, _ = _provider(RuntimeError("secret-a is broken"))
     await p._kh_shadow_compare(LEGACY, {})
-    assert "split failed (RuntimeError)" in caplog.text and "secret" not in caplog.text
+    fields = failure_line(caplog.records, "graph.provider.step_failed", "internal", logging.ERROR, "secret")
+    assert (fields["op"], fields["step"]) == ("_kh_shadow_compare", "shadow_split")
+    assert "secret" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -145,3 +150,14 @@ async def test_no_more_than_the_bound_are_compared_at_once(monkeypatch: pytest.M
     again = p._kh_shadow_start(LEGACY, {})      # a finished comparison frees its place
     assert again is not None
     await again
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", [{"totalCapped": True}, {"resume": {"id": "secret-b"}, "hasMore": True}])
+async def test_a_split_page_cut_by_its_time_budget_is_not_compared(caplog: pytest.LogCaptureFixture, cut: dict) -> None:
+    # A wide start's split page is windowed with legacy's budget: where it stopped depends on timing, so no difference is reported.
+    p, _ = _provider({**LEGACY, "rows": [{"id": "secret-a"}], **cut})
+    with caplog.at_level(logging.INFO):
+        await p._kh_shadow_compare(LEGACY, {})
+    skipped = [r for r in caplog.records if r.getMessage() == "kh.browse.shadow_skipped"]
+    assert [r.reason for r in skipped] == ["split_cut_by_budget"] and "differ" not in caplog.text

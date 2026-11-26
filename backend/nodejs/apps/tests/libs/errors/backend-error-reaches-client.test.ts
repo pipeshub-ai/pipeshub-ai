@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import type { NextFunction, Request, Response } from 'express'
 import { handleBackendError } from '../../../src/libs/errors/backend-error'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
-import { InternalServerError } from '../../../src/libs/errors/http.errors'
+import { BadRequestError, InternalServerError } from '../../../src/libs/errors/http.errors'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 
 /**
@@ -21,7 +21,7 @@ const GENERIC = "Something went wrong on PipesHub's side"
 
 /** What the middleware writes: `{ error: { code, message, requestId? } }`. */
 interface ErrorBody {
-  error: { code: string; message: string; requestId?: string }
+  error: { code: string; message: string; requestId?: string; reasonCode?: string }
 }
 
 type ResponseDouble = Pick<
@@ -43,13 +43,17 @@ interface MiddlewareLogger {
 function sendThroughMiddleware(error: Error): {
   message: string
   headers: Record<string, string>
+  status: number | undefined
+  error: ErrorBody['error']
 } {
   const headers: Record<string, string> = {}
   let body: ErrorBody | undefined
+  let status: number | undefined
 
   const res = {
     headersSent: false,
-    status(): ResponseDouble {
+    status(code: number): ResponseDouble {
+      status = code
       return res
     },
     json(payload: ErrorBody): ResponseDouble {
@@ -99,7 +103,7 @@ function sendThroughMiddleware(error: Error): {
   }
 
   if (!body) throw new Error('the middleware sent no JSON body')
-  return { message: body.error.message, headers }
+  return { message: body.error.message, headers, status, error: body.error }
 }
 
 describe('what this module writes reaches the client', () => {
@@ -174,6 +178,9 @@ describe('what this module writes reaches the client', () => {
     'The search index took too long to respond, so no results are shown. Please try again in a minute.',
     "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
     'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
+    // An embedding provider account with no credit: "briefly unavailable, try again" would be wrong advice.
+    "Search can't run because the embedding model's provider account is out of credit. An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models.",
+    "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. Please try again in a minute.",
   ]) {
     it(`passes search's sentence for a vector store that did not answer: ${message}`, () => {
       // Search sends it as `message` in its own body, not as `detail`.
@@ -227,5 +234,43 @@ describe('what this module writes reaches the client', () => {
 
     expect(message).to.not.include('10.0.0.4')
     expect(message).to.include('briefly unavailable')
+  })
+
+  // H3 RL-8: a Python refusal reaches the browser typed, not as JSON text.
+  it('RL-8: a relayed 400 arrives with its status, the sentence and reasonCode', () => {
+    const mapped = handleBackendError(
+      {
+        statusCode: 400,
+        data: { detail: { reasonCode: 'runner_egress_invalid', message: "egress host 'x!' is not a host name" } },
+      },
+      'Update MCP server runner settings',
+    )
+    const sent = sendThroughMiddleware(mapped)
+    expect(sent.status).to.equal(400)
+    expect(sent.error).to.deep.equal({
+      code: 'HTTP_BAD_REQUEST',
+      message: "egress host 'x!' is not a host name",
+      reasonCode: 'runner_egress_invalid',
+    })
+  })
+
+  it('RL-8: a relayed 502 stays a 502 with the code and our own sentence', () => {
+    const mapped = handleBackendError(
+      { statusCode: 502, data: { detail: { reasonCode: 'discovery_failed', message: 'connect to 10.0.0.4 refused' } } },
+      'Get MCP server tool manifest',
+    )
+    const sent = sendThroughMiddleware(mapped)
+    expect(sent.status).to.equal(502)
+    expect(sent.error.code).to.equal('HTTP_BAD_GATEWAY')
+    expect(sent.error.reasonCode).to.equal('discovery_failed')
+    expect(sent.message).to.include('Something went wrong while PipesHub tried to get MCP server tool manifest')
+    expect(sent.message).to.not.include('10.0.0.4')
+  })
+
+  it('RL-9: no reasonCode from metadata that is not a machine code, nor on infrastructure failures', () => {
+    expect(sendThroughMiddleware(new BadRequestError('no', { reasonCode: 'Not A Code' })).error).to.not.have.property('reasonCode')
+    expect(sendThroughMiddleware(new BadRequestError('no', { reasonCode: 7 })).error).to.not.have.property('reasonCode')
+    const plumbing = new KafkaError('Error publishing to Kafka topic records', { reasonCode: 'kafka_down' })
+    expect(sendThroughMiddleware(plumbing).error).to.not.have.property('reasonCode')
   })
 })

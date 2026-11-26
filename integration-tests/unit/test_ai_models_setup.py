@@ -210,3 +210,74 @@ def test_a_default_llm_without_an_asked_for_capability_is_not_reused(monkeypatch
 
     assert (seeded.model_key, seeded.owned) == ("new-llm", True)
     assert [post["isReasoning"] for post in backend.posts] == [True]
+
+
+_GATEWAY = {
+    "TEST_OPENAI_COMPATIBLE_API_KEY": "gateway-key",
+    "TEST_OPENAI_COMPATIBLE_ENDPOINT": "https://gateway.example.com/v1",
+    "TEST_OPENAI_COMPATIBLE_LLM_MODEL": "openai/gpt-5.6-luna",
+    "TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL": "openai/text-embedding-3-small",
+}
+
+
+@pytest.mark.parametrize(
+    ("for_embedding", "model"), [(False, "openai/gpt-5.6-luna"), (True, "openai/text-embedding-3-small")]
+)
+def test_an_openai_compatible_gateway_is_added_with_its_base_url_and_model_id(
+    monkeypatch: pytest.MonkeyPatch, for_embedding: bool, model: str
+) -> None:
+    """openAICompatible (Bifrost and the like) posts the gateway's base URL, key
+    and model id, and the reasoning LLM uses the same model id."""
+    for name, value in _GATEWAY.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAICompatible")
+    backend = _Backend([], post=_Response(200, {"details": {"modelKey": "gateway-model"}}))
+    _install(monkeypatch, backend)
+
+    if for_embedding:
+        seeded = setup.setup_test_embedding_model(_Client())
+    else:
+        monkeypatch.setattr(setup.requests, "get", lambda url, **_: _Response(200, {"models": []}))
+        seeded = setup.setup_test_llm_model(_Client(), is_reasoning=True)
+
+    assert (seeded.provider, seeded.model_name, seeded.owned) == ("openAICompatible", model, True)
+    assert [(post["provider"], post["configuration"]) for post in backend.posts] == [(
+        "openAICompatible",
+        {"model": model, "apiKey": "gateway-key", "endpoint": "https://gateway.example.com/v1"},
+    )]
+
+
+@pytest.mark.parametrize("missing", sorted(_GATEWAY))
+def test_a_gateway_missing_a_setting_is_not_tried(monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
+    """A half-set gateway is no candidate, so the named provider fails with the
+    missing-credentials message instead of posting blanks."""
+    for name, value in _GATEWAY.items():
+        if name != missing:
+            monkeypatch.setenv(name, value)
+    monkeypatch.delenv(missing, raising=False)
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAICompatible")
+    for_embedding = missing.endswith("EMBEDDING_MODEL")
+    if for_embedding:
+        assert setup._embedding_provider_candidates(model_name=None) == []
+    else:
+        assert setup.llm_configuration() is None
+
+
+def test_a_caller_s_model_name_stands_in_for_the_gateway_s_env_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unnamed, the gateway is still found when the caller names the model itself."""
+    for name, value in _GATEWAY.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_LLM_MODEL")
+    monkeypatch.delenv("TEST_OPENAI_COMPATIBLE_EMBEDDING_MODEL")
+    monkeypatch.delenv("TEST_AZURE_OPENAI_API_KEY")
+    # No provider is named here, so any other LLM key in the environment would be found.
+    monkeypatch.delenv("TEST_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("TEST_GROQ_API_KEY", raising=False)
+
+    assert setup.llm_configuration(model_name="openai/gpt-5.6-luna") == (
+        "openAICompatible",
+        "openai/gpt-5.6-luna",
+        {"model": "openai/gpt-5.6-luna", "apiKey": "gateway-key", "endpoint": "https://gateway.example.com/v1"},
+    )
+    assert [c.model_name for c in setup._embedding_provider_candidates(model_name="openai/e")] == ["openai/e"]
+    assert setup.llm_configuration() is None

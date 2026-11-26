@@ -230,7 +230,7 @@ export function TextRenderer({ fileUrl, fileName, fileType: _fileType, citations
   if (error) {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--red-11)' }}>
           error_outline
         </span>
         <Text size="3" weight="medium" color="red">

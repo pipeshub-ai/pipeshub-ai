@@ -24,6 +24,9 @@ from fastapi.testclient import TestClient
 from app.agents.agent_loop.cancellation.in_process import (
     InProcessRunCancellationRegistry,
 )
+from app.services.graph_db.common.utils import AGENT_UPDATABLE_FIELDS
+from tests.support.bound_org import bound_like_auth
+from tests.support.config_service import FakeConfigurationService
 
 USERS_COLL = "users"
 ORGS_COLL = "organizations"
@@ -50,7 +53,12 @@ class GraphOutage(RuntimeError):
 
 
 class InMemoryGraph:
-    def __init__(self, *, rollback_undoes_writes: bool = True, honours_explicit: bool = True) -> None:
+    def __init__(
+        self, *, rollback_undoes_writes: bool = True, honours_explicit: bool = True, backend: str = "arango",
+    ) -> None:
+        # How the generic node calls answer (agent versions use only those): "arango" hands back the stored
+        # document with its `_key`; "neo4j" drops null properties on write and lists nodes by their `id`.
+        self.backend = backend
         # False behaves like Neo4j without explicit transactions: every write commits
         # at once and rollback only closes the session.
         self.rollback_undoes_writes = rollback_undoes_writes
@@ -166,21 +174,6 @@ class InMemoryGraph:
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
 
-    async def get_user_connector_instances(
-        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: object,
-    ) -> list[dict]:
-        try:
-            self._enter("get_user_connector_instances", user_id, org_id)
-        except Exception:
-            return []  # like the real providers
-        return [
-            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
-            if doc.get("orgId") == org_id and (
-                doc.get("scope") == team_scope
-                or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id)
-            )
-        ]
-
     async def get_org_apps(
         self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
         app_ids: list[str] | None = None,
@@ -233,12 +226,20 @@ class InMemoryGraph:
             ]
             toolsets.append({**ts, "tools": copy.deepcopy(tools)})
         knowledge = [
-            copy.deepcopy(self.nodes["agentKnowledge"][e["_to"].split("/", 1)[1]])
+            self._named_source(self.nodes["agentKnowledge"][e["_to"].split("/", 1)[1]])
             for e in self.edges_from("agentHasKnowledge", agent_path)
             if e["_to"].split("/", 1)[1] in self.nodes.get("agentKnowledge", {})
         ]
         mcp_servers = [
-            copy.deepcopy(self.nodes["agentMcpServers"][e["_to"].split("/", 1)[1]])
+            {
+                **copy.deepcopy(self.nodes["agentMcpServers"][e["_to"].split("/", 1)[1]]),
+                # As the providers join them (mcpServerHasTool), when the server has any.
+                **({"tools": tools} if (tools := [
+                    copy.deepcopy(self.nodes["agentTools"][t["_to"].split("/", 1)[1]])
+                    for t in self.edges_from("mcpServerHasTool", e["_to"])
+                    if t["_to"].split("/", 1)[1] in self.nodes.get("agentTools", {})
+                ]) else {}),
+            }
             for e in self.edges_from("agentHasMcpServer", agent_path)
             if e["_to"].split("/", 1)[1] in self.nodes.get("agentMcpServers", {})
         ]
@@ -251,6 +252,18 @@ class InMemoryGraph:
             **copy.deepcopy(agent), "toolsets": toolsets, "knowledge": knowledge,
             "mcpServers": mcp_servers, "skills": skills, "shareWithOrg": share_with_org,
         }
+
+    def _named_source(self, knowledge: dict[str, Any]) -> dict[str, Any]:
+        """A knowledge node as the providers' get_agent returns it: named after its connector (in `apps`), or by
+        its connector id typed UNKNOWN when there is none. Nothing is added when no connector was ever stored."""
+        source = copy.deepcopy(knowledge)
+        if "apps" not in self.nodes:
+            return source
+        app = self.nodes["apps"].get(str(source.get("connectorId")))
+        name = (app.get("name") if app else None) or source.get("connectorId")
+        # A node the test already typed UNKNOWN stands for an app the provider could not read.
+        kind = "UNKNOWN" if source.get("type") == "UNKNOWN" or not app else app.get("type") or "APP"
+        return {**source, "name": name, "type": kind, "displayName": name}
 
     async def update_agent(self, agent_id: str, agent_updates: dict, user_id: str, org_id: str, transaction: str | None = None) -> bool:
         self._enter("update_agent", agent_id, agent_updates, user_id, org_id)
@@ -306,6 +319,22 @@ class InMemoryGraph:
                 if USERS_BY_KEY[a["createdBy"]]["orgId"] == org_id and a.get("webSearch") == provider]
 
     # templates
+    async def get_user_connector_instances(
+        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """As the providers answer: the org's team-scoped connectors, and the user's own personal ones; a failed read
+        is no connectors, as the real providers answer it."""
+        try:
+            self._enter("get_user_connector_instances", collection, user_id, org_id)
+        except Exception:
+            return []
+        return [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if doc.get("orgId") == org_id
+            and (doc.get("scope") == team_scope or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id))
+        ]
+
     def _template_role(self, template_id: str, user_id: str) -> str | None:
         template = self.nodes.get(TEMPLATES, {}).get(template_id)
         if template is None or template.get("isDeleted"):
@@ -394,6 +423,56 @@ class InMemoryGraph:
             self.add_node(collection, node)
         return True
 
+    async def ensure_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> None:
+        """Creates each node whose id is new and leaves an existing one untouched, as both providers do; a write
+        either backend would refuse (a nested map on Neo4j, a schema mismatch on Arango) fails here too."""
+        from tests.unit.services.artifact_registry.fakes import assert_valid_write
+
+        self._enter("ensure_nodes", nodes, collection)
+        stored = self.nodes.setdefault(collection, {})
+        for node in nodes:
+            assert_valid_write(collection, node)
+            doc = {
+                k: v for k, v in node.items() if k != "id" and not (self.backend == "neo4j" and v is None)
+            }
+            key = node.get("id") or node["_key"]
+            if key not in stored:
+                stored[key] = copy.deepcopy({**doc, "_key": key})
+
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+        transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> list[dict]:
+        try:
+            self._enter("get_nodes_by_filters", collection, filters)
+        except Exception:
+            if raise_on_error:
+                raise
+            return []
+        out = []
+        for doc in self.nodes.get(collection, {}).values():
+            if all(doc.get(f) == v for f, v in filters.items()):
+                view = {**copy.deepcopy(doc), "id": doc["_key"]}
+                if self.backend == "neo4j":
+                    view.pop("_key")
+                out.append({f: view.get(f) for f in return_fields} if return_fields else view)
+        return out
+
+    async def get_documents_paginated(
+        self, collection: str, skip: int = 0, limit: int = 50, filters: dict[str, Any] | None = None,
+        sort_field: str | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
+        after_key: str | None = None, return_fields: list[str] | None = None,
+    ) -> list[dict]:
+        self._enter("get_documents_paginated", collection, filters)
+        docs = sorted(self.nodes.get(collection, {}).values(), key=lambda d: d["_key"])
+        docs = [
+            d for d in docs
+            if all(d.get(f) == v for f, v in (filters or {}).items()) and (after_key is None or d["_key"] > after_key)
+        ][skip:skip + limit]
+        return [
+            {f: d.get(f) for f in return_fields} if return_fields else copy.deepcopy(d) for d in docs
+        ]
+
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._enter("batch_create_edges", edges, collection)
         for edge in edges:
@@ -458,11 +537,10 @@ class InMemoryGraph:
 
 USERS_BY_KEY = {user_key(name): user for name, user in USERS.items()}
 
-# The scalar fields ArangoHTTPProvider.update_agent copies from an update; models are handled apart.
-AGENT_UPDATE_FIELDS = (
-    "name", "description", "startMessage", "systemPrompt", "instructions", "tags",
-    "isActive", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort",
-)
+# The fields ArangoHTTPProvider.update_agent (and Neo4j's) copies from an update; models are handled apart.
+# The fields a save may change are the graph providers' own list, so a field the agents API gains (WP100-FU-9: the
+# environment) reaches this fake as it reaches Neo4j and Arango, never dropped by a hand-kept copy.
+AGENT_UPDATE_FIELDS = AGENT_UPDATABLE_FIELDS
 
 
 def _normalize_models(raw: Any) -> list[str] | None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
@@ -486,17 +564,16 @@ def _normalize_models(raw: Any) -> list[str] | None:  # noqa: ANN401 - a JSON va
     return entries
 
 
-class FakeConfigService:
-    def __init__(self, values: dict[str, Any] | None = None) -> None:
-        self.values = values or {}
+FakeConfigService = FakeConfigurationService
 
-    async def get_config(
-        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
-    ) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
-        return copy.deepcopy(self.values.get(key, default))
 
-    async def list_keys_in_directory(self, directory: str) -> list[str]:
-        return [k for k in self.values if k.startswith(directory)]
+class _AcceptingProducer:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+
+    async def send_message(self, topic: str, message: dict[str, Any], key: str | None = None) -> bool:
+        self.sent.append((topic, message))
+        return True
 
 
 class FakeContainer:
@@ -507,8 +584,14 @@ class FakeContainer:
         self.config = config
         self.graph_provider_error: BaseException | None = None
         self.registry = InProcessRunCancellationRegistry()
+        # The broker the routes publish directory events on: accepts every message, as a healthy broker does.
+        self.messaging_producer = _AcceptingProducer()
 
     async def retrieval_service(self) -> object:
+        return object()
+
+    def reranker_service(self) -> object:
+        """Main dropped the reranker from today's route; the release before (CPD10-83's skew test) still resolves it."""
         return object()
 
     async def graph_provider(self) -> InMemoryGraph:
@@ -538,7 +621,11 @@ class _TestAuth:
         if scope["type"] == "http":
             name = dict(scope["headers"]).get(b"x-test-user")
             if name is not None:
-                scope.setdefault("state", {})["user"] = dict(self.users[name.decode()])
+                user = dict(self.users[name.decode()])
+                scope.setdefault("state", {})["user"] = user
+                with bound_like_auth(user):
+                    await self.app(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 

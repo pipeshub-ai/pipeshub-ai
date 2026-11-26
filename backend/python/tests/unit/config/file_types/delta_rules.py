@@ -6,6 +6,11 @@ checks the new value against main itself: a spelling that differs only in case o
 (``any-spelling``), or another spelling of the same type (``alias-spelling``), must now decide exactly as main decided
 the plain spelling.
 
+A cell's ``tier`` and ``kind`` are checked against the reader the replayed dispatch reached for the same labels
+(``reader-labels``): the handler in the replay's ``legacy`` column, mapped through the hand-written
+``HANDLER_TIER_KIND`` table, never through the registry code under test. Where such a reader exists its value is
+binding for those two columns, main-indexed cells included; no other reason can accept a different value.
+
     python -m tests.unit.config.file_types.delta_rules PINNED REPLAY
 
 writes ``allowed_deltas.json`` from a replay (``gen_pinned_decisions --replay``), and fails on any
@@ -21,7 +26,7 @@ from typing import Any
 ALLOWED_DELTAS_FILE = Path(__file__).with_name("allowed_deltas.json")
 
 REASONS: dict[str, str] = {
-    "new-type": "msg, odt, rtf, xlsm, docm, dotx and potx are indexable where main read nothing: gate, "
+    "new-type": "msg, odt, rtf, xlsm, docm, dotx, potx and pptm are indexable where main read nothing: gate, "
           "route, parse format, tier and kind",
     "any-spelling": "extensions and mime types match in any case, with a leading dot or mime parameters; the "
           "decision is the one main made for the plain spelling",
@@ -31,11 +36,18 @@ REASONS: dict[str, str] = {
     "log-cfg": ".log and .cfg are indexable as capped plain text where main refused them (octet-stream, "
           "no mime, a CODE_FILE); stored as text/plain they keep main's full-text path",
     "xlsm-mime": "the macro-enabled workbook mime alone (no extension) names xlsm and is read as a workbook",
+    "pptm-mime": "the macro-enabled deck mime, in any spelling and with no .pptm extension, is indexable and read "
+          "as PPTX (python-pptx opens it as it is) where main refused it or raised",
+    "name-fallback": "a FILE with no extension of its own whose mime names nothing (none, octet-stream, unknown) is "
+          "read by its name's extension where main's dispatch raised; every such pinned cell is one the gate refuses",
     "filter-options": "the sync filter offers the new types; log moves from exclude-only to offered",
     "bounded-token-cost": "a .log/.cfg main read (as text, code or JSON) is indexed as at most "
                           "TEXT_LOG_MAX_BYTES of text and refused over TEXT_LOG_HARD_LIMIT_BYTES",
+    "reader-labels": "the tier and kind are those of the reader the labels select: the handler the replayed dispatch "
+                     "reached for these labels, by HANDLER_TIER_KIND (a SQL table is light, a CSV sent as "
+                     "application/vnd.ms-excel is read as XLS)",
     "package-not-text": "a FILE stored as text/plain whose bytes are a package (msg, odt, rtf, xlsm, docm, dotx, "
-           "potx) is read as that package, not as text (listed cell by cell below)",
+           "potx, pptm) is read as that package, not as text (listed cell by cell below)",
 }
 
 # The lists a reason changes; each list test checks the change is only that.
@@ -48,10 +60,10 @@ GLOBAL_REASONS: dict[str, str] = {
 # reviewed: the raw package bytes main read as Markdown text. Any other such cell changing fails.
 EXISTING_CELL_EXCEPTIONS: dict[str, str] = {
     json.dumps([ext, "text/plain", f"file.{ext}", "FILE"]): "package-not-text"
-    for ext in ("msg", "odt", "rtf", "xlsm", "docm", "dotx", "potx")
+    for ext in ("msg", "odt", "rtf", "xlsm", "docm", "dotx", "potx", "pptm")
 }
 
-NEW_TYPES = frozenset({"msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx"})
+NEW_TYPES = frozenset({"msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm"})
 NEW_MIMES = frozenset({
     "application/vnd.ms-outlook", "application/vnd.oasis.opendocument.text", "application/rtf",
     "text/rtf", "application/x-rtf", "application/vnd.ms-excel.sheet.macroenabled.12",
@@ -60,6 +72,8 @@ NEW_MIMES = frozenset({
     "application/vnd.openxmlformats-officedocument.presentationml.template",
 })
 _XLSM_MIME = "application/vnd.ms-excel.sheet.macroenabled.12"
+_PPTM_MIME = "application/vnd.ms-powerpoint.presentation.macroenabled.12"
+_PPTM_COLUMNS = frozenset({"gate", "legacy", "parse_format", "kind"})
 CODE_GRAMMARS = frozenset({"pyi", "mts", "cts", "scala", "groovy", "gradle", "lua"})
 
 COLUMNS = ("extension", "mime", "name", "record_type", "gate", "legacy", "parse_format",
@@ -92,12 +106,79 @@ def _canonical_spelling(mime: str) -> str | None:
     return ft.mimes[0]
 
 
-class Oracle:
-    """The decisions pinned on main, looked up by their inputs."""
+# What each in-process parser is admitted as, written out by hand so the rule never asks the code it checks. None: the
+# parser has no tier or kind of its own (an image has no kind, epub neither), and main's value stands.
+HANDLER_TIER_KIND: dict[str, tuple[str | None, str | None]] = {
+    "_dispatch_pdf_binary": ("heavy", "pdf"),
+    "process_docx_document": ("heavy", "docling_docx"),
+    "process_doc_document": ("heavy", "docling_docx"),
+    "process_pptx_document": ("heavy", "docling_docx"),
+    "process_ppt_document": ("heavy", "docling_docx"),
+    "process_libreoffice_document": ("heavy", "docling_docx"),
+    "process_excel_document": ("heavy", "excel_load"),
+    "process_xls_document": ("heavy", "excel_load"),
+    "process_image": ("heavy", None),
+    "process_epub_document": (None, None),
+    "process_delimited_document": ("light", "csv"),
+    "process_txt_document": ("light", "text"),
+    "process_md_document": ("light", "text"),
+    "process_mdx_document": ("light", "text"),
+    "process_html_document": ("light", "text"),
+    "process_structured_document": ("light", "text"),
+    "process_sql_structured_data": ("light", "text"),
+    "process_plain_text_document": ("light", "text"),
+    "process_msg_document": ("light", "text"),
+    "process_gmail_message": ("light", "text"),
+    "process_code_document": ("light", "code"),
+    "process_blocks": ("light", None),
+}
+# Rows whose tier or kind may differ from their reader's, each reviewed (none so far).
+ORACLE_EXCEPTIONS: dict[str, str] = {}
+_TIER, _KIND = COLUMNS.index("tier"), COLUMNS.index("kind")
 
-    def __init__(self, pinned: dict[str, Any]) -> None:
+
+def _labels_decide(row: list[Any]) -> bool:
+    """A FILE row whose reader its labels alone chose: the name is the default one, or the mime names something."""
+    from app.config import file_types
+
+    ext, mime, name, record_type = row[:4]
+    return (
+        record_type == "FILE" and all(v is None or isinstance(v, str) for v in (ext, mime))
+        and (name == _name_for(ext) or not file_types._names_nothing(mime))
+    )
+
+
+def _readers(pinned_rows: list[list[Any]], replayed_rows: list[list[Any]]) -> dict[str, dict[int, object]]:
+    """Per labels, the tier and kind of the handler the replayed dispatch reached for a FILE row they decide."""
+    found: dict[str, dict[int, object]] = {}
+    legacy = COLUMNS.index("legacy")
+    for pinned, replayed in zip(pinned_rows, replayed_rows, strict=True):
+        handler = replayed[legacy]
+        if not _labels_decide(pinned) or not isinstance(handler, str) or handler not in HANDLER_TIER_KIND:
+            if _labels_decide(pinned) and isinstance(handler, str) and "!" not in handler and handler != "-":
+                raise AssertionError(f"{handler} is not in HANDLER_TIER_KIND: add the parser by hand")
+            continue
+        tier, kind = HANDLER_TIER_KIND[handler]
+        expected = {_TIER: tier or pinned[_TIER], _KIND: kind or pinned[_KIND]}
+        key = json.dumps(pinned[:2])
+        if found.setdefault(key, expected) != expected:
+            raise AssertionError(f"two readers for the labels {key}")
+    return found
+
+
+class Oracle:
+    """The decisions pinned on main, looked up by their inputs; with *replayed* (the replay's rows, in pinned order),
+    also the reader each pair of labels selects."""
+
+    def __init__(self, pinned: dict[str, Any], replayed: list[list[Any]] | None = None) -> None:
         self.rows = {json.dumps(r[:4]): r for r in pinned["rows"]}
         self.mimes = dict(pinned["mimes"])
+        self.readers = _readers(pinned["rows"], replayed) if replayed is not None else {}
+
+    def reader_value(self, row: list[Any], column: str) -> tuple[bool, object]:
+        """``(True, value)`` when the labels' reader decides *column* (tier or kind), else ``(False, None)``."""
+        found = self.readers.get(json.dumps(row[:2])) if column in ("tier", "kind") else None
+        return (True, found[COLUMNS.index(column)]) if found is not None else (False, None)
 
     def row(self, ext: object, mime: object, name: str, record_type: str) -> list[Any] | None:
         for candidate in (name, _name_for(ext)):
@@ -112,8 +193,26 @@ def main_indexed(row: list[Any]) -> bool:
     return row[4] == "ok" and not str(row[5]).startswith("!")
 
 
+def _read_by_its_name(row: list[Any], name_ext: str | None, new: object) -> bool:
+    """A cell main's gate refused and its dispatch raised for, now read by the parser of its name's type."""
+    from app.config import file_types
+    from tests.unit.config.file_types.test_registry_invariants import _ROUTE_HANDLER
+
+    ext, mime, _, record_type = row[:4]
+    named = file_types.by_extension(name_ext) if name_ext else None
+    return (
+        record_type == "FILE" and ext in (None, "", "unknown") and row[4] != "ok"
+        and row[5] == "!UnsupportedFormatError" and file_types._names_nothing(mime)
+        and named is not None and named.route is not None and new == _ROUTE_HANDLER.get(named.route)
+    )
+
+
 def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> str | None:
     """The reason a row's *column* may now read *new*, or None when no reviewed reason covers it."""
+    decided, expected = oracle.reader_value(row, column)
+    if decided:
+        # Binding: no other reason may accept a tier or kind the labels' reader does not have.
+        return "reader-labels" if new == expected else ORACLE_EXCEPTIONS.get(_key(row))
     if main_indexed(row):
         return EXISTING_CELL_EXCEPTIONS.get(json.dumps(list(row[:4])))
     ext, mime, name, record_type = row[:4]
@@ -127,6 +226,10 @@ def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> s
         if m == _XLSM_MIME and decided_by is None:
             return "xlsm-mime" if e in (None, "", "unknown") else None
         return "log-cfg" if decided_by in ("log", "cfg") else "new-type"
+    if m == _PPTM_MIME or e == "pptm":
+        return "pptm-mime" if column in _PPTM_COLUMNS else None
+    if column == "legacy" and _read_by_its_name(row, name_ext, new):
+        return "name-fallback"
     if e in CODE_GRAMMARS or (record_type == "CODE_FILE" and name_ext in CODE_GRAMMARS):
         return "code-extension" if column == "gate" else None
     if e == "htm":
@@ -191,7 +294,7 @@ def size_rows(pinned: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def build(pinned: dict[str, Any], replay: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    oracle = Oracle(pinned)
+    oracle = Oracle(pinned, replayed=replay["rows"])
     rows: dict[str, dict[str, Any]] = {}
     unexplained: list[str] = []
     for old, new in zip(pinned["rows"], replay["rows"], strict=True):

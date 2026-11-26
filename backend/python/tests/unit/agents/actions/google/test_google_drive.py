@@ -1059,7 +1059,7 @@ class TestGetFileContent:
             "app.agents.actions.google.drive.drive.FileContentParser"
         ) as MockParser:
             with patch(
-                "app.agents.actions.google.drive.drive.FileRecord"
+                "app.agents.actions.google.drive.drive.live_file_record"
             ) as MockFileRecord:
                 mock_item = MagicMock()
                 mock_item.model_dump.return_value = {}

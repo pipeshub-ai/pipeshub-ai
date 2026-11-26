@@ -2,11 +2,16 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { ChatCompareFeature } from '../../../../src/modules/enterprise_search/utils/chat-compare-feature'
-import { flows, startStream, finalAnswer } from './streaming-flows'
+import { flows, startStream, finalAnswer, appConfig } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const primaryFlows = flows.filter((f) => f.name === 'streamChat' || f.name === 'addMessageStream')
 
 describe('turn_started on the primary streams (Compare models)', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => sinon.restore())
 
   for (const flow of primaryFlows) {

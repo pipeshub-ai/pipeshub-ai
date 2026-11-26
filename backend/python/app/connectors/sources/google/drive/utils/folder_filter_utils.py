@@ -130,6 +130,19 @@ def drive_error_reasons(error: HttpError) -> set:
     return reasons
 
 
+def sharing_refused(error: BaseException) -> bool:
+    """Whether Google refused to show an item's sharing for good: a 404, or a 403 whose every reason is a known
+    permanent denial (`is_permission_denied_403`).
+
+    Such a read is answered: the sharing is unknown to this user. Anything else (a 403 with no reason, a rate
+    limit, `domainPolicy`, a 5xx, a timeout) is a read that did not happen, to be tried again, not an answer.
+    """
+    if not isinstance(error, HttpError):
+        return False
+    status = getattr(error.resp, "status", None)
+    return status == 404 or (status == 403 and is_permission_denied_403(error))
+
+
 def _403_reasons(error: HttpError) -> set:
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return set()

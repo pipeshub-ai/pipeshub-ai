@@ -29,7 +29,7 @@ export function ImportDateSection() {
         <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {t('workspace.connectors.configTab.importDate')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.configTab.importDateDescription')}
         </Text>
       </Flex>

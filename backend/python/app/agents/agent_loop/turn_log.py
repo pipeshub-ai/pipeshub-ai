@@ -1,6 +1,6 @@
 """`agent_turn.end`: the one line that says how a chat turn ended (contract: docs/logging.md).
 
-Both bridges (`stream_bridge.run_agent_loop_stream`, `chat_modes.bridge.run_chat_stream`)
+Both routes (`stream_bridge.run_agent_loop_stream`, `stream_bridge.run_chat_stream`)
 count the turn with `AgentRunTiming` and end it with `AgentRunTiming.end`; route exits
 that happen before a bridge exists call `log_turn_end` directly. Ids (org, user,
 conversation, agent, run) come from the bound log context. Counts, sizes and enums
@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.events.base import EventType
 from app.agents.agent_loop.error_classification import classify_error as user_error_code
+from app.agents.agent_loop.error_classification import run_error_text
 from app.utils import error_class
 from app.utils.logging_fields import log_event
 
@@ -162,7 +163,7 @@ class AgentRunTiming:
             if result is not None:
                 line |= {"end_event": result.end_event or None, "error_class": result.error_class}
                 if not result.success and not result.cancelled:
-                    line["code"] = user_error_code(result.error or "")[0]  # the code the client got
+                    line["code"] = user_error_code(run_error_text(result) or "")[0]  # the code the client got
             log_turn_end(log, stop_reason, exc=exc, **(line | fields))
         except Exception:
             logger.debug("agent_turn.end failed", exc_info=True)

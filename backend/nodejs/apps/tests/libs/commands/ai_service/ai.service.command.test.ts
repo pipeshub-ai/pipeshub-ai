@@ -5,10 +5,14 @@ import {
   AIServiceCommand,
   AICommandOptions,
 } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('AIServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ query: ['http://ai.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {
@@ -329,6 +333,8 @@ describe('AIServiceCommand', () => {
       ]
 
       const mockReader = {
+        cancel: sinon.stub().resolves(),
+        releaseLock: sinon.stub(),
         read: sinon.stub().callsFake(async () => {
           if (readCount < chunks.length) {
             return { done: false, value: chunks[readCount++] }
@@ -377,6 +383,84 @@ describe('AIServiceCommand', () => {
       expect(receivedChunks).to.have.length(2)
       expect(receivedChunks[0]).to.include('chunk1')
       expect(receivedChunks[1]).to.include('chunk2')
+    })
+
+    it('cancels the upstream body and fetch when the consumer disconnects', async () => {
+      const cancel = sinon.spy()
+      const body = new ReadableStream<Uint8Array>({ cancel })
+      fetchStub.resolves(new Response(body))
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream', method: HttpMethod.POST, headers: {},
+      })
+      const stream = await cmd.executeStream()
+      const closed = new Promise<void>((resolve) => stream.once('close', resolve))
+      stream.destroy()
+      await closed
+      expect(fetchStub.firstCall.args[1].signal.aborted).to.equal(true)
+      expect(cancel.calledOnce).to.equal(true)
+      expect(body.locked).to.equal(false)
+    })
+
+    it('stops reading when a consumer does not drain the buffer', async () => {
+      let pulls = 0
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1
+          controller.enqueue(new Uint8Array(65536))
+        },
+      })
+      fetchStub.resolves(new Response(body))
+      const stream = await new AIServiceCommand({
+        uri: 'http://ai.local/stream', method: HttpMethod.POST, headers: {},
+      }).executeStream()
+      stream.read(0)
+      await new Promise((resolve) => setImmediate(resolve))
+      const stoppedAt = pulls
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(pulls).to.equal(stoppedAt)
+      expect(pulls).to.be.at.most(3)
+      const closed = new Promise<void>((resolve) => stream.once('close', resolve))
+      stream.destroy()
+      await closed
+    })
+
+    it('preserves UTF-8 characters split across upstream chunks', async () => {
+      const bytes = new TextEncoder().encode('data: café 🚀\n\n')
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const byte of bytes) controller.enqueue(Uint8Array.of(byte))
+          controller.close()
+        },
+      })
+      fetchStub.resolves(new Response(body))
+      const stream = await new AIServiceCommand({
+        uri: 'http://ai.local/stream', method: HttpMethod.POST, headers: {},
+      }).executeStream()
+      let content = ''
+      for await (const chunk of stream as AsyncIterable<Buffer>) content += chunk.toString()
+      expect(content).to.equal('data: café 🚀\n\n')
+      expect(body.locked).to.equal(false)
+    })
+
+    it('does not log bearer, query, prompt, or reflected upstream errors', async () => {
+      const logger = Logger.getInstance()
+      const errorLog = sinon.stub(logger, 'error')
+      const secret = 'synthetic-sensitive-canary'
+      fetchStub.resolves(new Response(JSON.stringify({ detail: secret }), { status: 403 }))
+      const cmd = new AIServiceCommand({
+        uri: `http://ai.local/stream?credential=${secret}`,
+        method: HttpMethod.POST,
+        headers: { authorization: `Bearer ${secret}` },
+        body: { prompt: secret },
+      })
+      try {
+        await cmd.executeStream()
+        expect.fail('Expected upstream failure')
+      } catch {
+        // Main #4872: an answer with an error status is logged once, by the caller's handleBackendError, not here.
+        expect(errorLog.called).to.equal(false)
+        expect(JSON.stringify(errorLog.args)).not.to.include(secret)
+      }
     })
 
     it('should throw an error with detail from JSON error response when not ok', async () => {
@@ -450,8 +534,7 @@ describe('AIServiceCommand', () => {
           headers: { 'content-type': 'application/json' },
           body: { prompt: 'p' },
         })
-      // On the shared prototype, and another file's timer may log meanwhile: count only the call lines.
-      const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
+      // On the shared prototype: count only the call lines.
       const callLines = (stub: sinon.SinonStub) =>
         stub.getCalls().filter((c) => c.args[0] === 'upstream.call.end').map((c) => c.args[1])
       const level = () => ({
@@ -492,9 +575,8 @@ describe('AIServiceCommand', () => {
           [2, 'unavailable', 'ECONNREFUSED'],
           [3, 'unavailable', 'ECONNREFUSED'],
         ])
-        expect(callLines(logs.warn)[0]).to.include({ upstream: 'external', method: 'POST', route: 'ai.local' })
-        // Only this command's lines: in the Redis-cluster job another suite leaves the outbox dispatcher running, and it logs its own ERRORs.
-        expect(logs.error.getCalls().map((c) => c.args[0]).filter((m) => !BACKGROUND_LINES.has(m))).to.deep.equal([])
+        expect(callLines(logs.warn)[0]).to.include({ upstream: 'query', method: 'POST', route: '/api/v1/chat/stream' })
+        expect(logs.error.getCalls().map((c) => c.args[0])).to.deep.equal([])
       })
 
       it('ends a stream when its body ends, at DEBUG, and logs nothing at INFO when it opens', async () => {
@@ -807,6 +889,8 @@ describe('AIServiceCommand', () => {
     it('should destroy readable stream when reader.read() throws during streaming', async () => {
       const readError = new Error('stream read failure')
       const mockReader = {
+        cancel: sinon.stub().resolves(),
+        releaseLock: sinon.stub(),
         read: sinon.stub().rejects(readError),
       }
 
@@ -836,7 +920,8 @@ describe('AIServiceCommand', () => {
       const readable = await cmd.executeStream()
       expect(readable).to.exist
 
-      // Wait for the pump to encounter the error and destroy the stream
+      readable.resume()
+      // Reading starts on consumer demand.
       await new Promise<void>((resolve) => {
         readable.on('error', (err: Error) => {
           expect(err.message).to.equal('stream read failure')

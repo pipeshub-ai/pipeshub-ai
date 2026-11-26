@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +34,9 @@ from app.connectors.sources.localKB.handlers.kh_bounded import (
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.core.org_context import bound_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.models.entities import RecordType
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.selection_scope import unavailable_message
 from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VALID_NODE_TYPES = {nt.value for nt in NodeType}
+_VALID_RECORD_TYPES = frozenset(rt.value for rt in RecordType)
 _VALID_SORT_FIELDS = {"name", "createdAt", "updatedAt", "size", "type"}
 _VALID_SORT_ORDERS = {"asc", "desc"}
 
@@ -254,6 +258,241 @@ def _wants_flat_listing(
     return bool(matched_source_ids or (wants_contents and single_source))
 
 
+@dataclass(frozen=True)
+class ScopedListing:
+    """How a listing reads the knowledge service as the run's person, inside the run's scope: ``fetch`` reads a
+    page of the service; ``inside``, when set, keeps only the rows a bound below app level (or the turn's
+    selection) admits (the service knows nothing of it). ``note`` leads the listing's text; ``in_selection``:
+    the rows are a search inside the turn's selection, not under one node of it. ``fetch`` takes the service's
+    cursor third; ``connector_ids`` are the sources it lists, which a cursor issued for wider ones must not leave."""
+
+    fetch: Callable[..., Awaitable[KnowledgeHubNodesResponse]]
+    inside: Callable[[list[str]], Awaitable[set[str]]] | None
+    query: str | None
+    note: str | None = None
+    in_selection: bool = False
+    connector_ids: tuple[str, ...] = ()
+
+
+async def plan_listing(
+    state: "ChatState",
+    *,
+    query: str | None = None,
+    source_ids: list[str] | None = None,
+    node_types: list[str] | None = None,
+    record_types: list[str] | None = None,
+    sort_by: str = "updatedAt",
+    sort_order: str = "desc",
+    cursor: str | None = None,
+    flatten: bool = False,
+) -> ScopedListing | tuple[bool, str]:
+    """The listing a call makes, or its answer when it needs no listing (the turn's selection, an empty scope,
+    an unknown record type). ``source_ids`` accepts both app-connector IDs and KB-collection IDs and only ever
+    narrows the run's scope. ``flatten``: every record inside the sources, with or without a query (the bulk
+    export, G-35), where a listing without one names the sources; it never searches inside a selection, so an
+    export under one is refused by its caller. Shared by ``knowledgegraph__list_files`` and the export, so both
+    read exactly what the person may read in the run's scope."""
+    logger_instance = state.get("logger", logger)
+    graph_provider = state.get("graph_provider")
+    org_id = bound_org_id() or ""
+    user_id = state.get("user_id", "")
+
+    if not graph_provider:
+        return False, "Graph provider not available."
+
+    from app.agents.actions.knowledge_graph.ops.scope import (
+        SELECTION_OUTSIDE_MESSAGE,
+        browsable_app_ids,
+        ids_within_scope,
+        list_selected_nodes,
+        resolve_scope,
+        selected_node_ids,
+        selection_browse_refusal,
+        turn_picked_sources,
+    )
+    from app.modules.retrieval.selection_scope import (
+        has_selection,
+        resolve_request_scopes,
+        resolve_user_key,
+    )
+
+    # Input normalization
+    query = query.strip() if query else None
+    if query and len(query) < MIN_QUERY_LENGTH:
+        query = None
+    elif query and len(query) > MAX_QUERY_LENGTH:
+        query = query[:MAX_QUERY_LENGTH]
+
+    source_ids_norm = _normalize_list(source_ids)
+    node_types = _normalize_list(node_types)
+    record_types = _normalize_list(record_types)
+
+    filters = state.get("filters") or {}
+    # Under a selection a search runs inside it; a cursor pages the
+    # selection itself, whatever the query says.
+    selection_search = not flatten and has_selection(filters) and not cursor and bool(
+        query or record_types or node_types or source_ids_norm
+    )
+    if not selection_search:
+        selected = await list_selected_nodes(
+            state, graph_provider, user_id, org_id, cursor=cursor,
+        )
+        if selected is not None:
+            return True, selected
+
+    scope = await resolve_scope(state)
+    agent_source_ids = browsable_app_ids(state, scope)
+    if not agent_source_ids:
+        if turn_picked_sources(state):
+            return True, "This conversation has no sources to list; only attached files."
+        if not state.get("has_knowledge"):
+            return False, "No knowledge sources configured for this agent."
+
+    if node_types:
+        node_types = [nt for nt in node_types if nt in _VALID_NODE_TYPES] or None
+    if record_types:
+        record_types = [rt.upper() for rt in record_types]
+        unknown = [rt for rt in record_types if rt not in _VALID_RECORD_TYPES]
+        if unknown:
+            # KN-04: an unknown type would list nothing, read as "no such files".
+            return False, (
+                f"Unknown record_types {unknown}. Use any of {', '.join(sorted(_VALID_RECORD_TYPES))}, "
+                "or omit record_types."
+            )
+
+    if sort_by not in _VALID_SORT_FIELDS:
+        sort_by = "updatedAt"
+    if sort_order not in _VALID_SORT_ORDERS:
+        sort_order = "desc"
+
+    # source_ids may name apps and KBs; narrow to them, never widen. With no
+    # agent sources the user picked nothing, and the service gates by the
+    # user's own access: what they name is checked there.
+    allowed = set(agent_source_ids)
+    matched = [sid for sid in source_ids_norm or [] if not allowed or sid in allowed]
+    note: str | None = None
+    if source_ids_norm and not matched and not selection_search:
+        # Listing the rest under a source the call named would pass it off
+        # as that source's contents.
+        query = None
+        note = _NO_NAMED_SOURCE_NOTE
+    use_connector_ids = matched or agent_source_ids
+
+    # The agent's sources can be everything the user reads, while a bound
+    # (a connected app's limit, a saved agent's or a project's sources) is
+    # narrower, and the listing service knows nothing of it.
+    bound_user_key: str | None = None
+    partial_ids: set[str] = set()
+    parent_id: str | None = None
+    parent_type: str | None = None
+    if selection_search or any(key in filters for key in ALLOWED_FILTER_KEYS):
+        bound_user_key = await resolve_user_key(graph_provider, user_id)
+        if not bound_user_key:
+            return False, "User not found."
+    if selection_search:
+        # Every row is checked against the selection and the bounds below;
+        # a source the call names only narrows where the search starts.
+        if len(source_ids_norm or []) > 1:
+            return False, _ONE_SELECTED_SOURCE_MESSAGE
+        start: str | None = None
+        if not source_ids_norm:
+            # A scan of the touched apps stops after a few hundred rows, before
+            # the selection is applied: start from the one selected node instead.
+            named = selected_node_ids(state)
+            if len(named) > 1 and not query:
+                return False, _ONE_SELECTED_SOURCE_MESSAGE
+            if (
+                len(named) == 1 and named[0] not in (filters.get("recordsExact") or ())
+                and not await selection_browse_refusal(state, graph_provider, bound_user_key, org_id, named[0])
+            ):
+                start = named[0]
+        elif source_ids_norm[0] not in agent_source_ids:
+            refusal = await selection_browse_refusal(
+                state, graph_provider, bound_user_key, org_id, source_ids_norm[0],
+            )
+            if refusal:
+                return False, refusal
+            start = source_ids_norm[0]
+        if start:
+            # The start node bounds the search; its app may not be a touched one.
+            use_connector_ids = []
+            info = await graph_provider.get_knowledge_hub_node_access(
+                node_id=start, user_key=bound_user_key, org_id=org_id,
+                folder_mime_types=FOLDER_MIME_TYPES,
+            )
+            if info is None:
+                return False, SELECTION_OUTSIDE_MESSAGE
+            parent_id, parent_type = start, info["nodeType"]
+    elif bound_user_key:
+        _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
+        if not use_connector_ids and bounds:
+            use_connector_ids = sorted(bounds[0].connector_ids)
+        for bound in bounds:
+            use_connector_ids = [sid for sid in use_connector_ids if sid in bound.connector_ids]
+        if not use_connector_ids:
+            return True, _render_flat_text(KnowledgeHubNodesResponse(success=True, items=[]), query)
+        # Sources a bound reaches only through some of its folders or files.
+        partial_ids = {sid for sid in use_connector_ids if any(sid not in b.app_ids for b in bounds)}
+        if partial_ids and not query and not flatten:
+            # A root listing names sources, and a partly shared one lies
+            # outside its own bound: list what the bound names instead.
+            listing = await list_selected_nodes(
+                {**state, "filters": _bound_as_selection(filters)}, graph_provider, user_id, org_id,
+                cursor=cursor,
+            )
+            if listing is not None:
+                return True, listing
+    wants_contents = _asks_for_contents(node_types, record_types)
+    single_source = len(use_connector_ids) == 1 and note is None
+    if flatten or selection_search:
+        flattened: bool | None = True
+    else:
+        flattened = _wants_flat_listing(query, matched, wants_contents=wants_contents, single_source=single_source)
+    if flattened is False and wants_contents:
+        # The root holds only sources: listed by record type it is empty.
+        node_types = record_types = None
+        note = note or _NAME_A_SOURCE_NOTE
+
+    service = KnowledgeHubService(
+        logger=logger_instance,
+        graph_provider=graph_provider,
+        excluded_app_ids=excluded_app_ids(state),
+        config_service=state.get("config_service"),
+    )
+
+    async def fetch(service_page: int, service_limit: int, service_cursor: str | None = None) -> KnowledgeHubNodesResponse:
+        return await service.get_nodes(
+            user_id=user_id,
+            org_id=org_id,
+            parent_id=parent_id,
+            parent_type=parent_type,
+            only_containers=False,
+            page=service_page,
+            limit=service_limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            q=query,
+            node_types=node_types,
+            record_types=record_types,
+            connector_ids=use_connector_ids or None,
+            flattened=flattened,
+            cursor=service_cursor,
+        )
+
+    inside = None
+    if bound_user_key and (partial_ids or selection_search):
+        key = bound_user_key
+
+        async def inside(ids: list[str]) -> set[str]:
+            return await ids_within_scope(state, graph_provider, key, org_id, ids)
+
+    return ScopedListing(
+        fetch=fetch, inside=inside, query=query, note=note,
+        in_selection=selection_search and parent_id is None,
+        connector_ids=tuple(use_connector_ids),
+    )
+
+
 async def execute_list_files(
     state: "ChatState",
     *,
@@ -278,200 +517,39 @@ async def execute_list_files(
         return False, "Tool state not initialized."
 
     try:
-        logger_instance = state.get("logger", logger)
+        planned = await plan_listing(
+            state,
+            query=query,
+            source_ids=source_ids,
+            node_types=node_types,
+            record_types=record_types,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            cursor=cursor,
+        )
+        if isinstance(planned, tuple):
+            return planned
         graph_provider = state.get("graph_provider")
         org_id = state.get("org_id", "")
-        user_id = state.get("user_id", "")
-
-        if not graph_provider:
-            return False, "Graph provider not available."
-
-        from app.agents.actions.knowledge_graph.ops.scope import (
-            SELECTION_OUTSIDE_MESSAGE,
-            browsable_app_ids,
-            ids_within_scope,
-            list_selected_nodes,
-            resolve_scope,
-            selected_node_ids,
-            selection_browse_refusal,
-            turn_picked_sources,
-        )
-        from app.modules.retrieval.selection_scope import (
-            has_selection,
-            resolve_request_scopes,
-            resolve_user_key,
-        )
-
-        # Input normalization
-        query = query.strip() if query else None
-        if query and len(query) < MIN_QUERY_LENGTH:
-            query = None
-        elif query and len(query) > MAX_QUERY_LENGTH:
-            query = query[:MAX_QUERY_LENGTH]
-
-        source_ids_norm = _normalize_list(source_ids)
-        node_types = _normalize_list(node_types)
-        record_types = _normalize_list(record_types)
-
-        filters = state.get("filters") or {}
-        # Under a selection a search runs inside it; a cursor pages the
-        # selection itself, whatever the query says.
-        selection_search = has_selection(filters) and not cursor and bool(
-            query or record_types or node_types or source_ids_norm
-        )
-        if not selection_search:
-            selected = await list_selected_nodes(
-                state, graph_provider, user_id, org_id, cursor=cursor,
-            )
-            if selected is not None:
-                return True, selected
-
-        scope = await resolve_scope(state)
-        agent_source_ids = browsable_app_ids(state, scope)
-        if not agent_source_ids:
-            if turn_picked_sources(state):
-                return True, "This conversation has no sources to list; only attached files."
-            if not state.get("has_knowledge"):
-                return False, "No knowledge sources configured for this agent."
-
-        if node_types:
-            node_types = [nt for nt in node_types if nt in _VALID_NODE_TYPES] or None
-
         page = max(1, page)
         limit = min(max(1, limit), 50)
-        if sort_by not in _VALID_SORT_FIELDS:
-            sort_by = "updatedAt"
-        if sort_order not in _VALID_SORT_ORDERS:
-            sort_order = "desc"
-
-        # source_ids may name apps and KBs; narrow to them, never widen. With no
-        # agent sources the user picked nothing, and the service gates by the
-        # user's own access: what they name is checked there.
-        allowed = set(agent_source_ids)
-        matched = [sid for sid in source_ids_norm or [] if not allowed or sid in allowed]
-        note: str | None = None
-        if source_ids_norm and not matched and not selection_search:
-            # Listing the rest under a source the call named would pass it off
-            # as that source's contents.
-            query = None
-            note = _NO_NAMED_SOURCE_NOTE
-        use_connector_ids = matched or agent_source_ids
-
-        # The agent's sources can be everything the user reads, while a bound
-        # (a connected app's limit, a saved agent's or a project's sources) is
-        # narrower, and the listing service knows nothing of it.
-        bound_user_key: str | None = None
-        partial_ids: set[str] = set()
-        parent_id: str | None = None
-        parent_type: str | None = None
-        if selection_search or any(key in filters for key in ALLOWED_FILTER_KEYS):
-            bound_user_key = await resolve_user_key(graph_provider, user_id)
-            if not bound_user_key:
-                return False, "User not found."
-        if selection_search:
-            # Every row is checked against the selection and the bounds below;
-            # a source the call names only narrows where the search starts.
-            if len(source_ids_norm or []) > 1:
-                return False, _ONE_SELECTED_SOURCE_MESSAGE
-            start: str | None = None
-            if not source_ids_norm:
-                # A scan of the touched apps stops after a few hundred rows, before
-                # the selection is applied: start from the one selected node instead.
-                named = selected_node_ids(state)
-                if len(named) > 1 and not query:
-                    return False, _ONE_SELECTED_SOURCE_MESSAGE
-                if (
-                    len(named) == 1 and named[0] not in (filters.get("recordsExact") or ())
-                    and not await selection_browse_refusal(state, graph_provider, bound_user_key, org_id, named[0])
-                ):
-                    start = named[0]
-            elif source_ids_norm[0] not in agent_source_ids:
-                refusal = await selection_browse_refusal(
-                    state, graph_provider, bound_user_key, org_id, source_ids_norm[0],
-                )
-                if refusal:
-                    return False, refusal
-                start = source_ids_norm[0]
-            if start:
-                # The start node bounds the search; its app may not be a touched one.
-                use_connector_ids = []
-                info = await graph_provider.get_knowledge_hub_node_access(
-                    node_id=start, user_key=bound_user_key, org_id=org_id,
-                    folder_mime_types=FOLDER_MIME_TYPES,
-                )
-                if info is None:
-                    return False, SELECTION_OUTSIDE_MESSAGE
-                parent_id, parent_type = start, info["nodeType"]
-        elif bound_user_key:
-            _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
-            if not use_connector_ids and bounds:
-                use_connector_ids = sorted(bounds[0].connector_ids)
-            for bound in bounds:
-                use_connector_ids = [sid for sid in use_connector_ids if sid in bound.connector_ids]
-            if not use_connector_ids:
-                return True, _render_flat_text(KnowledgeHubNodesResponse(success=True, items=[]), query)
-            # Sources a bound reaches only through some of its folders or files.
-            partial_ids = {sid for sid in use_connector_ids if any(sid not in b.app_ids for b in bounds)}
-            if partial_ids and not query:
-                # A root listing names sources, and a partly shared one lies
-                # outside its own bound: list what the bound names instead.
-                listing = await list_selected_nodes(
-                    {**state, "filters": _bound_as_selection(filters)}, graph_provider, user_id, org_id,
-                    cursor=cursor,
-                )
-                if listing is not None:
-                    return True, listing
-        wants_contents = _asks_for_contents(node_types, record_types)
-        single_source = len(use_connector_ids) == 1 and note is None
-        flattened = True if selection_search else _wants_flat_listing(
-            query, matched, wants_contents=wants_contents, single_source=single_source,
-        )
-        if flattened is False and wants_contents:
-            # The root holds only sources: listed by record type it is empty.
-            node_types = record_types = None
-            note = note or _NAME_A_SOURCE_NOTE
-
-        service = KnowledgeHubService(
-            logger=logger_instance,
-            graph_provider=graph_provider,
-            excluded_app_ids=excluded_app_ids(state),
-            config_service=state.get("config_service"),
-        )
-
-        async def fetch(service_page: int, service_limit: int) -> KnowledgeHubNodesResponse:
-            return await service.get_nodes(
-                user_id=user_id,
-                org_id=org_id,
-                parent_id=parent_id,
-                parent_type=parent_type,
-                only_containers=False,
-                page=service_page,
-                limit=service_limit,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                q=query,
-                node_types=node_types,
-                record_types=record_types,
-                connector_ids=use_connector_ids or None,
-                flattened=flattened,
-                cursor=service_cursor,
-            )
 
         hint: str | None = None
-        service_cursor: str | None = None
-        if bound_user_key and (partial_ids or selection_search):
+        if planned.inside is not None:
             if cursor:
                 return False, _NOT_THIS_LISTING_CURSOR
             # Batches are read by page number; the rows a bound drops leave no keyset to resume from.
             response, hint = await _page_inside_bounds(
-                lambda position, **_: fetch(position.page, BOUNDED_BATCH),
-                lambda ids: ids_within_scope(state, graph_provider, bound_user_key, org_id, ids),
-                page=page, limit=limit, in_selection=selection_search and parent_id is None,
+                lambda position, **_: planned.fetch(position.page, BOUNDED_BATCH),
+                planned.inside,
+                page=page, limit=limit, in_selection=planned.in_selection,
             )
         else:
-            service_cursor = cursor
-            response = await fetch(page, limit)
-            if cursor and use_connector_ids and response.success and not cursor_keeps_to(response, use_connector_ids):
+            response = await planned.fetch(page, limit, cursor)
+            if (
+                cursor and planned.connector_ids and response.success
+                and not cursor_keeps_to(response, list(planned.connector_ids))
+            ):
                 # The cursor's own filters decide the page, so one issued for wider sources must not resume here.
                 return False, _NOT_THIS_LISTING_CURSOR
 
@@ -488,8 +566,8 @@ async def execute_list_files(
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = _render_flat_text(response, query, record_id_shortener, cite_refs, page=page)
-        return True, "\n".join(part for part in (note, text, hint) if part)
+        text = _render_flat_text(response, planned.query, record_id_shortener, cite_refs, page=page)
+        return True, "\n".join(part for part in (planned.note, text, hint) if part)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

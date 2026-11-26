@@ -34,6 +34,7 @@ import httpx2
 
 from app.agents.mcp import wire
 from app.agents.mcp.errors import MCPUrlBlockedError
+from app.harness.mcp_hub.ssrf import address_rule
 from app.utils.env_utils import env_bool
 from app.utils.public_http import UnsafeUrlError, plan_hop
 from app.utils.url_fetcher import (
@@ -141,11 +142,17 @@ async def assert_mcp_url_allowed(url: str, *, allow_private: bool) -> PublicTarg
     try:
         # Public-only also means globally routable: CGNAT (100.64/10, used by Tailscale)
         # reaches the deployment's network as surely as RFC1918 does.
-        return await asyncio.to_thread(
+        target = await asyncio.to_thread(
             resolve_public_http_target, url, block_non_global=not allow_private, allow_private=allow_private,
         )
     except FetchError as e:
         raise _blocked(url, str(e), _ADDRESS_NOT_ALLOWED[allow_private]) from e
+    # With MCP_HUB on (P2.8) the deployment's stricter rule too: a private address only where
+    # PIPESHUB_BLOCK_PRIVATE_ADDRESSES / MCP_PRIVATE_NETWORKS allow it.
+    rule = address_rule()
+    if rule.pinned and (refused := next((ip for ip in target.addresses if rule.refuses(ip)), None)) is not None:
+        raise _blocked(url, f"{refused} is refused with MCP_HUB on", _ADDRESS_NOT_ALLOWED[allow_private])
+    return target
 
 
 async def check_mcp_url(url: str, *, allow_private: bool) -> None:

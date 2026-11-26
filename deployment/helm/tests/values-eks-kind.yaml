@@ -125,5 +125,7 @@ neo4j:
   nodeSelector: null
   tolerations: null
 
+# Kept on (ADR-OPS-04), so a kind run on a policy-enforcing CNI checks the
+# same rules EKS gets.
 networkPolicy:
-  enabled: false
+  enabled: true

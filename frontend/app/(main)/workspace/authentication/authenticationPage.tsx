@@ -12,7 +12,7 @@ import {
   IconButton,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+import { EnterpriseFeatureNotice } from '@/config';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
 import { ConfirmationDialog } from '../components/confirmation-dialog';
@@ -35,8 +35,6 @@ import {
   type SignInRemovalStatus,
 } from './types';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
-
-const SALES_EMAIL = 'sales@pipeshub.com';
 
 // ============================================================
 // Page
@@ -323,7 +321,7 @@ export default function AuthenticationPage() {
               </Text>
               <Text
                 size="1"
-                style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
+                style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}
               >
                 {t('workspace.authentication.methodsSubtitle')}
               </Text>
@@ -374,22 +372,6 @@ export default function AuthenticationPage() {
               <EnterpriseFeatureNotice
                 title={t('workspace.authentication.enterpriseSso.title')}
                 description={t('workspace.authentication.enterpriseSso.description')}
-                action={
-                  <Text size="1">
-                    <a
-                      href={`mailto:${SALES_EMAIL}`}
-                      className="touch-size"
-                      style={{
-                        color: 'var(--accent-11)',
-                        textDecoration: 'none',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                      }}
-                    >
-                      {t('workspace.authentication.enterpriseSso.contactSales', { email: SALES_EMAIL })}
-                    </a>
-                  </Text>
-                }
               />
             </Flex>
         </Flex>
@@ -404,7 +386,7 @@ export default function AuthenticationPage() {
             background: 'var(--accent-a2)',
           }}
         >
-          <IconButton variant="soft" size="2" style={{ background: 'var(--slate-a2)', borderRadius: 'var(--radius-1)', padding: 'var(--space-2)' }}>
+          <IconButton aria-hidden tabIndex={-1} variant="soft" size="2" style={{ background: 'var(--slate-a2)', borderRadius: 'var(--radius-1)', padding: 'var(--space-2)' }}>
             <MaterialIcon name="info" size={16} />
           </IconButton>
           <Flex direction="column" gap="1">
@@ -472,7 +454,7 @@ export default function AuthenticationPage() {
                 <Flex key={label} align="center" gap="1" style={{ marginBottom: 'var(--space-1)' }}>
                   <span
                     className="material-icons-outlined"
-                    style={{ fontSize: 14, color: 'var(--slate-10)' }}
+                    style={{ fontSize: 14, color: 'var(--slate-11)' }}
                   >
                     arrow_right
                   </span>

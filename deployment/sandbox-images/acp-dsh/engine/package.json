@@ -1,0 +1,8 @@
+{
+  "name": "pxh-acp-dsh-engine",
+  "private": true,
+  "description": "DeepSeek Harness (dsh) as the ACP engine acp-dsh: the exact npm tree its image installs with npm ci (WP-105).",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.1"
+  }
+}

@@ -41,6 +41,8 @@ export type AgentSidebarRowMenuAccess = {
   canDelete: boolean;
   canShare: boolean;
   shareWithOrg: boolean;
+  /** A service agent: it answers everyone with its own credentials, so the chat says so (OWD-2, SEC-AZ-04). */
+  isServiceAccount: boolean;
   /**
    * Offer “View agent” in the row menu when the user may open the builder but cannot edit:
    * shared non–service-account agents, or service-account agents (builder is structure-locked without edit).
@@ -79,6 +81,7 @@ export function getAgentSidebarRowMenuAccess(agent: AgentAccessInput): AgentSide
     canDelete,
     canShare,
     shareWithOrg,
+    isServiceAccount,
     showViewAgent,
     viewAgentTooltipVariant,
     showMenu: canEdit || canDelete || canShare || showViewAgent,

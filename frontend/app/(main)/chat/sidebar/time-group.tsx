@@ -109,7 +109,7 @@ export function TimeGroup({
             fontWeight: 400,
             lineHeight: 'var(--line-height-1)',
             letterSpacing: '0.04px',
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
           }}
         >
           {t(TIME_GROUP_I18N[label])}

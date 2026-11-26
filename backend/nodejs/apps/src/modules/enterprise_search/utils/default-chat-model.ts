@@ -58,7 +58,7 @@ const namesAModel = (body: Record<string, unknown>): boolean =>
  * default itself; only the record of it is lost.
  */
 export const fillDefaultChatModel =
-  (keyValueStoreService?: KeyValueStoreService) =>
+  (keyValueStoreService?: Pick<KeyValueStoreService, 'get'>) =>
   async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     const body = req.body as Record<string, unknown> | undefined;
     if (

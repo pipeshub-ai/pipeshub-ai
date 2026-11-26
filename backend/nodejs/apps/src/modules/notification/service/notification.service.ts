@@ -91,8 +91,8 @@ export class NotificationService {
             // Fail closed, and not as an auth failure, so the client retries rather than signing out.
             this.logger.error('Notification handshake: session check failed', {
               error,
-              userId: socket.data.userId,
-              orgId: socket.data.orgId,
+              target_user_id: socket.data.userId,
+              org_id: socket.data.orgId,
             });
             return next(new Error('Unable to check the session right now'));
           }
@@ -124,7 +124,7 @@ export class NotificationService {
       if (socket.data.forceLogoutReason) {
         socket.emit('force_logout', { reason: socket.data.forceLogoutReason });
         this.logger.info('force_logout on connect', {
-          userId,
+          target_user_id: userId,
           reason: socket.data.forceLogoutReason,
         });
         socket.disconnect(true);
@@ -132,17 +132,18 @@ export class NotificationService {
       }
 
       this.logger.debug('User connected', {
-        userId,
-        orgId,
+        target_user_id: userId,
+        org_id: orgId,
       });
 
       if (userId) {
         // Join a room with the user's ID for direct messaging
         socket.join(userId);
         this.connectedUsers.add(userId);
-        this.logger.debug(
-          `User connected: userId: ${userId} & socketId: ${socket.id}`,
-        );
+        this.logger.debug('Socket joined its user room', {
+          target_user_id: userId,
+          socket_id: socket.id,
+        });
 
         // Process any queued notifications for this user immediately upon connection
         this.processQueuedNotificationsForUser(userId);
@@ -160,13 +161,18 @@ export class NotificationService {
           const room = this.io?.sockets.adapter.rooms.get(userId);
           if (!room || room.size === 0) {
             this.connectedUsers.delete(userId);
-            this.logger.info(
-              `User disconnected: userId: ${userId} & socketId: ${socket.id}`,
-            );
+            this.logger.debug('Socket disconnected', {
+              target_user_id: userId,
+              socket_id: socket.id,
+            });
           } else {
             // User still has other connections, keep them marked as connected
             this.logger.debug(
-              `User socket disconnected but still has other connections: userId: ${userId} & socketId: ${socket.id}`,
+              'Socket disconnected; user has other connections',
+              {
+                target_user_id: userId,
+                socket_id: socket.id,
+              },
             );
           }
         }
@@ -204,12 +210,15 @@ export class NotificationService {
     if (queue.length >= this.MAX_QUEUE_SIZE_PER_USER) {
       // Remove oldest notification (FIFO)
       const removed = queue.shift();
-      this.logger.warn('Notification queue full, dropping oldest notification', {
-        userId,
-        event: removed?.event,
-        queueSize: queue.length,
-        maxSize: this.MAX_QUEUE_SIZE_PER_USER,
-      });
+      this.logger.warn(
+        'Notification queue full, dropping oldest notification',
+        {
+          target_user_id: userId,
+          event: removed?.event,
+          queueSize: queue.length,
+          maxSize: this.MAX_QUEUE_SIZE_PER_USER,
+        },
+      );
     }
 
     queue.push({
@@ -221,7 +230,7 @@ export class NotificationService {
     });
 
     this.logger.debug('Notification queued for user', {
-      userId,
+      target_user_id: userId,
       event,
       queueSize: queue.length,
     });
@@ -249,7 +258,7 @@ export class NotificationService {
         if (sent) {
           processed.push(notification);
           this.logger.debug('Queued notification delivered', {
-            userId,
+            target_user_id: userId,
             event: notification.event,
             queuedAt: notification.timestamp,
             deliveryDelay: Date.now() - notification.timestamp,
@@ -260,19 +269,22 @@ export class NotificationService {
           if (notification.retryCount < this.MAX_RETRY_COUNT) {
             remaining.push(notification);
           } else {
-            this.logger.warn('Notification exceeded max retry count, dropping', {
-              userId,
-              event: notification.event,
-              retryCount: notification.retryCount,
-            });
+            this.logger.warn(
+              'Notification exceeded max retry count, dropping',
+              {
+                target_user_id: userId,
+                event: notification.event,
+                retryCount: notification.retryCount,
+              },
+            );
           }
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         this.logger.error('Error processing queued notification', {
-          userId,
+          target_user_id: userId,
           event: notification.event,
-          error: err.message,
+          error: err,
         });
         notification.retryCount += 1;
         if (notification.retryCount < this.MAX_RETRY_COUNT) {
@@ -334,13 +346,16 @@ export class NotificationService {
     }
     if (!this.isUserConnected(userId)) {
       this.logger.debug('force_logout skipped; user not connected', {
-        userId,
+        target_user_id: userId,
         reason,
       });
       return false;
     }
     this.sendToUserDirect(userId, 'force_logout', { reason });
-    this.logger.info('force_logout emitted', { userId, reason });
+    this.logger.info('force_logout emitted', {
+      target_user_id: userId,
+      reason,
+    });
     return true;
   }
 
@@ -356,14 +371,20 @@ export class NotificationService {
       event === 'newNotification' &&
       isNotYetVisible((data as { visibleAt?: unknown } | undefined)?.visibleAt)
     ) {
-      this.logger.debug('Scheduled notification not pushed', { userId, event });
+      this.logger.debug('Scheduled notification not pushed', {
+        target_user_id: userId,
+        event,
+      });
       return false;
     }
     if (!this.io) {
-      this.logger.warn('Socket.IO server not initialized, notification not sent', {
-        userId,
-        event,
-      });
+      this.logger.warn(
+        'Socket.IO server not initialized, notification not sent',
+        {
+          target_user_id: userId,
+          event,
+        },
+      );
       return false;
     }
 
@@ -372,7 +393,7 @@ export class NotificationService {
       // User is connected, send immediately
       this.sendToUserDirect(userId, event, data);
       this.logger.debug('Notification sent immediately to connected user', {
-        userId,
+        target_user_id: userId,
         event,
       });
       return true;
@@ -380,7 +401,7 @@ export class NotificationService {
       // User is not connected, queue for later delivery
       this.queueNotification(userId, event, data);
       this.logger.debug('User not connected, notification queued', {
-        userId,
+        target_user_id: userId,
         event,
       });
       return false; // Indicates notification was queued, not sent immediately

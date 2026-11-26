@@ -15,6 +15,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingTooLarge,
 )
 from app.services.graph_db.postgres import kh_listing
+from app.services.graph_db.postgres import permissions as permissions_module
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -75,6 +76,37 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
+@pytest.mark.parametrize("hidden", [False, True], ids=["plain", "walked"])
+async def test_a_first_page_that_reads_its_whole_listing_counts_its_total_from_it_without_a_second_read(pg_db, monkeypatch, hidden) -> None:
+    """300 records, 15 readable. A search that matches ten names reads its whole listing in the page's first window: the total (5, of the readable ones) and the counts are the
+    rows the window admitted, and the connector is not read again to count them (a rare word was read whole twice, once to find its rows and once to count them). A listing that
+    does not end in the page's windows (no search), and a page after a boundary, still count by the count. ``walked``: a matching readable record no class decides (a restamp hides
+    it) is in the total as the access check admits it, in the window as in the count."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300, readable=15)
+    if hidden:
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND id = 'r0012' AND coll = 3", org)
+    counted: list[bool] = []
+    real = kh_listing.KhListingMixin._kh_flat_exact
+
+    async def spy(self, *a, **kw) -> object:
+        counted.append(True)
+        return await real(self, *a, **kw)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_flat_exact", spy)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, filters={"search_query": "r001"})
+    matched = [f"r{i:04d}" for i in range(10, 15)]
+    assert [r["id"] for r in page["rows"]] == matched and page["total"] == 5 and page["counts"] == {"record": 5} and not page.get("totalCapped")
+    assert not counted
+    with ctx(org):
+        whole = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=3)
+    assert whole["total"] == 15 and len(counted) == 1
+    after = {k: whole["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+    with ctx(org):
+        later = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, after=after, filters={"search_query": "r001"})
+    assert [r["id"] for r in later["rows"]] == matched and later["total"] == 5 and len(counted) == 2
+
+
 async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
@@ -131,6 +163,32 @@ async def test_a_flatten_below_a_node_and_a_depth_bound_list_what_browsing_down_
     assert await ids() == ["f1", "f2", "g1", "r1", "r3", "r5", "r9"]
 
 
+async def test_a_depth_bound_counts_a_child_met_twice_once_against_its_bound(pg_db, monkeypatch) -> None:
+    """app1 > g1 > a, b; c is a child of a and of b: the third level reads c twice. Five rows fit a bound of five (the read cut at the room left is read again whole), not of four."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FOLDER", "origin": "CONNECTOR"} for k in ("a", "b", "c")], "records")
+        await p.batch_create_edges([edge("app1", "apps", "g1", "recordGroups", relationshipType="PARENT_CHILD")]
+                                   + [edge(x, xc, y, "records", relationshipType="PARENT_CHILD") for x, xc, y in (("g1", "recordGroups", "a"), ("g1", "recordGroups", "b"),
+                                                                                                                  ("a", "records", "c"), ("b", "records", "c"))], "nodeRelations")
+        await p.batch_create_edges([edge("g1", "recordGroups", "app1", "apps")], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", k, kc, type="USER", role="READER") for k, kc in (("g1", "recordGroups"), ("a", "records"), ("b", "records"),
+                                                                                                        ("c", "records"))], "permission")
+    await flip(pg_db, org)
+    every = ["g1", "a", "b", "c"]
+    monkeypatch.setattr(kh_listing, "SCOPE_MAX", 5)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=every), limit=50, max_depth=3)
+    assert [r["id"] for r in page["rows"]] == ["a", "b", "c", "g1"]
+    monkeypatch.setattr(kh_listing, "SCOPE_MAX", 4)
+    with ctx(org), pytest.raises(KnowledgeHubListingTooLarge):
+        await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=every), limit=50, max_depth=3)
+
+
 async def test_another_organisations_connector_is_never_read(pg_db) -> None:
     p, mine, theirs = prov(pg_db), new_org(), new_org()
     await seed(p, pg_db, mine, 5)
@@ -155,6 +213,56 @@ async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_
     with ctx(org):
         walked = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=9), limit=3)
     assert walked["totalCapped"] is True and 0 < walked["total"] <= 9
+
+
+async def _service_pages(p, org: str, limit: int) -> list:
+    """Every page the Knowledge Hub service gives ``u1`` for the connector, flattened and by name, by cursor."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+    service, pages, cursor = KnowledgeHubService(logging.getLogger("kh-flat"), p, _Config()), [], None
+    for _ in range(50):
+        with ctx(org):
+            page = await service.get_nodes(user_id="uid1", org_id=org, parent_id="app1", parent_type="app", flattened=True, limit=limit, sort_by="name", sort_order="asc",
+                                           **({"cursor": cursor} if cursor else {}))
+        assert page.success, page.error
+        pages.append(page)
+        cursor = page.pagination.nextCursor
+        if not cursor:
+            return pages
+    raise AssertionError("did not end")
+
+
+async def test_a_capped_total_is_never_below_the_rows_the_listing_has_shown(pg_db, monkeypatch) -> None:
+    """The readable rows lie past the first COUNT_SCAN candidates the lower bound asks the check about: it admits fewer of them than page one already shows."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    await _admin("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'u1' AND to_id < 'r0003'", org)
+    await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    monkeypatch.setattr(kh_listing, "COUNT_SCAN", 5)
+    with ctx(org):
+        raw = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=[f"r{i:04d}" for i in range(3, 12)]), limit=9)
+    assert len(raw["rows"]) == 9 and raw["total"] < 9 and raw["totalCapped"] is True      # the provider's count: what the check admitted among the first five candidates
+    pages = await _service_pages(p, org, 9)
+    shown = 0
+    for page in pages:
+        shown += len(page.items)
+        assert page.pagination.totalItems >= shown and page.pagination.totalCapped is True, (shown, page.pagination)
+    assert shown == 9
+
+
+async def test_an_exact_total_through_the_service_is_the_walks(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    pages = await _service_pages(p, org, 3)
+    ids = [i.id for page in pages for i in page.items]
+    assert ids == [f"r{i:04d}" for i in range(7)]
+    assert all(page.pagination.totalItems == len(ids) and page.pagination.totalCapped is False for page in pages)
 
 
 async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) -> None:
@@ -271,6 +379,7 @@ def _nodes(plan: object) -> list[dict]:
     return found
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_every_listing_statement_reads_the_connector_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
     p, org = prov(pg_db), new_org()
@@ -289,6 +398,9 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         adm = kgl.Params([org, app_sk, 201])
         cond = f"w.r13 IS FALSE AND w.class_id = ANY({adm.add([1])}::bigint[]) AND w.id = ANY({adm.add(['x'])}::text[])"
         statements += [(f"admitted {s} {d}", kgl.page_sql("name", s, d, "", None, cond), adm.values) for s in ("ASC", "DESC") for d in ("next", "prev")]
+        sc = kgl.Params([org, app_sk, 51])      # a scoped page (a depth bound, a start below the connector): the classes admit in the read
+        inside = f" AND r.sk = ANY({sc.add([app_sk + 1, app_sk + 2])}::bigint[]) AND " + kgl.class_admit("r", sc, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()}, raw=True)
+        statements += [(f"scoped admitted {s} {d}", kgl.page_sql("name", s, d, inside, None, "true"), sc.values) for s in ("ASC", "DESC") for d in ("next", "prev")]
         arrows = kgl.Params([org, [app_sk], []])
         statements += [("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values)]
         statements += [("scan", kgl.scan_sql("", "$4"), [org, app_sk, 501, 0]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
@@ -299,6 +411,118 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
             plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))
             seq = [n for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
             assert not seq, f"{name} ({'after' if analyzed else 'before'} ANALYZE): sequential scan of {[n['Relation Name'] for n in seq]}"
+            if name.startswith("scoped"):      # a class test inside the read must not turn it into a read of the class across the organisation
+                loose = plan_gate.unkeyed(plan, "records", r"org_id = .*\bsk = |org_id = .*app_sk = ")
+                assert not loose, f"{name} ({'after' if analyzed else 'before'} ANALYZE): {loose}"
+    finally:
+        await con.close()
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
+async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
+    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
+    Judged with statistics, as kg's tables are once copied (kg_0016): with statistics older than an organisation's rows the planner may take any index of the org."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
+        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
+        # the classes' read may take any range of the connector when a class holds most of it (as in this world); never the organisation
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
+        assert "records_undecided" in used and not loose, f"undecided rows read by {used}: {loose}"
+    finally:
+        await con.close()
+
+
+def _joined_reads(node: dict, relation: str, probe: bool = False) -> list[str]:
+    """The reads of ``relation`` in a plan that are not inside a SubPlan (a per-row probe): part of the plan's joins."""
+    probe = probe or node.get("Parent Relationship") == "SubPlan"
+    own = [f"{node['Node Type']} on {node['Relation Name']}"] if not probe and str(node.get("Relation Name", "")).startswith(relation) else []
+    return own + [x for c in node.get("Plans", []) for x in _joined_reads(c, relation, probe)]
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+@pytest.mark.parametrize("admitted", [False, True], ids=["walked", "by_class"])
+async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_the_organisations_nodes(pg_db, analyzed, admitted) -> None:
+    """A window filtered by indexing status reads each row's node by its key, in the window's order. As a join the plan read every node of the organisation
+    (a sequential scan of its partition: 4.2 s at 1M records) to keep one window."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        if analyzed:
+            await con.execute("ANALYZE kg.records; ANALYZE graph.nodes")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        base = kgl.Params([org, app_sk, None])
+        where = kgl.filters_sql({"record_types": ["FILE"], "indexing_status": ["COMPLETED"]}, base)
+        q = kgl.Params(list(base.values))
+        q.values[2] = 204
+        admit = kgl.class_admit("w", q, {"unvouched": [], "plain": [1], "own": [], "granted": [], "walked": set()}) if admitted else None
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.page_sql("updatedAt", "DESC", "next", where, None, admit), *q.values))
+        joined = _joined_reads(plan_gate.root(plan), "nodes")
+        assert plan_gate.scans(plan, "nodes") and not joined, f"indexing status ({'after' if analyzed else 'before'} ANALYZE) joins the organisation's nodes: {joined}"
+    finally:
+        await con.close()
+
+
+def _rows_read(plan: object, relation: str) -> int:
+    """The rows the plan's reads of ``relation`` looked at: what each returned and what its filter removed, over every loop."""
+    return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+@pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
+async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
+    """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
+    index condition there. Read as one disjoint read per part of the boundary, each read was a scan of the connector (or of the organisation, the planner's pick at 1M records)
+    to find a handful of rows; read as one walk of the name index it looks at the rows up to the boundary and the window."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 600, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+    finally:
+        await con.close()
+    at = "r0010" if (sort_dir == "ASC") == (direction == "next") else "r0589"      # ten rows from the start of the walk in the page's direction
+    q = kgl.Params([org, app_sk, 20])
+    sql = kgl.page_sql("name", sort_dir, direction, "", kgl.after("name", sort_dir, direction, {"nullRank": 0, "sortKey": at, "id": at}, q))
+
+    async def read(tx) -> tuple[list[str], object]:
+        # A connector this small is read whole and sorted, to the planner; at scale the window's LIMIT makes the walk of the name index the cheap plan, which these
+        # settings leave as the only one. The gate is about how far that walk reads.
+        for setting in ("enable_seqscan", "enable_bitmapscan", "enable_sort"):
+            await tx.execute(f"SET LOCAL {setting} = off")
+        return [r["id"] for r in await tx.fetch(sql, *q.values)], json.loads(await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *q.values))
+    with ctx(org):
+        ids, plan = await pg_db.run(read, custom_plan=True)
+    n = int(at[1:])
+    want = [f"r{i:04d}" for i in (range(n + 1, n + 21) if (sort_dir == "ASC") == (direction == "next") else range(n - 1, n - 21, -1))]
+    assert ids == want
+    reads = [(n["Node Type"], plan_gate.bounds(n), n.get("Actual Rows"), n.get("Rows Removed by Filter")) for n in plan_gate.scans(plan, "records")]
+    assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
+    """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
+    kg_0016): never a read of the organisation by records_id or records_pkey."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # as above: the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + permissions_module._KG_ADMITTED, org, app_sk, [], [1, 2], [3], ["r0001"]))
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
+        assert plan_gate.scans(plan, "records") and not loose, f"admitted records read by {loose}"
     finally:
         await con.close()
 
@@ -335,6 +559,7 @@ async def _generic_plan(con, sql: str) -> object:
     return json.loads(await con.fetchval("SELECT current_setting('kh.plan')"))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
     """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
@@ -518,6 +743,68 @@ async def test_a_record_named_longer_than_the_copy_once_took_is_copied_whole_and
     assert stored == long
 
 
+async def test_a_connectors_classes_are_decided_from_a_row_of_classes_and_a_row_of_literals_as_their_clauses_say(pg_db) -> None:
+    """3,000 classes of random clauses over the literals of a tree (a group, folders with children, a record with none, a key kg does not hold, ``@self``): each class is met with
+    no grant of the row's own, met with it, or not vouched for, as the clauses say. The classes and the literals kg vouches for reach the listing as one row each, not one row per
+    class or literal: a connector has tens of thousands of each, and their decoding held the event loop every page of the knowledge hub shares (about 0.2 s a connector at 1M records)."""
+    import random
+    p, org = prov(pg_db), new_org()
+    await _tree(p, pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        lit = {r["id"]: r["sk"] for r in await con.fetch("SELECT id, sk FROM kg.records WHERE org_id = $1 AND id = ANY($2::text[])", org, ["g1", "f1", "f2", "r1"])}
+        pool = [*lit.values(), 99_999_999, kg_read.SELF]
+        rng = random.Random(6051)
+        made = [[rng.sample(pool, rng.randint(0, 3)) for _ in range(rng.randint(0, 3))] for _ in range(3000)]
+        await con.execute("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 980000 + i, $2, NULL, c::jsonb, decode(md5($1 || i), 'hex') "
+                          "FROM unnest($3::text[]) WITH ORDINALITY AS q(c, i)", org, app_sk, [json.dumps(m) for m in made])
+        classes = {r["id"]: json.loads(r["clauses"]) for r in await con.fetch("SELECT id, clauses::text FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2", org, app_sk)}
+        # what kg vouches for, by the rule of kg_read.LITERALS: a node kg holds that is not flagged a leaf and, for a record, has a child
+        seen = {r["sk"] for r in await con.fetch("SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[]) AND r.leaf IS FALSE AND (r.kind <> 3 OR EXISTS "
+                                                    "(SELECT 1 FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk = r.sk) OR EXISTS (SELECT 1 FROM kg.links l "
+                                                    "WHERE l.org_id = r.org_id AND l.parent_sk = r.sk AND l.kind = 1))", org, pool[:-1])}
+    finally:
+        await con.close()
+    assert seen == {lit["g1"], lit["f1"], lit["f2"]}          # the tree gives one literal of each kind: r1 has no child, the last key is not held
+    granted = {"g1", "f2", "r1"}
+    live = {lit[i] for i in granted} & seen
+
+    def verdict(cl: list[list]) -> tuple[bool, bool] | None:
+        if any(x != kg_read.SELF and x not in seen for clause in cl for x in clause):
+            return None
+        met = [all(x in live for x in clause if x != kg_read.SELF) for clause in cl]
+        return (any(m and kg_read.SELF not in c for m, c in zip(met, cl, strict=True)), any(m and kg_read.SELF in c for m, c in zip(met, cl, strict=True)))
+    want = {c: verdict(cl) for c, cl in classes.items()}
+
+    class Counted:
+        def __init__(self, tx) -> None:
+            self.tx, self.rows = tx, 0
+
+        async def fetch(self, *a) -> list:
+            out = await self.tx.fetch(*a)
+            self.rows += len(out)
+            return out
+
+        async def fetchrow(self, *a) -> object:
+            self.rows += 1
+            return await self.tx.fetchrow(*a)
+
+        async def fetchval(self, *a) -> object:
+            return await self.tx.fetchval(*a)
+
+    async def go(tx) -> tuple[dict, int]:
+        c = Counted(tx)
+        return await kh_listing.class_sets(c, org, app_sk, granted), c.rows
+    with ctx(org):
+        sets, rows = await pg_db.run(go)
+    assert sets["plain"] == {c for c, v in want.items() if v and v[0]}
+    assert sets["own"] == {c for c, v in want.items() if v and v[1] and not v[0]}
+    assert sets["unvouched"] == {c for c, v in want.items() if v is None}
+    assert sets["plain"] and sets["own"] and sets["unvouched"]
+    assert rows <= 2, rows
+
+
 async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:
     """kg serves the connector when the page checks. Before the page reads its rows, a change to the connector as a whole commits: it hides the connector (an ``app`` job, no row
     marks) and a stamp written under that hiding opens r0010 to everyone. The page reads the snapshot the check read, so the hidden stamp admits nothing; the next page is the walk's."""
@@ -605,3 +892,160 @@ async def test_a_page_in_a_callers_transaction_never_admits_by_a_stamp_hidden_af
         finally:
             await p.rollback_transaction(tid)
     assert fired and [r["id"] for r in page["rows"]] == [f"r{i:04d}" for i in range(7)] and page["total"] == 7
+
+
+# The rows of kg.records a backend has read and not yet reported: those its sequential scans read and those its index and bitmap scans fetched from the table (inside a
+# function too). Counts of earlier transactions may still be pending, so a page's reads are the difference across it.
+KG_RECORDS_READ = """SELECT coalesce((SELECT seq_tup_read FROM pg_stat_xact_user_tables WHERE relid = 'kg.records'::regclass), 0)
+    + pg_stat_get_xact_tuples_fetched('kg.records'::regclass)"""
+
+
+async def _page_and_reads(p, org: str, **kw) -> tuple[dict, int]:
+    with ctx(org):
+        snap = await p.begin_snapshot()
+        try:
+            before = await p._q(lambda tx: tx.fetchval(KG_RECORDS_READ), snap)
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, **kw), transaction=snap)
+            return page, int(await p._q(lambda tx: tx.fetchval(KG_RECORDS_READ), snap) - before)
+        finally:
+            await p.rollback_transaction(snap)
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_a_search_for_a_rare_word_reads_its_matches_not_the_connector(pg_db) -> None:
+    """A connector of 20,300 rows (300 records and 20,000 rows of other names that sort before them) and a search whose one match sorts last: the page walked the
+    connector's name index from its start, filtering every row by the search, to find it (a rare word on a large connector read the connector). By the trigram index of
+    the graph nodes' names (graph.records_by_name) it finds the match's node, and the page's statements read that row by its key."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300)
+    # the other rows straight into kg (live listing rows of the connector, no graph node, never matched by the search; ASCII names, so their UTF-16 key is a zero byte
+    # before each), then the statistics the analyze job would take
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, name, name_key, name_sort) SELECT $1, 9000000000 + i, 3, 'f' || i, 3, k.sk, n, n, "
+                 "decode(regexp_replace(encode(convert_to(n, 'UTF8'), 'hex'), '(..)', '00\\1', 'g'), 'hex') FROM kg.node_keys k, generate_series(1, 20000) i, LATERAL (SELECT 'a filler ' || i AS n) x WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+    await _admin("ANALYZE kg.records")
+    page, read = await _page_and_reads(p, org, granted=300, limit=50, filters={"search_query": "r0299"})
+    assert [r["id"] for r in page["rows"]] == ["r0299"] and page["total"] == 1
+    assert read <= 200, f"read {read} rows of kg.records for one match in a 20,300-row connector"
+    # as the service runs it, under its row policy: each node's row by its key (a condition that is not leakproof would have made it a scan of the organisation per node)
+    with ctx(org):
+        assert [r["node_id"] for r in await p._kq(lambda tx: tx.fetch(kgl.NAME_NODES, "app1", kgl.name_pattern("r0299"), 10001), None)] == ["r0299"]
+        plan = json.loads(await p._kq(lambda tx: tx.fetchval("EXPLAIN (FORMAT JSON) " + kgl.NAME_ROWS, org, [3], ["r0299"]), None))
+    reads = [(n["Node Type"], n.get("Index Name"), n.get("Index Cond", "")) for n in _nodes(plan) if n.get("Relation Name") == "records"]
+    assert reads and all(t == "Index Scan" and i == "records_id" and "coll = g.coll" in c and "id = g.id" in c for t, i, c in reads), reads
+
+
+NAMED = {"n00": "Printer-Jam.pdf", "n01": "printer jam notes", "n02": "printer_jam_tray.2", "n03": "ΟΣ.Α report", "n04": "νομος.txt", "n05": "Νομοσ x",
+         "n06": "100%_done\\x", "n07": "a\\%b_c%d", "n08": "Café crème", "n09": "item 1234 handle", "n10": "item 12345 handle", "n11": "item 1234-handle",
+         "n12": "xx--yy", "n13": "Report", "n14": "re port", "n15": "REPORT final", "n16": "rePort.v2", "n17": "jam printer",
+         "n18": "\u212aelvin plan", "n19": "\u0130tem 99 list", "n20": "STATE \u017ftate"}
+SEARCHES = ["printer-jam", "Printer Jam", "jam.pdf", "ΟΣ Α", "νομος", "100%_done", "\\%b", "b_c%d", "café", "item 1234 handle", "item-1234.handle", "1234 h",
+            "xx-yy", "rep", "report", "PORT", "re po", "ab", "%", "nothing here", "jam",
+            "kelvin plan", "elvin", "item 99", "tem 99 l", "state"]
+
+
+@pytest.mark.parametrize("mode", ["served", "not_served", "too_many"])
+async def test_a_name_search_by_the_trigram_index_lists_what_the_walk_listed(pg_db, monkeypatch, mode) -> None:
+    """Every search, on names with separators, sigmas, wildcard characters, accents and repeated words, lists the same rows and total by the trigram index as by the walk
+    of the sort order, for a viewer who may read some of the records: kg deciding by class (``served``), the live check (``not_served``), and a search that matches more
+    rows than the index read keeps (``too_many``: the walk). The access check is asked about the rows either way; the index only chooses which rows it is asked about."""
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, NAMED)
+    readable = sorted(NAMED)[::2]
+    if mode == "not_served":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode == "too_many":
+        monkeypatch.setattr(kh_listing, "NAME_HITS_MAX", 1)
+    read: list[object] = []
+    real = kh_listing.KhListingMixin._kh_name_hits
+
+    async def spy(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        read.append(got)
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", spy)
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+    for q in SEARCHES:
+        for sort_dir in ("ASC", "DESC"):
+            kw = {"granted_ids": readable, "sort_dir": sort_dir, "filters": {"search_query": q}}
+            read.clear()
+            by_index, _, first = await walk(p, org, 2, **kw)
+            used = read[0] is not None
+            with monkeypatch.context() as m:
+                m.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+                by_walk, _, old = await walk(p, org, 2, **kw)
+            assert by_index == by_walk and first["total"] == old["total"], (q, sort_dir, by_index, by_walk)
+            assert used == (mode != "too_many" and kgl.name_pattern(q) is not None) or (mode == "too_many" and len(read[0] or []) <= 1), (q, read)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=sorted(NAMED)), limit=50, filters={"search_query": "printer jam"})
+    assert [r["id"] for r in page["rows"]] == ["n01", "n00", "n02"]      # the separators read as spaces, as before (" " sorts before "-")
+
+
+async def test_a_name_search_lists_what_the_walk_lists_while_a_rename_waits_for_the_drain(pg_db, monkeypatch) -> None:
+    """A record renamed in the graph whose change the drain has not projected yet: kg still holds the old name, and the listing's search condition reads kg's.
+    The walk lists it for the old name and not for the new one until the drain; the trigram lookup, which reads the graph's names, must list the same (the
+    connector's rows that wait for the drain are candidates too), and both list the new name once it is drained."""
+    from app.services.graph_db.postgres.kg.drainer import drain_org
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, {"n00": "alpha report", "n01": "other report", "n02": "alphabet soup"})
+    # a writer whose change the projection has not taken yet (as one by the query or indexing role, which no inline flush follows)
+    await _admin("UPDATE graph.nodes SET doc = jsonb_set(doc, '{recordName}', '\"bravo report\"') WHERE org_id = $1 AND coll = 'records' AND id = 'n00'", org)
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+
+    async def both(q: str) -> tuple[list[str], list[str]]:
+        kw = {"granted_ids": ["n00", "n01", "n02"], "filters": {"search_query": q}}
+        by_index, _, first = await walk(p, org, 2, **kw)
+        with monkeypatch.context() as m:
+            m.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+            by_walk, _, old = await walk(p, org, 2, **kw)
+        assert first["total"] == old["total"], (q, first["total"], old["total"])
+        return by_index, by_walk
+    for q, want in (("alpha", ["n00", "n02"]), ("alpha report", ["n00"]), ("bravo", []), ("report", ["n00", "n01"])):
+        by_index, by_walk = await both(q)
+        assert by_index == by_walk == want, (q, by_index, by_walk)
+    await drain_org(pg_db, org)
+    for q, want in (("alpha", ["n02"]), ("bravo", ["n00"]), ("report", ["n00", "n01"])):
+        by_index, by_walk = await both(q)
+        assert by_index == by_walk == want, (q, by_index, by_walk)
+
+
+async def test_a_name_search_in_a_callers_transaction_lists_what_its_later_statements_read(pg_db, monkeypatch) -> None:
+    """In a caller's own transaction (read committed) the page's statements read different commits. A rename and its drain that commit between the name lookup
+    and the lookup of the rows waiting for the drain must not make the page empty for the new name: such a page walks, as it did before the name index, and lists
+    the record that its own statements read under the new name."""
+    import asyncio
+    import contextvars
+
+    from app.services.graph_db.postgres.kg.drainer import drain_org
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, {"n00": "alpha report", "n01": "other report"})
+    real_kq, fired = kh_listing.KhListingMixin._kq, []
+
+    class Between:      # the page's reads, with the rename and its drain committed before the read of the rows that wait for the drain, or before the page's rows
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._tx, name)
+
+        async def fetch(self, sql: str, *args) -> object:
+            if (sql == kgl.NAME_PENDING or sql.startswith("/* pipeshub:kg.listing_page")) and not fired:
+                fired.append(True)
+                await _admin("UPDATE graph.nodes SET doc = jsonb_set(doc, '{recordName}', '\"bravo report\"') WHERE org_id = $1 AND coll = 'records' AND id = 'n00'", org)
+                # another session's drain: a context of its own, outside the page's unit of work
+                await asyncio.get_running_loop().create_task(drain_org(pg_db, org), context=contextvars.Context())
+            return await self._tx.fetch(sql, *args)
+
+    async def kq(self, fn, transaction) -> object:
+        return await real_kq(self, lambda tx: fn(Between(tx)), transaction)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kq", kq)
+    with ctx(org):
+        tid = await p.begin_transaction([], [])
+        try:
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["n00", "n01"]), limit=50, transaction=tid, filters={"search_query": "bravo"})
+        finally:
+            await p.rollback_transaction(tid)
+    assert fired and [r["id"] for r in page["rows"]] == ["n00"] and page["total"] == 1, (fired, page["rows"], page["total"])

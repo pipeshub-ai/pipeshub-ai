@@ -35,6 +35,8 @@ if [ "$1" = postgres ]; then
     fi
     check_password "$name" "$val"
   done
+  # optional: set only when the metrics exporter is used (the monitoring login, pg-roles.sh)
+  [ -z "${PG_MONITOR_PASSWORD:-}" ] || check_password PG_MONITOR_PASSWORD "$PG_MONITOR_PASSWORD"
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
   # logged and retried, and until it succeeds the server and PgBouncer stay unhealthy (no verifier file).
@@ -48,17 +50,42 @@ if [ "$1" = postgres ]; then
       # No cap on the wait: a slow crash recovery or a large volume can take longer than any fixed limit (the container's own
       # healthcheck and start_period decide when that is too long).
       until pg_isready -q -h 127.0.0.1 -U postgres; do sleep 1; done
+      # Already the postgres user when the container runs non-root (the Helm chart does); gosu needs root.
+      as_postgres() { if [ "$(id -u)" = 0 ]; then gosu postgres "$@"; else "$@"; fi; }
+      # After a point-in-time restore the server answers while it still replays WAL, read-only, and role setup writes: it waits for the
+      # end of recovery, at most PG_ROLES_RECOVERY_WAIT_SECS (6 h), then tries anyway (and fails and retries, as below).
+      waited=0
+      while [ "$(as_postgres psql -XtAq -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-pipeshub}" -c 'select pg_is_in_recovery()' 2>/dev/null)" = t ]; do
+        if [ "$waited" -ge "${PG_ROLES_RECOVERY_WAIT_SECS:-21600}" ]; then
+          echo "pg-entrypoint: the server is still in recovery after ${waited}s (PG_ROLES_RECOVERY_WAIT_SECS); trying role setup anyway" >&2; break
+        fi
+        [ $((waited % 300)) = 0 ] && echo "pg-entrypoint: the server is in recovery (replaying WAL, read-only); role setup waits until it ends (${waited}s so far)" >&2
+        sleep 1; waited=$((waited + 1))
+      done
       # Retried with a pause, so the container recovers by itself once the cause clears; a permanent failure (a bad password) keeps
       # logging and leaves the server and pooler unhealthy (no verifier file).
       while :; do
-        # Already the postgres user when the container runs non-root (the Helm chart does); gosu needs root.
-        if [ "$(id -u)" = 0 ]; then gosu postgres "$roles"; else "$roles"; fi && break
+        as_postgres "$roles" && break
         echo "pg-entrypoint: role setup failed; see the lines above. Retrying in ${PG_ROLES_RETRY_SECS:-10}s" >&2
         sleep "${PG_ROLES_RETRY_SECS:-10}"
       done
     ) &
   fi
-  # pg_textsearch must be preloaded. shared_buffers is ~25% of PG_MEMORY_LIMIT (set in .env).
+  # Backups on (docker-compose.postgres-backup.yml sets the stanza): every finished WAL segment goes to the pgBackRest repository (with
+  # the archive queue capped, pgbackrest-archive-push.sh), and
+  # archive_timeout closes a segment at least that often, which bounds how much a point-in-time restore can lose
+  # (https://www.postgresql.org/docs/17/continuous-archiving.html, 25.3.1). Put before "$@" so the command line can still override them.
+  if [ -n "${PGBACKREST_STANZA:-}" ]; then
+    set -- -c archive_mode=on -c 'archive_command=pgbackrest-archive-push.sh %p' -c archive_timeout="${PG_ARCHIVE_TIMEOUT:-60}" "$@"
+    # The local repository is mounted here. A new named volume takes the image directory's owner (postgres), but a host directory named
+    # by PG_BACKUP_REPO is created by Docker as root:0755, and archive-push runs as postgres: hand the directory (not its contents) over
+    # while still root.
+    repo=/var/lib/pgbackrest
+    if [ "$(id -u)" = 0 ] && [ -d "$repo" ] && [ "$(stat -c %U "$repo")" != postgres ]; then
+      chown postgres:postgres "$repo" && chmod 0750 "$repo"
+    fi
+  fi
+  # pg_textsearch must be preloaded (pg-restore.sh starts a restored copy with the same list). shared_buffers is ~25% of PG_MEMORY_LIMIT.
   set -- postgres \
     -c shared_preload_libraries=pg_stat_statements,auto_explain,pg_textsearch \
     -c max_connections="${PG_MAX_CONNECTIONS:-200}" \

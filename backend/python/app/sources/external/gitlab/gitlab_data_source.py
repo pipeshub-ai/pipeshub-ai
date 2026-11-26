@@ -77,6 +77,9 @@ class GitLabDataSource:
             self.token = None
 
         self._base_url = base_url.rstrip("/")
+        # The client's address rule (False: public addresses only), for the calls made here too.
+        allow_private = getattr(client_or_sdk, "allow_private", None)
+        self._allow_private: bool | None = allow_private if isinstance(allow_private, bool) else None
         # Shared async HTTP client — created lazily, reused across all GraphQL
         # and direct HTTP calls to avoid per-request TCP+TLS setup overhead.
         # Callers must use aclose() to tear it down.
@@ -91,6 +94,7 @@ class GitLabDataSource:
         """Return the lazily-initialised shared async HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = guarded_async_client(
+                allow_private=self._allow_private,
                 follow_redirects=True,
                 timeout=60.0,
             )

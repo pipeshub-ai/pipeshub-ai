@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.core.exceptions import ToolError
 from app.agent_loop_lib.core.types import ToolCall
@@ -8,6 +8,9 @@ from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.tools.tags import TAG_SPAWN
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class BestOfNTool(Tool):
@@ -24,6 +27,10 @@ class BestOfNTool(Tool):
     answer to in-loop tree search (LATS/ToT) WITHOUT changing the turn-loop
     kernel — branching happens across whole runs, never mid-trajectory.
     """
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on child agent loops, every step of which is bounded on its own.
+        return None
 
     @property
     def log_kind(self) -> str:

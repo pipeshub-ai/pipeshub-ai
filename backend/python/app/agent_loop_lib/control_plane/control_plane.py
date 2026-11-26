@@ -405,13 +405,16 @@ class ControlPlane:
 
             csc = cfg.coding_sandbox
 
-            # Process-wide, not per-ControlPlane: an instance per plane
-            # would cap each one separately, which is no cap at all once
-            # several run in the same process.
+            # Shared, not per-ControlPlane: an instance per plane would cap
+            # each one separately, which is no cap at all once several run
+            # in the same process.
             governor = get_default_governor(GovernorLimits(
                 max_total_sandboxes=csc.governor.max_total_sandboxes,
                 max_per_org=csc.governor.max_per_org,
             ))
+            # One manager serves every request of this plane, so it has no
+            # per-request slot limit: counted here it would cap the whole
+            # server at SANDBOX_MAX_PER_REQUEST runs at once.
             self._sandbox_manager = SandboxManager(governor=governor)
 
             registry = build_default_registry(

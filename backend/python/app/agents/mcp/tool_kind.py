@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, Optional
 
+from harness_core.mcp_hub.annotations import declared_hints
+
 ToolKind = Literal["read", "write", "destructive"]
 # Where the kind came from: the tool's name, the server's hints, or neither (the default).
 KindSource = Literal["name", "server", "none"]
@@ -46,7 +48,8 @@ def deletes_by_name(name: str) -> bool:
 def tool_kind(name: str, annotations: Optional[dict[str, Any]]) -> tuple[ToolKind, KindSource]:
     if deletes_by_name(name):
         return "destructive", "name"
-    hints = annotations if isinstance(annotations, dict) else {}
+    # The same reading of the hints as the tool's effect and sink (`hint_tags`): a non-boolean is not declared.
+    hints = declared_hints(annotations if isinstance(annotations, dict) else None)
     read_only = hints.get("readOnlyHint")
     destructive = hints.get("destructiveHint")
     if read_only is True:

@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -115,7 +116,7 @@ def _capped_tabs(tabs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool
     return kept, False
 
 
-@ToolsetBuilder("Docs")\
+@ToolsetBuilder("Docs", provider=ToolProvider.CONNECTOR)\
     .in_group("Google Workspace")\
     .with_description("Google Docs integration for reading, creating and editing documents")\
     .with_category(ToolsetCategory.APP)\
@@ -184,7 +185,7 @@ class GoogleDocs:
         parameters=[
             ToolParameter(name="document_id", type=ParameterType.STRING, description="The document id", required=True),
         ],
-        tags=[Tag(key="category", value="documents"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Reading Google Doc {document_id}", "document_id"),
         result_summary=entity_summary(lambda d: f"Read \"{d.get('title') or '?'}\"", path=()),
     )
@@ -213,7 +214,7 @@ class GoogleDocs:
             ToolParameter(name="title", type=ParameterType.STRING, description="The document's title", required=True),
             ToolParameter(name="text", type=ParameterType.STRING, description="Text to put in the new document", required=False),
         ],
-        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Creating Google Doc \"{title}\"", "title"),
         result_summary=entity_summary(lambda d: f"Created \"{d.get('title') or '?'}\"", path=()),
     )
@@ -256,7 +257,7 @@ class GoogleDocs:
             ToolParameter(name="index", type=ParameterType.INTEGER, description="Where to insert (1 is the start); leave out to add at the end", required=False),
             ToolParameter(name="tab_id", type=ParameterType.STRING, description="The tab to write into, from get_document; leave out for the first tab", required=False),
         ],
-        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding text to Google Doc {document_id}", "document_id"),
         result_summary=confirmation("Text added to Google Doc {document_id}", "document_id"),
     )
@@ -290,7 +291,7 @@ class GoogleDocs:
             ToolParameter(name="match_case", type=ParameterType.BOOLEAN, description="Whether letter case must match", required=False, default=True),
             ToolParameter(name="tab_id", type=ParameterType.STRING, description="Only replace in this tab, from get_document; leave out for every tab", required=False),
         ],
-        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Replacing \"{old_text}\" in Google Doc {document_id}", "old_text", "document_id"),
         result_summary=entity_summary(lambda d: f"Replaced {d.get('occurrences_changed', 0)} occurrence(s)", path=()),
     )
@@ -328,7 +329,7 @@ class GoogleDocs:
                 description="Google Docs API batchUpdate request objects, applied in order",
             ),
         ],
-        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Editing Google Doc {document_id}", "document_id"),
         result_summary=confirmation("Google Doc {document_id} updated", "document_id"),
     )

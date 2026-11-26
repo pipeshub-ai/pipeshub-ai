@@ -26,8 +26,10 @@
 #   HEALTH_WAIT_SECS       installer health deadline (default: 600 slim/eval, 720 full)
 #   PIPESHUB_SMOKE_KEEP=1  leave the stack running (skip uninstall)
 #   PIPESHUB_EXPECT_VERSION, PIPESHUB_EXPECT_COMMIT
-#                          when set, /api/v1/health must report this build
+#                          when set, the app container must carry this build (the
+#                          build Node reports; /api/v1/health shows it to an admin only)
 #   PUBLISHED_HUB_SMOKE_DIAG  directory to copy logs/health.json on failure
+#   PIPESHUB_SMOKE_FOOTPRINT=1  measure memory (footprint.py); eval fails over budget
 # ==============================================================================
 set -euo pipefail
 
@@ -264,9 +266,12 @@ then
 fi
 
 if [[ -n "${PIPESHUB_EXPECT_VERSION:-}" || -n "${PIPESHUB_EXPECT_COMMIT:-}" ]]; then
-  BUILD_URL="http://localhost:${PORT}/api/v1/health"
-  if ! curl --connect-timeout 10 --max-time 30 -sf "$BUILD_URL" -o "$WORK/build.json"; then
-    die "host cannot reach ${BUILD_URL}"
+  # R41OPS-FU-8: the unauthenticated health answer no longer names the build. Node reads it from these two
+  # variables in a container (build-info.utils.ts), so they are what the image reports.
+  BUILD_URL="the app container's APP_VERSION and GIT_COMMIT"
+  if ! docker exec "$APP_ID" sh -c 'printf "{\"build\":{\"version\":\"%s\",\"commitId\":\"%s\"}}" "${APP_VERSION:-}" "${GIT_COMMIT:-}"' \
+    > "$WORK/build.json"; then
+    die "cannot read ${BUILD_URL}"
   fi
   if ! python3 - "$WORK/build.json" "${PIPESHUB_EXPECT_VERSION:-}" "${PIPESHUB_EXPECT_COMMIT:-}" <<'PY'
 import json, sys
@@ -292,6 +297,21 @@ UI_CODE="$(curl --connect-timeout 10 --max-time 30 -s -o /dev/null -w '%{http_co
   "http://localhost:${PORT}/" || echo fail)"
 if [[ "$UI_CODE" != "200" ]]; then
   die "UI returned HTTP ${UI_CODE} (expected 200)"
+fi
+
+# S1 (P0.9): the shipped eval profile must fit its laptop memory budget.
+if [[ "${PIPESHUB_SMOKE_FOOTPRINT:-}" == "1" ]]; then
+  sleep "${FOOTPRINT_SETTLE_SECS:-60}"
+  python3 "$SCRIPT_DIR/footprint.py" measure --project "$PROJECT" \
+    --label "${DEPLOY_TYPE}-smoke" --out "$WORK/footprint.json"
+  if [[ -n "$DIAG_DIR" ]]; then
+    mkdir -p "$DIAG_DIR"
+    cp "$WORK/footprint.json" "$DIAG_DIR/"
+  fi
+  if [[ "$DEPLOY_TYPE" == "eval" ]]; then
+    python3 "$SCRIPT_DIR/footprint.py" check "$WORK/footprint.json" \
+      || die "eval profile is over its memory budget"
+  fi
 fi
 
 echo "${LOG_PREFIX}: ok (deploy=${DEPLOY_TYPE} graph=${DATA_STORE} image=${GOT_IMAGE} UI 200, core services healthy)"

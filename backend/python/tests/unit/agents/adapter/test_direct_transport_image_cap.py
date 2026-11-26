@@ -51,7 +51,7 @@ class _RecordingTransport:
         self.args: tuple = ()
 
     async def complete(self, messages, tools=None, system=None, model=None,
-                       thinking_budget=None, effort=None, system_blocks=None) -> str:
+                       thinking_budget=None, effort=None, system_blocks=None, *, tool_choice: object = None) -> str:
         self.seen = messages
         self.args = (tools, system, model, thinking_budget, effort, system_blocks)
         return "response"
@@ -62,7 +62,7 @@ class _RecordingTransport:
         return "structured"
 
     def stream(self, messages, tools=None, system=None, model=None,
-               thinking_budget=None, effort=None, system_blocks=None) -> iter:
+               thinking_budget=None, effort=None, system_blocks=None, *, tool_choice: object = None) -> iter:
         self.seen = messages
         self.args = (tools, system, model, thinking_budget, effort, system_blocks)
         return iter(())

@@ -19,6 +19,7 @@ import {
 import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
 import {
   isKnowledgeLimitWithin,
+  readStoredKnowledgeLimit,
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
 import {
@@ -44,6 +45,7 @@ import {
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import {
   FIRST_PARTY_DEVICE_CLIENT_ID,
+  isPatClientId,
   stripTokenDisplayPrefix,
 } from '../constants/constants';
 import {
@@ -163,6 +165,12 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       ...creatorClaim,
+      // Only on a token with no caller of its own whose identity is the app's
+      // chosen service account, so a reader can tell it from a person: an app
+      // that falls back to its creator, or a user grant, never carries it.
+      ...(!userId && app.tokenIdentityUserId && 'createdBy' in creatorClaim
+        ? { actsAsServiceAccount: true as const }
+        : {}),
       knowledgeLimit,
       ...(opts?.audience === undefined ? {} : { aud: opts.audience }),
       ...(opts?.agentRegistrationId
@@ -287,10 +295,10 @@ export class OAuthTokenService {
     }
 
     this.logger.info('OAuth tokens generated', {
-      clientId: app.clientId,
-      userId,
+      client_id: app.clientId,
+      target_user_id: userId,
       scopes,
-      hasRefreshToken: !!result.refreshToken,
+      refresh_issued: !!result.refreshToken,
     });
 
     return result;
@@ -457,6 +465,21 @@ export class OAuthTokenService {
         throw new InvalidTokenError('Token has been revoked');
       }
 
+      // A personal access token's owner can change its limit after it is
+      // signed, so the stored one is the limit. An OAuth app's token keeps the
+      // limit its user agreed to, which is the one it was signed with.
+      if (isPatClientId(payload.client_id)) {
+        const stored = readStoredKnowledgeLimit(storedToken.knowledgeLimit);
+        if (stored === 'unreadable') {
+          throw new InvalidTokenError("Token's access limit could not be read");
+        }
+        if (stored) {
+          payload.knowledgeLimit = stored;
+        } else {
+          delete payload.knowledgeLimit;
+        }
+      }
+
       // A registration's access tokens are not stored against it, so revoking the registration
       // (by its owner, or with the agent app) only reaches them here.
       if (
@@ -474,7 +497,7 @@ export class OAuthTokenService {
         });
       });
 
-      return payload;
+      return { ...payload, tokenRowId: storedToken._id };
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
         throw new ExpiredTokenError('Access token has expired');
@@ -589,9 +612,9 @@ export class OAuthTokenService {
 
     if (storedToken.clientId !== app.clientId) {
       this.logger.warn('Refresh token presented by a different client', {
-        issuedTo: storedToken.clientId,
-        presentedBy: app.clientId,
-        userId: storedToken.userId,
+        issued_to: storedToken.clientId,
+        presented_by: app.clientId,
+        user_id: storedToken.userId,
       });
       throw new InvalidGrantError(
         'Refresh token was not issued to this client',
@@ -677,9 +700,9 @@ export class OAuthTokenService {
     }
 
     this.logger.info('Tokens refreshed', {
-      clientId: app.clientId,
-      userId: payload.userId,
-      rotationCount: storedToken.rotationCount + 1,
+      client_id: app.clientId,
+      user_id: payload.userId,
+      rotation_count: storedToken.rotationCount + 1,
     });
 
     return newTokens;
@@ -706,7 +729,7 @@ export class OAuthTokenService {
   ): Promise<never> {
     this.logger.warn(
       'Refresh token reuse detected. Revoking all tokens for this client and user',
-      { clientId, userId },
+      { client_id: clientId, user_id: userId },
     );
     const repo = getOAuthTokenRepository();
     await repo.flagRefreshReplayed(refreshId);
@@ -738,14 +761,14 @@ export class OAuthTokenService {
 
     if (!tokenType || tokenType === 'access_token') {
       if (await repo.revokeAccessByHash(tokenHash, clientId)) {
-        this.logger.info('Access token revoked', { clientId });
+        this.logger.info('Access token revoked', { client_id: clientId });
         return true;
       }
     }
 
     if (!tokenType || tokenType === 'refresh_token') {
       if (await repo.revokeRefreshByHash(tokenHash, clientId)) {
-        this.logger.info('Refresh token revoked', { clientId });
+        this.logger.info('Refresh token revoked', { client_id: clientId });
         return true;
       }
     }
@@ -787,7 +810,9 @@ export class OAuthTokenService {
     await repo.revokeAgentRegistration(
       registrationId.slice(REGISTRATION_ID_PREFIX.length),
     );
-    this.logger.info('Agent registration revoked by token', { registrationId });
+    this.logger.info('Agent registration revoked by token', {
+      registration_id: registrationId,
+    });
     return true;
   }
 
@@ -801,7 +826,7 @@ export class OAuthTokenService {
       await getOAuthTokenRepository().revokeAllAgentRegistrations();
     }
 
-    this.logger.info('All tokens revoked for app', { clientId });
+    this.logger.info('All tokens revoked for app', { client_id: clientId });
   }
 
   /**
@@ -818,7 +843,7 @@ export class OAuthTokenService {
     );
 
     this.logger.info('Refresh tokens without a stored limit revoked', {
-      clientId,
+      client_id: clientId,
     });
   }
 
@@ -847,8 +872,8 @@ export class OAuthTokenService {
     }
 
     this.logger.info('All tokens revoked for user in app', {
-      clientId,
-      userId,
+      client_id: clientId,
+      target_user_id: userId,
     });
   }
 
@@ -989,7 +1014,7 @@ export class OAuthTokenService {
     if (tokens.length === limit) {
       this.logger.warn(
         'Token list reached its limit; older tokens are not shown',
-        { clientId, userId, limit },
+        { client_id: clientId, target_user_id: userId, limit },
       );
     }
 
@@ -1063,10 +1088,49 @@ export class OAuthTokenService {
     );
 
     if (revoked) {
-      this.logger.info('Access token revoked by id', { id, clientId, userId });
+      this.logger.info('Access token revoked by id', {
+        id,
+        client_id: clientId,
+        target_user_id: userId,
+      });
       return true;
     }
     return false;
+  }
+
+  /**
+   * Replace the knowledge limit stored on one live access token, scoped to the
+   * owning client and user. Only a personal access token's limit is read back
+   * from storage on each request; every other token keeps the one it was
+   * signed with. Returns the updated token, or null when there is none.
+   */
+  async setAccessTokenKnowledgeLimit(
+    id: string,
+    clientId: string,
+    userId: string,
+    knowledgeLimit: KnowledgeLimit | null,
+  ): Promise<TokenListItem | null> {
+    const t = await getOAuthTokenRepository().setAccessKnowledgeLimit(
+      id,
+      clientId,
+      userId,
+      knowledgeLimit,
+    );
+    if (!t) {
+      return null;
+    }
+    return {
+      id: t._id,
+      tokenType: 'access' as const,
+      userId: t.userId,
+      scopes: t.scopes,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+      isRevoked: t.isRevoked,
+      name: t.name,
+      lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
+    };
   }
 
   /**
@@ -1091,8 +1155,8 @@ export class OAuthTokenService {
     if (revoked) {
       this.logger.info('Access token revoked by id (admin)', {
         id,
-        clientId,
-        revokedBy,
+        client_id: clientId,
+        user_id: revokedBy,
       });
       return true;
     }

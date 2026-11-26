@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/model-accounts.schema.json",
+  "title": "ModelAccounts",
+  "description": "`GET /api/v1/agent-harness/model-accounts/me`: the caller's own keys.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["accounts"],
+  "properties": {
+    "accounts": {
+      "type": "array",
+      "items": {"$ref": "model-account.schema.json"}
+    }
+  },
+  "examples": [
+    {"accounts": []},
+    {
+      "accounts": [
+        {
+          "id": "openai",
+          "accountRef": {"kind": "user_api_key", "accountId": "users/u1/openai"},
+          "provider": "openai",
+          "label": "Mine",
+          "last4": "x9Qz",
+          "version": 2,
+          "createdAt": "2026-10-09T00:00:00.000Z",
+          "rotatedAt": "2026-10-09T01:00:00.000Z",
+          "validation": "unvalidated"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+[
+  {
+    "description": "readable is required",
+    "instance": {
+      "decisions": []
+    }
+  },
+  {
+    "description": "unknown status",
+    "instance": {
+      "readable": [],
+      "decisions": [
+        {
+          "source": {
+            "kind": "indexed",
+            "recordId": "r1"
+          },
+          "status": "maybe"
+        }
+      ]
+    }
+  },
+  {
+    "description": "an artifact decision has a status",
+    "instance": {
+      "readable": [],
+      "artifacts": [
+        {
+          "artifactId": "a1"
+        }
+      ]
+    }
+  }
+]

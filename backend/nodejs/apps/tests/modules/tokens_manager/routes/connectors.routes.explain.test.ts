@@ -47,9 +47,9 @@ describe('Connector routes: why a person cannot read a record', () => {
     expect(r.body).to.deep.equal(ANSWER)
     const forwarded = h.backend.callsTo('GET', BACKEND_PATH)
     expect(forwarded).to.have.length(1)
-    expect(forwarded[0].query.get('user_id')).to.equal(MEMBER_ID)
-    expect(forwarded[0].query.get('record_id')).to.equal(RECORD_ID)
-    expect(forwarded[0].headers.authorization).to.equal(`Bearer ${token}`)
+    expect(forwarded[0]!.query.get('user_id')).to.equal(MEMBER_ID)
+    expect(forwarded[0]!.query.get('record_id')).to.equal(RECORD_ID)
+    expect(forwarded[0]!.headers.authorization).to.equal(`Bearer ${token}`)
   })
 
   it('gives a member the 404 of a route that is not there, before anything reaches the connector service', async () => {
@@ -73,13 +73,12 @@ describe('Connector routes: why a person cannot read a record', () => {
   it('records who asked about whom and which record, with the reason code and no content', async () => {
     await call(h, 'GET', PATH + QUERY, sessionToken(h, ADMIN))
 
+    // Who asked, the org and the connector are the request context's; the line names the rest.
     expect(audits()).to.deep.equal([
       {
-        actorUserId: ADMIN._id,
-        orgId: ADMIN.orgId,
-        connectorId: CONNECTOR_ID,
-        targetUserId: MEMBER_ID,
-        recordId: RECORD_ID,
+        target_user_id: MEMBER_ID,
+        record_id: RECORD_ID,
+        outcome: 'success',
         status: 200,
         code: 'restricted_container',
         admitted: false,
@@ -94,7 +93,7 @@ describe('Connector routes: why a person cannot read a record', () => {
 
     expect(r.status).to.equal(404)
     expect(audits()).to.have.length(1)
-    expect(audits()[0]).to.include({ actorUserId: ADMIN._id, recordId: RECORD_ID, status: 404 })
+    expect(audits()[0]).to.include({ record_id: RECORD_ID, status: 404, outcome: 'failure' })
   })
 
   it('limits an admin to 30 checks a minute and counts each admin apart', async () => {
@@ -119,10 +118,10 @@ describe('The explanation route in the OpenAPI spec', () => {
     .schema as Schema
 
   it('makes the container nullable in a schema of its own, and a path item not nullable', () => {
-    const container = answer.properties!.container
+    const container = answer.properties!.container!
     expect(container.allOf).to.equal(undefined)
-    expect(spec.components.schemas[container.$ref!.split('/').pop()!].nullable).to.equal(true)
-    const item = spec.components.schemas[answer.properties!.path.items!.$ref!.split('/').pop()!]
-    expect(item.nullable).to.not.equal(true)
+    expect(spec.components.schemas[container.$ref!.split('/').pop()!]!.nullable).to.equal(true)
+    const item = spec.components.schemas[answer.properties!.path!.items!.$ref!.split('/').pop()!]
+    expect(item!.nullable).to.not.equal(true)
   })
 })

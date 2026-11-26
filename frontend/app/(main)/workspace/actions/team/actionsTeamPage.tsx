@@ -15,6 +15,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import {
   useFeatureFlagsStore,
   selectActionsEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
@@ -582,6 +583,8 @@ function TeamActionsAccessGate() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
 
   useEffect(() => {
     if (!isProfileInitialized) return;
@@ -589,10 +592,10 @@ function TeamActionsAccessGate() {
       router.replace('/workspace/actions/personal/');
       return;
     }
-    if (flagsLoaded && !actionsEnabled) {
+    if (flagsKnown && !actionsEnabled) {
       router.replace('/workspace/general');
     }
-  }, [isProfileInitialized, isAdmin, flagsLoaded, actionsEnabled, router]);
+  }, [isProfileInitialized, isAdmin, flagsKnown, actionsEnabled, router]);
 
   if (!isProfileInitialized || isAdmin !== true || (flagsLoaded && !actionsEnabled)) {
     return null;

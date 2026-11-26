@@ -2,24 +2,13 @@
 
 import json
 import logging
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
-# asyncpg is not installed in all environments (e.g. Windows dev).
-# Stub it before importing the module under test so the class-level guard passes.
-if "asyncpg" not in sys.modules:
-    _asyncpg_stub = MagicMock()
-    sys.modules["asyncpg"] = _asyncpg_stub
-
-import app.sources.client.postgres.postgres as _pg_mod  # noqa: E402
-
-# Ensure the module uses the stub
-_pg_mod.asyncpg = sys.modules["asyncpg"]
-
-from app.sources.client.postgres.postgres import (  # noqa: E402
+import app.sources.client.postgres.postgres as _pg_mod
+from app.sources.client.postgres.postgres import (
     AuthConfig,
     PostgreSQLClient,
     PostgreSQLClientBuilder,

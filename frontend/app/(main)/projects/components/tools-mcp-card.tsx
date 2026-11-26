@@ -131,7 +131,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
 
   if (isLoading) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('common.loading', { defaultValue: 'Loading…' })}
       </Text>
     );
@@ -145,7 +145,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
   }
   if (groups.length === 0) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('chat.projects.workspace.noToolsAvailable', {
           defaultValue: 'No authenticated actions or MCP servers to add yet.',
         })}
@@ -155,7 +155,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
 
   return (
     <Flex direction="column" gap="1">
-      <Text size="1" style={{ color: 'var(--slate-10)', marginBottom: 'var(--space-1)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', marginBottom: 'var(--space-1)' }}>
         {t('chat.projects.workspace.toolsSubtitle')}
       </Text>
       {groups.map((group) => {
@@ -198,7 +198,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
               >
                 {group.label}
               </Text>
-              <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
+              <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
                 {group.fullNames.filter((fn) => selectedSet.has(fn)).length}/{group.fullNames.length}
               </Text>
               <IconButton
@@ -222,7 +222,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
                     <Text
                       size="1"
                       weight="medium"
-                      style={{ color: 'var(--slate-10)', marginLeft: 'var(--space-5)', paddingTop: 'var(--space-1)' }}
+                      style={{ color: 'var(--slate-11)', marginLeft: 'var(--space-5)', paddingTop: 'var(--space-1)' }}
                     >
                       {t(`chat.projects.workspace.toolKind.${section.kind}`)}
                     </Text>
@@ -270,7 +270,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
                             <Text
                               size="1"
                               style={{
-                                color: 'var(--slate-10)',
+                                color: 'var(--slate-11)',
                                 overflow: 'hidden',
                                 display: '-webkit-box',
                                 WebkitLineClamp: 2,

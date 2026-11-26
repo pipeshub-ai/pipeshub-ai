@@ -25,7 +25,7 @@ class TestLoadMcpInstances:
         ) as mock_load:
             result = await load_mcp_instances(config_service, "org-1")
         assert result == expected
-        mock_load.assert_awaited_once_with(config_service, "org-1")
+        mock_load.assert_awaited_once_with(config_service, "org-1", strict=False)
 
     async def test_returns_empty_list_when_service_returns_empty(self) -> None:
         from app.api.routes.mcp_resolvers import load_mcp_instances

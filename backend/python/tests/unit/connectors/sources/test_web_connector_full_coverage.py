@@ -148,7 +148,8 @@ class TestInitSession:
     async def test_init_creates_session(self):
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+        # robots.txt, the landing probe and CSR detection fetch the site; the behaviour suite covers them on fake sites
+        with patch.object(connector, "_check_script_rendering", new_callable=AsyncMock):
             result = await connector.init()
         assert result is True
         assert connector.session is not None

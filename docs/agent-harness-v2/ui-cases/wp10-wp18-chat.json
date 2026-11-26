@@ -1,0 +1,159 @@
+{
+  "package": "UI-2: WP-10 approval card, WP-18 error wording, WP-15 link popover",
+  "spec": "frontend/tests/e2e/harness/wp10-wp18-chat.spec.ts",
+  "tracker": ["C3.71", "C3.72", "C10.02", "UX-03", "AP-05", "UX-06"],
+  "screenshots": "Each case saves <name>-<light|dark>-<desktop|phone>.png into UI_CASE_SHOTS (desktop 1280 px, phone 375 px); the pictures are not kept in git.",
+  "modes": {
+    "live": "Driven end to end on the running stack with the scripted model and SaaS.",
+    "replay": "The real chat page on the running stack, with the server's frames for that turn replayed: the scripted model cannot produce this case (an engine's held edit, an outage, an erased conversation, a gVisor-less server, a spent budget, an unconnected toolset)."
+  },
+  "cases": [
+    {
+      "id": "WP10-01",
+      "title": "An engine edit's approval card shows its diff and the declared cost",
+      "mode": "replay",
+      "steps": [
+        "Open a conversation whose coding engine run waits on an edit of docs/launch-plan.md (approval with effect.diff and effect.costEstimate 0.04)."
+      ],
+      "expected": [
+        "The card shows 'What changes' with the file name and the changed lines, removed in red and added in green.",
+        "It shows 'Estimated cost: about $0.04 · as the tool states it'.",
+        "The raw arguments (old_string/new_string) are not shown."
+      ],
+      "screenshots": ["wp10-01-diff-cost"]
+    },
+    {
+      "id": "WP10-02",
+      "title": "A long diff is folded and says when the worker cut it",
+      "mode": "replay",
+      "steps": [
+        "Open a held edit whose diff has 41 lines and diffTruncated true.",
+        "Click 'Show the full change (41 lines)'."
+      ],
+      "expected": [
+        "First 12 lines are shown, with the note that the change is longer than the card can show.",
+        "After the click all 41 lines show."
+      ],
+      "screenshots": ["wp10-02-long-diff-folded", "wp10-02-long-diff-open"]
+    },
+    {
+      "id": "WP10-03",
+      "title": "Deny with a reason reaches the harness; the receipt quotes it",
+      "mode": "live",
+      "steps": [
+        "As the tool agent, send a turn whose model calls create_ticket (the org asks before writes).",
+        "Click Deny on the card; type 'Post it in #team-updates, not #general'.",
+        "Click Deny again."
+      ],
+      "expected": [
+        "Deny opens 'Why not? (optional, the agent reads this)' with a character counter, Cancel and Deny.",
+        "The decision POST carries {decision: denied, reason}.",
+        "The run ends; nothing reaches the SaaS; the receipt reads 'Denied by you, because “…”'."
+      ],
+      "screenshots": ["wp10-03-deny-reason-open", "wp10-03-deny-reason-receipt"]
+    },
+    {
+      "id": "WP10-04",
+      "title": "A batch of three calls is one card with Allow all 3",
+      "mode": "live",
+      "steps": [
+        "Send a turn whose model calls create_ticket three times in one step.",
+        "Click 'Allow all 3'."
+      ],
+      "expected": [
+        "One grouped card lists the three tickets, with Review each, Deny all and Allow all 3.",
+        "After Allow all 3 the run does all three calls and answers 'Filed all three.'"
+      ],
+      "screenshots": ["wp10-04-allow-all-grouped"]
+    },
+    {
+      "id": "WP15-01",
+      "title": "A plain link in an answer opens directly",
+      "mode": "live",
+      "steps": ["Send a turn whose answer links https://docs.acme.dev/release-notes."],
+      "expected": ["The link points at the address itself and is not marked as carrying data."],
+      "screenshots": ["wp15-01-link-normal"]
+    },
+    {
+      "id": "WP15-02",
+      "title": "A link whose address carries data asks first and names the host",
+      "mode": "live",
+      "steps": [
+        "In the same answer, click the link to https://reports.example.net/view?user=…&token=…."
+      ],
+      "expected": [
+        "The visible href is the address without its query.",
+        "A popover 'This link sends extra data' names reports.example.net; 'Open link' carries the full address."
+      ],
+      "screenshots": ["wp15-02-link-flagged-query"]
+    },
+    {
+      "id": "WP18-01",
+      "title": "ACCESS_POLICY_UNAVAILABLE: an outage says to wait, with Try again",
+      "mode": "replay",
+      "steps": ["Send a message; the server refuses it 503 HTTP_AGENT_HARNESS_ACCESS_POLICY_UNAVAILABLE."],
+      "expected": [
+        "'Your organization's AI rules couldn't be read just now, so nothing was sent. Wait a moment, then send it again.'",
+        "Never 'pick another model'.",
+        "A 'Try again' button sends the question again."
+      ],
+      "screenshots": ["wp18-01-access-policy-unavailable"]
+    },
+    {
+      "id": "WP18-02",
+      "title": "SESSION_ERASED: the conversation was deleted, with New chat",
+      "mode": "replay",
+      "steps": ["Send a message; the server refuses it 410 HTTP_AGENT_HARNESS_SESSION_ERASED."],
+      "expected": ["'This conversation was deleted. Start a new chat to keep going.' with a 'New chat' button."],
+      "screenshots": ["wp18-02-session-erased"]
+    },
+    {
+      "id": "WP18-03",
+      "title": "gvisor_unavailable: ask the admin, with the install guide",
+      "mode": "replay",
+      "steps": ["Send a message; the run ends RUN_ERROR code gvisor_unavailable."],
+      "expected": [
+        "'Coding engines need the gVisor sandbox runtime on this server. Ask your admin to install it — install guide: …GVISOR.md'.",
+        "No button: the step is the admin's."
+      ],
+      "screenshots": ["wp18-03-gvisor-unavailable"]
+    },
+    {
+      "id": "WP18-04",
+      "title": "budget_exhausted: ask the admin, or ask for less",
+      "mode": "replay",
+      "steps": ["Send a message; the turn ends with an error answer, errorCode budget_exhausted."],
+      "expected": [
+        "'This reply stopped because it reached its spending limit. Ask your admin to raise the limit, or ask for less at a time.'",
+        "No button."
+      ],
+      "screenshots": ["wp18-04-budget-exhausted"]
+    },
+    {
+      "id": "WP18-05",
+      "title": "budget_insufficient: ask the admin, or ask for less",
+      "mode": "replay",
+      "steps": ["Send a message; the turn ends with an error answer, errorCode budget_insufficient."],
+      "expected": [
+        "'This reply stopped because its spending limit had too little left for the next step. Ask your admin to raise the limit, or ask for less at a time.'",
+        "No button."
+      ],
+      "screenshots": ["wp18-05-budget-insufficient"]
+    },
+    {
+      "id": "WP18-06",
+      "title": "tool_unavailable: a Connect row under the search step",
+      "mode": "replay",
+      "steps": [
+        "Send a message; the run's search_tools step finds jira__create_issue (not_authenticated) and goldencrm__close_deal (not_attached).",
+        "Open the finished turn's steps."
+      ],
+      "expected": [
+        "'Jira · Create issue isn't connected' with Connect linking /workspace/actions/personal/?toolsetType=jira.",
+        "'Goldencrm · Close deal isn't available to this agent' with no button.",
+        "The server's English message is not shown."
+      ],
+      "screenshots": ["wp18-06-tool-unavailable-connect"]
+    }
+  ]
+}

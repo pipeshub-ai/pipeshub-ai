@@ -396,7 +396,7 @@ async def test_an_old_stamp_version_is_not_read(scope_graph, neo4j_provider, neo
     await _cypher(neo4j_settings, "MATCH (m:KhScopeMeta {connectorId: $c}) SET m.version = 1", c=SMALL)
     await _page(neo4j_provider, USER_V, SMALL)
     assert scope_counter["served"] == 0
-    assert SMALL in await kh_scope.stale_connectors(neo4j_provider.client)
+    assert SMALL in await kh_scope.stale_connectors(neo4j_provider.client, ORG)
     assert (await neo4j_provider.kh_scope_stamp(SMALL))["stamped"]
 
 

@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
+from app.modules.parse_engine import class_gate
 from app.modules.parse_engine.admission import AdmissionNumbers
 from app.modules.parse_engine.budget_port import AdmissionTimeout, Family
 from app.modules.parse_engine.class_gate import ClassGate, GateRequest, PoolCapacity
 from app.modules.parse_engine.cost import CostClass
 from tests.support.fake_member_budget import FakeMemberBudget
+from tests.support.loop_clock import virtual_loop_time
 
 S, L, H = CostClass.SMALL, CostClass.LARGE, CostClass.HUGE
 N = AdmissionNumbers()
@@ -57,21 +58,25 @@ async def test_a_unit_refused_by_the_ledger_does_not_count_as_running_and_starve
         p.release()
 
 
-async def test_a_policy_timer_admits_a_waiter_even_when_nothing_else_changes() -> None:
-    """Small demand stops being recent: the big share rises from the recent cap to the borrow cap with no event."""
+async def test_a_policy_timer_admits_a_waiter_even_when_nothing_else_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Small demand stops being recent: the big share rises from the recent cap to the borrow cap with no event.
+
+    The gate reads the virtual loop clock, so the timer comes due at an exact time a busy runner cannot move."""
     from app.modules.parse_engine.admission import AdmissionNumbers
 
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
     numbers = AdmissionNumbers(small_recent_s=0.4)
-    gate = ClassGate("heavy_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(10))
+    gate = ClassGate("heavy_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(10), clock=loop.time)
     small = await gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=1)
     big = [await gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1) for _ in range(5)]  # up to the recent cap
     small.release()
+    released = loop.time()
     blocked = asyncio.create_task(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=5))
     await asyncio.sleep(0.15)
     assert not blocked.done()  # the sixth large is over the recent cap while small demand is recent
-    started = time.monotonic()
     permit = await asyncio.wait_for(blocked, 4)  # no release, no capacity change: only the clock moved
-    assert time.monotonic() - started < 2.0
+    assert 0.4 <= loop.time() - released <= 0.4 + class_gate._POLL_S  # on the waiter's first poll after the timer
     permit.release()
     for p in big:
         p.release()
@@ -132,13 +137,15 @@ async def test_the_huge_cap_holds_only_while_large_work_waits() -> None:
         p.release()
 
 
-async def test_an_oversized_head_is_served_at_a_capacity_of_one_while_small_work_keeps_arriving() -> None:
+async def test_an_oversized_head_is_served_at_a_capacity_of_one_while_small_work_keeps_arriving(monkeypatch: pytest.MonkeyPatch) -> None:
     """P=1, aging 0.5 s, a steady small stream: an unbounded huge head (an Office record over the unit budget) waited
     for ever (A1 needs room for two when small work waits, A2 and A4 take bounded heads only)."""
     from app.modules.parse_engine.admission import AdmissionNumbers
 
+    virtual_loop_time(monkeypatch)  # the gate and the test read one loop clock that a busy runner cannot move
+    loop = asyncio.get_running_loop()
     numbers = AdmissionNumbers(aging_s=0.5)
-    gate = ClassGate("remote_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(1))
+    gate = ClassGate("remote_parse", numbers=lambda: numbers, capacity=lambda: PoolCapacity(1), clock=loop.time)
     stop = asyncio.Event()
     served_small = 0
 
@@ -152,13 +159,13 @@ async def test_an_oversized_head_is_served_at_a_capacity_of_one_while_small_work
 
     streams = [asyncio.create_task(small_stream()) for _ in range(3)]
     await asyncio.sleep(0.1)
-    started = time.monotonic()
+    started = loop.time()
     head = await gate.acquire(GateRequest(cls=H, est_seconds=900.0, bounded=False), deadline_s=4)
-    waited = time.monotonic() - started
+    waited = loop.time() - started
     stop.set()
     head.release()
     await asyncio.gather(*streams)
-    assert waited < 2.5, waited  # aged (0.5 s), then served next; it was not served in 4 s before
+    assert 0.5 <= waited <= 0.5 + 0.02, waited  # aged (0.5 s), then served at the next release; it was not served in 4 s before
     assert served_small > 0
 
 
@@ -231,11 +238,15 @@ async def test_a_priority_unsplittable_head_is_served_at_capacity_one_and_goes_b
 
 
 @pytest.mark.parametrize("head_priority", [False, True])
-async def test_an_unsplittable_head_is_served_at_capacity_one_under_a_priority_small_stream(head_priority: bool) -> None:
+async def test_an_unsplittable_head_is_served_at_capacity_one_under_a_priority_small_stream(
+    head_priority: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A priority-lane consumer: every record is priority, the head included."""
     from app.modules.parse_engine.admission import AdmissionNumbers
 
-    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.4), capacity=lambda: PoolCapacity(1))
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.4), capacity=lambda: PoolCapacity(1), clock=loop.time)
     stop = asyncio.Event()
 
     async def stream() -> None:
@@ -255,20 +266,22 @@ async def test_an_unsplittable_head_is_served_at_capacity_one_under_a_priority_s
 
     runner = asyncio.create_task(stream())
     await asyncio.sleep(0.2)
-    started = time.monotonic()
+    started = loop.time()
     head = await gate.acquire(GateRequest(cls=H, bounded=False, priority=head_priority, est_seconds=900.0), deadline_s=4)
-    waited = time.monotonic() - started
+    waited = loop.time() - started
     stop.set()
     head.release()
     await runner
-    assert waited < 3.0, waited  # aged (0.4 s), then served next; it was not served in 4 s while any priority waiter existed
+    assert 0.4 <= waited <= 0.4 + 0.02, waited  # aged (0.4 s), then served at the next release; it was not served in 4 s while any priority waiter existed
 
 
-async def test_the_age_bound_waits_for_the_aging_time() -> None:
+async def test_the_age_bound_waits_for_the_aging_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """Not before: a head that has waited less than ``aging_s`` is left to the ordinary rules."""
     from app.modules.parse_engine.admission import AdmissionNumbers
 
-    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.8), capacity=lambda: PoolCapacity(1))
+    virtual_loop_time(monkeypatch)
+    loop = asyncio.get_running_loop()
+    gate = ClassGate("remote_parse", numbers=lambda: AdmissionNumbers(aging_s=0.8), capacity=lambda: PoolCapacity(1), clock=loop.time)
     stop = asyncio.Event()
 
     async def one() -> None:
@@ -279,10 +292,10 @@ async def test_the_age_bound_waits_for_the_aging_time() -> None:
 
     streams = [asyncio.create_task(one()) for _ in range(3)]
     await asyncio.sleep(0.1)
-    started = time.monotonic()
+    started = loop.time()
     head = await gate.acquire(GateRequest(cls=H, bounded=False, est_seconds=900.0), deadline_s=5)
-    waited = time.monotonic() - started
+    waited = loop.time() - started
     stop.set()
     head.release()
     await asyncio.gather(*streams, return_exceptions=True)
-    assert 0.6 <= waited < 3.0, waited  # held back until it aged (0.8 s), then served
+    assert 0.8 <= waited <= 0.8 + 0.01, waited  # held back until it aged (0.8 s), then served at the next release

@@ -1,0 +1,79 @@
+{
+  "source": "QA-AUTO FU-5, kept-qadur3 (run.sh durable, opencode, scripted model): the job's engine_progress values up to its create_ticket approval. `recorded` as the worker journaled them; `fixed` as FIX-TOOLWORDS journals them (gateway name, display name, the ask naming its step).",
+  "recorded": [
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "started",
+      "text": "File a ticket UIP2 444fc4.\ntool create_ticket {\"title\":\"UIP2 444fc4\",\"body\":\"From UI-P2.\"}\nsay Ticket UIP2 444fc4 is filed.\n\nThis task's time and money: deliver your result by 06:02 UTC (about 58 minutes from now), with at most USD 5.00 of model use.",
+      "data": {},
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967296
+    },
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "tool",
+      "text": "tools_mcp_e2esaas_create_ticket",
+      "data": {
+        "args": "{\"title\": \"UIP2 444fc4\", \"body\": \"From UI-P2.\"}",
+        "callId": "call_e2e_33"
+      },
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967298
+    },
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "approval",
+      "text": "mcp_e2esaas_create_ticket",
+      "data": {
+        "argsJson": "{\"body\": \"From UI-P2.\", \"title\": \"UIP2 444fc4\"}",
+        "displayName": "E2Esaas · create_ticket",
+        "interactionId": "ix.approve.kaaa8862305c13d14f9b79ade140095fd8bc8587f",
+        "toolName": "mcp_e2esaas_create_ticket"
+      },
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967299
+    }
+  ],
+  "fixed": [
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "started",
+      "text": "File a ticket UIP2 444fc4.\ntool create_ticket {\"title\":\"UIP2 444fc4\",\"body\":\"From UI-P2.\"}\nsay Ticket UIP2 444fc4 is filed.\n\nThis task's time and money: deliver your result by 06:02 UTC (about 58 minutes from now), with at most USD 5.00 of model use.",
+      "data": {},
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967296
+    },
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "tool",
+      "text": "mcp_e2esaas_create_ticket",
+      "data": {
+        "args": "{\"title\": \"UIP2 444fc4\", \"body\": \"From UI-P2.\"}",
+        "callId": "call_e2e_33",
+        "displayName": "E2Esaas · create_ticket"
+      },
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967298
+    },
+    {
+      "tool": "code_task",
+      "taskId": "bcadbf8c-158e-79a8-dc19-555033c677c7",
+      "kind": "approval",
+      "text": "mcp_e2esaas_create_ticket",
+      "data": {
+        "argsJson": "{\"body\": \"From UI-P2.\", \"title\": \"UIP2 444fc4\"}",
+        "displayName": "E2Esaas · create_ticket",
+        "interactionId": "ix.approve.kaaa8862305c13d14f9b79ade140095fd8bc8587f",
+        "toolName": "mcp_e2esaas_create_ticket",
+        "callId": "call_e2e_33"
+      },
+      "turnId": "trn_9449ace626debaf95e9beea578b51451",
+      "seq": 4294967299
+    }
+  ]
+}

@@ -167,7 +167,7 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
         made.push(a);
       }
       await repo.create(mk(org, fx.newId(), { name: 'Not mine' }));
-      await repo.updateOwned(org, me, made[1]._id, { status: OAuthAppStatus.SUSPENDED });
+      await repo.updateOwned(org, me, made[1]!._id, { status: OAuthAppStatus.SUSPENDED });
 
       const all = await repo.listOwned(org, me, { skip: 0, limit: 10 });
       expect(all.total).to.equal(3);
@@ -401,6 +401,39 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       const onlyA = await repo.listInOrg(org, { skip: 0, limit: 10, createdBy: a });
       expect(onlyA.rows.map((r) => r.name)).to.deep.equal(['A']);
       expect((await repo.listInOrg(org, { skip: 0, limit: 10, search: 'b' })).total).to.equal(1);
+    });
+  });
+
+  describe('stored client secrets (the SECRET_KEY rotation, ADR-KEY-01)', () => {
+    it('listClientSecrets lists every app of the org, deleted ones too, and no other org\'s', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const live = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-live' }));
+      const gone = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-gone' }));
+      await repo.updateOwned(org, me, gone._id, { isDeleted: true });
+      await repo.create(mk(fx.newId(), me, { clientSecretEncrypted: 'enc-elsewhere' }));
+      const listed = await repo.listClientSecrets(org);
+      expect([...listed].sort((a, b) => a.id.localeCompare(b.id))).to.deep.equal(
+        [
+          { id: live._id, clientSecretEncrypted: 'enc-live' },
+          { id: gone._id, clientSecretEncrypted: 'enc-gone' },
+        ].sort((a, b) => a.id.localeCompare(b.id)),
+      );
+      expect(await repo.listClientSecrets(fx.newId())).to.deep.equal([]);
+    });
+
+    it('replaceClientSecret swaps only while the stored secret is the expected one, and only in its org', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const app = await repo.create(mk(org, me, { clientSecretEncrypted: 'enc-old' }));
+      expect(await repo.replaceClientSecret(fx.newId(), app._id, 'enc-old', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-stale', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, fx.newId(), 'enc-old', 'enc-new')).to.equal(false);
+      expect(await repo.replaceClientSecret(org, 'not-an-id', 'enc-old', 'enc-new')).to.equal(false);
+      expect((await repo.findByClientId(app.clientId))?.clientSecretEncrypted).to.equal('enc-old');
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-old', 'enc-new')).to.equal(true);
+      expect(await repo.replaceClientSecret(org, app._id, 'enc-old', 'enc-other')).to.equal(false);
+      expect((await repo.findByClientId(app.clientId))?.clientSecretEncrypted).to.equal('enc-new');
     });
   });
 }

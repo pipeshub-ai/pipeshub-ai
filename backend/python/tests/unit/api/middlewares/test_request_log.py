@@ -31,10 +31,13 @@ from app.api.middlewares.request_log import (
     path_log_fields,
 )
 from app.core.org_context import OrgContext, set_request_context
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.telemetry.middleware import MetricsMiddleware
 from app.utils import error_class
 from app.utils.logger import RedactingFormatter, log_record_fields
 from app.utils.request_context import get_context, set_context_org
+from tests.support.graph_read_errors import DRIVER_TEXT, marked_internal
+from tests.support.settle import settle
 from tests.unit.api.test_framework_behaviour import (  # noqa: F401 - autouse fixture
     Recorder,
     _drive,
@@ -533,6 +536,35 @@ async def test_positive_control_an_unlogged_exception_still_reaches_uvicorn() ->
     assert _uvicorn_keeps(RuntimeError("never logged"))
 
 
+def _pvue_over_a_stamped_error() -> PermissionVerificationUnavailableError:
+    try:
+        try:
+            raise marked_internal()
+        except RuntimeError as exc:
+            raise PermissionVerificationUnavailableError() from exc
+    except PermissionVerificationUnavailableError as pvue:
+        return pvue
+
+
+async def test_uvicorn_drops_its_line_for_a_logged_text_hidden_exception(clock: _Clock) -> None:
+    """Its record carries a text-free stack and no exc_info; the filter still finds the exception (F24g)."""
+    _build_app(clock)  # installs the filter
+    pvue = _pvue_over_a_stamped_error()
+    error_class.log_failure(logging.getLogger(LOGGER), EVENT, pvue, level=logging.ERROR)
+
+    record = _uvicorn_record(pvue)
+    assert record.exc_info is None and "PermissionVerificationUnavailableError: <message omitted>" in record.exc_text
+    assert DRIVER_TEXT not in record.exc_text
+    assert not _uvicorn_keeps(pvue)
+
+
+async def test_control_uvicorn_keeps_its_line_for_an_unlogged_text_hidden_exception(clock: _Clock) -> None:
+    _build_app(clock)
+    pvue = _pvue_over_a_stamped_error()
+    assert _uvicorn_keeps(pvue)
+    assert DRIVER_TEXT not in RedactingFormatter().format(_uvicorn_record(pvue))
+
+
 async def test_a_crash_logs_nothing_else_at_warning_or_above(clock: _Clock, capture) -> None:
     app = _build_app(clock)
 
@@ -1011,8 +1043,8 @@ ROUTE_LOGGER = "app.api.routes.test_ids"
 
 
 def _add_id_routes(app: FastAPI) -> None:
-    """A router binding its path parameter as ``toolset_id``, the same route shape without it, and a route adding an
-    event field."""
+    """A router binding its path parameter as ``toolset_id``, a router binding two parameters (one route lacks one, one
+    has both), the same route shape without either, and a route adding an event field."""
     router = APIRouter(prefix="/api/v1/ids", dependencies=[Depends(path_log_fields(instance_id="toolset_id"))])
 
     @router.get("/{instance_id}")
@@ -1021,6 +1053,19 @@ def _add_id_routes(app: FastAPI) -> None:
         return {}
 
     app.include_router(router)
+
+    agents = APIRouter(prefix="/api/v1/agent-ids",
+                       dependencies=[Depends(path_log_fields(instance_id="toolset_id", agent_key="agent_id"))])
+
+    @agents.get("/{instance_id}")
+    async def without_agent_key(instance_id: str) -> dict:
+        return {}
+
+    @agents.get("/{agent_key}/instances/{instance_id}")
+    async def with_both(agent_key: str, instance_id: str) -> dict:
+        return {}
+
+    app.include_router(agents)
 
     @app.get("/api/v1/no-ids/{instance_id}")
     async def no_ids(instance_id: str) -> dict:
@@ -1054,6 +1099,56 @@ async def test_a_router_binds_its_path_ids_on_the_route_lines_and_the_request_li
     _, end = _one_end(capture)
     (inside,) = _inside(capture)
     assert "toolset_id" not in end and "toolset_id" not in inside
+
+
+EMAIL = "ada.lovelace@example.com"
+
+
+@pytest.mark.parametrize(("sent", "value"), [
+    (EMAIL, EMAIL),
+    ("Ada%20Lovelace", "Ada Lovelace"),
+    ("a" * 129, "a" * 129),  # longer than 128: a token-sized value
+    ("C%3A%5Cusers%5Cada", "C:\\users\\ada"),
+    ("Zo%C3%AB", "Zoë"),  # a non-ASCII letter: the class is ASCII, as on Node, not `\w`
+    ("ts-1%0A", "ts-1\n"),  # an id then a newline: `fullmatch`, not `match` with `$`, which allows a final newline
+])
+async def test_a_path_value_that_is_not_an_id_is_not_bound(clock: _Clock, capture, sent: str, value: str) -> None:
+    capture.set_level(logging.DEBUG, logger=ROUTE_LOGGER)
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    assert (await _get(app, f"/api/v1/ids/{sent}")).status_code == 200  # the route ran with the value
+    _, end = _one_end(capture)
+    (inside,) = _inside(capture)
+    assert "toolset_id" not in end and "toolset_id" not in inside
+    assert all(value not in str(v) for r in capture.records for v in vars(r).values())
+
+
+@pytest.mark.parametrize("value", ["ts-1", "TS-1", "65f0a1b2c3d4e5f6a7b8c9d0", "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                   "all_ab:c.d", "a" * 128])
+async def test_an_id_shaped_path_value_is_still_bound(clock: _Clock, capture, value: str) -> None:
+    capture.set_level(logging.DEBUG, logger=ROUTE_LOGGER)
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    await _get(app, f"/api/v1/ids/{value}")
+    _, end = _one_end(capture)
+    (inside,) = _inside(capture)
+    assert end["toolset_id"] == value and inside["toolset_id"] == value
+
+
+async def test_a_router_param_absent_from_the_route_is_not_bound(clock: _Clock, capture) -> None:
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    await _get(app, "/api/v1/agent-ids/ts-1")
+    _, end = _one_end(capture)
+    assert end["toolset_id"] == "ts-1" and "agent_id" not in end
+
+
+async def test_each_path_value_is_checked_on_its_own(clock: _Clock, capture) -> None:
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    await _get(app, f"/api/v1/agent-ids/{EMAIL}/instances/ts-1")
+    _, end = _one_end(capture)
+    assert end["toolset_id"] == "ts-1" and "agent_id" not in end
 
 
 async def test_ids_never_leak_into_the_next_request(clock: _Clock, capture) -> None:
@@ -1262,7 +1357,7 @@ async def test_the_body_reaches_the_route_in_order_and_is_read_one_message_ahead
 
     server = _Server(b'{"a": ', b'"b"', b"}")
     request = asyncio.create_task(app(_scope("POST", "/api/v1/gated-body"), server.receive, server.send))
-    await asyncio.wait_for(server.second_read.wait(), 1)
+    await settle(server.second_read.wait())
     await _settle()
     assert server.calls == 2  # one message in the slot, one in the read-ahead's hand: a body is not buffered
     gate.set()

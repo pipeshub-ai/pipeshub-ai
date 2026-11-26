@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.agent_loop_lib.commands.render import CommandArgument, parse_arguments
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 
 """Skill data model — implements the agentskills.io / anthropic/skills
@@ -54,7 +55,7 @@ def is_advertised(metadata: "SkillMetadata") -> bool:
     sees. Management surfaces (REST `GET /skills`, the personal Skills UI)
     intentionally do NOT call this — owners must still see disabled/deprecated
     skills to manage them."""
-    return metadata.status not in CATALOG_HIDDEN_STATUSES
+    return metadata.status not in CATALOG_HIDDEN_STATUSES and metadata.invocation_model
 
 
 class SkillSource(str, Enum):
@@ -100,6 +101,16 @@ class SkillMetadata(BaseModel):
     pack_name: str | None = None
     pack_version: str | None = None
 
+    # --- /command extension (SLASH1), same namespace as `invocation:` and `arguments:` ---
+    invocation_user: bool = False   # listed in the chat composer's / menu
+    invocation_model: bool = True   # the model may find and load it itself
+    arguments: list[CommandArgument] = Field(default_factory=list)
+
+    # --- provenance of agent-written content, same namespace ---
+    # The confidentiality label (opaque here) of the run whose model wrote this content: a learned skill's text
+    # can summarise what that run read. None: no run wrote it (a person did), or it predates the field.
+    label: dict[str, Any] | None = None
+
     @classmethod
     def from_raw(cls, data: dict[str, Any]) -> "SkillMetadata":
         """Build from a parsed YAML frontmatter dict (see loader.py). Pulls
@@ -110,6 +121,7 @@ class SkillMetadata(BaseModel):
         ext = dict(raw_metadata.get(AGENT_LOOP_NAMESPACE) or {})
         allowed_tools_raw = data.get("allowed-tools")
         allowed_tools = allowed_tools_raw.split() if isinstance(allowed_tools_raw, str) else None
+        invocation = ext.get("invocation") if isinstance(ext.get("invocation"), dict) else {}
 
         return cls(
             name=data.get("name"),
@@ -133,6 +145,11 @@ class SkillMetadata(BaseModel):
             concepts=list(ext.get("concepts") or []),
             pack_name=ext.get("pack_name"),
             pack_version=ext.get("pack_version"),
+            invocation_user=invocation.get("user") is True,
+            invocation_model=invocation.get("model") is not False,
+            arguments=parse_arguments(ext.get("arguments")),
+            # Present but unreadable stays present, so it reads as unknown rather than as no label at all.
+            label=(dict(ext["label"]) if isinstance(ext["label"], dict) else {}) if "label" in ext else None,
         )
 
     def to_frontmatter_dict(self) -> dict[str, Any]:
@@ -178,6 +195,12 @@ class SkillMetadata(BaseModel):
             ext["pack_name"] = self.pack_name
         if self.pack_version:
             ext["pack_version"] = self.pack_version
+        if self.invocation_user or not self.invocation_model:
+            ext["invocation"] = {"user": self.invocation_user, "model": self.invocation_model}
+        if self.arguments:
+            ext["arguments"] = [a.wire() for a in self.arguments]
+        if self.label is not None:
+            ext["label"] = self.label
 
         merged_metadata = dict(self.metadata)
         merged_metadata[AGENT_LOOP_NAMESPACE] = ext
@@ -247,6 +270,41 @@ class SkillCandidate(BaseModel):
     confidence: float = 1.0
     created_at: str
     status: Literal["pending", "approved", "rejected"] = "pending"
+    # The label of the run it was learned from (see `SkillMetadata.label`); None when nothing recorded one.
+    label: dict[str, Any] | None = None
+    # UI-B4: who learned it. The agent whose run proposed it (None: the assistant), that run, and the person the
+    # run acted for, who may decide it as its owner-to-be (an org admin may too).
+    source_agent_key: str | None = None
+    source_run_id: str | None = None
+    proposed_by: str | None = None
+
+
+class CandidateEdits(BaseModel):
+    """What a reviewer changed before approving a candidate (UI-B4): written as the skill's first version, so an
+    approval with edits is one version, never an approval and then an update."""
+
+    name: str | None = None
+    description: str | None = None
+    body: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    tags: list[str] | None = None
+
+    def applied_to(self, candidate: "SkillCandidate") -> "SkillCandidate":
+        changes = {k: v for k, v in self.model_dump().items() if v is not None}
+        return candidate.model_copy(update=changes)
+
+    @property
+    def empty(self) -> bool:
+        return all(v is None for v in self.model_dump().values())
+
+
+class SkillProvenance(BaseModel):
+    """Where agent-written skill content came from: the writing run's label (None: unknown) and its
+    conversation, whose erasure takes the skill. A store stamps it on every write it makes for a run."""
+
+    label: dict[str, Any] | None = None
+    session_id: str | None = None
 
 
 class SkillFilter(BaseModel):
