@@ -3490,7 +3490,14 @@
         "createError": "创建连接器失败",
         "createSuccess": "连接器实例“{{name}}”创建成功",
         "authSaveError": "保存认证配置失败",
-        "configSaveError": "保存配置失败"
+        "configSaveError": "保存配置失败",
+        "syncTurningOn": "正在为 {{name}} 开启同步",
+        "syncTurningOnDescription": "正在检查与 {{source}} 的连接，可能需要几秒钟。",
+        "syncTurningOff": "正在为 {{name}} 关闭同步",
+        "syncTurnedOn": "{{name}} 的同步已开启",
+        "syncTurnedOff": "{{name}} 的同步已关闭",
+        "syncToggleFailed": "无法更改 {{name}} 的同步",
+        "syncToggleFailedDescription": "请重试。如果仍然失败，请检查连接器的设置。"
       },
       "tabs": {
         "authenticate": "认证实例",
@@ -3790,7 +3797,9 @@
         "removing": "正在移除此连接器。",
         "configureFirst": "请先完成配置，然后才能启用同步。",
         "authenticateFirst": "请先认证此连接器，然后才能启用同步。",
-        "selected": "已选择 {{field}}"
+        "selected": "已选择 {{field}}",
+        "turningOn": "正在开启…",
+        "turningOff": "正在关闭…"
       },
       "instanceStatus": {
         "setup": {
