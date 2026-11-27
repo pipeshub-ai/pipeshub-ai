@@ -493,6 +493,89 @@ def test_profile_fence_is_volatile_read_committed_and_callable_by_the_login(db):
         assert {("pipeshub_query_login", "USAGE"), ("pipeshub_node_login", "USAGE")} <= grants
 
 
+def _prologue(fence: str) -> str:
+    """The units' shape (app/core/db/uow.py, src/libs/db/uow.ts): the org is set in a materialized pre that the fence's subquery reads."""
+    return ("WITH pre AS MATERIALIZED (SELECT %s::text AS role, set_config('app.org_id', %s, true) AS org) "
+            f"SELECT s.fence FROM pre, LATERAL (SELECT set_config('role', pre.role, true), {fence}(1) AS fence WHERE pre.org IS NOT NULL) s")
+
+
+def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
+    """kernel.org_writes_held holds no org here, so both fences answer as before; a body that holds one org (as an extra migration
+    location would plant) refuses that org's write units with 25006, and only them."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    held, other = "a" * 24, "b" * 24
+
+    def prologue(login: str, role: str, fence: str, org: str) -> None:
+        with connect(cluster, name, login) as c:
+            c.autocommit = False
+            try:
+                c.execute(_prologue(fence), (role, org))
+            finally:
+                c.rollback()
+
+    def every_unit(org: str) -> None:
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_profile_epoch", org)
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_store_epoch", org)
+
+    for org in (held, other, ""):
+        every_unit(org)
+    def hold_body(body: str) -> None:      # what an extra migration location's run does: the owner replaces the body
+        with connect(cluster, name) as c:
+            c.execute("GRANT CREATE ON SCHEMA kernel TO pipeshub_vetted_kernel")
+            c.execute("SET ROLE pipeshub_vetted_kernel")
+            c.execute("CREATE OR REPLACE FUNCTION kernel.org_writes_held(p_org text) RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER "
+                      f"SET search_path = pg_catalog, kernel, pg_temp SET standard_conforming_strings = on AS $fn$ BEGIN {body} END $fn$")
+            c.execute("RESET ROLE")
+            c.execute("REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel")
+
+    hold_body(f"RETURN p_org = '{held}';")
+    try:
+        for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction, match="writes are held"):
+                prologue("pipeshub_node_login", "pipeshub_node", fence, held)
+        every_unit(other)
+        every_unit("")
+    finally:
+        hold_body("RETURN false;")
+    with connect(cluster, name) as c:      # nobody but the fences' owner can call the hook
+        for role in ("pipeshub_node", "pipeshub_jobs"):
+            assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
+
+
+def test_a_hold_is_recorded_behind_the_fences_barriers_so_no_writer_in_flight_outlives_it(db):
+    """The fences ask for the hold after they hold their install-wide barrier (7341 for the profile fence, 7340 for the document
+    store's), shared to commit: whoever records a hold takes both exclusively first, so it cannot start while any writer is past its
+    fence, and while it is open every new writer is refused; the fences take no lock of their own for the hold."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    org, other = "a" * 24, "b" * 24
+    take = "SELECT pg_try_advisory_xact_lock(7341, 1) AND pg_try_advisory_xact_lock(7340, 1)"
+
+    def unit(fence: str, who: str) -> psycopg.Connection:
+        c = connect(cluster, name, "pipeshub_node_login")
+        c.autocommit = False
+        c.execute(_prologue(fence), ("pipeshub_node", who))
+        return c
+
+    with connect(cluster, name) as k:
+        for fence in ("assert_profile_epoch", "assert_store_epoch"):
+            src = k.execute("SELECT prosrc FROM pg_proc WHERE oid = %s::regprocedure", (f"kernel.{fence}(int)",)).fetchone()[0]
+            assert src.count("advisory") == 1 and "org_writes_held" in src
+    for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+        with unit(fence, org) as writer, connect(cluster, name) as opener:      # a writer is past its fence
+            opener.autocommit = False
+            assert opener.execute(take).fetchone()[0] is False
+            opener.rollback()
+            writer.rollback()                                                  # it ends
+            assert opener.execute(take).fetchone()[0] is True                  # now the hold can be recorded
+            for who in (org, other, ""):                                       # and nobody writes until it commits
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                    unit(fence, who).close()
+            opener.rollback()
+        unit(fence, org).close()
+
+
 def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrades_again(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)

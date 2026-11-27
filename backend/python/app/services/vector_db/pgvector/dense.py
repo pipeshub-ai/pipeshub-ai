@@ -372,7 +372,7 @@ class Sizer:
         count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb, False)
         return leaf, count
 
-    async def connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
+    async def connectors(self, org: str, collection_id: int, apps: list[str] | None = None) -> frozenset[str] | None:
         """The connectors of the org's collection, when a user who can read all of them may skip the membership arms; else None.
 
         That is safe only when there is at least one connector, there are not more than ``_MAX_CONNECTORS`` (found by hopping
@@ -381,13 +381,16 @@ class Sizer:
         of them: until its answer is in, and while an expired one is checked again, the answer is None and the arms are applied. On
         a timeout or any database error there is no elimination either. The answer is reused for a short time, so a connector
         created inside the window is not yet in it: the arms are then dropped for a user who may not read it, for at most
-        ``connector_ttl_s``."""
+        ``connector_ttl_s``.
+
+        ``apps``: the connectors of the user who asks. When they do not cover the org's connectors the arms cannot be dropped for them, so
+        the check stops after listing the connectors and does not look for unconnected points (a scan of the org's points)."""
         key = (org, collection_id)
         hit = self._connectors.get(key)
         if hit is not None and hit[0] >= time.monotonic():
             return hit[1]
         if key not in self._connectors_inflight:          # one check for the callers that miss together; it can scan every point of the org
-            task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id), name="pgvector-connectors")
+            task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id, apps), name="pgvector-connectors")
             task.add_done_callback(lambda t: (self._connectors_inflight.pop(key, None), t.cancelled() or t.exception()))
         return None
 
@@ -395,7 +398,7 @@ class Sizer:
         for task in list(self._connectors_inflight.values()):
             task.cancel()
 
-    async def _check_connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
+    async def _check_connectors(self, org: str, collection_id: int, apps: list[str] | None = None) -> frozenset[str] | None:
         async def read(tx: Tx) -> frozenset[str] | None:
             # The budget is the statements' own (never above the unit's, which carries the org's limit): a wait for a pooled connection
             # says the database is busy, not that the org is too big to check.
@@ -403,6 +406,8 @@ class Sizer:
             found = [r["member_id"] for r in await tx.fetch(_CONNECTORS, org, collection_id, _MAX_CONNECTORS + 1)]
             if not found or len(found) > _MAX_CONNECTORS:
                 return None
+            if apps is not None and not set(found) <= set(apps):
+                return None                 # nothing to drop for this user: asked again after connector_ttl_s, by whoever comes then
             if await tx.fetchval(_UNCONNECTED, org, collection_id):
                 return None
             return frozenset(found)

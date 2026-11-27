@@ -808,6 +808,9 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
             calls[_name] = calls.get(_name, 0) + 1
             return await _real(self, *a, **kw)
         monkeypatch.setattr(kh_browse.KhBrowseMixin, name, counted)
+    # what this counts is reads, not time: the request's wall-clock budget (BUDGET_S) ends a page early and caps its total on a loaded host, as it should
+    monkeypatch.setattr(kh_browse, "BUDGET_S", 3600.0)
+    monkeypatch.setattr(kh_listing, "BUDGET_S", 3600.0)
     page = await browse(p, org, "fold", granted, limit=50)
     assert [r["id"] for r in page["rows"]] == groups[:50] and all(r["hasChildren"] for r in page["rows"]) and page["total"] == 300, page["rows"][:3]
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls

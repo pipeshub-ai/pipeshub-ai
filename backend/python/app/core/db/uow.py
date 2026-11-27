@@ -100,17 +100,19 @@ ABORT_TIMEOUT_S = 5.0
 # JIT is off in every unit: its statements read rows by key, and the planner's estimate for a list of keys (or a plan with nodes disabled) passes
 # jit_above_cost at a few thousand keys, where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration and roles are not ours to change).
 _PROLOGUE = """
-WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
+WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r, set_config('app.org_id', $2, true) AS org)
 SELECT pre.r, now() AS started{fence_out} FROM pre, LATERAL (
-  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
+  SELECT set_config('role', $1, true), set_config('app.request_id', $3, true),
          set_config('statement_timeout', $4, true), set_config('lock_timeout', $5, true),
          set_config('plan_cache_mode', $6, true), set_config('jit', 'off', true),
          CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END{fence}
-  WHERE pre.r IS NOT NULL) s
+  WHERE pre.r IS NOT NULL AND pre.org IS NOT NULL) s
 """
 PROLOGUE_READ = _PROLOGUE.format(fence="", fence_out="")
 # The fence is VOLATILE (a STABLE one with an unused result would be dropped by the planner) and asserts READ COMMITTED; its
-# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column.
+# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column. It reads
+# the unit's org from app.org_id, which ``pre`` sets: ``s`` reads pre.org, so it runs after the materialized ``pre`` (an order given
+# by that dependency, not by the order of the expressions in one select list, which PostgreSQL does not define).
 PROLOGUE_WRITE = _PROLOGUE.format(fence=",\n         kernel.assert_profile_epoch($8) AS fence", fence_out=", s.fence")
 
 
