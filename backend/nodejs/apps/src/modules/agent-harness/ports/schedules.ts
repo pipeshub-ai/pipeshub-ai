@@ -7,7 +7,10 @@ import type {
   NotifyChannel,
   RunTrigger,
   RunTriggerContext,
+  ScheduleChangedFrom,
   ScheduleFiring,
+  ScheduleTrigger,
+  ScheduleRunnerKind,
   ScheduleStatus,
 } from '../domain/schedules';
 import type { RunDigest } from '../projection/run-digest';
@@ -15,6 +18,17 @@ import type { RunDigest } from '../projection/run-digest';
 export interface ScheduleLimits {
   perActor: number;
   perOrg: number;
+}
+
+/** What a person's edit writes (ADR-SCH-03 D4); every field optional, each present one replaced. */
+export interface ScheduleChange {
+  name?: string;
+  input?: RunInputSnapshot;
+  trigger?: ScheduleTrigger;
+  notify?: NotifyChannel[];
+  nextFireAt?: number | null;
+  skipNextAt?: number | null;
+  lastChangedFrom?: ScheduleChangedFrom;
 }
 
 /** Where schedules and their firings live (P8a); both adapters pass `schedule-store-contract`. */
@@ -46,9 +60,24 @@ export interface ScheduleStore {
       to: ScheduleStatus;
       reason: string | null;
       nextFireAt: number | null;
+      /** The chat a person made this change from (ADR-SCH-03 D3). */
+      lastChangedFrom?: ScheduleChangedFrom;
+      /** Only if the schedule is still at this revision (ADR-SCH-03 D5); another refuses `SCHEDULE_CHANGED`. */
+      expectedRevision?: number;
     },
     now: number,
   ): Promise<AgentSchedule | null>;
+  /**
+   * Changes what a person may edit of a schedule (ADR-SCH-03 D4) if its revision is still `expectedRevision`, and
+   * bumps the revision; `changed` when another change came first, null when it is gone. `skipNextAt: null` clears it.
+   */
+  update(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+    change: ScheduleChange,
+    now: number,
+  ): Promise<AgentSchedule | 'changed' | null>;
   /** Moves an agent schedule's version pin (OWD-14); null when it is gone, disabled or not an agent's. */
   setAgentVersion(
     orgId: string,
@@ -56,8 +85,15 @@ export interface ScheduleStore {
     agentVersion: AgentVersionPin,
     now: number,
   ): Promise<AgentSchedule | null>;
-  /** Deletes the schedule and its firings; false when it was not there. */
-  delete(orgId: string, id: string): Promise<boolean>;
+  /**
+   * Deletes the schedule and its firings; false when it was not there. With `expectedRevision`, only a schedule still
+   * at that revision, in the same write: one another change moved on is refused `SCHEDULE_CHANGED` (ADR-SCH-03 D5).
+   */
+  delete(
+    orgId: string,
+    id: string,
+    expectedRevision?: number,
+  ): Promise<boolean>;
   /** Active cron schedules whose cursor is due, oldest cursor first. */
   dueCron(now: number, limit: number): Promise<AgentSchedule[]>;
   /**
@@ -215,6 +251,8 @@ export interface ActorAuthority {
   authorize(
     orgId: string,
     actorId: string,
+    /** `ttlS`: how long the credential lives; absent, `ACTOR_CREDENTIAL_TTL` (a durable run's admission only). */
+    options?: { ttlS?: number },
   ): Promise<{ authorization: string } | { refused: ActorRefusal }>;
   /** Whether the user is an org admin (an admin may trigger runs from connector events). */
   isOrgAdmin(orgId: string, userId: string): Promise<boolean>;
@@ -297,7 +335,10 @@ export interface ScheduleNotifier {
     /** The agent the run is a conversation of; the link opens that agent's chat. */
     agentKey?: string;
     sessionId: string;
+    /** The runner's reference to the run (a classic turn's: its conversation). */
     runId: string;
+    /** Absent: the harness. */
+    runner?: ScheduleRunnerKind;
     deadlineAt: number;
   }): Promise<void>;
   /** A firing was refused (UX3, R1 F14): at most once a day per schedule, so a broken schedule is not silent. */
@@ -321,8 +362,15 @@ export interface RunEndedNotice {
   scheduleName: string;
   agentKey?: string;
   sessionId: string;
+  /** The runner's reference to the run: a durable run's id, a classic turn's conversation. */
   runId: string;
+  /** Which runner ran it (ADR-SCH-02 D2); absent: the harness. */
+  runner?: ScheduleRunnerKind;
   status: 'completed' | 'failed' | 'cancelled';
+  /** Why a failed run failed, where the runner says (`ask_expired`: an approval nobody gave by the deadline). */
+  reason?: string;
+  /** The schedule's cost cap did not apply: the run was a classic turn (D6). */
+  costCapIgnored?: true;
   channels: NotifyChannel[];
   /** What the run did (G-07), folded from its journal; absent when it could not be read. In the app only. */
   digest?: RunDigest;

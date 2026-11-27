@@ -798,7 +798,6 @@ describe('ConfigurationManager Controller', () => {
     // R50-OFF (ADR-OPS-06): a harness Labs setting cannot be saved while the harness is switched off.
     for (const [label, body] of [
       ['a harness Labs flag', { featureFlags: { enable_agent_harness: true } }],
-      ['scheduled runs', { featureFlags: { ENABLE_SCHEDULED_RUNS: true } }],
       ['knowledge publications', { featureFlags: { ENABLE_KNOWLEDGE_PUBLICATIONS: false } }],
       ['the harness rollout settings', { featureFlags: {}, agentHarness: { modelFamilies: null } }],
     ] as const) {
@@ -815,6 +814,22 @@ describe('ConfigurationManager Controller', () => {
         expect(mockEncService.encrypt.called).to.equal(false)
       })
     }
+
+    it('ADR-SCH-02 D1: saves Labs scheduled runs while the harness is switched off', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane(), HARNESS_OFF))
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { featureFlags: { ENABLE_SCHEDULED_RUNS: true } } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.equal(false)
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved.featureFlags.ENABLE_SCHEDULED_RUNS).to.equal(true)
+    })
 
     it('saves the other flags as before while the harness is switched off', async () => {
       const kvs = createMockKeyValueStore()
@@ -881,7 +896,13 @@ describe('ConfigurationManager Controller', () => {
 
       const keys = res.json.firstCall.args[0].flags.map((f: any) => f.key)
       expect(keys).to.include('ENABLE_MCP')
-      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+      // ADR-SCH-02 D1: scheduling is not the harness's, so an install without it can turn scheduling on.
+      expect(keys).to.include('ENABLE_SCHEDULED_RUNS')
+      // Its Beta badge comes from `beta`, not from being a harness flag.
+      const scheduled = res.json.firstCall.args[0].flags.find((f: any) => f.key === 'ENABLE_SCHEDULED_RUNS')
+      expect(scheduled).to.include({ beta: true })
+      expect(scheduled).to.not.have.property('requiresAgentHarness')
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
         expect(keys).to.not.include(key)
       }
     })
@@ -897,6 +918,7 @@ describe('ConfigurationManager Controller', () => {
       expect(harness.map((f) => f.key)).to.have.members([...AGENT_HARNESS_LABS_FLAGS])
       for (const flag of harness) {
         expect(flag.defaultEnabled, flag.key).to.equal(false)
+        expect(flag.beta, flag.key).to.equal(true)
       }
       expect(flags.find((f) => f.key === 'ENABLE_MCP')).to.not.have.property('requiresAgentHarness')
     })
@@ -1044,9 +1066,10 @@ describe('ConfigurationManager Controller', () => {
       expect(body.harnessReconcile).to.equal(false)
       expect(body.continuePrivately).to.equal(false)
       expect(body.engineRuns).to.equal(false)
-      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
         expect(body.featureFlags).to.not.have.property(key)
       }
+      expect(body.featureFlags).to.have.property('ENABLE_SCHEDULED_RUNS', false)
       expect(body.featureFlags).to.have.property('ENABLE_MCP')
       expect(decideForOrg.called).to.equal(false)
     })

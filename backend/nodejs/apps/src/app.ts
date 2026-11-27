@@ -823,6 +823,10 @@ export class Application {
     // chat speech (TTS/STT) proxy routes to the Python AI backend
     this.app.use('/api/v1/chat', createChatSpeechRouter(this.esAgentContainer));
 
+    // Scheduling is not the harness's (ADR-SCH-02 D1): mounted on every install, ahead of the harness namespace's
+    // guard; each request answers 404 while the org's Labs scheduled runs is off.
+    this.app.use(SCHEDULES_PREFIX, createScheduleRouter(this.esAgentContainer));
+    this.app.use(TRIGGERS_PREFIX, createTriggerRouter(this.esAgentContainer));
     this.app.use(AGENT_HARNESS_API_PREFIX, harnessNamespaceWhileOff());
     this.app.use(AGENT_HARNESS_INTERNAL_PREFIX, internalRoutesElsewhere());
     if (internalListenerWanted()) {
@@ -867,7 +871,6 @@ export class Application {
         agentHarnessSwitchedOn() ? this.edition.controlPlaneRoutes : [],
       ),
     );
-    this.app.use(SCHEDULES_PREFIX, whenHarnessSwitchedOn(createScheduleRouter(this.esAgentContainer)));
     this.app.use(
       PUBLICATIONS_PREFIX,
       whenHarnessSwitchedOn(createPublicationRouter(this.esAgentContainer)),
@@ -876,7 +879,6 @@ export class Application {
       CAPABILITY_SYNC_PATH,
       createHarnessCapabilitySyncRouter(this.esAgentContainer),
     );
-    this.app.use(TRIGGERS_PREFIX, whenHarnessSwitchedOn(createTriggerRouter(this.esAgentContainer)));
     this.app.use(MEMORIES_PREFIX, whenHarnessSwitchedOn(createMemoryRouter(this.esAgentContainer)));
     this.app.use(INBOX_PREFIX, whenHarnessSwitchedOn(createInboxRouter(this.esAgentContainer)));
 

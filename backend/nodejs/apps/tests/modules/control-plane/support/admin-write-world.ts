@@ -235,7 +235,7 @@ export function probedStore<S extends object>(inner: S, name: string, probe: Wri
 }
 
 /** The schedule store's configuration writes (a firing is run state, not configuration). */
-const SCHEDULE_CONFIG_WRITES: ReadonlySet<string> = new Set(['create', 'setStatus', 'setAgentVersion', 'delete']);
+const SCHEDULE_CONFIG_WRITES: ReadonlySet<string> = new Set(['create', 'setStatus', 'setAgentVersion', 'update', 'delete']);
 
 export function probedScheduleStore(inner: ScheduleStore, probe: WriteProbe): ScheduleStore {
   return new Proxy(inner, {

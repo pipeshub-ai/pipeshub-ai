@@ -237,7 +237,7 @@ export function describeScheduleStoreContract(
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const { firing } = await f.store.claimSlot(aFiring(schedule));
       expect(
-        await f.store.settle(ORG, firing.id, { status: 'admitted', runId: 'run-1', sessionId: 'ses-1', watchUntil: T0 + 10 }, T0 + 1),
+        await f.store.settle(ORG, firing.id, { status: 'admitted', runner: 'harness', runRef: 'run-1', runId: 'run-1', sessionId: 'ses-1', watchUntil: T0 + 10 }, T0 + 1),
       ).to.equal(true);
       expect(await f.store.settle(ORG, firing.id, { status: 'refused', reason: 'quota' }, T0 + 2)).to.equal(false);
       expect(await f.store.getFiring(ORG, firing.id)).to.deep.include({
@@ -249,6 +249,135 @@ export function describeScheduleStoreContract(
         watchUntil: T0 + 10,
       });
       expect(await f.store.getFiring(OTHER_ORG, firing.id)).to.equal(null);
+    });
+
+    it('SCH-02: a firing keeps the runner that started it and its reference; a classic turn has no run id', async () => {
+      const schedule = await f.store.create(aSchedule({ maxCostUsd: 1 }), LIMITS);
+      const { firing: classic } = await f.store.claimSlot(aFiring(schedule, { slotKey: 'm:classic' }));
+      expect(
+        await f.store.settle(
+          ORG,
+          classic.id,
+          { status: 'admitted', runner: 'classic', runRef: 'conv-1', runId: null, sessionId: 'conv-1', watchUntil: T0 + 60_000, costCapIgnored: true },
+          T0,
+        ),
+      ).to.equal(true);
+      expect(await f.store.getFiring(ORG, classic.id)).to.deep.include({
+        runner: 'classic',
+        runRef: 'conv-1',
+        runId: null,
+        sessionId: 'conv-1',
+        costCapIgnored: true,
+      });
+      expect((await f.store.watched(T0, 10)).map((w) => w.runRef)).to.include('conv-1');
+      const { firing: durable } = await f.store.claimSlot(aFiring(schedule, { slotKey: 'm:durable' }));
+      await f.store.settle(ORG, durable.id, { status: 'admitted', runner: 'harness', runRef: 'run-9', runId: 'run-9', sessionId: 'ses-9', watchUntil: T0 + 60_000 }, T0);
+      const read = await f.store.getFiring(ORG, durable.id);
+      expect(read).to.deep.include({ runner: 'harness', runRef: 'run-9', runId: 'run-9' });
+      expect(read).to.not.have.property('costCapIgnored');
+      // A refusal writes no runner.
+      const { firing: refused } = await f.store.claimSlot(aFiring(schedule, { slotKey: 'm:refused' }));
+      await f.store.settle(ORG, refused.id, { status: 'refused', reason: 'quota' }, T0);
+      expect(await f.store.getFiring(ORG, refused.id)).to.not.have.property('runner');
+    });
+
+    it('SCH-03: an update at the revision read changes the fields and bumps it; a stale one changes nothing', async () => {
+      const schedule = await f.store.create(aSchedule(), LIMITS);
+      const from = { conversationId: 'chat-1', agentKey: 'helper', at: T0 + 5, interactionId: 'ix-1' };
+      const input = { ...schedule.input!, query: 'An animal joke' };
+      const updated = await f.store.update(
+        ORG,
+        schedule.id,
+        0,
+        { name: 'Renamed', input, notify: ['in_app', 'email'], nextFireAt: T0 + 90_000, skipNextAt: T0 + 90_000, lastChangedFrom: from },
+        T0 + 5,
+      );
+      expect(updated).to.not.equal('changed');
+      const read = await f.store.get(ORG, schedule.id);
+      expect(read).to.deep.include({
+        name: 'Renamed',
+        revision: 1,
+        notify: ['in_app', 'email'],
+        nextFireAt: T0 + 90_000,
+        skipNextAt: T0 + 90_000,
+        lastChangedFrom: from,
+        updatedAt: T0 + 5,
+      });
+      expect(read?.input?.query).to.equal('An animal joke');
+      expect(await f.store.update(ORG, schedule.id, 0, { name: 'Late' }, T0 + 6)).to.equal('changed');
+      expect((await f.store.get(ORG, schedule.id))?.name).to.equal('Renamed');
+      await f.store.update(ORG, schedule.id, 1, { skipNextAt: null }, T0 + 7);
+      expect(await f.store.get(ORG, schedule.id)).to.not.have.property('skipNextAt');
+      expect(await f.store.update(ORG, 'no-such', 0, { name: 'x' }, T0)).to.equal(null);
+      expect(await f.store.update('0000000000000000000000ff', schedule.id, 2, { name: 'x' }, T0)).to.equal(null);
+      // A pause, a resume and a version move are changes too.
+      const paused = await f.store.setStatus(
+        ORG,
+        schedule.id,
+        { from: ['active'], to: 'paused', reason: 'by_actor', nextFireAt: null, lastChangedFrom: { ...from, interactionId: 'ix-2' } },
+        T0 + 8,
+      );
+      expect(paused).to.deep.include({ revision: 3, lastChangedFrom: { ...from, interactionId: 'ix-2' } });
+    });
+
+    it('SCH-03: a delete or a pause at a stale revision is refused SCHEDULE_CHANGED and removes nothing', async () => {
+      const schedule = await f.store.create(aSchedule(), LIMITS);
+      await f.store.claimSlot(aFiring(schedule));
+      await f.store.update(ORG, schedule.id, 0, { name: 'Moved on' }, T0 + 1);
+      const refused = async (work: () => Promise<unknown>): Promise<string> => {
+        try {
+          await work();
+        } catch (error) {
+          return (error as HarnessScheduleRefusedError).code;
+        }
+        return 'none';
+      };
+      expect(await refused(() => f.store.delete(ORG, schedule.id, 0))).to.equal('SCHEDULE_CHANGED');
+      expect(await f.store.get(ORG, schedule.id)).to.not.equal(null);
+      expect(await f.store.firings(ORG, schedule.id, 10)).to.have.length(1);
+      const pause = { from: ['active'] as const, to: 'paused' as const, reason: 'by_actor', nextFireAt: null };
+      expect(await refused(() => f.store.setStatus(ORG, schedule.id, { ...pause, expectedRevision: 0 }, T0 + 2))).to.equal(
+        'SCHEDULE_CHANGED',
+      );
+      expect((await f.store.get(ORG, schedule.id))?.status).to.equal('active');
+      expect(await f.store.setStatus(ORG, schedule.id, { ...pause, expectedRevision: 1 }, T0 + 2)).to.deep.include({
+        status: 'paused',
+        revision: 2,
+      });
+      // A pause from a state it cannot leave is not a change of revision: it answers null, as before.
+      expect(await f.store.setStatus(ORG, schedule.id, { ...pause, expectedRevision: 2 }, T0 + 3)).to.equal(null);
+      expect(await f.store.delete(ORG, schedule.id, 2)).to.equal(true);
+      expect(await f.store.delete(ORG, schedule.id, 2)).to.equal(false);
+      expect(await f.store.delete(ORG, 'no-such', 0)).to.equal(false);
+    });
+
+    it('SCH-03: an edit and a delete approved on the same revision race: exactly one of them happens', async () => {
+      for (let round = 0; round < 5; round += 1) {
+        const schedule = await f.store.create(aSchedule(), LIMITS);
+        const [edited, deleted] = await Promise.allSettled([
+          f.store.update(ORG, schedule.id, 0, { name: 'Edited' }, T0 + 1),
+          f.store.delete(ORG, schedule.id, 0),
+        ]);
+        const after = await f.store.get(ORG, schedule.id);
+        if (after === null) {
+          // The delete won: the edit found nothing to change.
+          expect(deleted).to.deep.equal({ status: 'fulfilled', value: true });
+          expect(edited).to.deep.equal({ status: 'fulfilled', value: null });
+        } else {
+          // The edit won: the delete approved on the old revision removed nothing.
+          expect(after).to.deep.include({ name: 'Edited', revision: 1 });
+          expect(deleted.status).to.equal('rejected');
+          expect(((deleted as PromiseRejectedResult).reason as HarnessScheduleRefusedError).code).to.equal('SCHEDULE_CHANGED');
+        }
+      }
+    });
+
+    it('SCH-03: a schedule a classic chat made keeps its chat; deleting it leaves no tombstone', async () => {
+      const schedule = await f.store.create(aSchedule({ origin: { conversationId: 'chat-1', agentKey: 'helper' } }), LIMITS);
+      expect((await f.store.get(ORG, schedule.id))?.origin).to.deep.equal({ conversationId: 'chat-1', agentKey: 'helper' });
+      expect(await f.store.delete(ORG, schedule.id)).to.equal(true);
+      // No tombstone holds the id: the same id can be made again.
+      expect((await f.store.create(aSchedule({ id: schedule.id }), LIMITS)).id).to.equal(schedule.id);
     });
 
     it('ST-5: a pending firing whose lease passed is retaken once', async () => {
@@ -370,7 +499,7 @@ export function describeScheduleStoreContract(
     it('ST-8: the approval watch', async () => {
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const { firing } = await f.store.claimSlot(aFiring(schedule));
-      await f.store.settle(ORG, firing.id, { status: 'admitted', runId: 'run-1', sessionId: 'ses-1', watchUntil: T0 + 1_000 }, T0);
+      await f.store.settle(ORG, firing.id, { status: 'admitted', runner: 'harness', runRef: 'run-1', runId: 'run-1', sessionId: 'ses-1', watchUntil: T0 + 1_000 }, T0);
       expect((await f.store.watched(T0, 10)).map((w) => w.id)).to.deep.equal([firing.id]);
       // A run expired at its deadline is still seen ending (TR-07): the watch outlives it by the grace.
       expect((await f.store.watched(T0 + 1_000 + WATCH_GRACE_MS - 1, 10)).map((w) => w.id)).to.deep.equal([firing.id]);
@@ -390,7 +519,7 @@ export function describeScheduleStoreContract(
       const ids: string[] = [];
       for (let i = 0; i < 3; i += 1) {
         const { firing } = await f.store.claimSlot(aFiring(schedule));
-        await f.store.settle(ORG, firing.id, { status: 'admitted', runId: `run-${String(i)}`, sessionId: 's', watchUntil: T0 + 60_000 }, T0);
+        await f.store.settle(ORG, firing.id, { status: 'admitted', runner: 'harness', runRef: `run-${String(i)}`, runId: `run-${String(i)}`, sessionId: 's', watchUntil: T0 + 60_000 }, T0);
         ids.push(firing.id);
       }
       await f.store.markChecked(ORG, ids[0]!, T0 + 1);
@@ -403,7 +532,7 @@ export function describeScheduleStoreContract(
     it('ST-11 (TR-06): a slot by its key; the active firings; one queued firing, put back without spending an attempt', async () => {
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const { firing: active } = await f.store.claimSlot(aFiring(schedule, { slotAt: T0 }));
-      await f.store.settle(ORG, active.id, { status: 'admitted', runId: 'run-1', sessionId: 's', watchUntil: T0 + 60_000 }, T0);
+      await f.store.settle(ORG, active.id, { status: 'admitted', runner: 'harness', runRef: 'run-1', runId: 'run-1', sessionId: 's', watchUntil: T0 + 60_000 }, T0);
       expect((await f.store.firingBySlot(ORG, schedule.id, active.slotKey))?.id).to.equal(active.id);
       expect(await f.store.firingBySlot(ORG, schedule.id, 'missing')).to.equal(null);
       expect(await f.store.firingBySlot(OTHER_ORG, schedule.id, active.slotKey)).to.equal(null);

@@ -73,7 +73,7 @@ interface ModelSchedule {
 
 const outcomeOf = (status: FiringOutcome['status'], now: number): FiringOutcome =>
   status === 'admitted'
-    ? { status, runId: 'run-1', sessionId: 'ses-1', watchUntil: now + HOUR }
+    ? { status, runner: 'harness', runRef: 'run-1', runId: 'run-1', sessionId: 'ses-1', watchUntil: now + HOUR }
     : { status, reason: 'qa13' };
 
 const view = (f: ScheduleFiring) => [f.id, f.slotKey, f.status, f.attempts, f.leaseUntil] as const;

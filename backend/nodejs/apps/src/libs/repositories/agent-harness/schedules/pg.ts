@@ -10,9 +10,13 @@ import {
   SCHEDULE_TOMBSTONE_STATUS,
   type ScheduleStatus,
   WATCH_GRACE_MS,
+  settledRun,
+  type ScheduleChangedFrom,
+  scheduleChanged,
 } from '../../../../modules/agent-harness/domain/schedules';
 import type {
   ScheduleEraser,
+  ScheduleChange,
   ScheduleLimits,
   ScheduleStore,
 } from '../../../../modules/agent-harness/ports/schedules';
@@ -167,6 +171,8 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       to: ScheduleStatus;
       reason: string | null;
       nextFireAt: number | null;
+      lastChangedFrom?: ScheduleChangedFrom;
+      expectedRevision?: number;
     },
     now: number,
   ): Promise<AgentSchedule | null> {
@@ -174,7 +180,9 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       this.scheduleDocs(
         k,
         `/* pipeshub:harness.schedules_set_status */ UPDATE harness.schedules SET doc = doc || $4::jsonb
-          WHERE org_id = $1 AND id = $2 AND status = ANY($3::text[]) RETURNING doc`,
+            || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
+          WHERE org_id = $1 AND id = $2 AND status = ANY($3::text[])
+            AND ($5::bigint IS NULL OR COALESCE((doc->>'revision')::bigint, 0) = $5::bigint) RETURNING doc`,
         [
           orgId,
           id,
@@ -183,12 +191,45 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
             status: change.to,
             statusReason: change.reason,
             nextFireAt: change.nextFireAt,
+            ...(change.lastChangedFrom !== undefined
+              ? { lastChangedFrom: change.lastChangedFrom }
+              : {}),
             updatedAt: now,
           }),
+          change.expectedRevision ?? null,
         ],
       ),
     );
-    return found[0] === undefined ? null : toSchedule(this.inputs, found[0]);
+    if (found[0] !== undefined) return toSchedule(this.inputs, found[0]);
+    const expected = change.expectedRevision;
+    if (expected !== undefined) {
+      const live = await this.org(orgId, false, (k) =>
+        this.scheduleDocs(
+          k,
+          `/* pipeshub:harness.schedules_get_live */ SELECT doc FROM harness.schedules
+            WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
+          [orgId, id],
+        ),
+      );
+      if (live[0] !== undefined && (live[0].revision ?? 0) !== expected) {
+        throw scheduleChanged();
+      }
+    }
+    return null;
+  }
+
+  /** Whether the org holds a live schedule (not a tombstone) under this id. */
+  private async live(
+    k: PgKernelTx,
+    orgId: string,
+    id: string,
+  ): Promise<boolean> {
+    const { rows } = await k.query<{ id: string }>(
+      `/* pipeshub:harness.schedules_live */ SELECT id FROM harness.schedules
+        WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
+      [orgId, id],
+    );
+    return rows.length > 0;
   }
 
   async setAgentVersion(
@@ -201,6 +242,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       this.scheduleDocs(
         k,
         `/* pipeshub:harness.schedules_set_version */ UPDATE harness.schedules SET doc = doc || $3::jsonb
+            || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)
           WHERE org_id = $1 AND id = $2 AND doc ? 'agentKey' AND status <> 'disabled' RETURNING doc`,
         [orgId, id, docParam({ agentVersion, updatedAt: now })],
       ),
@@ -208,26 +250,79 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     return found[0] === undefined ? null : toSchedule(this.inputs, found[0]);
   }
 
+  async update(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+    change: ScheduleChange,
+    now: number,
+  ): Promise<AgentSchedule | 'changed' | null> {
+    const { input, skipNextAt, ...fields } = change;
+    const patch: Record<string, unknown> = { ...fields, updatedAt: now };
+    if (input !== undefined) {
+      patch['input'] = await this.inputs.sealInput(
+        orgId,
+        { scheduleId: id },
+        input,
+      );
+    }
+    if (skipNextAt !== undefined && skipNextAt !== null) {
+      patch['skipNextAt'] = skipNextAt;
+    }
+    const removed = skipNextAt === null ? ['skipNextAt'] : [];
+    return this.org(orgId, true, async (k) => {
+      const found = await this.scheduleDocs(
+        k,
+        `/* pipeshub:harness.schedules_update */ UPDATE harness.schedules
+            SET doc = (doc || $4::jsonb
+              || jsonb_build_object('revision', COALESCE((doc->>'revision')::bigint, 0) + 1)) - $5::text[]
+          WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
+            AND COALESCE((doc->>'revision')::bigint, 0) = $3 RETURNING doc`,
+        [orgId, id, expectedRevision, docParam(patch), removed],
+      );
+      if (found[0] !== undefined) return toSchedule(this.inputs, found[0]);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:harness.schedules_exists */ SELECT id FROM harness.schedules
+          WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
+        [orgId, id],
+      );
+      return rows.length === 0 ? null : 'changed';
+    });
+  }
+
   /** A chat-made schedule leaves its tombstone in the same unit (ADR-SCH-01 D3); any other goes. */
-  delete(orgId: string, id: string): Promise<boolean> {
+  delete(
+    orgId: string,
+    id: string,
+    expectedRevision?: number,
+  ): Promise<boolean> {
+    const revision = expectedRevision ?? null;
     return this.org(orgId, true, async (k) => {
       const now = await this.time.now(k);
+      // The revision is in each WHERE: a row another change updated first is re-read under its lock and not touched.
       const { rows } = await k.query<{ id: string }>(
         `/* pipeshub:harness.schedules_tombstone */ UPDATE harness.schedules
             SET doc = jsonb_build_object('_id', id, 'orgId', org_id, 'actorId', doc->'actorId',
                                          'status', '${SCHEDULE_TOMBSTONE_STATUS}', 'origin', doc->'origin',
                                          'input', NULL, 'deletedAt', $3::bigint)
-          WHERE org_id = $1 AND id = $2 AND doc ? 'origin' AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
+          WHERE org_id = $1 AND id = $2 AND doc->'origin' ? 'interactionId' AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
+            AND ($4::bigint IS NULL OR COALESCE((doc->>'revision')::bigint, 0) = $4::bigint)
           RETURNING id`,
-        [orgId, id, now],
+        [orgId, id, now, revision],
       );
       if (rows.length !== 1) {
         const { rowCount } = await k.query(
           `/* pipeshub:harness.schedules_delete */ DELETE FROM harness.schedules
-            WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
-          [orgId, id],
+            WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
+              AND ($3::bigint IS NULL OR COALESCE((doc->>'revision')::bigint, 0) = $3::bigint)`,
+          [orgId, id, revision],
         );
-        if (rowCount !== 1) return false;
+        if (rowCount !== 1) {
+          if (revision !== null && (await this.live(k, orgId, id))) {
+            throw scheduleChanged();
+          }
+          return false;
+        }
       }
       await k.query(
         `/* pipeshub:harness.schedule_firings_delete */ DELETE FROM harness.schedule_firings
@@ -351,6 +446,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
         reason: admitted ? null : outcome.reason,
         watchUntil: admitted ? outcome.watchUntil : null,
         settledAt: now,
+        ...settledRun(outcome),
       },
     );
   }

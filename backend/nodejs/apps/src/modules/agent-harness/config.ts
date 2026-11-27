@@ -49,7 +49,9 @@ export const recordCapabilitySettlement = (
  * Whether the document store has multi-document transactions: a MongoDB replica set (`REPLICA_SET_AVAILABLE`), or
  * PostgreSQL (`DOC_STORE=postgres`), where every unit of work is one.
  */
-const transactionsAvailable = (env: AgentHarnessEnvironment): boolean =>
+export const transactionsAvailable = (
+  env: AgentHarnessEnvironment = process.env,
+): boolean =>
   envFlag('REPLICA_SET_AVAILABLE', env) ||
   (env['DOC_STORE'] ?? '').trim().toLowerCase() === 'postgres';
 
@@ -79,6 +81,32 @@ export const recordOrgHarnessReader = (
 ): void => {
   orgHarnessReader = reader;
 };
+
+// Recorded once at composition (Labs `ENABLE_SCHEDULED_RUNS`); null until then.
+let orgSchedulesReader: OrgHarnessReader | null = null;
+
+export const recordOrgSchedulesReader = (
+  reader: OrgHarnessReader | null,
+): void => {
+  orgSchedulesReader = reader;
+};
+
+/**
+ * Whether the org has scheduling (ADR-SCH-02 D1): Labs `ENABLE_SCHEDULED_RUNS` alone, on every install, whatever its
+ * harness. `false` without an org, without a reader, or when the setting cannot be read (fail closed). Read where it
+ * is used, never cached across a request.
+ */
+export async function orgSchedulesOn(
+  orgId: string | null | undefined,
+  reader: OrgHarnessReader | null = orgSchedulesReader,
+): Promise<boolean> {
+  if (!orgId || reader === null) return false;
+  try {
+    return await reader(orgId);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * `false` with the switch off, without an org, before a reader is recorded, or when the org's settings cannot be

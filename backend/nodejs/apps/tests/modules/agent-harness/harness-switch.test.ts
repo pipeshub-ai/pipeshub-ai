@@ -127,13 +127,26 @@ describe('R50-OFF the harness switch on the routes', () => {
       'MODEL_ACCOUNTS_PREFIX',
       'AGENT_HARNESS_ADMIN_PREFIX',
       'AGENT_HARNESS_RUNS_PREFIX',
-      'SCHEDULES_PREFIX',
       'INBOX_PREFIX',
     ]) {
       expect(
         source.search(new RegExp(`this\\.app\\.use\\( ?${family},`)),
         family,
       ).to.be.greaterThan(guard);
+    }
+    // ADR-SCH-02 D1: scheduling is not the harness's: served on every install, ahead of the namespace's guard.
+    for (const family of ['SCHEDULES_PREFIX', 'TRIGGERS_PREFIX']) {
+      const at = source.search(new RegExp(`this\\.app\\.use\\( ?${family},`));
+      expect(at, family).to.be.greaterThan(0);
+      expect(at, family).to.be.lessThan(guard);
+    }
+    for (const factory of ['createScheduleRouter', 'createTriggerRouter']) {
+      expect(source.replace(/\s+/g, ''), factory).to.include(
+        `${factory}(this.esAgentContainer)`,
+      );
+      expect(source.replace(/\s+/g, ''), factory).to.not.include(
+        `whenHarnessSwitchedOn(${factory}(`,
+      );
     }
     const unmatched = source.indexOf(
       'this.app.use(AGENT_HARNESS_API_PREFIX, harnessNamespaceUnmatched)',
@@ -152,7 +165,6 @@ describe('R50-OFF the harness switch on the routes', () => {
       'createChatHarnessSessionRouter',
       'createAgentHarnessSessionRouter',
       'createAgentConfigRouter',
-      'createScheduleRouter',
       'createInboxRouter',
       'createAgentHarnessRunsRouter',
     ]) {

@@ -38,8 +38,8 @@ export const mongoActorReader: ActorReader = (_orgId, actorId) =>
  * The user a schedule runs as, read at each firing (P8a): the same checks
  * `generateAuthToken` makes before any sign-in (not deleted, not disabled, a
  * person, an active org), read from the database, never from the schedule.
- * The credential it mints is the user's own, lives five minutes, and is only
- * presented to the agent authority, as an interactive run presents theirs.
+ * The credential it mints is the user's own and lives five minutes, or as long
+ * as the caller asks for a classic turn that presents it while it runs (ADR-SCH-02 D3).
  */
 export class HarnessActorAuthority implements ActorAuthority {
   constructor(
@@ -50,6 +50,7 @@ export class HarnessActorAuthority implements ActorAuthority {
   async authorize(
     orgId: string,
     actorId: string,
+    options?: { ttlS?: number },
   ): Promise<{ authorization: string } | { refused: ActorRefusal }> {
     if (
       !mongoose.isValidObjectId(actorId) ||
@@ -77,7 +78,9 @@ export class HarnessActorAuthority implements ActorAuthority {
       user.fullName ?? null,
       org.accountType,
       normalizeUserRole(user.role) ?? 'member',
-      ACTOR_CREDENTIAL_TTL,
+      options?.ttlS !== undefined
+        ? `${String(Math.ceil(options.ttlS))}s`
+        : ACTOR_CREDENTIAL_TTL,
     );
     return { authorization: `Bearer ${token}` };
   }

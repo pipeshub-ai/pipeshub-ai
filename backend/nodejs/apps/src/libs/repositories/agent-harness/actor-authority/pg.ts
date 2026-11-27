@@ -33,10 +33,14 @@ export class PgActorAuthority extends HarnessActorAuthority {
   override authorize(
     orgId: string,
     actorId: string,
+    options?: { ttlS?: number },
   ): ReturnType<HarnessActorAuthority['authorize']> {
     // An id that is no org's is refused before any read, with nothing to bind.
-    if (oidOf(orgId) === undefined) return super.authorize(orgId, actorId);
-    return inBoundOrgUnit(orgId, () => super.authorize(orgId, actorId));
+    if (oidOf(orgId) === undefined)
+      return super.authorize(orgId, actorId, options);
+    return inBoundOrgUnit(orgId, () =>
+      super.authorize(orgId, actorId, options),
+    );
   }
 
   override isOrgAdmin(orgId: string, userId: string): Promise<boolean> {

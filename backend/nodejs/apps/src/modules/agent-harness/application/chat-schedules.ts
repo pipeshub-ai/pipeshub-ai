@@ -13,6 +13,7 @@ import { principalRefFor } from '../domain/run-spec';
 import type {
   AgentSchedule,
   NotifyChannel,
+  ScheduleChangedFrom,
   ScheduleOrigin,
   ScheduleTrigger,
 } from '../domain/schedules';
@@ -24,6 +25,8 @@ import {
 } from './harness-log';
 import type {
   CreateScheduleRequest,
+  ScheduleCaller,
+  ScheduleListItem,
   ScheduleView,
   ScheduleService,
   ScheduleTemplate,
@@ -32,6 +35,56 @@ import type {
 
 /** The platform tool a harness run proposes a schedule with (ADR-SCH-01 D2). */
 export const SCHEDULE_CREATE_TOOL_ID = 'pipeshub@schedules/create';
+/** The schedules toolset's other tools (ADR-SCH-03 D1): find reads, update and delete ask every time. */
+export const SCHEDULE_FIND_TOOL_ID = 'pipeshub@schedules/find';
+export const SCHEDULE_UPDATE_TOOL_ID = 'pipeshub@schedules/update';
+export const SCHEDULE_DELETE_TOOL_ID = 'pipeshub@schedules/delete';
+
+/** `schedule_update`'s arguments (`schedule-update-arguments.schema.json`). */
+export interface ScheduleUpdateToolArguments {
+  id: string;
+  revision: number;
+  name?: string;
+  ask?: string;
+  when?: ScheduleToolArguments['when'];
+  notify?: NotifyChannel[];
+  action?: 'pause' | 'resume' | 'skip_next' | 'run_now';
+}
+
+/** `schedule_delete`'s arguments (`schedule-delete-arguments.schema.json`). */
+export interface ScheduleDeleteToolArguments {
+  id: string;
+  revision: number;
+}
+
+/** `schedule_find`'s arguments (`schedule-find-arguments.schema.json`). */
+export interface ScheduleFindToolArguments {
+  query?: string;
+  status?: 'active' | 'paused' | 'disabled';
+  madeHere?: boolean;
+}
+
+/** The most schedules `schedule_find` answers (ADR-SCH-03 D2). */
+export const SCHEDULE_FIND_LIMIT = 20;
+
+/**
+ * The one rule of `schedule_update` the generated models cannot say (ADR-SCH-03 D4): field changes, at least one, or
+ * one action, never both. Null when the call keeps it.
+ */
+export function updateArgumentsProblem(
+  args: ScheduleUpdateToolArguments,
+): string | null {
+  const fields = (['name', 'ask', 'when', 'notify'] as const).filter(
+    (field) => args[field] !== undefined,
+  );
+  if (args.action !== undefined && fields.length > 0) {
+    return 'an action is not combined with changes';
+  }
+  if (args.action === undefined && fields.length === 0) {
+    return 'nothing to change';
+  }
+  return null;
+}
 /** Node's audit fact in the run's journal of the schedule an approval made; single use is the store's, not this. */
 export const SCHEDULE_CREATED_EVENT = 'x.pipeshub.schedule.created';
 
@@ -110,6 +163,12 @@ export interface ChatScheduleView {
   nextFireAt: string | null;
 }
 
+/** A change a chat made (ADR-SCH-03 D4): the schedule as it is now, and whether this call changed it. */
+export interface ChatScheduleChange {
+  schedule: ScheduleView | null;
+  changed: boolean;
+}
+
 export interface ChatScheduleOptions {
   /** The run with its input opened, and its journal with payloads resolved. */
   runs: {
@@ -118,7 +177,19 @@ export interface ChatScheduleOptions {
   };
   /** How the run's person reached it: a schedule is a person's, never a service's. */
   vias: { via(orgId: string, runId: string): Promise<RunVia | null> };
-  schedules: Pick<ScheduleService, 'create'>;
+  schedules: Pick<
+    ScheduleService,
+    | 'create'
+    | 'update'
+    | 'skipNext'
+    | 'pause'
+    | 'resume'
+    | 'runNow'
+    | 'delete'
+    | 'get'
+    | 'list'
+    | 'assertRevision'
+  >;
   store: Pick<ScheduleStore, 'get'>;
   actors: Pick<ActorAuthority, 'authorize'>;
   marks: ScheduleMarks;
@@ -248,6 +319,7 @@ export class ChatScheduleService {
       conversationId: run.sessionId,
       runId,
       interactionId: request.interactionId,
+      ...(run.agentKey !== undefined ? { agentKey: run.agentKey } : {}),
     };
     let created: ScheduleView;
     try {
@@ -290,6 +362,249 @@ export class ChatScheduleService {
         nextFireAt: created.nextFireAt,
       },
       created: true,
+    };
+  }
+
+  /** The run's person's own schedules, as `schedule_find` reads them (ADR-SCH-03 D2): this chat's first. */
+  async find(
+    orgId: string,
+    runId: string,
+    args: ScheduleFindToolArguments,
+  ): Promise<ScheduleListItem[]> {
+    const { run, caller } = await this.personOf(orgId, runId);
+    return this.options.schedules.list(caller, SCHEDULE_FIND_LIMIT, false, {
+      conversationId: run.sessionId,
+      ...(args.query !== undefined ? { query: args.query } : {}),
+      ...(args.status !== undefined ? { status: args.status } : {}),
+      ...(args.madeHere !== undefined ? { madeHere: args.madeHere } : {}),
+    });
+  }
+
+  /** One of the run's person's schedules, as a card shows its current values before asking (ADR-SCH-03 D5). */
+  async read(
+    orgId: string,
+    runId: string,
+    scheduleId: string,
+  ): Promise<ScheduleView> {
+    const { caller } = await this.personOf(orgId, runId);
+    const view = await this.options.schedules.get(caller, scheduleId);
+    if (view.actorId !== caller.userId) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_NOT_FOUND',
+        'Schedule not found',
+      );
+    }
+    return view;
+  }
+
+  /**
+   * A change the run's person approved (ADR-SCH-03 D6): only on their own `approved` decision of exactly this call,
+   * as for a create, then made as them with every check the Schedules page makes. The schedule records this chat
+   * and the call, so a repeat of the same decision changes nothing again.
+   */
+  async update(
+    orgId: string,
+    runId: string,
+    scheduleId: string,
+    request: {
+      interactionId: string;
+      toolId: string;
+      arguments: ScheduleUpdateToolArguments;
+      callArgsDigest?: string;
+    },
+  ): Promise<ChatScheduleChange> {
+    const args = request.arguments;
+    if (args.id !== scheduleId) throw notApproved('another schedule');
+    const problem = updateArgumentsProblem(args);
+    if (problem !== null) {
+      throw new HarnessScheduleRefusedError('SCHEDULE_INVALID', problem);
+    }
+    const run = await this.approvedRun(orgId, runId, {
+      ...request,
+      expected: SCHEDULE_UPDATE_TOOL_ID,
+    });
+    const { caller } = await this.personOf(orgId, runId, run);
+    const current = await this.options.store.get(orgId, scheduleId);
+    if (current === null || current.actorId !== caller.userId) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_NOT_FOUND',
+        'Schedule not found',
+      );
+    }
+    if (current.lastChangedFrom?.interactionId === request.interactionId) {
+      return {
+        schedule: await this.options.schedules.get(caller, scheduleId),
+        changed: false,
+      };
+    }
+    const from: ScheduleChangedFrom = {
+      conversationId: run.sessionId,
+      agentKey: run.agentKey ?? null,
+      at: Date.now(),
+      interactionId: request.interactionId,
+    };
+    const schedules = this.options.schedules;
+    let schedule: ScheduleView;
+    switch (args.action) {
+      case 'pause':
+      case 'resume':
+        schedule = await schedules[args.action](
+          caller,
+          scheduleId,
+          from,
+          args.revision,
+        );
+        break;
+      case 'skip_next':
+        schedule = await schedules.skipNext(
+          caller,
+          scheduleId,
+          args.revision,
+          from,
+        );
+        break;
+      case 'run_now':
+        await schedules.assertRevision(caller, scheduleId, args.revision);
+        await schedules.runNow(
+          caller,
+          scheduleId,
+          `chat:${request.interactionId}`,
+        );
+        schedule = await schedules.get(caller, scheduleId);
+        break;
+      case undefined:
+        schedule = await schedules.update(
+          caller,
+          scheduleId,
+          {
+            revision: args.revision,
+            ...(args.name !== undefined ? { name: args.name } : {}),
+            ...(args.ask !== undefined ? { query: args.ask } : {}),
+            ...(args.when !== undefined
+              ? {
+                  trigger:
+                    args.when.kind === 'once'
+                      ? {
+                          kind: 'once',
+                          at: args.when.at,
+                          timeZone: args.when.timeZone,
+                        }
+                      : {
+                          kind: 'cron',
+                          cron: args.when.cron,
+                          timeZone: args.when.timeZone,
+                        },
+                }
+              : {}),
+            ...(args.notify !== undefined ? { notify: [...args.notify] } : {}),
+          },
+          from,
+        );
+        break;
+    }
+    this.logger.info(
+      'schedule.changed_from_chat',
+      harnessLogMeta('schedule.changed_from_chat', {
+        orgId,
+        runId,
+        sessionId: run.sessionId,
+        scheduleId,
+        action: args.action ?? 'edit',
+      }),
+    );
+    return { schedule, changed: true };
+  }
+
+  /** A delete the run's person approved (ADR-SCH-03 D6); a repeat once it is gone answers that it is gone. */
+  async delete(
+    orgId: string,
+    runId: string,
+    scheduleId: string,
+    request: {
+      interactionId: string;
+      toolId: string;
+      arguments: ScheduleDeleteToolArguments;
+      callArgsDigest?: string;
+    },
+  ): Promise<ChatScheduleChange> {
+    if (request.arguments.id !== scheduleId) {
+      throw notApproved('another schedule');
+    }
+    const run = await this.approvedRun(orgId, runId, {
+      ...request,
+      expected: SCHEDULE_DELETE_TOOL_ID,
+    });
+    const { caller } = await this.personOf(orgId, runId, run);
+    const current = await this.options.store.get(orgId, scheduleId);
+    if (current === null) return { schedule: null, changed: false };
+    if (current.actorId !== caller.userId) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_NOT_FOUND',
+        'Schedule not found',
+      );
+    }
+    await this.options.schedules.delete(
+      caller,
+      scheduleId,
+      request.arguments.revision,
+    );
+    this.logger.info(
+      'schedule.deleted_from_chat',
+      harnessLogMeta('schedule.deleted_from_chat', {
+        orgId,
+        runId,
+        sessionId: run.sessionId,
+        scheduleId,
+      }),
+    );
+    return { schedule: null, changed: true };
+  }
+
+  /** The run and its journal's approval of this call, for a change (the create's own check, for another tool). */
+  private async approvedRun(
+    orgId: string,
+    runId: string,
+    request: {
+      interactionId: string;
+      toolId: string;
+      arguments: unknown;
+      callArgsDigest?: string;
+      expected: string;
+    },
+  ): Promise<HarnessRun> {
+    const run = await this.options.runs.get(orgId, runId);
+    if (run === null) throw new HarnessNotFoundError();
+    const events = await this.options.runs.runEvents(orgId, runId);
+    this.assertApprovedCall(run, events, request, request.expected);
+    return run;
+  }
+
+  /** The person the run acts for, as a schedule caller, their authority re-read now. */
+  private async personOf(
+    orgId: string,
+    runId: string,
+    known?: HarnessRun,
+  ): Promise<{ run: HarnessRun; caller: ScheduleCaller }> {
+    const run = known ?? (await this.options.runs.get(orgId, runId));
+    if (run === null) throw new HarnessNotFoundError();
+    const actor = await this.options.actors.authorize(orgId, run.actorId);
+    if ('refused' in actor) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_FORBIDDEN',
+        'The person this chat acts for can no longer manage schedules',
+      );
+    }
+    const via = (await this.options.vias.via(orgId, runId)) ?? 'session';
+    return {
+      run,
+      caller: {
+        orgId,
+        userId: run.actorId,
+        via,
+        ...(run.input?.locale !== undefined
+          ? { locale: run.input.locale }
+          : {}),
+      },
     };
   }
 
@@ -346,7 +661,22 @@ export class ChatScheduleService {
     events: readonly JournalEvent[],
     request: ChatScheduleRequest,
   ): void {
-    if (request.toolId !== SCHEDULE_CREATE_TOOL_ID) {
+    this.assertApprovedCall(run, events, request, SCHEDULE_CREATE_TOOL_ID);
+  }
+
+  /** ADR-SCH-01 D3, for any of the schedules tools that writes: the person's own approval of exactly this call. */
+  private assertApprovedCall(
+    run: HarnessRun,
+    events: readonly JournalEvent[],
+    request: {
+      interactionId: string;
+      toolId: string;
+      arguments: unknown;
+      callArgsDigest?: string;
+    },
+    expected: string,
+  ): void {
+    if (request.toolId !== expected) {
       throw notApproved('not a schedule call');
     }
     const approval = approvalOf(events, run.runId, request.interactionId);

@@ -6,7 +6,8 @@ import {
   listCompareBranches,
   purgeBranchArtifacts,
 } from '../controller/compare.controller';
-import { NextFunction, Router, Response } from 'express';
+import { NextFunction, RequestHandler, Router, Response } from 'express';
+import type { ClassicTurnPipelines } from '../utils/in-process-turn';
 import { prometheusChatPathMetrics } from '../../agent-harness/adapters/telemetry/chat-path-metrics';
 import { legacyTurnMetrics } from '../../agent-harness/transport/legacy-turn-metrics';
 import { scanAfterAuthentication } from '../../agent-harness/transport/pasted-secret-guard';
@@ -1518,4 +1519,41 @@ export function createChatSpeechRouter(container: Container): Router {
   );
 
   return router;
+}
+
+/**
+ * The chat routes' own handlers for a schedule's classic turn (ADR-SCH-02 D3): the same authentication, scope,
+ * validation, default model and handler as `POST /conversations/stream` and `POST /agents/:agentKey/conversations/stream`.
+ * Left out: what only a person's browser request has (a /command typed in the composer, client history) and the
+ * harness's own routing, since the runner already chose the classic path for this firing.
+ */
+export function createScheduledTurnPipelines(
+  container: Container,
+): ClassicTurnPipelines {
+  const authMiddleware = scanAfterAuthentication(
+    container.get<AuthMiddleware>('AuthMiddleware'),
+  );
+  const appConfig = container.get<AppConfig>('AppConfig');
+  const defaultChatModel = fillDefaultChatModel(
+    container.isBound('KeyValueStoreService')
+      ? container.get<KeyValueStoreService>('KeyValueStoreService')
+      : undefined,
+  );
+  return {
+    assistant: [
+      authMiddleware.authenticate,
+      requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+      ValidationMiddleware.validate(enterpriseSearchStreamCreateSchema),
+      defaultChatModel,
+      legacyTurnMetrics('assistant', prometheusChatPathMetrics),
+      streamChat(appConfig),
+    ] as RequestHandler[],
+    agent: [
+      authMiddleware.authenticate,
+      requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+      ValidationMiddleware.validate(agentStreamCreateSchema),
+      legacyTurnMetrics('agent', prometheusChatPathMetrics),
+      streamAgentConversation(appConfig),
+    ] as RequestHandler[],
+  };
 }

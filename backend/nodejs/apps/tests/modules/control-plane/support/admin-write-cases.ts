@@ -112,6 +112,24 @@ export const WRITE_CASES: readonly WriteCase[] = [
     object: (_orgId, id) => schedule(id),
   },
   {
+    id: 'W8 schedule edit (ADR-SCH-03)',
+    route: `PATCH ${SCHEDULES}/:scheduleId`,
+    prepare: scheduleCreated,
+    request: (id) => ({
+      method: 'PATCH',
+      path: `${SCHEDULES}/${id}`,
+      body: { revision: 0, name: 'Renamed digest' },
+    }),
+    object: (_orgId, id) => schedule(id),
+  },
+  {
+    id: 'W8 schedule skip next (ADR-SCH-03)',
+    route: `POST ${SCHEDULES}/:scheduleId/skip`,
+    prepare: scheduleCreated,
+    request: (id) => ({ method: 'POST', path: `${SCHEDULES}/${id}/skip` }),
+    object: (_orgId, id) => schedule(id),
+  },
+  {
     id: 'W8 schedule resume',
     route: `POST ${SCHEDULES}/:scheduleId/resume`,
     prepare: async (world) => {

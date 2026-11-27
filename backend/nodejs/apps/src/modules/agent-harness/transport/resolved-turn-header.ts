@@ -1,3 +1,4 @@
+import { SCHEDULED_TURN_HEADERS } from './scheduled-turn-mark';
 import type { IncomingMessage } from 'node:http';
 import type { Request, RequestHandler } from 'express';
 import type { Container } from 'inversify';
@@ -113,17 +114,24 @@ export interface LegacyProxySite {
 
 /**
  * The headers of a chat turn proxied to the query service: the request's own
- * without any `X-PipesHub-Resolved` it carried, plus Node's signed one under
- * `CONTROL_PLANE_PIN=on`. Every proxy of a chat turn builds its headers here.
+ * without any `X-PipesHub-Resolved` or scheduled-turn header it carried, plus
+ * Node's signed one under `CONTROL_PLANE_PIN=on`; a schedule's turn sends its
+ * own through `AICommandOptions.scheduledTurnHeaders` (ADR-SCH-02 D4). Every
+ * proxy of a chat turn builds its headers here.
  */
 export async function resolvedProxyHeaders(
   req: Request,
   site: LegacyProxySite,
 ): Promise<Record<string, string>> {
-  const { [RESOLVED_TURN_HEADER]: _client, ...headers } = req.headers as Record<
+  const { [RESOLVED_TURN_HEADER]: _client, ...own } = req.headers as Record<
     string,
     string
   >;
+  const headers = Object.fromEntries(
+    Object.entries(own).filter(
+      ([name]) => !SCHEDULED_TURN_HEADERS.includes(name),
+    ),
+  );
   const turn = turns.get(req);
   const signer = turn?.header() ?? null;
   if (turn === undefined || signer === null) return headers;

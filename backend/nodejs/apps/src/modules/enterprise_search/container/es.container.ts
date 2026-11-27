@@ -1,3 +1,9 @@
+import { AGENT_HARNESS_CLASSIC_TURNS } from '../../agent-harness/binders/tokens';
+import {
+  type ClassicTurnPipelines,
+  InProcessClassicTurns,
+} from '../utils/in-process-turn';
+import { createScheduledTurnPipelines } from '../routes/es.routes';
 import { etcdComponentLogins } from '../../agent-harness/adapters/etcd/etcd-component-roles';
 import { createGroupMembership } from '../../../libs/repositories/agent-harness/group-membership';
 import {
@@ -29,6 +35,7 @@ import {
   prepareAgentHarnessStore,
   startAgentHarnessBackgroundServices,
   startSessionErasureServices,
+  startScheduleServices,
   stopAgentHarnessBackgroundServices,
 } from '../../agent-harness/composition';
 import {
@@ -93,6 +100,7 @@ import { createApproverPeople } from '../../../libs/repositories/agent-harness/a
 import {
   isAgentHarnessInfrastructureReady,
   recordOrgHarnessReader,
+  recordOrgSchedulesReader,
 } from '../../agent-harness/config';
 import { sandboxBrokerEndpoint } from '../../agent-harness/adapters/configuration/sandbox-broker-endpoint';
 import { RedisLiveBus } from '../../agent-harness/adapters/redis/redis-live-bus';
@@ -257,6 +265,17 @@ export class EnterpriseSearchAgentContainer {
         ...harnessOrgStops(harnessEditionOf(container), keyValueStoreService),
       });
       recordOrgHarnessReader(orgHarnessReaderOf(rollout));
+      const scheduledRuns = new PlatformScheduledRuns(orgSettings);
+      recordOrgSchedulesReader((orgId) => scheduledRuns.enabled(orgId));
+      // ADR-SCH-02 D3: a schedule's firing on classic chat is the chat route's own turn, started in this process.
+      let turnPipelines: ClassicTurnPipelines | null = null;
+      container
+        .bind(AGENT_HARNESS_CLASSIC_TURNS)
+        .toConstantValue(
+          new InProcessClassicTurns(
+            () => (turnPipelines ??= createScheduledTurnPipelines(container)),
+          ),
+        );
       bindAgentHarness(container, {
         edition: harnessEditionOf(container),
         sessions: createChatSessionRepository(),
@@ -360,7 +379,7 @@ export class EnterpriseSearchAgentContainer {
         },
         schedules: {
           actors: createActorAuthority(() => appConfig.jwtSecret),
-          setting: new PlatformScheduledRuns(orgSettings),
+          setting: scheduledRuns,
           // TR-07: a run's end in the inbox, and by email and Slack where the schedule and the org allow.
           slackBots: agentSlackBots,
           notifier: harnessNotices,
@@ -467,6 +486,7 @@ export class EnterpriseSearchAgentContainer {
         container,
         container.get<Logger>('Logger'),
       );
+      await startScheduleServices(container, container.get<Logger>('Logger'));
       await preparePolicyStore(container.get<Logger>('Logger'));
       this.logger.info(
         'Enterprise Search Agent services initialized successfully',

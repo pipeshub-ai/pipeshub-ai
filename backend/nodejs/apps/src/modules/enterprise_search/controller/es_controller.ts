@@ -26,7 +26,7 @@ import {
   RasterImageFormat,
   sharp,
 } from '../../../libs/utils/image.utils';
-import { Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
 import { refuseIfDraining } from '../../../libs/repositories/drain';
 import { randomBytes } from 'crypto';
@@ -176,6 +176,13 @@ import type { AgentErasureQueue } from '../../agent-harness/ports/agent-erasures
 import { AGENT_DELETE_CONFIRM_AFTER_MS } from '../../agent-harness/domain/session-erasure';
 import { principalRefFor } from '../../agent-harness/domain/run-spec';
 import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-turn-header';
+import {
+  scheduledConversationOrigin,
+  type ScheduledConversationOrigin,
+  scheduledTurnHeaders,
+  scheduledTurnOf,
+  scheduledTurnOrigin,
+} from '../../agent-harness/transport/scheduled-turn-mark';
 import { shapedForViewer } from '../../agent-harness/domain/token-redaction';
 import {
   inDurableTransaction,
@@ -300,6 +307,26 @@ const saveAskUserQuestion = (
 };
 const unitOfWork = createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE'));
 const convRepo = (): ConversationRepository => getConversationRepository();
+
+/** `origin` on a conversation a schedule's firing made (ADR-SCH-02 D3); nothing on any other. */
+const scheduleOriginField = (
+  metadata: Map<string, unknown> | Record<string, unknown> | undefined,
+): { origin?: ScheduledConversationOrigin } => {
+  const origin = scheduledConversationOrigin(metadata);
+  return origin === null ? {} : { origin };
+};
+
+/** A schedule's classic turn (ADR-SCH-02 D3): its conversation is named after the schedule and records which made it. */
+const scheduledSessionFields = (
+  req: Request,
+): Pick<NewSession, 'title' | 'metadata'> => {
+  const mark = scheduledTurnOf(req);
+  if (mark === null) return {};
+  return {
+    title: mark.title,
+    metadata: { origin: scheduledTurnOrigin(mark) },
+  };
+};
 const searches = (): SemanticSearchRepository => getSemanticSearchRepository();
 
 const CHAT_SCOPE: SessionScope = { kind: 'chat' };
@@ -1130,6 +1157,7 @@ export const streamChat =
         // Store model and mode information
         modelInfo: modelInfo,
         sessionType: 'chat',
+        ...scheduledSessionFields(req),
         ...(projectLink.projectId
           ? {
               projectId: projectLink.projectId,
@@ -1210,6 +1238,7 @@ export const streamChat =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        scheduledTurnHeaders: scheduledTurnHeaders(req),
       };
 
       // Variables to collect complete response data
@@ -2442,6 +2471,7 @@ export const getConversationById =
           ...conversationResponse,
           ...(forkedFrom && { forkedFrom }),
           ...(forks.length > 0 && { forks }),
+          ...scheduleOriginField(session.metadata),
         },
         filters: filtersMetadata,
         meta: {
@@ -6778,6 +6808,7 @@ export const streamAgentConversation =
         // Set explicitly: the legacy agentConversations schema defaulted this,
         // the unified chatSessions schema can't (it also backs plain chats).
         conversationSource: 'agent_chat',
+        ...scheduledSessionFields(req),
         ...(projectLink.projectId
           ? {
               projectId: projectLink.projectId,
@@ -6856,6 +6887,7 @@ export const streamAgentConversation =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        scheduledTurnHeaders: scheduledTurnHeaders(req),
       };
 
       // Variables to collect complete response data
@@ -8023,6 +8055,7 @@ export const getAgentConversationById =
           ...conversationResponse,
           ...(forkedFrom && { forkedFrom }),
           ...(forks.length > 0 && { forks }),
+          ...scheduleOriginField(session.metadata),
         },
         filters: filtersMetadata,
         meta: {

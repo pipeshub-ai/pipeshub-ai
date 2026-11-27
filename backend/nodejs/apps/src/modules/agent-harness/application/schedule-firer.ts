@@ -1,7 +1,8 @@
 import { forEnumeratedOrg } from '../../../libs/context/orgContext';
+import { orgSchedulesOn } from '../config';
 import { randomUUID } from 'node:crypto';
 import { HarnessScheduleRefusedError } from '../domain/errors';
-import type { HarnessRun, RunStatus } from '../domain/execution';
+import type { HarnessRun } from '../domain/execution';
 import {
   type AgentSchedule,
   coalescedSlot,
@@ -28,9 +29,12 @@ import {
   RAN_ONCE,
   OVERLAP_RECHECK_MS,
   firedScheduleOf,
+  firingRun,
+  type ScheduleRunnerKind,
   parseScheduleIdempotencyKey,
   type RunTriggerContext,
   SCHEDULE_TICK_MS,
+  SKIPPED_BY_OWNER,
   type ScheduleFiring,
   scheduleIdempotencyKey,
   scheduleNotify,
@@ -50,6 +54,17 @@ import type {
   TriggerSettings,
 } from '../ports/schedules';
 import type { RecordReadAccess } from '../ports/record-access';
+import {
+  type ScheduleRunner,
+  type ScheduleRunRequest,
+  type ScheduleRunStart,
+  type ScheduleRunState,
+  type ScheduleRunStatus,
+} from '../ports/schedule-runner';
+import {
+  HarnessScheduleRunner,
+  scheduleRunStatus,
+} from './harness-schedule-runner';
 import { sourceKey } from '../projection/citation-source';
 import type { RunDigest } from '../projection/run-digest';
 import {
@@ -62,7 +77,7 @@ import { detachedInterval } from '../../../libs/context/orgContext';
 /** A firer's per-schedule work is bound to the org of the schedule or firing its cross-org read found. */
 const SCHEDULE_JOB = 'agent-harness.schedule-firer';
 
-const ENDED: ReadonlySet<RunStatus> = new Set([
+const ENDED_SCHEDULE_RUN: ReadonlySet<ScheduleRunStatus> = new Set([
   'completed',
   'failed',
   'cancelled',
@@ -82,7 +97,14 @@ type Waiting = { waiting: 'queued' } | { skipped: string };
 
 export interface ScheduleFirerOptions {
   store: ScheduleStore;
-  admission: ScheduledRunAdmission;
+  /**
+   * The durable runner (ADR-SCH-02 D2). Absent: one is made of `admission`, `runs` and `digests`; without `runs` its
+   * firings are not watched.
+   */
+  harness?: ScheduleRunner;
+  /** The classic chat turn (D3), for an org whose harness is off. Absent: such a firing is refused. */
+  classic?: ScheduleRunner;
+  admission?: ScheduledRunAdmission;
   actors: ActorAuthority;
   setting: ScheduledRunsSetting;
   runs?: RunStatusReader;
@@ -100,7 +122,7 @@ export interface ScheduleFirerOptions {
   records?: RecordReadAccess;
   /** The org's allowed notice channels (TR-07). Absent: every channel the schedule names. */
   settings?: Pick<TriggerSettings, 'notifyChannels'>;
-  /** The org harness predicate (ADR-OPS-08: switch and Labs). Absent: on. */
+  /** The org harness predicate (ADR-OPS-08: switch and Labs), which picks each firing's runner. Absent: on. */
   harnessOn?: (orgId: string) => Promise<boolean>;
   logger?: HarnessLogger;
   newId?: () => string;
@@ -139,13 +161,13 @@ const REFUSAL_NOTICE_LOOKBACK = 50;
 
 export class ScheduleFirer {
   private readonly store: ScheduleStore;
-  private readonly admission: ScheduledRunAdmission;
+  private readonly runners: Partial<Record<ScheduleRunnerKind, ScheduleRunner>>;
+  /** The runners whose firings are watched until their run ends. */
+  private readonly watching: ReadonlySet<ScheduleRunnerKind>;
   private readonly actors: ActorAuthority;
   private readonly setting: ScheduledRunsSetting;
-  private readonly runs?: RunStatusReader;
   private readonly notifier?: ScheduleNotifier;
   private readonly waitNotices?: ScheduledWaitNotices;
-  private readonly digests?: RunDigestReader;
   private readonly connectorEvents?: TriggerSourceSwitch;
   private readonly records?: RecordReadAccess;
   private readonly settings?: Pick<TriggerSettings, 'notifyChannels'>;
@@ -157,13 +179,21 @@ export class ScheduleFirer {
 
   constructor(options: ScheduleFirerOptions) {
     this.store = options.store;
-    this.admission = options.admission;
+    const harness = harnessRunnerOf(options);
+    this.runners = {
+      ...(harness !== null ? { harness } : {}),
+      ...(options.classic !== undefined ? { classic: options.classic } : {}),
+    };
+    this.watching = new Set<ScheduleRunnerKind>([
+      ...(options.harness !== undefined || options.runs !== undefined
+        ? (['harness'] as const)
+        : []),
+      ...(options.classic !== undefined ? (['classic'] as const) : []),
+    ]);
     this.actors = options.actors;
     this.setting = options.setting;
-    this.runs = options.runs;
     this.notifier = options.notifier;
     this.waitNotices = options.waitNotices;
-    this.digests = options.digests;
     this.connectorEvents = options.connectorEvents;
     this.records = options.records;
     this.settings = options.settings;
@@ -250,7 +280,18 @@ export class ScheduleFirer {
     }
     if (decision.kind === 'wait') return false;
     const once = trigger.kind === 'once';
-    const skipReason = once ? ONCE_TOO_LATE : 'catch_up_skip';
+    // ADR-SCH-03 D4: the slot its owner asked to skip is claimed as skipped, so it is recorded and never runs.
+    const byOwner =
+      decision.kind === 'fire' &&
+      !once &&
+      schedule.skipNextAt !== undefined &&
+      schedule.skipNextAt === decision.slotAt;
+    if (byOwner) decision = { ...decision, kind: 'skip' };
+    const skipReason = byOwner
+      ? SKIPPED_BY_OWNER
+      : once
+        ? ONCE_TOO_LATE
+        : 'catch_up_skip';
     const firing = this.newFiring(schedule, {
       kind: once ? 'once' : 'cron',
       slotKey: once
@@ -431,7 +472,7 @@ export class ScheduleFirer {
    * for a replica that died before it could.
    */
   async watchRuns(): Promise<number> {
-    if (this.runs === undefined) return 0;
+    if (this.watching.size === 0) return 0;
     const now = await this.store.now();
     let notified = 0;
     for (const firing of await this.store.watched(now, MAX_WATCHED_PER_TICK)) {
@@ -450,15 +491,61 @@ export class ScheduleFirer {
     firing: ScheduleFiring,
     now: number,
   ): Promise<boolean> {
-    const runs = this.runs;
-    if (runs === undefined) return false;
     await this.store.markChecked(firing.orgId, firing.id, now);
-    if (firing.runId === null) return false;
-    const status = await runs.status(firing.orgId, firing.runId);
-    if (status === null || ENDED.has(status)) {
-      return this.endWatch(firing, status, now);
+    const run = firingRun(firing);
+    if (run === null || !this.watching.has(run.runner)) return false;
+    const runner = this.runners[run.runner];
+    if (runner === undefined) return false;
+    const state = await runner.status(
+      firing.orgId,
+      run.runRef,
+      firing.watchUntil,
+    );
+    if (state === null || ENDED_SCHEDULE_RUN.has(state.status)) {
+      return this.endWatch(firing, state, now);
     }
-    return this.observe(firing, firing.runId, status, now);
+    return this.observe(firing, run.runRef, state.status, now);
+  }
+
+  /**
+   * A run a runner of this process saw end (a classic turn's answer saved): its actor is told now, not at the next
+   * watch, and a firing queued behind it is made due. Never throws.
+   */
+  async runnerEnded(orgId: string, firingId: string): Promise<void> {
+    try {
+      await forEnumeratedOrg(orgId, SCHEDULE_JOB, async () => {
+        const firing = await this.store.getFiring(orgId, firingId);
+        if (firing === null || firing.watchUntil === null) return;
+        const now = await this.store.now();
+        await this.watchOne(firing, now);
+        const run = firingRun(firing);
+        if (run !== null) await this.releaseQueued(firing, run.runRef, now);
+      });
+    } catch (error) {
+      this.logger.warn(
+        'schedule.run_end_failed',
+        harnessLogMeta('schedule.run_end_failed', {
+          orgId,
+          firingId,
+          errorType: errorType(error),
+        }),
+      );
+    }
+  }
+
+  /** A firing queued behind the run `runRef` of its schedule (TR-06) is made due for the next tick. */
+  private async releaseQueued(
+    firing: ScheduleFiring,
+    runRef: string,
+    now: number,
+  ): Promise<void> {
+    const queued = await this.store.queuedFiring(
+      firing.orgId,
+      firing.scheduleId,
+    );
+    if (queued?.queuedBehind === runRef) {
+      await this.store.release(queued.orgId, queued.id, queued.attempts, now);
+    }
   }
 
   /**
@@ -466,13 +553,14 @@ export class ScheduleFirer {
    * command moved): it is told now, not at the next watch, which stays the backstop. Never throws.
    */
   async runMoved(run: FiredRun): Promise<void> {
-    if (ENDED.has(run.status)) return;
+    const status = scheduleRunStatus(run.status);
+    if (ENDED_SCHEDULE_RUN.has(status)) return;
     const scheduleId = firedScheduleOf(run);
     if (scheduleId === null) return;
     try {
       const firing = await this.firingOfRun(run, scheduleId);
       if (firing === null || firing.watchUntil === null) return;
-      await this.observe(firing, run.runId, run.status, await this.store.now());
+      await this.observe(firing, run.runId, status, await this.store.now());
     } catch (error) {
       this.logger.warn(
         'schedule.run_move_failed',
@@ -513,12 +601,12 @@ export class ScheduleFirer {
   private async observe(
     firing: ScheduleFiring,
     runId: string,
-    status: RunStatus,
+    status: ScheduleRunStatus,
     now: number,
   ): Promise<boolean> {
     let notifiedNow = false;
     if (firing.watchUntil === null || firing.watchUntil <= now) return false;
-    if (status !== 'waiting_approval' || firing.notifiedAt !== null)
+    if (status !== 'waiting_for_you' || firing.notifiedAt !== null)
       return false;
     if (!(await this.store.markNotified(firing.orgId, firing.id, now))) {
       return false;
@@ -535,6 +623,7 @@ export class ScheduleFirer {
           : {}),
         sessionId: firing.sessionId ?? '',
         runId: runId,
+        runner: firing.runner ?? 'harness',
         deadlineAt: firing.watchUntil,
       });
       if (schedule !== null && this.waitNotices !== undefined) {
@@ -588,8 +677,9 @@ export class ScheduleFirer {
     try {
       const now = await this.store.now();
       const firing = await this.firingOfRun(run, scheduleId);
-      if (firing !== null && ENDED.has(run.status)) {
-        await this.endWatch(firing, run.status, now);
+      const status = scheduleRunStatus(run.status);
+      if (firing !== null && ENDED_SCHEDULE_RUN.has(status)) {
+        await this.endWatch(firing, { status }, now);
       }
       const queued = await this.store.queuedFiring(run.orgId, scheduleId);
       if (queued?.queuedBehind === run.runId) {
@@ -611,12 +701,12 @@ export class ScheduleFirer {
   /** The run's summary (G-07); null when it cannot be read: the notice still goes, without it. */
   private async digestOf(
     firing: ScheduleFiring,
+    runner: ScheduleRunner,
     runId: string,
     status: 'completed' | 'failed' | 'cancelled',
   ): Promise<RunDigest | null> {
-    if (this.digests === undefined) return null;
     try {
-      return await this.digests.digest(firing.orgId, runId, status);
+      return await runner.summary(firing.orgId, runId, status);
     } catch (error) {
       this.logger.warn(
         'schedule.run_digest_failed',
@@ -637,12 +727,16 @@ export class ScheduleFirer {
    */
   private async endWatch(
     firing: ScheduleFiring,
-    status: RunStatus | null,
+    state: ScheduleRunState | null,
     now: number,
   ): Promise<boolean> {
     if (!(await this.store.unwatch(firing.orgId, firing.id, now))) return false;
+    const run = firingRun(firing);
+    const status = state?.status;
+    const runner = run === null ? undefined : this.runners[run.runner];
     if (
-      firing.runId === null ||
+      run === null ||
+      runner === undefined ||
       (status !== 'completed' && status !== 'failed' && status !== 'cancelled')
     ) {
       return false;
@@ -652,7 +746,7 @@ export class ScheduleFirer {
     try {
       const channels = await this.channels(schedule);
       if (channels.length === 0) return false;
-      const digest = await this.digestOf(firing, firing.runId, status);
+      const digest = await this.digestOf(firing, runner, run.runRef, status);
       await this.notifier.runEnded({
         orgId: firing.orgId,
         actorId: firing.actorId,
@@ -662,8 +756,11 @@ export class ScheduleFirer {
           ? { agentKey: schedule.agentKey }
           : {}),
         sessionId: firing.sessionId ?? '',
-        runId: firing.runId,
+        runId: run.runRef,
+        runner: run.runner,
         status,
+        ...(state?.reason !== undefined ? { reason: state.reason } : {}),
+        ...(firing.costCapIgnored === true ? { costCapIgnored: true } : {}),
         channels,
         ...(digest !== null ? { digest } : {}),
       });
@@ -671,8 +768,10 @@ export class ScheduleFirer {
         'schedule.run_end_notified',
         harnessLogMeta('schedule.run_end_notified', {
           ...this.fields(firing),
-          runId: firing.runId,
+          runId: run.runRef,
+          runner: run.runner,
           status,
+          reason: state?.reason,
           channels: channels.join(','),
         }),
       );
@@ -682,7 +781,7 @@ export class ScheduleFirer {
         'schedule.notify_failed',
         harnessLogMeta('schedule.notify_failed', {
           ...this.fields(firing),
-          runId: firing.runId,
+          runId: run.runRef,
           errorType: errorType(error),
         }),
       );
@@ -830,21 +929,33 @@ export class ScheduleFirer {
       const waiting = await this.overlap(schedule, firing);
       if (waiting !== null) return waiting;
     }
-    const actor = await this.actors.authorize(schedule.orgId, schedule.actorId);
+    const runner = await this.runnerFor(schedule.orgId);
+    if (runner === null) return 'runner_unavailable';
+    // A classic turn presents the credential for as long as the firing may take; a durable run only at admission.
+    const actor = await this.actors.authorize(
+      schedule.orgId,
+      schedule.actorId,
+      runner.kind === 'classic' ? { ttlS: schedule.deadlineS } : undefined,
+    );
     if ('refused' in actor) return actor.refused;
     const context = await this.context(schedule, firing, actor.authorization);
     const input = firingInput(schedule, firing.slotAt, context);
     if (input === null) return 'template_missing';
     const agentVersion = firingAgentVersion(schedule);
-    const outcome = await this.admission.admit({
+    const startedAt = await this.store.now();
+    const request: ScheduleRunRequest = {
       orgId: schedule.orgId,
       actorId: schedule.actorId,
+      scheduleId: schedule.id,
+      scheduleName: schedule.name,
+      firingId: firing.id,
       ...(schedule.agentKey !== undefined
         ? { agentKey: schedule.agentKey }
         : {}),
       ...(agentVersion !== undefined ? { agentVersion } : {}),
       idempotencyKey: scheduleIdempotencyKey(schedule.id, firing.slotKey),
       deadlineMs: schedule.deadlineS * 1000,
+      deadlineAt: startedAt + schedule.deadlineS * 1000,
       input,
       authorization: actor.authorization,
       trigger: {
@@ -855,17 +966,24 @@ export class ScheduleFirer {
           ? { maxCostUsd: schedule.maxCostUsd }
           : {}),
       },
-    });
-    if (outcome.kind === 'refused') return outcome.reason;
+      ended: () => {
+        void this.runnerEnded(firing.orgId, firing.id);
+      },
+    };
+    const { runner: ran, started } = await this.startRun(runner, request);
+    if (started.kind === 'refused') return started.reason;
     const now = await this.store.now();
     await this.store.settle(
       firing.orgId,
       firing.id,
       {
         status: 'admitted',
-        runId: outcome.runId,
-        sessionId: outcome.sessionId,
-        watchUntil: now + schedule.deadlineS * 1000,
+        runner: ran.kind,
+        runRef: started.runRef,
+        runId: started.runId ?? null,
+        sessionId: started.sessionId,
+        watchUntil: request.deadlineAt,
+        ...(started.costCapIgnored === true ? { costCapIgnored: true } : {}),
       },
       now,
     );
@@ -873,8 +991,9 @@ export class ScheduleFirer {
       'schedule.fired',
       harnessLogMeta('schedule.fired', {
         ...this.fields(firing),
-        runId: outcome.runId,
-        sessionId: outcome.sessionId,
+        runner: ran.kind,
+        runId: started.runRef,
+        sessionId: started.sessionId,
         agentKey: schedule.agentKey,
         lateMs: now - firing.slotAt,
         missed: firing.missed,
@@ -894,7 +1013,7 @@ export class ScheduleFirer {
     firing: ScheduleFiring,
   ): Promise<Waiting | null> {
     const policy = scheduleOverlap(schedule);
-    if (policy === 'allow' || this.runs === undefined) return null;
+    if (policy === 'allow' || this.watching.size === 0) return null;
     const active = await this.activeRun(schedule, firing);
     if (active === null) return null;
     if (policy === 'skip') return { skipped: 'overlap_skip' };
@@ -928,18 +1047,63 @@ export class ScheduleFirer {
     schedule: AgentSchedule,
     firing: ScheduleFiring,
   ): Promise<string | null> {
-    const runs = this.runs;
-    if (runs === undefined) return null;
     for (const other of await this.store.activeFirings(
       schedule.orgId,
       schedule.id,
       MAX_ACTIVE_CHECKED,
     )) {
-      if (other.id === firing.id || other.runId === null) continue;
-      const status = await runs.status(other.orgId, other.runId);
-      if (status !== null && !ENDED.has(status)) return other.runId;
+      const run = firingRun(other);
+      if (other.id === firing.id || run === null) continue;
+      const runner = this.runners[run.runner];
+      if (runner === undefined || !this.watching.has(run.runner)) continue;
+      const state = await runner.status(
+        other.orgId,
+        run.runRef,
+        other.watchUntil,
+      );
+      if (state !== null && !ENDED_SCHEDULE_RUN.has(state.status)) {
+        return run.runRef;
+      }
     }
     return null;
+  }
+
+  /**
+   * The runner a firing starts on (ADR-SCH-02 D2): the durable harness where the org's harness is on now, the classic
+   * chat turn where it is off. Null when this deployment has neither for it.
+   */
+  private async runnerFor(orgId: string): Promise<ScheduleRunner | null> {
+    let durable = true;
+    if (this.harnessOn !== undefined) {
+      try {
+        durable = await this.harnessOn(orgId);
+      } catch {
+        durable = false;
+      }
+    }
+    const preferred = durable ? this.runners.harness : this.runners.classic;
+    return preferred ?? this.runners.classic ?? null;
+  }
+
+  /**
+   * Starts the run. A durable admission that routes the turn to the classic path (the operator's stop, a store not
+   * ready) runs it as the classic turn a chat would get then, rather than refusing it.
+   */
+  private async startRun(
+    runner: ScheduleRunner,
+    request: ScheduleRunRequest,
+  ): Promise<{ runner: ScheduleRunner; started: ScheduleRunStart }> {
+    const started = await runner.start(request);
+    const classic = this.runners.classic;
+    if (
+      runner.kind === 'harness' &&
+      started.kind === 'refused' &&
+      started.reason === 'rollout_legacy' &&
+      classic !== undefined
+    ) {
+      return { runner: classic, started: await classic.start(request) };
+    }
+    return { runner, started };
   }
 
   /**
@@ -1117,23 +1281,23 @@ export class ScheduleFirer {
     }
   }
 
-  /** The org state a firing runs in: the org's harness (switch and Labs) and its Labs scheduled runs. */
+  /** Whether the org has scheduling (ADR-SCH-02 D1): Labs scheduled runs alone; its harness picks the runner. */
   private async orgOn(orgId: string): Promise<boolean> {
-    try {
-      if (this.harnessOn !== undefined && !(await this.harnessOn(orgId))) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
     return this.enabled(orgId);
   }
 
-  private async enabled(orgId: string): Promise<boolean> {
-    try {
-      return await this.setting.enabled(orgId);
-    } catch {
-      return false;
-    }
+  private enabled(orgId: string): Promise<boolean> {
+    return orgSchedulesOn(orgId, (org) => this.setting.enabled(org));
   }
+}
+
+/** The durable runner the options give, or make of today's admission, status and digest readers. */
+function harnessRunnerOf(options: ScheduleFirerOptions): ScheduleRunner | null {
+  if (options.harness !== undefined) return options.harness;
+  if (options.admission === undefined) return null;
+  return new HarnessScheduleRunner(
+    options.admission,
+    options.runs ?? { status: () => Promise.resolve(null) },
+    options.digests ?? null,
+  );
 }

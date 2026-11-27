@@ -204,7 +204,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
     });
 
-    it('too late while the org cannot run schedules: skipped and disabled, nobody told', async () => {
+    it('too late while the org has scheduled runs off: skipped and disabled, nobody told', async () => {
       const { schedule } = await once();
       clock.value = AT_MS + MAX_ONCE_LATENESS_MS + MIN;
       const off = new FakeSetting();
@@ -212,6 +212,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       await new ScheduleFirer({ store, admission, actors, setting: off, notifier }).fireDue();
       expect((await store.get(ORG, schedule.id))?.status).to.equal('disabled');
       expect(notifier.refusals).to.deep.equal([]);
+      // ADR-SCH-02 D1: the org's harness is not part of scheduling, so with it off the person is still told.
       clock.value = T0;
       const { schedule: other } = await once();
       clock.value = AT_MS + 2 * MAX_ONCE_LATENESS_MS;
@@ -224,7 +225,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
         harnessOn: async () => false,
       }).fireDue();
       expect((await store.get(ORG, other.id))?.status).to.equal('disabled');
-      expect(notifier.refusals).to.deep.equal([]);
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
     });
 
     it('run now takes its one slot: two at once, or with a tick, make one firing; the loser is told it ran', async () => {
@@ -257,7 +258,7 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_RAN_ONCE');
     });
 
-    it('due while the org’s harness is off: the firing is settled, nobody is told', async () => {
+    it('due while the org’s harness is off and the deployment has no classic runner: refused, never admitted durable', async () => {
       const { schedule } = await once();
       clock.value = AT_MS;
       await new ScheduleFirer({
@@ -270,9 +271,9 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       }).fireDue();
       expect(admission.admitted).to.equal(0);
       expect((await store.firings(ORG, schedule.id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([
-        ['refused', 'scheduled_runs_disabled'],
+        ['refused', 'runner_unavailable'],
       ]);
-      expect(notifier.refusals).to.deep.equal([]);
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal(['runner_unavailable']);
     });
 
     it('more than a day late: skipped, disabled, and its person told', async () => {
@@ -533,7 +534,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       actorId: ALICE,
       agentKey: 'helper',
       agentVersion: 3,
-      origin: { conversationId: 'ses-chat', runId: RUN, interactionId: ixOf(ARGS) },
+      origin: { conversationId: 'ses-chat', runId: RUN, interactionId: ixOf(ARGS), agentKey: 'helper' },
     });
     expect(stored?.input).to.deep.include({ query: ARGS.ask, locale: 'de-DE' });
     expect(stored?.input?.model).to.deep.include({ chatMode: 'quick', modelKey: 'm-1', modelName: 'gpt-x' });

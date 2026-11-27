@@ -10,10 +10,16 @@ import {
   scheduleApprovalUsed,
   type ScheduleStatus,
   WATCH_GRACE_MS,
+  settledRun,
+  leavesTombstone,
+  type ScheduleChangedFrom,
+  scheduleRevision,
+  scheduleChanged,
 } from '../domain/schedules';
 import type {
   ScheduleEraser,
   ScheduleLimits,
+  ScheduleChange,
   ScheduleStore,
 } from '../ports/schedules';
 
@@ -103,18 +109,29 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
       to: ScheduleStatus;
       reason: string | null;
       nextFireAt: number | null;
+      lastChangedFrom?: ScheduleChangedFrom;
+      expectedRevision?: number;
     },
     now: number,
   ): Promise<AgentSchedule | null> {
     const found = this.schedules.get(id);
-    if (found?.orgId !== orgId || !change.from.includes(found.status)) {
-      return null;
+    if (found?.orgId !== orgId) return null;
+    if (
+      change.expectedRevision !== undefined &&
+      scheduleRevision(found) !== change.expectedRevision
+    ) {
+      throw scheduleChanged();
     }
+    if (!change.from.includes(found.status)) return null;
     const next: AgentSchedule = {
       ...found,
       status: change.to,
       statusReason: change.reason,
       nextFireAt: change.nextFireAt,
+      revision: scheduleRevision(found) + 1,
+      ...(change.lastChangedFrom !== undefined
+        ? { lastChangedFrom: { ...change.lastChangedFrom } }
+        : {}),
       updatedAt: now,
     };
     this.schedules.set(id, next);
@@ -135,15 +152,53 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     ) {
       return null;
     }
-    const next: AgentSchedule = { ...found, agentVersion, updatedAt: now };
+    const next: AgentSchedule = {
+      ...found,
+      agentVersion,
+      revision: scheduleRevision(found) + 1,
+      updatedAt: now,
+    };
     this.schedules.set(id, next);
     return copy(next);
   }
 
-  async delete(orgId: string, id: string): Promise<boolean> {
+  async update(
+    orgId: string,
+    id: string,
+    expectedRevision: number,
+    change: ScheduleChange,
+    now: number,
+  ): Promise<AgentSchedule | 'changed' | null> {
+    const found = this.schedules.get(id);
+    if (found?.orgId !== orgId) return null;
+    if (scheduleRevision(found) !== expectedRevision) return 'changed';
+    const { skipNextAt, ...rest } = structuredClone(change);
+    const next: AgentSchedule = {
+      ...found,
+      ...rest,
+      revision: expectedRevision + 1,
+      updatedAt: now,
+    };
+    if (skipNextAt === null) delete next.skipNextAt;
+    else if (skipNextAt !== undefined) next.skipNextAt = skipNextAt;
+    this.schedules.set(id, next);
+    return copy(next);
+  }
+
+  async delete(
+    orgId: string,
+    id: string,
+    expectedRevision?: number,
+  ): Promise<boolean> {
     const found = this.schedules.get(id);
     if (found?.orgId !== orgId) return false;
-    if (found.origin !== undefined) {
+    if (
+      expectedRevision !== undefined &&
+      scheduleRevision(found) !== expectedRevision
+    ) {
+      throw scheduleChanged();
+    }
+    if (leavesTombstone(found)) {
       this.tombstones.set(id, { orgId, actorId: found.actorId });
     }
     return this.drop(orgId, id);
@@ -261,6 +316,7 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
       reason: outcome.status === 'admitted' ? null : outcome.reason,
       watchUntil: outcome.status === 'admitted' ? outcome.watchUntil : null,
       settledAt: now,
+      ...settledRun(outcome),
     });
     return true;
   }

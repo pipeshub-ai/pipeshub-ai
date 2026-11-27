@@ -1,4 +1,4 @@
-import { orgHarnessOn } from '../config';
+import { orgHarnessOn, transactionsAvailable } from '../config';
 import type { ControlPlaneTransaction } from '../../control-plane';
 import { BrokerTriggerSource } from '../adapters/messaging/broker-trigger-source';
 import { createRunStatusReader } from '../../../libs/repositories/agent-harness/run-status';
@@ -8,6 +8,16 @@ import type { ExecutionService } from '../application/execution-service';
 import { RunAdmissionService } from '../application/run-admission-service';
 import type { RunTimelineService } from '../application/run-timeline-service';
 import { ScheduleFirer } from '../application/schedule-firer';
+import { HarnessScheduleRunner } from '../application/harness-schedule-runner';
+import {
+  ClassicScheduleRunner,
+  type ClassicTurns,
+} from '../application/classic-schedule-runner';
+import {
+  RepositoryChatConversations,
+  RepositoryClassicConversations,
+} from '../adapters/classic-schedule-conversations';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { InboxAwareScheduleNotifier } from '../application/inbox-notice-policy';
 import type { InboxPreferenceStore } from '../ports/inbox';
 import { ScheduleService } from '../application/schedule-service';
@@ -32,6 +42,7 @@ import {
   AGENT_HARNESS_RUN_ADMISSION_SERVICE,
   AGENT_HARNESS_RUN_TIMELINES,
   AGENT_HARNESS_SCHEDULE_FIRER,
+  AGENT_HARNESS_CLASSIC_TURNS,
   AGENT_HARNESS_SCHEDULES,
   CONTROL_PLANE_TRANSACTION,
   AGENT_HARNESS_TRIGGER_SETTINGS,
@@ -55,16 +66,35 @@ export const bindSchedules: HarnessBinder = ({
   container
     .bind<ScheduleFirer>(AGENT_HARNESS_SCHEDULE_FIRER)
     .toDynamicValue((context) => {
+      const classicTurns = boundOrNull<ClassicTurns>(
+        context.container,
+        AGENT_HARNESS_CLASSIC_TURNS,
+      );
       const firer: ScheduleFirer = new ScheduleFirer({
         store,
-        admission: new RunAdmissionScheduledRuns(
-          context.container.get<RunAdmissionService>(
-            AGENT_HARNESS_RUN_ADMISSION_SERVICE,
+        harness: new HarnessScheduleRunner(
+          new RunAdmissionScheduledRuns(
+            context.container.get<RunAdmissionService>(
+              AGENT_HARNESS_RUN_ADMISSION_SERVICE,
+            ),
           ),
+          createRunStatusReader(),
+          context.container.isBound(AGENT_HARNESS_RUN_TIMELINES)
+            ? context.container.get<RunTimelineService>(
+                AGENT_HARNESS_RUN_TIMELINES,
+              )
+            : null,
         ),
+        ...(classicTurns !== null
+          ? {
+              classic: new ClassicScheduleRunner(
+                classicTurns,
+                new RepositoryClassicConversations(getConversationRepository),
+              ),
+            }
+          : {}),
         actors: schedules.actors,
         setting: schedules.setting,
-        runs: createRunStatusReader(),
         settings: triggers,
         harnessOn: (orgId) => orgHarnessOn(orgId),
         ...(dependencies.recordAccess !== undefined
@@ -88,13 +118,6 @@ export const bindSchedules: HarnessBinder = ({
           ? {
               waitNotices: context.container.get<ScheduledWaitNotices>(
                 AGENT_HARNESS_SCHEDULED_WAIT_NOTICES,
-              ),
-            }
-          : {}),
-        ...(context.container.isBound(AGENT_HARNESS_RUN_TIMELINES)
-          ? {
-              digests: context.container.get<RunTimelineService>(
-                AGENT_HARNESS_RUN_TIMELINES,
               ),
             }
           : {}),
@@ -128,7 +151,6 @@ export const bindSchedules: HarnessBinder = ({
           transaction: context.container.get<ControlPlaneTransaction>(
             CONTROL_PLANE_TRANSACTION,
           ),
-          rollout: dependencies.rollout,
           triggers,
           budgets: runBudgetCeilingOf(context.container),
           ...(schedules.slackBots !== undefined
@@ -141,6 +163,10 @@ export const bindSchedules: HarnessBinder = ({
             context.container,
             AGENT_HARNESS_SCHEDULE_REACH,
           ),
+          conversations: new RepositoryChatConversations(
+            getConversationRepository,
+          ),
+          storeReady: () => transactionsAvailable(),
           agentVersions: new ActorAgentVersions(
             schedules.actors,
             dependencies.agentAccess,

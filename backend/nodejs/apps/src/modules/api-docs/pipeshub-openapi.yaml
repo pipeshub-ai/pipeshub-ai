@@ -2536,13 +2536,20 @@ components:
       required: [name, input, trigger]
       properties:
         name: { type: string, minLength: 1, maxLength: 200 }
+        fromConversation:
+          type: object
+          additionalProperties: false
+          required: [conversationId]
+          description: "ADR-SCH-03 D3: the caller's own chat it is made from (classic chat's `schedule_create`), recorded as its `origin`; a chat that is not the caller's is refused `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`"
+          properties:
+            conversationId: { type: string, maxLength: 128 }
         agentKey: { type: string, maxLength: 128, description: The agent to run; absent runs the assistant }
         agentVersion:
           allOf: [{ $ref: '#/components/schemas/AgentVersionPin' }]
           description: "A published version of the agent to run, checked against what the caller may run; `latest` follows every publish. Absent: the agent's latest version now, pinned (OWD-14). Only with `agentKey`"
         input: { $ref: '#/components/schemas/AgentScheduleTemplate' }
         trigger: { $ref: '#/components/schemas/AgentScheduleTrigger' }
-        maxCostUsd: { type: number, minimum: 0, exclusiveMinimum: true, description: "Each firing's budget, at most the per-run ceiling (5 USD) and any further ceiling the deployment holds its runs to" }
+        maxCostUsd: { type: number, minimum: 0, exclusiveMinimum: true, description: "Each firing's budget, at most the per-run ceiling (5 USD) and any further ceiling the deployment holds its runs to. Enforced only on a firing that runs on the agent harness; one that runs as a classic chat turn records `costCapIgnored` (ADR-SCH-02 D6)" }
         deadlineS: { type: integer, minimum: 300, maximum: 86400, description: "Each firing's run deadline (default 8 h); an approval nobody answers expires with it" }
         overlap: { $ref: '#/components/schemas/AgentScheduleOverlap' }
         notify:
@@ -2565,7 +2572,7 @@ components:
     AgentSchedule:
       type: object
       additionalProperties: false
-      required: [id, name, actorId, agentKey, agentVersion, trigger, maxCostUsd, deadlineS, status, statusReason, nextFireAt, overlap, notify, createdAt, updatedAt]
+      required: [id, name, actorId, agentKey, agentVersion, trigger, maxCostUsd, deadlineS, status, statusReason, nextFireAt, overlap, notify, revision, lastChangedFrom, skipNextAt, createdAt, updatedAt]
       properties:
         id: { type: string }
         name: { type: string }
@@ -2587,12 +2594,26 @@ components:
         origin:
           type: object
           additionalProperties: false
-          required: [conversationId, runId, interactionId]
-          description: "Absent unless made in a harness chat on its person's approval (ADR-SCH-01): the conversation, run and approval it came from"
+          required: [conversationId]
+          description: "Absent unless made in a chat: on the harness on its person's approval (ADR-SCH-01), with the run and the approval; on classic chat (ADR-SCH-03 D3) the conversation and its agent only"
           properties:
             conversationId: { type: string }
             runId: { type: string }
             interactionId: { type: string }
+            agentKey: { type: string, description: "The agent of the chat it was made in; absent for the assistant" }
+        revision: { type: integer, minimum: 0, description: "ADR-SCH-03 D5: bumped by every change; a change names the one it read and is refused `HTTP_AGENT_HARNESS_SCHEDULE_CHANGED` when another came first" }
+        lastChangedFrom:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [conversationId, agentKey, at]
+          description: "ADR-SCH-03 D3: the chat its owner last changed it from; null when never changed from a chat"
+          properties:
+            conversationId: { type: string }
+            agentKey: { type: string, nullable: true }
+            at: { type: string, format: date-time }
+        skipNextAt: { type: string, format: date-time, nullable: true, description: "ADR-SCH-03 D4: the next run its owner asked to skip (it is recorded skipped, `skipped_by_owner`); null when none is" }
+        madeHere: { type: boolean, description: "List answers for a chat (`conversationId`) only: whether that chat made it" }
         overlap: { $ref: '#/components/schemas/AgentScheduleOverlap' }
         notify:
           type: array
@@ -2784,15 +2805,17 @@ components:
     AgentScheduleFiring:
       type: object
       additionalProperties: false
-      required: [id, kind, slotAt, status, reason, runId, conversationId, missed, attempts, createdAt, settledAt]
+      required: [id, kind, slotAt, status, reason, runId, conversationId, runner, costCapIgnored, missed, attempts, createdAt, settledAt]
       properties:
         id: { type: string }
         kind: { type: string, enum: [cron, once, manual, event] }
         slotAt: { type: string, format: date-time }
         status: { type: string, enum: [pending, admitted, refused, skipped] }
-        reason: { type: string, nullable: true, description: "Why refused or skipped: `scheduled_runs_disabled`, `actor_disabled`, `agent_forbidden`, `rollout_legacy`, `unavailable`, `catch_up_skip`, `once_too_late` (a one-time slot more than 24 hours late), an admission code" }
-        runId: { type: string, nullable: true }
-        conversationId: { type: string, nullable: true, description: Each firing runs in a new conversation of the schedule's user }
+        reason: { type: string, nullable: true, description: "Why refused or skipped: `scheduled_runs_disabled`, `actor_disabled`, `agent_forbidden`, `runner_unavailable` (no runner for the org's path on this deployment), `turn_invalid` (the classic chat route refused the request), `unavailable`, `catch_up_skip`, `once_too_late` (a one-time slot more than 24 hours late), an admission code" }
+        runId: { type: string, nullable: true, description: "The durable run's id; null for a firing run as a classic chat turn" }
+        conversationId: { type: string, nullable: true, description: "Each firing runs in a new conversation of the schedule's user, named after the schedule; a classic turn's conversation records it as `metadata.origin` (`{kind: schedule, scheduleId, firingId}`)" }
+        runner: { type: string, enum: [harness, classic], nullable: true, description: "ADR-SCH-02: who ran it, chosen when it fired by whether the org's agent harness was on (`harness`: a durable run; `classic`: the classic chat turn). Null until admitted" }
+        costCapIgnored: { type: boolean, description: "The schedule's `maxCostUsd` did not apply: the run was a classic chat turn, which has no budget ledger" }
         missed: { type: integer, description: Slots before this one that never fired (an outage) }
         attempts: { type: integer }
         createdAt: { type: string, format: date-time }
@@ -15978,6 +16001,18 @@ components:
         replayed:
           type: boolean
           description: True when this key had already made the copy.
+    ConversationScheduleOrigin:
+      type: object
+      additionalProperties: false
+      description: >-
+        ADR-SCH-02: the schedule whose firing made this conversation (a classic chat turn run as the schedule's
+        owner). Absent on every other conversation.
+      required: [kind, scheduleId, firingId, scheduleName]
+      properties:
+        kind: { type: string, enum: [schedule] }
+        scheduleId: { type: string }
+        firingId: { type: string }
+        scheduleName: { type: string, description: "The schedule's name when it fired (the conversation is named after it)" }
     ConversationForkOrigin:
       type: object
       additionalProperties: false
@@ -20618,6 +20653,8 @@ components:
           description: The caller's own forks of this conversation, oldest first. Absent when there are none.
           items:
             $ref: '#/components/schemas/ConversationFork'
+        origin:
+          $ref: '#/components/schemas/ConversationScheduleOrigin'
         messages:
           type: array
           items:
@@ -22988,8 +23025,13 @@ components:
         requiresAgentHarness:
           type: boolean
           description: |
-            When true, the flag is a switch of the agent harness (beta). It is listed only while the
-            install's harness switch (AGENT_HARNESS_WORKER_ENABLED) is on, and Labs marks it Beta.
+            When true, the flag is a switch of the agent harness. It is listed only while the
+            install's harness switch (AGENT_HARNESS_WORKER_ENABLED) is on.
+        beta:
+          type: boolean
+          description: |
+            When true, Labs marks the flag Beta: a feature still in beta, whether or not it is the
+            agent harness's (Scheduled runs is Beta and listed on every install, ADR-SCH-02).
 
     # -------------------- Skills Schemas --------------------
       additionalProperties: false
@@ -53527,6 +53569,8 @@ paths:
                         description: The caller's own forks of this conversation, oldest first. Absent when there are none.
                         items:
                           $ref: '#/components/schemas/ConversationFork'
+                      origin:
+                        $ref: '#/components/schemas/ConversationScheduleOrigin'
                       messages:
                         type: array
                         description: Page of messages, sliced by `pagination` and ordered by `sortingMessages`
@@ -90130,7 +90174,7 @@ paths:
         digest. A one-time `at` the person approved after it came is accepted up to 24 hours
         late and fires at the next tick. The schedule is the
         run's person's, made with every check of `POST /agent-harness/schedules` (Labs
-        `ENABLE_SCHEDULED_RUNS`, durable chat, limits, the 5-minute cron floor, notice channels)
+        `ENABLE_SCHEDULED_RUNS`, limits, the 5-minute cron floor, notice channels)
         with the agent, model and chat mode the run used, and records its origin. One decision
         makes one schedule, once: its id derives from the decision, a repeat answers the same
         schedule with `created: false` while it exists, and deleting it leaves a tombstone under that
@@ -90171,8 +90215,162 @@ paths:
         '401': { description: "Missing, invalid, expired or superseded attempt token, or one for another run or attempt" }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED`: no approval of this call by the run's person in its journal, a denial, another call or other arguments; `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: the person can no longer make schedules" }
         '404': { description: "Run not found in the token tenant; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_UNAVAILABLE`; `HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED`: this approval already made its schedule and its person deleted it (its tombstone holds the id), so nothing is made again" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`; `HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED`: this approval already made its schedule and its person deleted it (its tombstone holds the id), so nothing is made again" }
         '429': { description: "More than 30 schedule requests for this run in a minute" }
+    get:
+      tags: [Agent Harness Internal]
+      summary: Find the run's person's schedules
+      operationId: internalAgentHarnessFindChatSchedules
+      x-internal: true
+      description: "ADR-SCH-03 D2, attempt token: `schedule_find` (`contracts/harness/ext/pipeshub/api/schedule-find-arguments.schema.json`) as the run's person, their own schedules only, at most 20, this chat's first and then the next to run, each with `madeHere`. A read: no approval."
+      security:
+        - harnessAttemptToken: []
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: attemptId, in: query, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: fence, in: query, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: query, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: status, in: query, schema: { type: string, enum: [active, paused, disabled] } }
+        - { name: madeHere, in: query, schema: { type: string, enum: ['true', 'false'] } }
+      responses:
+        '200':
+          description: The schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schedules]
+                properties:
+                  schedules:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentSchedule' }
+        '400': { description: Malformed query }
+        '401': { description: "Missing, invalid, expired or superseded attempt token" }
+        '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+  /agent-harness/internal/runs/{runId}/schedules/{scheduleId}:
+    get:
+      tags: [Agent Harness Internal]
+      summary: Read one of the run's person's schedules
+      operationId: internalAgentHarnessReadChatSchedule
+      x-internal: true
+      description: "ADR-SCH-03 D5, attempt token: the current values a change's approval card shows; only the run's person's own schedule."
+      security:
+        - harnessAttemptToken: []
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: scheduleId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: attemptId, in: query, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: fence, in: query, required: true, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200':
+          description: The schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentSchedule' }
+        '401': { description: "Missing, invalid, expired or superseded attempt token" }
+        '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+  /agent-harness/internal/runs/{runId}/schedules/{scheduleId}/update:
+    post:
+      tags: [Agent Harness Internal]
+      summary: Change a schedule the run's person approved changing in chat
+      operationId: internalAgentHarnessUpdateChatSchedule
+      x-internal: true
+      description: |
+        ADR-SCH-03 D6, attempt token: the `schedule_update` call (`pipeshub@schedules/update`) its
+        run's person approved, checked against the run's journal exactly as a create is. Then made
+        as the person with every check of `PATCH /agent-harness/schedules/{scheduleId}` (or pause,
+        resume, skip next, run now), recording this chat and the call as `lastChangedFrom`, so a
+        repeat of the same decision changes nothing.
+      security:
+        - harnessAttemptToken: []
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: scheduleId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        description: The approved call
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attemptId, fence, interactionId, toolId, arguments]
+              properties:
+                attemptId: { type: string, maxLength: 128 }
+                fence: { type: integer, minimum: 0 }
+                interactionId: { type: string, maxLength: 256 }
+                toolId: { type: string, enum: ['pipeshub@schedules/update'] }
+                callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                arguments: { type: object, description: "Exactly `contracts/harness/ext/pipeshub/api/schedule-update-arguments.schema.json`, its `id` the path's" }
+      responses:
+        '200':
+          description: "The schedule as it is now (null once deleted) and whether this call changed it (`false`: a repeat of the same decision)"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schedule, changed]
+                properties:
+                  schedule:
+                    nullable: true
+                    allOf: [{ $ref: '#/components/schemas/AgentSchedule' }]
+                  changed: { type: boolean }
+        '400': { description: "Malformed body, or `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` as for the public route (an action with field changes, nothing to change)" }
+        '401': { description: "Missing, invalid, expired or superseded attempt token" }
+        '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED`: no approval of this call by the run's person, a denial, another call, another schedule or other arguments; `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`" }
+        '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` (not the person's); `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`; `HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '429': { description: "More than 30 schedule changes for this run in a minute" }
+  /agent-harness/internal/runs/{runId}/schedules/{scheduleId}/delete:
+    post:
+      tags: [Agent Harness Internal]
+      summary: Delete a schedule the run's person approved deleting in chat
+      operationId: internalAgentHarnessDeleteChatSchedule
+      x-internal: true
+      description: "ADR-SCH-03 D6, attempt token: the `schedule_delete` call (`pipeshub@schedules/delete`) its run's person approved, checked as a create is; deleted as the person. A repeat once it is gone answers `changed: false`."
+      security:
+        - harnessAttemptToken: []
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { name: scheduleId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        description: The approved call
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attemptId, fence, interactionId, toolId, arguments]
+              properties:
+                attemptId: { type: string, maxLength: 128 }
+                fence: { type: integer, minimum: 0 }
+                interactionId: { type: string, maxLength: 256 }
+                toolId: { type: string, enum: ['pipeshub@schedules/delete'] }
+                callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                arguments: { type: object, description: "Exactly `contracts/harness/ext/pipeshub/api/schedule-delete-arguments.schema.json`, its `id` the path's" }
+      responses:
+        '200':
+          description: "The schedule as it is now (null once deleted) and whether this call changed it (`false`: a repeat of the same decision)"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schedule, changed]
+                properties:
+                  schedule:
+                    nullable: true
+                    allOf: [{ $ref: '#/components/schemas/AgentSchedule' }]
+                  changed: { type: boolean }
+        '400': { description: "Malformed body, or `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` as for the public route (an action with field changes, nothing to change)" }
+        '401': { description: "Missing, invalid, expired or superseded attempt token" }
+        '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED`: no approval of this call by the run's person, a denial, another call, another schedule or other arguments; `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`" }
+        '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` (not the person's); `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`; `HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '429': { description: "More than 30 schedule changes for this run in a minute" }
   /agent-harness/internal/runs/{runId}/gateway-token:
     post:
       tags: [Agent Harness Internal]
@@ -90979,8 +91177,8 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: a service account, or a connector trigger by a non-admin; or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`: the org's Labs flag is off" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`: 50 per user or 500 per org; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_UNAVAILABLE` (UX3): durable agent chat is off for the org, so the schedule could never run" }
-        '503': { description: Scheduled runs are not configured on this deployment }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`: 50 per user or 500 per org. A schedule is made whether or not the org's agent harness is on (ADR-SCH-02): its firings run on the harness where it is on and as classic chat turns where it is off" }
+        '503': { description: "Scheduled runs are not configured on this deployment; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_STORE_UNAVAILABLE`: the install's MongoDB runs without a replica set (`REPLICA_SET_AVAILABLE=false`), which scheduling needs (ADR-SCH-02); the person is told to ask their administrator" }
     get:
       tags: [Agents]
       summary: List schedules
@@ -90996,9 +91194,13 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - { name: query, in: query, description: "ADR-SCH-03 D2: a case-insensitive part of the name", schema: { type: string, minLength: 1, maxLength: 200 } }
+        - { name: status, in: query, schema: { type: string, enum: [active, paused, disabled] } }
+        - { name: conversationId, in: query, description: "The chat asking: its schedules first, then the next to run, each with `madeHere`", schema: { type: string, maxLength: 128 } }
+        - { name: madeHere, in: query, description: "With `conversationId`: only the schedules that chat made", schema: { type: string, enum: ['true', 'false'] } }
       responses:
         '200':
-          description: Schedules, newest first
+          description: Schedules, newest first (for a `conversationId`, that chat's first, then by next run)
           content:
             application/json:
               schema:
@@ -91092,11 +91294,74 @@ paths:
         - oauth2: [agent:execute]
       parameters:
         - { name: scheduleId, in: path, required: true, schema: { type: string } }
+        - { name: revision, in: query, required: false, description: "ADR-SCH-03 D5: the revision its person was shown, checked in the store's own delete: a schedule another change moved on is never removed (`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`, 409)", schema: { type: integer, minimum: 0 } }
       responses:
         '204': { description: Deleted }
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:execute }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND`" }
+        '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
+    patch:
+      tags: [Agents]
+      summary: Change a schedule
+      operationId: updateAgentSchedule
+      description: |
+        ADR-SCH-03 D4: its name, what it asks, when, and its notices, each checked exactly as a
+        create checks it (the cron floor, the one-off's window, the time zone, channels the org
+        allows). Its owner only (an admin who may pause it may not change it). A one-off that ran
+        or was skipped is refused `SCHEDULE_RAN_ONCE`; a moved one-off keeps its one slot; a new
+        time of a recurring schedule counts from its next slot (a paused one keeps none until
+        resumed); a new ask or notice applies from the next firing, a firing already claimed runs
+        as it was. `revision` is the one the caller read.
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 0 }
+                name: { type: string, minLength: 1, maxLength: 200 }
+                input:
+                  type: object
+                  additionalProperties: false
+                  required: [query]
+                  properties:
+                    query: { type: string, minLength: 1, maxLength: 10000 }
+                trigger:
+                  description: "`cron` or `once` only, as for a create"
+                  allOf: [{ $ref: '#/components/schemas/AgentScheduleTrigger' }]
+                notify:
+                  type: array
+                  minItems: 1
+                  maxItems: 3
+                  uniqueItems: true
+                  items: { $ref: '#/components/schemas/AgentScheduleNotifyChannel' }
+                fromConversation:
+                  type: object
+                  additionalProperties: false
+                  required: [conversationId]
+                  description: "The caller's own chat the change is made from, recorded as `lastChangedFrom`"
+                  properties:
+                    conversationId: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: The changed schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentSchedule' }
+        '400': { description: "Malformed body; `HTTP_AGENT_HARNESS_SCHEDULE_INVALID` naming the field, or nothing to change, or a time for an event schedule" }
+        '401': { description: Not authenticated }
+        '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: not its owner, a service account, or a `fromConversation` that is not the caller's" }
+        '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`: another change came first; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`; `HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/firings:
     get:
@@ -91137,6 +91402,22 @@ paths:
         - oauth2: [agent:execute]
       parameters:
         - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                revision: { type: integer, minimum: 0, description: "ADR-SCH-03 D5: the revision read, checked in the store's own write; another is `HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`" }
+                fromConversation:
+                  type: object
+                  additionalProperties: false
+                  required: [conversationId]
+                  description: "The caller's own chat it is asked from, recorded as `lastChangedFrom`"
+                  properties:
+                    conversationId: { type: string, maxLength: 128 }
       responses:
         '200':
           description: The paused schedule
@@ -91159,6 +91440,22 @@ paths:
         - oauth2: [agent:execute]
       parameters:
         - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                revision: { type: integer, minimum: 0, description: "ADR-SCH-03 D5: the revision read, checked in the store's own write; another is `HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`" }
+                fromConversation:
+                  type: object
+                  additionalProperties: false
+                  required: [conversationId]
+                  description: "The caller's own chat it is asked from, recorded as `lastChangedFrom`"
+                  properties:
+                    conversationId: { type: string, maxLength: 128 }
       responses:
         '200':
           description: The active schedule
@@ -91171,6 +91468,44 @@ paths:
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
         '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
+  /agent-harness/schedules/{scheduleId}/skip:
+    post:
+      tags: [Agents]
+      summary: Skip a schedule's next run
+      operationId: skipAgentScheduleNext
+      description: "ADR-SCH-03 D4: the next slot of an active recurring schedule is recorded skipped (`skipped_by_owner`) instead of running; the one after runs. Asking again for the same slot changes nothing. Its owner only. A one-off, a paused or an event schedule has no next run to skip."
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - { name: scheduleId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                revision: { type: integer, minimum: 0, description: "ADR-SCH-03 D5: the revision read, checked in the store's own write; another is `HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`" }
+                fromConversation:
+                  type: object
+                  additionalProperties: false
+                  required: [conversationId]
+                  description: "The caller's own chat it is asked from, recorded as `lastChangedFrom`"
+                  properties:
+                    conversationId: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: The schedule, `skipNextAt` set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentSchedule' }
+        '400': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_INVALID`: a one-off, a paused or an event schedule" }
+        '401': { description: Not authenticated }
+        '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: not its owner" }
+        '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`; `HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
   /agent-harness/schedules/{scheduleId}/agent-version:
     put:
       tags: [Agents]
@@ -91234,6 +91569,7 @@ paths:
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN` for anyone but the schedule's user, or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
         '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
+        '503': { description: "`HTTP_AGENT_HARNESS_SCHEDULED_RUNS_STORE_UNAVAILABLE`: the install's MongoDB runs without a replica set, which scheduling needs (ADR-SCH-02)" }
   /agent-harness/triggers/{scheduleId}/webhook:
     post:
       tags: [Agents]

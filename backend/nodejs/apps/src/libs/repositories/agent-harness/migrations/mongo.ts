@@ -780,6 +780,20 @@ export const SCHEDULES_MIGRATION = indexMigration('schedules', [
   },
 ]);
 
+/** The schedules' indexes alone, for an install that runs schedules without the harness (ADR-SCH-02 D1). */
+export async function migrateScheduleStore(
+  db: Db,
+): Promise<IndexMigrationResult> {
+  const results = [
+    await SCHEDULES_MIGRATION.up(db),
+    await TRIGGERS_MIGRATION.up(db),
+  ];
+  return {
+    created: results.flatMap((r) => r.created),
+    dropped: results.flatMap((r) => r.dropped),
+  };
+}
+
 const forks = AgentSessionForkModel.collection.collectionName;
 
 /** D2 for SS3: erasing either side of a fork finds its records by session. */

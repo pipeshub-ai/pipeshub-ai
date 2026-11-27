@@ -9,7 +9,10 @@ import {
   runEndLine,
   runEndTitle,
 } from '../../../../modules/agent-harness/domain/run-end-notice';
-import type { NotifyChannel } from '../../../../modules/agent-harness/domain/schedules';
+import type {
+  NotifyChannel,
+  ScheduleRunnerKind,
+} from '../../../../modules/agent-harness/domain/schedules';
 import { runNoticeWords } from '../../../../modules/agent-harness/domain/inbox';
 import type {
   InteractiveRunNotice,
@@ -177,6 +180,22 @@ async function personOf(
  * then pushed if the user is connected), and when a run ends (TR-07) also by
  * email and Slack where the schedule and the org allow.
  */
+/** What a notice adds about how its run went beyond the digest: an ask that expired, a cost cap that did not apply. */
+export function runEndCaveats(
+  notice: Pick<RunEndedNotice, 'reason' | 'costCapIgnored'>,
+): string {
+  return [
+    notice.reason === 'ask_expired'
+      ? 'It stopped because an approval it asked for was not given before its deadline.'
+      : '',
+    notice.costCapIgnored === true
+      ? "The schedule's cost cap did not apply: the run used standard chat."
+      : '',
+  ]
+    .filter((text) => text.length > 0)
+    .join(' ');
+}
+
 export class HarnessScheduleNotifier
   implements ScheduleNotifier, PersonNoticeChannels, RunEndNotifier
 {
@@ -213,6 +232,7 @@ export class HarnessScheduleNotifier
     agentKey?: string;
     sessionId: string;
     runId: string;
+    runner?: ScheduleRunnerKind;
     deadlineAt: number;
   }): Promise<void> {
     await this.inbox(notice.orgId, notice.actorId, {
@@ -225,7 +245,9 @@ export class HarnessScheduleNotifier
         scheduleId: notice.scheduleId,
         // The Inbox words the row from these (UIP3-FU-1); title and message are the English fallback.
         scheduleName: notice.scheduleName,
-        runId: notice.runId,
+        ...(notice.runner === 'classic'
+          ? { runner: 'classic' }
+          : { runId: notice.runId }),
         conversationId: notice.sessionId,
         deadlineAt: notice.deadlineAt,
       },
@@ -299,7 +321,9 @@ export class HarnessScheduleNotifier
       const digest = runEndDigest(answer ?? '');
       const facts =
         notice.digest !== undefined ? digestLine(notice.digest) : '';
-      const said = [facts, digest.summary].filter((text) => text.length > 0);
+      const said = [facts, digest.summary, runEndCaveats(notice)].filter(
+        (text) => text.length > 0,
+      );
       await this.inbox(
         notice.orgId,
         notice.actorId,
@@ -315,9 +339,14 @@ export class HarnessScheduleNotifier
           payload: {
             scheduleId: notice.scheduleId,
             scheduleName: notice.scheduleName,
-            runId: notice.runId,
+            // A classic turn is its conversation; the Inbox opens a run's page only for a durable run.
+            ...(notice.runner === 'classic'
+              ? { runner: 'classic' }
+              : { runId: notice.runId }),
             conversationId: notice.sessionId,
             status: notice.status,
+            ...(notice.reason !== undefined ? { reason: notice.reason } : {}),
+            ...(notice.costCapIgnored === true ? { costCapIgnored: true } : {}),
             artifacts: noticeArtifacts(digest.artifacts, notice.digest),
             ...(notice.digest !== undefined ? { digest: notice.digest } : {}),
           },

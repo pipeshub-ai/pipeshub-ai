@@ -478,6 +478,7 @@ describe('TRIGGERS2 TR-07: completion notices', () => {
         agentKey: 'support-agent',
         sessionId: firing!.sessionId,
         runId: firing!.runId,
+        runner: 'harness',
         status: 'completed',
         channels: ['in_app', 'email'],
       },

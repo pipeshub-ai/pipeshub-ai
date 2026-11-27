@@ -110,16 +110,20 @@ export class FakeActors implements ActorAuthority {
   readonly refused = new Map<string, ActorRefusal>();
   readonly admins = new Set<string>([ADMIN_USER]);
   readonly minted: string[] = [];
+  /** The lifetime each credential was minted with (ADR-SCH-02 D3); undefined: the default. */
+  readonly ttls: Array<number | undefined> = [];
   outage = false;
 
   async authorize(
     _orgId: string,
     actorId: string,
+    options?: { ttlS?: number },
   ): Promise<{ authorization: string } | { refused: ActorRefusal }> {
     if (this.outage) throw new Error('user store down');
     const refused = this.refused.get(actorId);
     if (refused !== undefined) return { refused };
     this.minted.push(actorId);
+    this.ttls.push(options?.ttlS);
     return { authorization: `Bearer token-of-${actorId}` };
   }
 

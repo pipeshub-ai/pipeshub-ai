@@ -1,4 +1,4 @@
-import { HarnessRolloutPolicy } from '../ports/harness-rollout';
+import { orgSchedulesOn } from '../config';
 import {
   createHash,
   randomBytes,
@@ -43,11 +43,18 @@ import {
   nextCronSlot,
   NOTIFY_CHANNELS,
   ranOnce,
+  RAN_ONCE,
+  ONCE_TOO_LATE,
+  scheduleChanged,
+  type ScheduleChangedFrom,
+  scheduleRevision,
   type ScheduleOrigin,
   type NotifyChannel,
   type OverlapPolicy,
   scheduleAgentVersion,
   type ScheduleFiring,
+  firingRun,
+  type ScheduleRunnerKind,
   scheduleNotify,
   scheduleOverlap,
   type ScheduleStatus,
@@ -64,6 +71,7 @@ import type {
   AgentVersionResolver,
   NoticeChannelChoice,
   ScheduledRunsSetting,
+  ScheduleChange,
   ScheduleReach,
   ScheduleStore,
   TriggerSettings,
@@ -118,6 +126,37 @@ export interface CreateScheduleRequest {
   notify?: NotifyChannel[];
 }
 
+/** One change to a schedule (ADR-SCH-03 D4), checked as a create checks it; `revision` is the one the caller read. */
+export interface UpdateScheduleRequest {
+  revision: number;
+  name?: string;
+  /** What each run is asked. */
+  query?: string;
+  trigger?: Extract<ScheduleTriggerRequest, { kind: 'cron' | 'once' }>;
+  notify?: NotifyChannel[];
+}
+
+/** The schedules a person lists (ADR-SCH-03 D2): their own, by name, state and the chat they are in. */
+export interface ScheduleListFilter {
+  /** A case-insensitive part of the name. */
+  query?: string;
+  status?: ScheduleStatus;
+  /** The chat asking: its schedules come first, then the next to run. */
+  conversationId?: string;
+  /** With `conversationId`: only the schedules that chat made. */
+  madeHere?: boolean;
+}
+
+/** The chats of the caller's own a change may name (ADR-SCH-03 D3); a chat of anyone else names nothing. */
+export interface ChatConversations {
+  /** The chat's agent (null: the assistant) when the caller owns it in the org; null otherwise. */
+  ownedBy(
+    orgId: string,
+    userId: string,
+    conversationId: string,
+  ): Promise<{ agentKey: string | null } | null>;
+}
+
 /** A webhook request as the route read it: the raw body is what a signature covers. */
 export interface WebhookDelivery {
   token?: string;
@@ -144,6 +183,16 @@ export interface ScheduleView {
   notify: NotifyChannel[];
   /** The chat it was made in (ADR-SCH-01); absent: made on the Schedules page or the API. */
   origin?: ScheduleOrigin;
+  /** ADR-SCH-03 D5: the version a change must name; bumped by every change. */
+  revision: number;
+  /** The chat a person last changed it from (ADR-SCH-03 D3). */
+  lastChangedFrom: {
+    conversationId: string;
+    agentKey: string | null;
+    at: string;
+  } | null;
+  /** The next run its owner asked to skip; null when none is skipped. */
+  skipNextAt: string | null;
   createdAt: string;
   updatedAt: string;
   /** The template; only its actor sees it (it is their prompt). */
@@ -160,6 +209,8 @@ export interface ScheduleListItem extends ScheduleView {
   agentName: string | null;
   /** The agent's latest published version: a pinned schedule below it offers the move. */
   agentLiveVersion: number | null;
+  /** Listed for a chat (`conversationId`): whether that chat made it. */
+  madeHere?: boolean;
 }
 
 export interface FiringView {
@@ -168,8 +219,13 @@ export interface FiringView {
   slotAt: string;
   status: ScheduleFiring['status'];
   reason: string | null;
+  /** The durable run's id; null for a classic turn, whose run is its conversation. */
   runId: string | null;
   conversationId: string | null;
+  /** Which runner ran it (ADR-SCH-02 D2); null until it was admitted. */
+  runner: ScheduleRunnerKind | null;
+  /** The schedule's cost cap did not apply: the run was a classic chat turn (D6). */
+  costCapIgnored: boolean;
   missed: number;
   attempts: number;
   createdAt: string;
@@ -330,6 +386,21 @@ export function scheduleView(
     nextFireAt: iso(schedule.nextFireAt),
     overlap: scheduleOverlap(schedule),
     notify: scheduleNotify(schedule),
+    revision: scheduleRevision(schedule),
+    lastChangedFrom:
+      schedule.lastChangedFrom === undefined
+        ? null
+        : {
+            conversationId: schedule.lastChangedFrom.conversationId,
+            agentKey: schedule.lastChangedFrom.agentKey,
+            at: new Date(schedule.lastChangedFrom.at).toISOString(),
+          },
+    skipNextAt:
+      schedule.skipNextAt !== undefined &&
+      schedule.status === 'active' &&
+      schedule.skipNextAt === schedule.nextFireAt
+        ? new Date(schedule.skipNextAt).toISOString()
+        : null,
     ...(schedule.origin !== undefined
       ? { origin: { ...schedule.origin } }
       : {}),
@@ -349,6 +420,9 @@ export const firingView = (firing: ScheduleFiring): FiringView => ({
   reason: firing.reason,
   runId: firing.runId,
   conversationId: firing.sessionId,
+  runner:
+    firing.status === 'admitted' ? (firingRun(firing)?.runner ?? null) : null,
+  costCapIgnored: firing.costCapIgnored === true,
   missed: firing.missed,
   attempts: firing.attempts,
   createdAt: iso(firing.createdAt) as string,
@@ -385,11 +459,6 @@ export interface ScheduleServiceOptions {
    * what its request names, else follows the latest.
    */
   agentVersions?: AgentVersionResolver;
-  /**
-   * The org's durable rollout (UX3, R1 F14): every firing is a durable run, so
-   * with the harness off a schedule would never run. Absent: not checked.
-   */
-  rollout?: Pick<HarnessRolloutPolicy, 'decideForOrg'>;
   /** Webhook limits and notice channels (TR-04, TR-07). Absent: the release's. */
   triggers?: TriggerSettings;
   /** Which agents have a Slack bot (TR-07). Absent: none has, so Slack is never offered. */
@@ -403,6 +472,13 @@ export interface ScheduleServiceOptions {
   agents?: AgentSummaryReader | null;
   /** Who may see and act on schedules other people own. Absent: each schedule only by its owner. */
   reach?: ScheduleReach | null;
+  /** Which chats are the caller's, for a change or a create that names one (ADR-SCH-03 D3). Absent: none is. */
+  conversations?: ChatConversations | null;
+  /**
+   * Whether the document store has the transactions a firing's claim and a create's count need (ADR-SCH-02): a
+   * MongoDB replica set or PostgreSQL. Absent: it has.
+   */
+  storeReady?: () => boolean;
   logger?: HarnessLogger;
   newId?: () => string;
   newToken?: () => string;
@@ -421,7 +497,6 @@ export class ScheduleService {
   private readonly actors: Pick<ActorAuthority, 'isOrgAdmin'>;
   private readonly setting: ScheduledRunsSetting;
   private readonly transaction: ControlPlaneTransaction;
-  private readonly rollout?: Pick<HarnessRolloutPolicy, 'decideForOrg'>;
   private readonly agentVersions?: AgentVersionResolver;
   private readonly triggers?: TriggerSettings;
   private readonly slackBots?: AgentSlackBots;
@@ -429,6 +504,8 @@ export class ScheduleService {
   private readonly agents: AgentSummaryReader | null;
 
   private readonly reach: ScheduleReach | null;
+  private readonly conversations: ChatConversations | null;
+  private readonly storeReady: () => boolean;
   private readonly logger: HarnessLogger;
   private readonly newId: () => string;
   private readonly newToken: () => string;
@@ -440,7 +517,6 @@ export class ScheduleService {
     this.actors = options.actors;
     this.setting = options.setting;
     this.transaction = options.transaction;
-    this.rollout = options.rollout;
     this.agentVersions = options.agentVersions;
     this.logger = options.logger ?? silentHarnessLogger;
     this.newId = options.newId ?? randomUUID;
@@ -455,6 +531,229 @@ export class ScheduleService {
     this.budgets = options.budgets ?? null;
     this.agents = options.agents ?? null;
     this.reach = options.reach ?? null;
+    this.conversations = options.conversations ?? null;
+    this.storeReady = options.storeReady ?? (() => true);
+  }
+
+  /** A schedule is only made or run where its store can claim each slot once (ADR-SCH-02 Deviations). */
+  private assertStoreReady(): void {
+    if (this.storeReady()) return;
+    throw new HarnessScheduleRefusedError(
+      'SCHEDULED_RUNS_STORE_UNAVAILABLE',
+      "Scheduled runs need a database setup this server doesn't have. Ask your administrator to run MongoDB as a replica set",
+    );
+  }
+
+  /**
+   * Where a person's change comes from (ADR-SCH-03 D3): one of their own chats, whose agent it records. A chat that
+   * is not theirs is refused, so no schedule ever names someone else's conversation.
+   */
+  async changedFrom(
+    caller: ScheduleCaller,
+    conversationId: string,
+    interactionId?: string,
+  ): Promise<ScheduleChangedFrom> {
+    const owned =
+      this.conversations === null
+        ? null
+        : await this.conversations.ownedBy(
+            caller.orgId,
+            caller.userId,
+            conversationId,
+          );
+    if (owned === null) {
+      throw forbidden('That conversation is not one of yours');
+    }
+    return {
+      conversationId,
+      agentKey: owned.agentKey,
+      at: await this.store.now(),
+      ...(interactionId !== undefined ? { interactionId } : {}),
+    };
+  }
+
+  /**
+   * Changes a schedule as its owner asked (ADR-SCH-03 D4), with every check a create makes: a one-off that ran or was
+   * skipped is not changed; a moved one-off keeps its one slot; a recurring schedule's new time counts from its next
+   * slot; a new ask or notice applies from the next firing, a firing already claimed runs as it was. `revision` is
+   * the one the caller read: a schedule changed since is refused `SCHEDULE_CHANGED`.
+   */
+  async update(
+    caller: ScheduleCaller,
+    id: string,
+    request: UpdateScheduleRequest,
+    from?: ScheduleChangedFrom,
+  ): Promise<ScheduleView> {
+    await this.assertEnabled(caller.orgId);
+    const schedule = await this.owned(caller, id, 'change');
+    if (
+      request.name === undefined &&
+      request.query === undefined &&
+      request.trigger === undefined &&
+      request.notify === undefined
+    ) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_INVALID',
+        'Nothing to change',
+      );
+    }
+    if (scheduleRevision(schedule) !== request.revision)
+      throw scheduleChanged();
+    if (oneOffSpent(schedule) || schedule.status === 'disabled') {
+      throw this.disabled(schedule);
+    }
+    const now = await this.store.now();
+    const change: ScheduleChange = {
+      ...(request.name !== undefined ? { name: request.name } : {}),
+      ...(from !== undefined ? { lastChangedFrom: from } : {}),
+    };
+    if (request.query !== undefined) {
+      if (schedule.input === null) {
+        throw new HarnessScheduleRefusedError(
+          'SCHEDULE_INVALID',
+          'This schedule has nothing to ask any more. Delete it and create a new one',
+          'input',
+        );
+      }
+      change.input = { ...schedule.input, query: request.query };
+    }
+    if (request.trigger !== undefined) {
+      if (
+        schedule.trigger.kind !== 'cron' &&
+        schedule.trigger.kind !== 'once'
+      ) {
+        throw new HarnessScheduleRefusedError(
+          'SCHEDULE_INVALID',
+          'This schedule runs on events, not at times',
+          'trigger',
+        );
+      }
+      const trigger = this.trigger(request.trigger, now, false);
+      change.trigger = trigger;
+      // Paused, it has no cursor: resume works out the next slot.
+      change.nextFireAt =
+        schedule.status === 'paused' ? null : firstSlot(trigger, now);
+      change.skipNextAt = null;
+    }
+    if (request.notify !== undefined) {
+      change.notify = await this.notifyChannels(caller.orgId, request.notify);
+    }
+    const { skipNextAt: _skip, ...edited } = change;
+    const after: AgentSchedule = { ...schedule, ...edited };
+    const changed = await this.audited(caller, schedule, schedule, after, () =>
+      this.store.update(caller.orgId, id, request.revision, change, now),
+    );
+    if (changed === 'changed') throw scheduleChanged();
+    if (changed === null) throw notFound();
+    this.logger.info(
+      'schedule.updated',
+      harnessLogMeta('schedule.updated', {
+        orgId: caller.orgId,
+        actorId: caller.userId,
+        scheduleId: id,
+        fields: Object.keys(change).join(','),
+        fromChat: from !== undefined ? 'yes' : undefined,
+      }),
+    );
+    return scheduleView(changed, caller.userId);
+  }
+
+  /**
+   * Skips a recurring schedule's next run (ADR-SCH-03 D4): the firer records that slot skipped instead of running it.
+   * Asking again for the same slot changes nothing.
+   */
+  async skipNext(
+    caller: ScheduleCaller,
+    id: string,
+    revision: number | undefined,
+    from?: ScheduleChangedFrom,
+  ): Promise<ScheduleView> {
+    await this.assertEnabled(caller.orgId);
+    const schedule = await this.owned(caller, id, 'skip');
+    if (revision !== undefined && scheduleRevision(schedule) !== revision) {
+      throw scheduleChanged();
+    }
+    if (oneOffSpent(schedule) || schedule.status === 'disabled') {
+      throw this.disabled(schedule);
+    }
+    const refuse = (message: string): HarnessScheduleRefusedError =>
+      new HarnessScheduleRefusedError('SCHEDULE_INVALID', message, 'trigger');
+    if (schedule.trigger.kind === 'once') {
+      throw refuse('A one-time schedule has one run: delete it instead');
+    }
+    if (schedule.trigger.kind !== 'cron') {
+      throw refuse('This schedule runs on events, not at times');
+    }
+    if (schedule.status !== 'active' || schedule.nextFireAt === null) {
+      throw refuse('It is paused: it has no next run to skip');
+    }
+    if (schedule.skipNextAt === schedule.nextFireAt) {
+      return scheduleView(schedule, caller.userId);
+    }
+    const now = await this.store.now();
+    const change: ScheduleChange = {
+      skipNextAt: schedule.nextFireAt,
+      ...(from !== undefined ? { lastChangedFrom: from } : {}),
+    };
+    const changed = await this.audited(
+      caller,
+      schedule,
+      schedule,
+      { ...schedule, skipNextAt: schedule.nextFireAt },
+      () =>
+        this.store.update(
+          caller.orgId,
+          id,
+          scheduleRevision(schedule),
+          change,
+          now,
+        ),
+    );
+    if (changed === 'changed') throw scheduleChanged();
+    if (changed === null) throw notFound();
+    this.logger.info(
+      'schedule.next_skipped',
+      harnessLogMeta('schedule.next_skipped', {
+        orgId: caller.orgId,
+        actorId: caller.userId,
+        scheduleId: id,
+        slotAt: schedule.nextFireAt,
+      }),
+    );
+    return scheduleView(changed, caller.userId);
+  }
+
+  /** Refuses `SCHEDULE_CHANGED` when the schedule the caller may manage is no longer at `revision`. */
+  async assertRevision(
+    caller: ScheduleCaller,
+    id: string,
+    revision: number,
+  ): Promise<AgentSchedule> {
+    const { schedule } = await this.manageable(caller, id);
+    if (scheduleRevision(schedule) !== revision) throw scheduleChanged();
+    return schedule;
+  }
+
+  /** The caller's own schedule; an admin's reach does not let them change what runs as someone else. */
+  private async owned(
+    caller: ScheduleCaller,
+    id: string,
+    what: 'change' | 'skip',
+  ): Promise<AgentSchedule> {
+    if (caller.via === 'service') {
+      throw forbidden(
+        'A schedule runs as a person; service accounts cannot change one',
+      );
+    }
+    const { schedule, asActor } = await this.manageable(caller, id);
+    if (!asActor) {
+      throw forbidden(
+        what === 'change'
+          ? 'A schedule runs as its owner: only they can change it'
+          : 'A schedule runs as its owner: only they can skip its runs',
+      );
+    }
+    return schedule;
   }
 
   /**
@@ -508,14 +807,14 @@ export class ScheduleService {
   async create(
     caller: ScheduleCaller,
     request: CreateScheduleRequest,
-    made?: { id: string; origin: ScheduleOrigin },
+    made?: { id?: string; origin: ScheduleOrigin },
   ): Promise<{
     schedule: ScheduleView;
     webhookToken?: string;
     webhookSecret?: string;
   }> {
     await this.assertEnabled(caller.orgId);
-    await this.assertRunnable(caller.orgId);
+    this.assertStoreReady();
     if (caller.via === 'service') {
       throw forbidden(
         'A schedule runs as a person; service accounts cannot own one',
@@ -552,6 +851,7 @@ export class ScheduleService {
     const secret = signed ? this.newSecret() : null;
     const schedule: AgentSchedule = {
       id: made?.id ?? this.newId(),
+      revision: 0,
       orgId: caller.orgId,
       actorId: caller.userId,
       name: request.name,
@@ -612,16 +912,23 @@ export class ScheduleService {
     caller: ScheduleCaller,
     limit: number,
     everyone = false,
+    filter: ScheduleListFilter = {},
   ): Promise<ScheduleListItem[]> {
     await this.assertEnabled(caller.orgId);
     if (everyone && !(await this.reachesOthers(caller))) {
       throw forbidden("Only the schedules' owners can list them");
     }
-    const found = await this.store.list(
+    const filtered =
+      filter.query !== undefined ||
+      filter.status !== undefined ||
+      filter.conversationId !== undefined;
+    // A filtered list looks through every schedule the owner may hold, so a match is never cut off by the page.
+    const read = await this.store.list(
       caller.orgId,
       everyone ? {} : { actorId: caller.userId },
-      limit,
+      filtered && !everyone ? MAX_SCHEDULES_PER_ACTOR : limit,
     );
+    const found = filtered ? listed(read, filter).slice(0, limit) : read;
     const agents = await this.agentSummaries(caller.orgId, found);
     return found.map((s) => {
       const agent =
@@ -630,6 +937,9 @@ export class ScheduleService {
         ...scheduleView(s, caller.userId),
         agentName: agent?.name ?? null,
         agentLiveVersion: agent?.latestVersion ?? null,
+        ...(filter.conversationId !== undefined
+          ? { madeHere: madeIn(s, filter.conversationId) }
+          : {}),
       };
     });
   }
@@ -677,8 +987,15 @@ export class ScheduleService {
     return (await this.store.firings(caller.orgId, id, limit)).map(firingView);
   }
 
-  async pause(caller: ScheduleCaller, id: string): Promise<ScheduleView> {
+  async pause(
+    caller: ScheduleCaller,
+    id: string,
+    from?: ScheduleChangedFrom,
+    /** The revision the caller read (ADR-SCH-03 D5): checked again in the store's write. */
+    revision?: number,
+  ): Promise<ScheduleView> {
     await this.assertEnabled(caller.orgId);
+    if (revision !== undefined) await this.assertRevision(caller, id, revision);
     const { schedule, asActor } = await this.manageable(caller, id);
     if (schedule.status === 'paused')
       return scheduleView(schedule, caller.userId);
@@ -699,6 +1016,8 @@ export class ScheduleService {
               to: 'paused',
               reason: asActor ? 'by_actor' : 'by_admin',
               nextFireAt: null,
+              ...(from !== undefined ? { lastChangedFrom: from } : {}),
+              ...(revision !== undefined ? { expectedRevision: revision } : {}),
             },
             now,
           )
@@ -707,8 +1026,15 @@ export class ScheduleService {
     return this.changed(caller, changed, 'schedule.paused');
   }
 
-  async resume(caller: ScheduleCaller, id: string): Promise<ScheduleView> {
+  async resume(
+    caller: ScheduleCaller,
+    id: string,
+    from?: ScheduleChangedFrom,
+    /** The revision the caller read (ADR-SCH-03 D5): checked again in the store's write. */
+    revision?: number,
+  ): Promise<ScheduleView> {
     await this.assertEnabled(caller.orgId);
+    if (revision !== undefined) await this.assertRevision(caller, id, revision);
     const { schedule } = await this.manageable(caller, id);
     if (schedule.status === 'active')
       return scheduleView(schedule, caller.userId);
@@ -740,6 +1066,8 @@ export class ScheduleService {
               to: 'active',
               reason: null,
               nextFireAt: firstSlot(schedule.trigger, now),
+              ...(from !== undefined ? { lastChangedFrom: from } : {}),
+              ...(revision !== undefined ? { expectedRevision: revision } : {}),
             },
             now,
           )
@@ -796,10 +1124,18 @@ export class ScheduleService {
   }
 
   /** Allowed while the flag is off, so a user can always remove what runs as them. */
-  async delete(caller: ScheduleCaller, id: string): Promise<void> {
+  async delete(
+    caller: ScheduleCaller,
+    id: string,
+    /** The revision the person was shown (ADR-SCH-03 D5): a schedule changed since is never removed. */
+    revision?: number,
+  ): Promise<void> {
     const { schedule } = await this.manageable(caller, id);
+    if (revision !== undefined && scheduleRevision(schedule) !== revision) {
+      throw scheduleChanged();
+    }
     await this.audited(caller, schedule, schedule, null, () =>
-      this.store.delete(caller.orgId, id),
+      this.store.delete(caller.orgId, id, revision),
     );
     this.logger.info(
       'schedule.deleted',
@@ -817,6 +1153,7 @@ export class ScheduleService {
     key: string,
   ): Promise<FiringView> {
     await this.assertEnabled(caller.orgId);
+    this.assertStoreReady();
     const { schedule, asActor } = await this.manageable(caller, id);
     if (!asActor) {
       throw forbidden('A schedule runs as its owner: only they can run it now');
@@ -1173,26 +1510,13 @@ export class ScheduleService {
     return this.reach.reachesOthers(caller.orgId, caller.userId);
   }
 
-  /** A schedule is only made where its firings can run: durable agent chat on for the org. */
-  private async assertRunnable(orgId: string): Promise<void> {
-    if (this.rollout === undefined) return;
-    const decided = await this.rollout.decideForOrg(orgId).catch(() => null);
-    if (decided?.useHarness !== true) {
-      throw new HarnessScheduleRefusedError(
-        'SCHEDULED_RUNS_UNAVAILABLE',
-        'Scheduled runs need durable agent chat, which is off for this organization',
-      );
-    }
+  /** Refuses `SCHEDULED_RUNS_DISABLED` (404) while the org has no scheduling (ADR-SCH-02 D1). */
+  assertOn(orgId: string): Promise<void> {
+    return this.assertEnabled(orgId);
   }
 
   private async assertEnabled(orgId: string): Promise<void> {
-    let on: boolean;
-    try {
-      on = await this.setting.enabled(orgId);
-    } catch {
-      on = false;
-    }
-    if (!on) {
+    if (!(await orgSchedulesOn(orgId, (org) => this.setting.enabled(org)))) {
       throw new HarnessScheduleRefusedError(
         'SCHEDULED_RUNS_DISABLED',
         'Scheduled agent runs are not enabled for this organization',
@@ -1217,4 +1541,44 @@ function sameHash(stored: string, given: string): boolean {
   const a = Buffer.from(stored, 'hex');
   const b = Buffer.from(given, 'hex');
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Whether the chat made the schedule (ADR-SCH-03 D2). */
+const madeIn = (schedule: AgentSchedule, conversationId: string): boolean =>
+  schedule.origin?.conversationId === conversationId;
+
+/** A one-off whose one slot was taken or passed by: it never runs again, so it is not changed (ADR-SCH-03 D4). */
+const oneOffSpent = (schedule: AgentSchedule): boolean =>
+  schedule.trigger.kind === 'once' &&
+  schedule.status === 'disabled' &&
+  (schedule.statusReason === RAN_ONCE ||
+    schedule.statusReason === ONCE_TOO_LATE);
+
+/**
+ * The filter's schedules (ADR-SCH-03 D2): by a part of the name and by state; listed for a chat, that chat's first
+ * and then the next to run, so "that one" is near the top.
+ */
+function listed(
+  schedules: readonly AgentSchedule[],
+  filter: ScheduleListFilter,
+): AgentSchedule[] {
+  const words = filter.query?.trim().toLocaleLowerCase();
+  const kept = schedules.filter(
+    (s) =>
+      (words === undefined ||
+        words === '' ||
+        s.name.toLocaleLowerCase().includes(words)) &&
+      (filter.status === undefined || s.status === filter.status) &&
+      (filter.madeHere !== true ||
+        (filter.conversationId !== undefined &&
+          madeIn(s, filter.conversationId))),
+  );
+  if (filter.conversationId === undefined) return kept;
+  const here = filter.conversationId;
+  const next = (s: AgentSchedule): number =>
+    s.nextFireAt ?? Number.MAX_SAFE_INTEGER;
+  return [...kept].sort(
+    (a, b) =>
+      Number(madeIn(b, here)) - Number(madeIn(a, here)) || next(a) - next(b),
+  );
 }
