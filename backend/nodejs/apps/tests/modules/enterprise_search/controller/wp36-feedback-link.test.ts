@@ -9,6 +9,7 @@ import sinon from 'sinon'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import type { RatedAnswer } from '../../../../src/modules/agent-harness/application/run-feedback'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 
 const ORG = oid()
 const OWNER = oid()
@@ -62,10 +63,12 @@ const request = (params: Record<string, string>, body: Record<string, unknown>):
     context: { requestId: 'req-wp36' },
   }) as never
 
-async function call(handler: unknown, req: never) {
+/** As the route serves a rating: the conversation guard first, then the handler. */
+async function call(handler: unknown, req: never, kind: 'chat' | 'agent' = 'chat') {
   const res = new FakeSSEResponse()
   const next = sinon.stub()
-  await (handler as (req: never, res: never, next: never) => Promise<unknown>)(req, res as never, next as never)
+  const guarded = behindGuard(realGuards(), 'feedback', handler as (req: never, res: never, next: never) => Promise<unknown>, kind)
+  await guarded(req, res as never, next as never)
   await settle()
   return { status: res.statusCode, body: res.jsonBody as { feedback: Record<string, unknown> }, error: next.firstCall?.args[0] as Error | undefined }
 }
@@ -107,6 +110,7 @@ describe('WP-36 G-15 feedback is linked to its run and agent version (FB)', () =
     const out = await call(
       controller.updateAgentFeedbackWith(port),
       request({ agentKey: AGENT_KEY, conversationId: s.agentChatId, messageId: s.agentBotId }, { isHelpful: false }),
+      'agent',
     )
     expect(out.status, String(out.error)).to.equal(200)
     const [stored] = s.store.messagesOf(s.agentChatId)[1]!.feedback as Array<Record<string, unknown>>

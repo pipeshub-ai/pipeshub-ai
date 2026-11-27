@@ -63,6 +63,10 @@ import { legacyWorld, RESOLVED_TURN_VECTOR, type LegacyWorld, type LegacyWorldOp
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 import { SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED } from '../../support/edition-defaults';
+import { CONVERSATION_TYPES } from '../../../src/modules/enterprise_search/services/conversation/conversation.types';
+import { MongoUserDirectory } from '../../../src/modules/user_management/services/user-directory.service';
+import { realGuards } from '../enterprise_search/helpers/guarded-chat';
+import { turnDeps } from '../enterprise_search/helpers/turn-deps';
 
 const JWT_SECRET = 'cpd10-jwt-secret';
 const SCOPED_SECRET = 'cpd10-scoped-secret';
@@ -239,6 +243,11 @@ async function startRig(mode: ControlPlanePin, options: RigOptions = {}): Promis
   container.bind('AppConfig').toConstantValue(appConfig);
   registerAppUpstreams(appConfig);
   container.bind('KeyValueStoreService').toConstantValue({ get: async () => null });
+  // The conversation routes' guards and the turn handlers' dependencies, bound as the chat container binds them.
+  container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(realGuards());
+  container
+    .bind(CONVERSATION_TYPES.ConversationTurnDeps)
+    .toConstantValue(turnDeps({ users: new MongoUserDirectory(), appConfig }));
   container.bind('AuthMiddleware').toConstantValue(
     new AuthMiddleware(quiet, tokens, () => ({ verifyAccessToken: async (token: string) => jwt.verify(token, JWT_SECRET) }) as never),
   );

@@ -3,6 +3,7 @@ import { NextFunction, Request, RequestHandler, Response } from 'express'
 import { DefaultConversationGuards } from '../../../../src/modules/enterprise_search/services/conversation/http/default-conversation-guards'
 import { GUARD_MARK, GuardMarkValue, IConversationGuards } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-guards'
 import { ConversationOperation } from '../../../../src/modules/enterprise_search/services/conversation/domain/types'
+import { Project } from '../../../../src/modules/projects/schema/project.schema'
 
 /** The real default guards; only the project port is stubbed. */
 export function realGuards(): DefaultConversationGuards {
@@ -16,6 +17,22 @@ export function realGuards(): DefaultConversationGuards {
 }
 
 type Handler = (req: never, res: never, next: never) => unknown
+
+/**
+ * The project the default guards read for a chat filed in it: `readers` are its viewers, so each reads the chat through
+ * the project. A world that says who can see the project another way (`ProjectService.getAccessibleProjectIds`, say)
+ * says the same thing here, as both read the one project in production.
+ */
+export function guardedProject(project: { _id: unknown; orgId: unknown; userId: unknown }, readers: readonly unknown[]): void {
+  const stored = {
+    ...project,
+    visibility: 'private',
+    aclVersion: 1,
+    projectChatAccess: 'editor',
+    members: readers.map((principalId) => ({ principalType: 'user', principalId, role: 'viewer' })),
+  }
+  sinon.stub(Project, 'findOne').callsFake((() => Object.assign(Promise.resolve(stored), { lean: () => Promise.resolve(stored) })) as never)
+}
 
 /** Runs the route's guard, then the handler; a denial goes to `next(err)` and the handler never runs, as in the router. */
 export function behindGuard(

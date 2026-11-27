@@ -9,6 +9,7 @@ import { HarnessLogger } from '../../../../src/modules/agent-harness/application
 import { SharedArtifactService } from '../../../../src/modules/agent-harness/application/shared-artifacts'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, guardedProject, realGuards } from '../helpers/guarded-chat'
 
 /**
  * SS0 (AN-5) on the conversation GET: a reader who does not own the
@@ -51,6 +52,7 @@ function setup(harnessVersion?: 'durable-v1') {
   sinon.stub(Logger.getInstance(), 'warn')
   const projectId = oid()
   ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
+  guardedProject({ _id: projectId, orgId: ORG, userId: OWNER }, [RECIPIENT])
   const shared = { isShared: true, sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] }
   const sessions = {
     chat: store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Chat', sessionType: 'chat', ...shared, ...(harnessVersion ? { harnessVersion } : {}) }),
@@ -94,12 +96,15 @@ async function read(handler: JsonHandler, req: never): Promise<{ body: string; a
 const cases = [
   {
     name: 'chat',
-    handler: (artifacts?: SharedArtifactService) => controller.getConversationById(appConfig, { artifacts }) as JsonHandler,
+    // As the route serves it: the conversation guard first, then the handler (its users are the route's directory).
+    handler: (artifacts?: SharedArtifactService) =>
+      behindGuard(realGuards(), 'read', controller.getConversationById(appConfig, undefined, { artifacts })) as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.chat._id) }),
   },
   {
     name: 'agent',
-    handler: (artifacts?: SharedArtifactService) => controller.getAgentConversationById(appConfig, { artifacts }) as JsonHandler,
+    handler: (artifacts?: SharedArtifactService) =>
+      behindGuard(realGuards(), 'read', controller.getAgentConversationById(appConfig, { artifacts }), 'agent') as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.agent._id), agentKey: AGENT_KEY }),
   },
 ]

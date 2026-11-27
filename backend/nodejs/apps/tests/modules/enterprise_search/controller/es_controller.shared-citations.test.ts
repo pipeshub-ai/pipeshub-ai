@@ -12,6 +12,7 @@ import { ProjectService } from '../../../../src/modules/projects/services/projec
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { behindGuard, guardedProject, realGuards } from '../helpers/guarded-chat'
 
 /**
  * C-6 on the conversation GET, the one shared view of a conversation's
@@ -65,6 +66,7 @@ function setup(
   // Agent conversations reach other readers through their project, not `sharedWith`.
   const projectId = oid()
   ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
+  guardedProject({ _id: projectId, orgId: ORG, userId: OWNER }, [RECIPIENT])
   const sessions = {
     chat: store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Chat', sessionType: 'chat', ...shared, ...(harnessVersion ? { harnessVersion } : {}) }),
     agent: store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Agent', sessionType: 'agent', agentKey: AGENT_KEY, conversationSource: 'agent_chat', projectId, projectVisibility: 'project', ...(harnessVersion ? { harnessVersion } : {}) }),
@@ -130,12 +132,15 @@ async function read(
 const cases = [
   {
     name: 'chat',
-    handler: (citations?: SharedCitationService) => controller.getConversationById(appConfig, { citations }) as JsonHandler,
+    // As the route serves it: the conversation guard first, then the handler (its users are the route's directory).
+    handler: (citations?: SharedCitationService) =>
+      behindGuard(realGuards(), 'read', controller.getConversationById(appConfig, undefined, { citations })) as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.chat._id) }),
   },
   {
     name: 'agent',
-    handler: (citations?: SharedCitationService) => controller.getAgentConversationById(appConfig, { citations }) as JsonHandler,
+    handler: (citations?: SharedCitationService) =>
+      behindGuard(realGuards(), 'read', controller.getAgentConversationById(appConfig, { citations }), 'agent') as JsonHandler,
     params: (s: ReturnType<typeof setup>) => ({ conversationId: String(s.sessions.agent._id), agentKey: AGENT_KEY }),
   },
 ]
