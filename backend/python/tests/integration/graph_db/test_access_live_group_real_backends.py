@@ -199,6 +199,13 @@ async def teams(graph: Any) -> AsyncIterator[_World]:  # noqa: ANN401
                                                for t in templates], collection="agentTemplates")
         assert await graph.batch_create_edges([{"from_id": w.sid(h), "from_collection": "teams", "to_id": w.sid(f"t-{h}"), "to_collection": "agentTemplates",
                                                 "type": "TEAM", "role": "READER", "createdAtTimestamp": TS} for h in ("own-live", "own-gone")], collection="permission")
+        # A write answers True when Neo4j matched no endpoint: the edges are read back. Neo4j holds no edge of a gone node; ArangoDB keeps it.
+        if hasattr(graph, "client"):
+            rows = await graph.client.execute_query("MATCH (t:Teams)-[:PERMISSION]->(a:AgentTemplate) WHERE a.id IN $ids RETURN t.id AS id", parameters={"ids": templates})
+        else:
+            rows = await graph.http_client.execute_aql("FOR e IN permission FILTER e._to IN @ids RETURN {id: PARSE_IDENTIFIER(e._from).key}",
+                                                       {"ids": [f"agentTemplates/{t}" for t in templates]})
+        assert sorted(w.plain(r["id"]) for r in rows) == (["own-live"] if hasattr(graph, "client") else ["own-gone", "own-live"])
         yield w
 
 
@@ -305,11 +312,12 @@ async def _edges_to_app(w: _World) -> dict[str, bool]:
     return {w.plain(r["id"]): bool(r["ext"]) for r in rows}
 
 
-async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool = False) -> None:
+async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool = False) -> list[str]:
     """Run the reaper while the writer's transaction is open, then commit the writer. A reaper that loses to the writer raises a write conflict (its
     transaction, if it had one, is rolled back) and runs again once the writer has committed, as its caller does; one that returns has its
-    transaction committed. It never returns after a conflict, and any other failure is raised."""
+    transaction committed. It never returns after a conflict, and any other failure is raised. Returns the reaper transactions a conflict rolled back."""
     g = w.graph
+    rolled_back: list[str] = []
 
     async def once() -> None:
         rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"]) if reaper_in_transaction else None
@@ -318,6 +326,7 @@ async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool
         except BaseException:
             if rid:
                 await g.rollback_transaction(rid)
+                rolled_back.append(rid)
             raise
         if rid:
             await g.commit_transaction(rid)
@@ -338,6 +347,7 @@ async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool
         if not g.is_write_conflict(e):
             raise
         await once()      # the caller's retry, now that the writer has committed
+    return rolled_back
 
 
 @pytest.mark.parametrize("in_transaction", [False, True], ids=["alone", "in_transaction"])
@@ -350,8 +360,17 @@ async def test_the_reaper_in_its_caller_s_transaction_never_commits_after_a_conf
     assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
                                         "createdAtTimestamp": TS}], collection="permission", transaction=tid)
     await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
-    await _reap_while(w, tid, reaper_in_transaction=in_transaction)
+    rolled_back = await _reap_while(w, tid, reaper_in_transaction=in_transaction)
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+    if in_transaction and not hasattr(g, "client"):
+        assert rolled_back, "ArangoDB answers the removal of the writer's locked edge with a conflict"
+    for rid in rolled_back:      # a conflicted reaper's transaction is gone: it cannot be committed after the fact (each store says so its own way)
+        committed = True
+        try:
+            await g.commit_transaction(rid)
+        except Exception:
+            committed = False
+        assert not committed, "a reaper transaction rolled back after a conflict could still be committed"
 
 
 async def test_the_reaper_keeps_a_membership_made_ordinary_while_it_runs(world: _World) -> None:
@@ -399,3 +418,49 @@ async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(world: _Wor
             await g.http_client.execute_aql("FOR e IN permission FILTER e._from == @p REMOVE e IN permission", {"p": f"person/{pid}"})
             await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._from == @p REMOVE e IN userAppRelation", {"p": f"person/{pid}"})
             await g.http_client.execute_aql("FOR p IN person FILTER p._key == @p REMOVE p IN person", {"p": pid})
+
+
+async def _grant_through_the_store(w: _World, ext: str) -> str:
+    """A connector's grant write alone (no ensure_app_membership after it), in a transaction left open; returns it."""
+    from app.connectors.core.base.data_store.graph_data_store import (
+        GraphTransactionStore,
+    )
+    g = w.graph
+    tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
+    try:
+        assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges(
+            [{"from_id": ext, "from_collection": "users", "to_id": w.sid("r-own-live"), "to_collection": "records", "type": "USER", "role": "READER",
+              "createdAtTimestamp": TS}], "permission")
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await g.rollback_transaction(tid)
+        raise
+    return tid
+
+
+async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_reaper_that_overlaps_it(world: _World) -> None:
+    """The store touches ext-own-gone's flagged membership before it writes the grant, in the grant's transaction, still open while the reaper
+    runs: the reaper waits for it (Neo4j) or conflicts and runs again (ArangoDB), so the collaborator keeps the App once both have committed."""
+    w = world
+    await _reap_while(w, await _grant_through_the_store(w, w.sid("ext-own-gone")))
+    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World) -> None:
+    """The reverse order: the reaper's transaction has removed ext-own-gone's membership (no grant then) and is still open when a grant to it is
+    written through the store. The grant waits for the reaper or conflicts and is run again after it, as its caller does; the membership is gone."""
+    w, g = world, world.graph
+    ext = w.sid("ext-own-gone")
+    rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"])
+    await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
+    grant = asyncio.create_task(_grant_through_the_store(w, ext))
+    await asyncio.sleep(1.0)
+    await g.commit_transaction(rid)
+    try:
+        tid = await grant
+    except Exception as e:
+        if not g.is_write_conflict(e):
+            raise
+        tid = await _grant_through_the_store(w, ext)
+    await g.commit_transaction(tid)
+    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct"}

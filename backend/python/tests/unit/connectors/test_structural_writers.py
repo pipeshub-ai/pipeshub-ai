@@ -183,7 +183,8 @@ async def test_a_grant_is_structural_only_when_it_flips_whether_the_node_has_one
         store, provider = _store()
         store.graph_provider = SimpleNamespace(get_nodes_by_field_in=_by_field_in, logger=provider.logger,
                                                get_structure_of_nodes=provider_answering(structures),
-                                               batch_create_edges=AsyncMock(), batch_delete_edges=AsyncMock())
+                                               batch_create_edges=AsyncMock(), batch_delete_edges=AsyncMock(),
+                                               lock_external_app_memberships=AsyncMock())
         await getattr(store, writer)([edge], perm)
         return store.structural_connectors
 

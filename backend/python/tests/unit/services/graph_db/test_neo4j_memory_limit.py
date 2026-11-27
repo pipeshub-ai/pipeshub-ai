@@ -47,11 +47,11 @@ def _pool_error(code: str = POOL) -> TransientError:
 
 
 class _Result:
-    def __init__(self, server: _Server) -> None:
-        self.server = server
+    def __init__(self, server: _Server, fails: bool = True) -> None:
+        self.server, self.fails = server, fails
 
     async def data(self) -> list[dict]:
-        if self.server.fail_at == "pull":
+        if self.server.fail_at == "pull" and self.fails:
             self.server.attempts += 1
             raise self.server.error
         return []
@@ -81,10 +81,11 @@ class _Tx:
 
     async def run(self, query, parameters=None) -> _Result:
         self.server.statements += 1
-        if self.server.fail_at == "run":
+        fails = "REMOVE r.matchLock" not in query      # the bulk write fails, not the lock of its holders' memberships before it
+        if self.server.fail_at == "run" and fails:
             self.server.attempts += 1
             raise self.server.error
-        return _Result(self.server)
+        return _Result(self.server, fails)
 
     async def commit(self) -> None:
         self.server.commits += 1
@@ -262,6 +263,7 @@ class TestPoolErrorOnABulkStatement:
     async def test_create_user_group_membership_does_not_swallow_it(self) -> None:
         graph = MagicMock()
         graph.batch_create_edges = AsyncMock(side_effect=GraphMemoryLimitError("full"))
+        graph.lock_external_app_memberships = AsyncMock()
         graph.is_transient_error = MagicMock(return_value=False)
         store = GraphTransactionStore(graph, "txn", explicit=True)
         store.get_user_by_source_id = AsyncMock(return_value=MagicMock(id="u", email="u@example.com"))

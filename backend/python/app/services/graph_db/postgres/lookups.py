@@ -968,9 +968,9 @@ class LookupsMixin(PgBase):
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
-            # The flagged edges are locked first and decided by the next statement, which sees every grant committed by then: a writer of a grant touches
-            # its holder's edge after it (``ensure_app_membership``), so it either commits before the lock (its grant is seen) or waits for this unit and writes
-            # the edge again once it is gone.
+            # The flagged edges are locked first and decided by the next statement, which sees every grant committed by then: a writer of a grant locks
+            # its holder's flagged edges before it writes it (``lock_external_app_memberships``, from the store), so it either holds the lock first (this
+            # unit waits and sees its grant) or waits for this unit, whose decision then predates the grant.
             await tx.execute("""/* pipeshub:graph.reap_lock_external_edges */ SELECT 1 FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation'
                 AND u.to_coll = 'apps' AND u.to_id = $2 AND u.doc->>'isExternalUser' = 'true' FOR UPDATE""", org, connector_id)
             gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (
@@ -986,6 +986,7 @@ class LookupsMixin(PgBase):
                                     WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
                                       AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) s
                 WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
+                  AND d.doc->>'isExternalUser' = 'true'      -- on the target too: a row changed since the snapshot is checked again on it, never on s
                 RETURNING d.from_coll, d.from_id""", org, connector_id)
             people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
             if not people:

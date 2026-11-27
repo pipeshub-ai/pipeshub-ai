@@ -626,6 +626,18 @@ class IdentityMixin(PgBase):
             WHERE p.org_id = $1 AND p.coll = $2 AND p.id = $3 AND a.org_id = $1 AND a.coll = 'apps' AND a.id = $4
             ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc""", org, principal_collection, principal_id, connector_id, _j(props)), transaction, write=True)
 
+    async def lock_external_app_memberships(self, principals: list[tuple[str, str]], transaction: str | None = None) -> None:
+        """Row-locks the principals' flagged (external-collaborator) app memberships until the transaction ends, the lock the reaper takes before it
+        decides (``reap_stale_external_app_relations``); a principal with none locks and writes nothing."""
+        if not principals:
+            return
+        org = current_org_id()
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.lock_external_app_memberships */ SELECT 1 FROM graph.edges u
+            JOIN unnest($2::text[], $3::text[]) AS p(c, i) ON u.from_coll = p.c AND u.from_id = p.i
+            WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
+            ORDER BY u.from_coll, u.from_id, u.to_id FOR UPDATE OF u""", org, [c for c, _ in principals], [i for _, i in principals]),
+                      transaction, write=True)
+
     async def ensure_team_app_edge(self, connector_id: str, org_id: str, transaction: str | None = None) -> None:
         """The org's "All" team gets an edge to the app (the app is created bare when missing, as MERGE does). Idempotent."""
         if not self._mine(org_id):

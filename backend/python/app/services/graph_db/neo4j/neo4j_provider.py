@@ -19289,6 +19289,32 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception:
             raise
 
+    async def lock_external_app_memberships(
+        self,
+        principals: list[tuple[str, str]],
+        transaction: str | None = None,
+    ) -> None:
+        """Write-lock the principals' flagged (external-collaborator) app memberships until
+        the transaction ends, as the reaper does before it decides
+        (``reap_stale_external_app_relations``). A principal with none locks nothing."""
+        relationship = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
+        app_label = collection_to_label(CollectionNames.APPS.value)
+        ids: dict[str, list[str]] = {}
+        for collection, key in principals:
+            ids.setdefault(collection, []).append(key)
+        for collection in sorted(ids):
+            await self.client.execute_query(
+                f"""
+                UNWIND $ids AS pid
+                MATCH (principal:{collection_to_label(collection)} {{id: pid}})-[r:{relationship}]->(:{app_label})
+                WHERE r.isExternalUser = true
+                SET r.{_MATCH_LOCK} = true
+                REMOVE r.{_MATCH_LOCK}
+                """,
+                parameters={"ids": sorted(set(ids[collection]))},
+                txn_id=transaction,
+            )
+
     def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
         external collaborator on this app?
@@ -19462,9 +19488,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (app:{app_label} {{id: $connector_id}})
             MATCH (principal)-[uar:{app_rel}]->(app)
             WHERE uar.isExternalUser = true
-            // The write lock first (a property set and removed: nothing kept), then the flag and the grant: a writer of a grant touches its
-            // holder's edge after it (ensure_app_membership) and a writer of a membership writes its flag, so either has committed (and is
-            // read below) or waits for this transaction and writes the edge again once it is gone.
+            // The write lock first (a property set and removed: nothing kept), then the flag and the grant: a writer of a grant locks its
+            // holder's flagged edges before it writes it (lock_external_app_memberships) and a writer of a membership writes its flag, so either
+            // has committed (and is read below) or waits for this transaction, whose decision then predates its write.
             SET uar.{_MATCH_LOCK} = true
             REMOVE uar.{_MATCH_LOCK}
             WITH principal, uar, app

@@ -389,6 +389,7 @@ class TestAbstractMethodInventory:
         "get_person_by_source_key",
         "ensure_app_membership",
         "create_edges_if_absent",
+        "lock_external_app_memberships",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",
         "get_app_role_by_external_id",

@@ -9612,6 +9612,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception:
             raise
 
+    async def lock_external_app_memberships(
+        self,
+        principals: list[tuple[str, str]],
+        transaction: str | None = None,
+    ) -> None:
+        """Touch the principals' flagged (external-collaborator) app memberships, as
+        ``ensure_app_membership`` does: a reaper removing one of them in a snapshot older than
+        this write conflicts with it (``reap_stale_external_app_relations``). A principal with
+        none writes nothing."""
+        if not principals:
+            return
+        await self.http_client.execute_aql(
+            f"""
+            FOR uar IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER uar._from IN @froms AND uar.isExternalUser == true
+                UPDATE uar WITH {{ updatedAtTimestamp: @now }} IN {CollectionNames.USER_APP_RELATION.value}
+            """,
+            bind_vars={"froms": sorted({f"{c}/{k}" for c, k in principals}), "now": get_epoch_timestamp_in_ms()},
+            txn_id=transaction,
+        )
+
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
         external collaborator on this app?
@@ -9857,7 +9878,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # The grant is checked by the statement that removes the edge: a grant written between a separate read and the removal would
             # otherwise lose its holder the App. A grant committed after this statement's snapshot is not seen, but its writer touches the
-            # holder's edge after it (ensure_app_membership): the removal then conflicts and nothing is removed (the next pass decides again).
+            # holder's flagged edges before it (lock_external_app_memberships): the removal then conflicts and nothing is removed (the next pass decides again).
             # The removed edges' principals are what the person cleanup below needs.
             stale_rows = await self.http_client.execute_aql(
                 f"""

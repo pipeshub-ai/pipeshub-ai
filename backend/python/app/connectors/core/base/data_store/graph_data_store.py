@@ -141,6 +141,12 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+def _error_kind(error: BaseException) -> str:
+    """The error's type and the store's code, never its text: a driver's message carries the query's keys and values."""
+    code = getattr(error, "code", None)
+    return f"{type(error).__name__} {code}" if isinstance(code, str | int) else type(error).__name__
+
+
 def is_retryable(instance: object, exception: Exception) -> bool:
     """Whether retry_on_deadlock retries this failure of a method of ``instance`` (attempts left or not)."""
     return _is_retryable(instance, exception)
@@ -200,7 +206,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                         logger.warning(
                             f"Deadlock or write conflict in {func.__name__} "
                             f"(attempt {attempt + 1}/{max_retries}), "
-                            f"retrying in {backoff:.1f}s: {str(e)[:200]}"
+                            f"retrying in {backoff:.1f}s: {_error_kind(e)}"
                         )
                         await asyncio.sleep(backoff)
                         continue
@@ -208,7 +214,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
                         if retryable:
                             logger.error(
                                 f"Deadlock or write conflict persists in {func.__name__} "
-                                f"after {max_retries} attempts: {str(e)[:200]}"
+                                f"after {max_retries} attempts: {_error_kind(e)}"
                             )
                         raise
                 finally:
@@ -225,6 +231,33 @@ read_collections = [
 write_collections = [
     collection.value for collection in CollectionNames
 ]
+
+# a grant from one of these to one of those is what keeps an external collaborator's app membership (reap_stale_external_app_relations)
+_GRANT_HOLDERS = frozenset({CollectionNames.USERS.value, CollectionNames.PEOPLE.value})
+_REAPER_GRANT_TARGETS = frozenset({CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.GROUPS.value,
+                                   CollectionNames.ROLES.value, CollectionNames.TEAMS.value})
+
+_REGRANT_ATTEMPTS = 3
+
+
+def _ends(e: dict) -> tuple[str | None, str | None, str | None]:
+    if "_from" in e:
+        fc, fi = e["_from"].split("/", 1)
+        return fc, fi, e.get("_to", "").split("/", 1)[0]
+    return e.get("from_collection"), e.get("from_id"), e.get("to_collection")
+
+
+def _grant_holders(edges: list[dict]) -> list[tuple[str, str]]:
+    """The users and people a grant write gives a grant the reaper counts, sorted (the order locks are taken in)."""
+    return sorted({(fc, fi) for fc, fi, to in map(_ends, edges) if fc in _GRANT_HOLDERS and fi and to in _REAPER_GRANT_TARGETS})
+
+
+def _from_moved(e: dict, moved: dict[str, str]) -> dict:
+    fc, fi, _ = _ends(e)
+    if fc != CollectionNames.PEOPLE.value or fi not in moved:
+        return e
+    return {**e, "_from": f"{fc}/{moved[fi]}"} if "_from" in e else {**e, "from_id": moved[fi]}
+
 
 # ---- the only handle the store has on the provider --------------------------------------------------------------------------
 # `GraphTransactionStore.graph_provider` is this proxy. A read goes through. Anything else must happen inside a store method that
@@ -658,15 +691,47 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
+    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[[list[dict]], Awaitable[_T]]) -> _T:
+        """Writes ``edges`` with ``write``. Before a grant, the flagged app memberships of the users and people it grants are locked as the
+        external-collaborator reaper locks them before it decides, so a reaper either waits for this grant to commit and sees it, or decided before
+        the grant existed. Without a transaction each statement commits alone: a person the reaper removed after its upsert is created again and the
+        grant written to it."""
+        holders = _grant_holders(edges) if collection == CollectionNames.PERMISSION.value else []
+        if holders:
+            await self.graph_provider.lock_external_app_memberships(holders, transaction=self.txn)
+        people = [] if self.explicit else [k for c, k in holders if c == CollectionNames.PEOPLE.value]
+        if not people:
+            return await write(edges)
+        docs = {k: await self.graph_provider.get_document(k, CollectionNames.PEOPLE.value, transaction=self.txn) for k in people}
+        for _ in range(_REGRANT_ATTEMPTS):
+            result = await write(edges)
+            gone = [k for k in docs if not await self.graph_provider.get_document(k, CollectionNames.PEOPLE.value, transaction=self.txn)]
+            if not gone:
+                return result
+            moved = {k: await self._person_again(docs[k]) for k in gone}
+            edges = [_from_moved(e, moved) for e in edges]
+            docs = {moved.get(k, k): d for k, d in docs.items()}
+        raise GraphWriteError("the people of a grant were removed while it was written")
+
+    async def _person_again(self, doc: dict | None) -> str:
+        """The id of a person created again from the document of one the reaper removed."""
+        doc = doc or {}
+        person = Person(email=doc.get("email"), source_key=doc.get("sourceKey"), org_id=doc.get("orgId"), full_name=doc.get("fullName"))
+        key = (await self.upsert_person_by_email(person, raise_on_error=True) if person.email
+               else await self.upsert_person_by_source_key(person, raise_on_error=True) if person.source_key else None)
+        if not key:
+            raise GraphWriteError("a person of a grant was removed while it was written and cannot be created again")
+        return key
+
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
-        await self.graph_provider.replace_edges_to(to_id, to_collection, edges, collection, transaction=self.txn)
+        await self._write_grant(edges, collection, lambda es: self.graph_provider.replace_edges_to(to_id, to_collection, es, collection, transaction=self.txn))
 
     async def replace_record_permissions(
         self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
     ) -> None:
-        await self.graph_provider.replace_record_permissions(
-            record_id, edges, record_group_id, inherit=inherit, transaction=self.txn
-        )
+        await self._write_grant(edges, CollectionNames.PERMISSION.value, lambda es: self.graph_provider.replace_record_permissions(
+            record_id, es, record_group_id, inherit=inherit, transaction=self.txn
+        ))
 
     async def link_record_to_group(
         self,
@@ -979,11 +1044,9 @@ class GraphTransactionStore(TransactionStore):
                 to_collection=CollectionNames.GROUPS.value,
             )
 
-            await self.graph_provider.batch_create_edges(
-                [perm_edge],
-                collection=CollectionNames.PERMISSION.value,
-                transaction=self.txn
-            )
+            await self._write_grant([perm_edge], CollectionNames.PERMISSION.value, lambda es: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn
+            ))
 
             self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
             return True
@@ -1434,17 +1497,15 @@ class GraphTransactionStore(TransactionStore):
                 )
 
         if permission_edges:
-            await self.graph_provider.batch_create_edges(
-                permission_edges,
-                collection=CollectionNames.PERMISSION.value,
-                transaction=self.txn
-            )
+            await self._write_grant(permission_edges, CollectionNames.PERMISSION.value, lambda es: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn
+            ))
 
     async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
-        return bool(await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn))
+        return bool(await self._write_grant(edges, collection, lambda es: self.graph_provider.batch_create_edges(es, collection=collection, transaction=self.txn)))
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
-        await self.graph_provider.create_edges_if_absent(edges, collection, transaction=self.txn)
+        await self._write_grant(edges, collection, lambda es: self.graph_provider.create_edges_if_absent(es, collection, transaction=self.txn))
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
@@ -1631,7 +1692,7 @@ class GraphDataStore(DataStoreProvider):
             # every query waited out the 60s acquisition timeout -- which
             # produced more record timeouts, more cancels, more leaks.
             if isinstance(e, Exception) and self.graph_provider.is_write_conflict(e):
-                self.logger.warning("Transaction hit a write conflict, rolling back: %s", str(e)[:200])
+                self.logger.warning("Transaction hit a write conflict, rolling back: %s", _error_kind(e))
             elif isinstance(e, Exception):
                 self.logger.error(f"❌ Transaction error, rolling back: {str(e)}")
             else:

@@ -4511,6 +4511,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def lock_external_app_memberships(
+        self,
+        principals: list[tuple[str, str]],
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Hold the principals' flagged (``isExternalUser``) app memberships, on every app, until
+        the transaction ends: the lock ``reap_stale_external_app_relations`` takes before it
+        decides. A grant writer calls it before writing a grant, so a reaper either waits for
+        the grant to commit and sees it, or has decided before the grant existed.
+
+        A principal with no flagged membership locks and writes nothing. Raises on failure.
+
+        Args:
+            principals: ``(collection, key)`` pairs, CollectionNames.USERS or PEOPLE
+            transaction: The grant writer's transaction
+        """
+        pass
+
+    @abstractmethod
     async def migrate_person_to_user(
         self,
         email: str,

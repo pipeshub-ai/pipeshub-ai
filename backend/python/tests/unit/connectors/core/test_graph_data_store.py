@@ -46,6 +46,7 @@ def mock_graph_provider():
     # Make all methods async
     provider.begin_transaction = AsyncMock(return_value="txn-123")
     provider.commit_transaction = AsyncMock()
+    provider.lock_external_app_memberships = AsyncMock()
     provider.rollback_transaction = AsyncMock()
     provider.get_document = AsyncMock(return_value=None)
     provider.get_record_by_external_id = AsyncMock(return_value=None)
