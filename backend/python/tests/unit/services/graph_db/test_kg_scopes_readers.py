@@ -32,6 +32,7 @@ KNOWN = Counter({
     (KG + "stamp.py", "_current_scopes"): 1,                            # the stamp writer compares the rows with what it computed
     (KG + "verify.py", "<module>"): 1,                                  # the verify names a row left without its record (ORPHAN_SCOPES)
     (KG + "backfill.py", "backfill_scope.reset"): 1,                    # the restart deletes those rows under the connector's lock
+    ("db/lib/kg_stats.py", "<module>"): 1,                              # the tables the maintenance worker ANALYZEs (statistics only, no row is read)
     ("db/versions/kg/0008_scopes_r13.sql", "<file>"): 7,                # the table, its index, settings, policy and grants
     ("db/versions/kg/0008_scopes_r13.py", "<module>"): 1,               # its docstring
     ("db/versions/kg/0008_scopes_r13.py", "downgrade"): 3,              # the downgrade that drops it

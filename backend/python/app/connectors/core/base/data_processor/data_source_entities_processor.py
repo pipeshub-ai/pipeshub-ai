@@ -1115,16 +1115,20 @@ class DataSourceEntitiesProcessor:
             )
 
     @staticmethod
-    def _parent_in_other_group(parent: Record | None, record_group_id: str | None) -> bool:
+    def _parent_in_other_group(
+        parent: Record | None, record_group_id: str | None, external_group_id: str | None = None,
+    ) -> bool:
         """A synced parent of another record group lists the record but lends it
-        no audience; a placeholder, RESTRICTED until it syncs, still hides it."""
-        return (
-            parent is not None
-            and not parent.is_placeholder
-            and bool(record_group_id)
-            and bool(parent.record_group_id)
-            and parent.record_group_id != record_group_id
-        )
+        no audience; a placeholder, RESTRICTED until it syncs, still hides it.
+
+        ``external_group_id``: the source's id of the record's group, for a record
+        whose group is not stored (``_handle_record_group`` could not mint it). Its
+        parent is then of another group unless the source names the same one."""
+        if parent is None or parent.is_placeholder:
+            return False
+        if record_group_id:
+            return bool(parent.record_group_id) and parent.record_group_id != record_group_id
+        return bool(external_group_id) and parent.external_record_group_id != external_group_id
 
     async def _handle_parent_record(
         self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None
@@ -1230,7 +1234,9 @@ class DataSourceEntitiesProcessor:
                 # straight past a restriction part way down the tree. Only a record
                 # its caller links to a group can fall back on that group.
                 in_other_group = self._parent_in_other_group(
-                    parent_record, record.record_group_id if record.external_record_group_id else None
+                    parent_record,
+                    record.record_group_id if record.external_record_group_id else None,
+                    record.external_record_group_id,
                 )
                 # A parent in this group is the permission parent. The flag is for a
                 # caller that must take the audience from the group anyway.
@@ -1647,6 +1653,22 @@ class DataSourceEntitiesProcessor:
                 return best["id"] == record.id
         return True
 
+    @staticmethod
+    def _leaves_for_unstored_group(
+        record: Record, record_group_id: str | None, existing_record: Record | None
+    ) -> bool:
+        """A stored record of a group that now names a group ``_handle_record_group``
+        could not store. It is in no group until its next write, so it leaves the
+        old one now: ``_link_record_to_group`` with no group to join takes away the
+        old group's membership, hierarchy and inherited access."""
+        return (
+            not record_group_id
+            and bool(record.external_record_group_id)
+            and record.origin != OriginTypes.UPLOAD
+            and existing_record is not None
+            and bool(existing_record.record_group_id)
+        )
+
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
         Prepare record group by looking up or creating it, and set record_group_id on the record.
@@ -1673,6 +1695,19 @@ class DataSourceEntitiesProcessor:
             record_group = None
 
         if record_group is None:
+            if record.record_group_type is None:
+                # A group needs a type to be stored, and the record does not say
+                # which. The record goes in without a group; its next write links
+                # it once the connector has synced the group. Until then it holds
+                # none of the group's access, which hides rather than exposes it.
+                self.logger.warning(
+                    "Record %s is not placed in group %s: its group is not stored and the record has no record_group_type",
+                    record.external_record_id, record.external_record_group_id,
+                )
+                # Nor does it keep a group id it came with: that may be the group
+                # it is leaving (see _leaves_for_unstored_group).
+                record.record_group_id = None
+                return None
             # Create a new record group
             record_group = RecordGroup(
                 external_group_id=record.external_record_group_id,
@@ -1761,13 +1796,19 @@ class DataSourceEntitiesProcessor:
         """Limit an unlicensed connector (its app document ``app``) to its creator, or keep the limit it has. Once
         ``accessLimit`` and ``permissionModel: APP_LEVEL`` are both stored, the generation bump committed with them,
         so only the refreshes after the write run again: a crash may have left those undone, and writing again would
-        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``."""
-        limit = app.get("accessLimit")
-        if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
-            async with self._access_limit_refreshed(connector_id):
-                return
-        await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
-        note_limited(connector_id)
+        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``.
+
+        The licence watcher is told every time, once the write has returned or raised: one that raised may still
+        have committed, and told before the commit it could read the connector as not limited and settle. Telling it
+        about a connector that is not limited only makes it look again."""
+        try:
+            limit = app.get("accessLimit")
+            if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
+                async with self._access_limit_refreshed(connector_id):
+                    return
+            await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        finally:
+            note_limited(connector_id)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
@@ -1893,6 +1934,9 @@ class DataSourceEntitiesProcessor:
         )
         if _gated(app) and app.get("accessLimit") is None:
             await self.limit_unlicensed(connector_id, app)
+        elif _gated(app):
+            # The first skip's write may have committed and then raised: the watcher has to learn of it anyway.
+            note_limited(connector_id)
         self.__dict__.setdefault("_known_limited", set()).add(connector_id)
 
     async def keep_skipped_groups(self, connector_id: str) -> None:
@@ -2214,7 +2258,7 @@ class DataSourceEntitiesProcessor:
         await self._reparent_orphans(tx_store, orphans)
 
     async def _link_record_to_group(
-        self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None,
+        self, record: Record, record_group_id: str | None, tx_store: TransactionStore, existing_record: Record | None = None,
         narrowed_connectors: set[str] | None = None,
         *, parent_in_other_group: bool = False, parent_outside_group: bool = False, stored_under_its_id: bool = False,
     ) -> bool:
@@ -3007,7 +3051,7 @@ class DataSourceEntitiesProcessor:
                         external_id=record.parent_external_record_id,
                     )
                 parent_outside_group = self._parent_in_other_group(
-                    parent_record, record_group.id if record_group else None
+                    parent_record, record_group.id if record_group else None, record.external_record_group_id
                 )
                 parent_in_other_group = parent_outside_group or bool(record.inherit_permissions_from_group)
                 # The group edge belongs to a record with no parent record. A nested
@@ -3590,7 +3634,11 @@ class DataSourceEntitiesProcessor:
             parent_outside_group = placement.parent_outside_group
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id or record.shared_with_me_record_group_ids:
+        if (
+            record_group_id
+            or record.shared_with_me_record_group_ids
+            or self._leaves_for_unstored_group(record, record_group_id, existing_record)
+        ):
             moved = await self._link_record_to_group(
                 record, record_group_id, tx_store, existing_record, narrowed_connectors,
                 parent_in_other_group=parent_in_other_group,
@@ -4485,7 +4533,9 @@ class DataSourceEntitiesProcessor:
                         placement = await self._handle_parent_record(
                             new_record, tx_store, existing_record=None
                         )
-                        if record_group_id:
+                        if record_group_id or self._leaves_for_unstored_group(
+                            new_record, record_group_id, old_record
+                        ):
                             await self._link_record_to_group(
                                 new_record, record_group_id, tx_store, old_record, narrowed_connectors,
                                 parent_in_other_group=placement.permissions_from_group,

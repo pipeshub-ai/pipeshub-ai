@@ -7,6 +7,8 @@ from inspect import isawaitable, isclass
 from typing import Any, cast
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -31,6 +33,7 @@ from app.services.messaging.lanes.lifecycle import (
 )
 from app.utils.error_class import log_failure
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import await_or_503, get_document_or_503
 
 
 # KB app documents store type == Connectors.KNOWLEDGE_BASE.value ("KB"), but the
@@ -348,10 +351,12 @@ class ConnectorRegistry:
         return True
 
     async def _org_id_from_edge(self, connector_instance: dict[str, Any]) -> str | None:
+        """The org on the app's org-app edge; an edge read the store could not answer just now is a 503 (other
+        failures are raised as they are)."""
         connector_id = connector_instance.get("_key") or connector_instance.get("id")
         if not connector_id:
             return None
-        return await org_id_from_app_edge(await self._get_graph_provider(), connector_id)
+        return await await_or_503(org_id_from_app_edge(await self._get_graph_provider(), connector_id, raise_on_error=True))
 
     async def _can_delete_connector(
         self,
@@ -413,6 +418,8 @@ class ConnectorRegistry:
 
             return False
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking connector access: {e}")
             return False
@@ -501,20 +508,12 @@ class ConnectorRegistry:
             connector_id: Unique key of the connector instance
 
         Returns:
-            Connector instance document or None if not found
+            Connector instance document, or None if there is none. A failed read is a 503, not None, so an outage is
+            not answered as a missing connector (404) or as an unlocked one.
         """
-        try:
-            graph_provider = await self._get_graph_provider()
-            return await graph_provider.get_document(
-                connector_id,
-                self._collection_name
-            )
-
-        except Exception as e:
-            self.logger.debug(
-                f"Could not get connector instance {connector_id} from database: {e}"
-            )
-            return None
+        # The first read builds the data store; a store that is down then is the same outage as a failed read.
+        graph_provider = await await_or_503(self._get_graph_provider())
+        return await get_document_or_503(graph_provider, connector_id, self._collection_name)
 
     async def _create_connector_instance(
         self,
@@ -1519,6 +1518,8 @@ class ConnectorRegistry:
             metadata = self._connectors[registry_key]
             return self._build_connector_info(connector_type, metadata, document)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error getting connector instance {connector_id}: {e}"

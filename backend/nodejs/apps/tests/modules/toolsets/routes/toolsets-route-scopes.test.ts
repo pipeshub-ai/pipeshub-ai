@@ -11,6 +11,7 @@ import { expect } from 'chai';
 import { createToolsetsRouter } from '../../../../src/modules/toolsets/routes/toolsets_routes';
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum';
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
 
 type ScopeName = keyof typeof OAuthScopeNames;
 type Method = 'get' | 'post' | 'put' | 'delete' | 'patch';
@@ -84,11 +85,20 @@ function routes(): Route[] {
     );
 }
 
+/** A route a build keeps for interactive sessions: no OAuth or PAT token reaches it, whatever its scopes. */
+const sessionOnly = (route: Route): boolean =>
+  route.stack.some((layer) => layer.handle === requireSessionAuth);
+
 /** The first error the route's middlewares raise before its controller, or null when they all pass. */
-async function guardError(route: Route, user: Record<string, unknown>): Promise<unknown> {
+async function guardError(
+  route: Route,
+  user: Record<string, unknown>,
+  { skipSessionOnly = false } = {},
+): Promise<unknown> {
   const req: any = { user, body: {}, query: {}, params: {}, headers: {}, path: route.path };
   const res: any = {};
   for (const layer of route.stack.slice(0, -1)) {
+    if (skipSessionOnly && layer.handle === requireSessionAuth) continue;
     const error = await new Promise<unknown>((done) => {
       Promise.resolve(layer.handle(req, res, (e?: unknown) => done(e ?? null))).catch(done);
     });
@@ -135,8 +145,16 @@ describe('toolsets router scopes (CPS TS-1, TS-2)', () => {
   it('TS-2 the scope each route requires is its Python twin\'s, in the toolset family', async () => {
     for (const route of routes()) {
       const scope = OAuthScopeNames[expected(route)];
-      const error = await guardError(route, oauth(scope));
+      // The scope check is what this asserts; a session-only route's refusal of every token is asserted below.
+      const error = await guardError(route, oauth(scope), { skipSessionOnly: true });
       expect(error instanceof ForbiddenError, `${route.method} ${route.path} with ${scope}`).to.equal(false);
+    }
+  });
+
+  it('TS-2 a session-only route refuses an OAuth token even with its scope', async () => {
+    for (const route of routes().filter(sessionOnly)) {
+      const error = await guardError(route, oauth(OAuthScopeNames[expected(route)]));
+      expect(error, `${route.method} ${route.path}`).to.be.instanceOf(ForbiddenError);
     }
   });
 

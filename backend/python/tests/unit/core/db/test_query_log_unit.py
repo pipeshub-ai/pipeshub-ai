@@ -320,7 +320,8 @@ async def _run_unit(step: str, error: BaseException) -> None:
     ("commit", OSError("connection reset"), CommitOutcomeUnknown, "unavailable", None),
 ])
 async def test_each_unit_step_writes_one_record(records, step: str, error: Exception, raised: type, cls: str,
-                                                code: str | None) -> None:
+                                                code: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_SLOW_QUERY_MS", "0")  # a busy runner can make an earlier step slow: count the failure record alone
     with pytest.raises(raised):
         await _run_unit(step, error)
     (record,) = _db_records(records)

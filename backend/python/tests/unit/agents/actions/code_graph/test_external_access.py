@@ -458,7 +458,7 @@ class RecordGrantsOnly(Repos):
 
     down = False
 
-    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> dict | None:
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False, **_: object) -> dict | None:
         if self.down:
             if raise_on_error:
                 raise ConnectionError("store down")

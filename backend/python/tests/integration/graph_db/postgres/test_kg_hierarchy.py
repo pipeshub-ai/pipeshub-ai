@@ -394,6 +394,7 @@ async def test_a_sampled_read_that_differs_from_the_walk_takes_the_connector_bac
 N = 12_000
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: on a connector of 12,000 records (a chain under f, a wide group), never analysed and then analysed, no statement scans a kg or graph table whole."""
     org = new_org()
