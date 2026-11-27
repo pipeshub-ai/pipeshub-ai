@@ -66,6 +66,8 @@ _BATCHES = f"""RECURSIVE b(ms, batch, n) AS (
     WHERE (SELECT k.deleted_ms FROM kg.records k WHERE {_TRASHED_BY_BATCH} AND (k.delete_batch, k.deleted_ms) > (b.batch, b.ms) AND k.delete_batch <= b.batch
         ORDER BY k.app_sk, k.delete_batch, k.deleted_ms LIMIT 1) IS NULL
       AND NOT ($3 AND (SELECT count(*) FROM {_BATCH_ROWS.format(x="b.batch", limit="LIMIT 2 ")} m) > 1))"""
+# shortcut: a single-file page reads every batch until it has a page of single-file ones (a few pages each, once per delete time of a batch deleted at several times): a
+# trash of large mixed-time batches can pass LIMITS and take the walk; index single-record batches if that shows up beyond the gate world.
 PAGE = f"""/* pipeshub:kg.trash_page */ WITH {_BATCHES}
 SELECT s.n, s.odd, s.batch, s.ms AS deleted_at, s.roots[1] AS first_id, cardinality(s.roots)::bigint AS root_count, s.batch_size,
     ARRAY(SELECT x.doc->>'recordName' FROM unnest(s.roots[2:1 + $7]) WITH ORDINALITY u(id, o) CROSS JOIN LATERAL {_node("'records'", "u.id")} x ORDER BY u.o) AS other_names
