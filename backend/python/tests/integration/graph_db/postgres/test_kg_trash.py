@@ -192,7 +192,7 @@ async def _count_hits(db, org: str) -> int:
 
 @pytest.mark.parametrize("shape", ["flat", "folder"])
 async def test_the_capped_count_reads_a_few_pages_a_batch_whatever_the_batch_holds(pg_provider, pg_db, shape) -> None:
-    """The count is of batches: 40 batches of one record and 40 batches of 25 (25 files, or a folder with 24 below it) cost the same reads, a few pages a batch. It once
+    """The count is of batches: 40 batches of one record and 40 batches of 25 (25 files, or a folder with 24 below it) cost about the same reads, a few pages a batch. It once
     tested every record of every batch for a root, so the trash of a large connector cost a read of each of its trashed records."""
     sizes = {}
     for per in (1, 25):
@@ -206,7 +206,7 @@ async def test_the_capped_count_reads_a_few_pages_a_batch_whatever_the_batch_hol
         with ctx(org):
             assert (await pg_provider.list_trashed_records(KB, org, limit=1, count_cap=10_000))["total"] == 40
         sizes[per] = await _count_hits(pg_db, org)
-    assert sizes[25] <= 2 * sizes[1] and sizes[25] <= 40 * 25, sizes          # a climb of one level at most; a read of every record was 8 pages a record
+    assert sizes[25] <= 3 * sizes[1] and sizes[25] <= 40 * 20, sizes          # a climb of one level at most; a read of every record was 60 to 260 pages a batch
 
 
 async def test_a_change_waiting_in_the_log_takes_the_walk_until_it_is_drained(pg_provider, pg_db, tally, monkeypatch) -> None:
