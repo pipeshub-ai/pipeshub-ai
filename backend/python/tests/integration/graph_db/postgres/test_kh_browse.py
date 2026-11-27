@@ -598,6 +598,10 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                probe, _, probe_links = params(201)
+                kinds, _, kinds_links = params(10_001)
+                statements += [(f"undecided probe {at}", kgl.browse_undecided_probe_sql(where, probe.add(app_sk), probe_links, probe.add([]) if probe_links else None), probe.values),
+                               (f"count classes {at}", kgl.browse_classes_sql(where, kinds_links), kinds.values)]
                 for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
                     one, _, one_links = params(204)
                     branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
@@ -634,6 +638,8 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 if name.startswith("wide"):      # the parent's children are read by an index on the parent (the children index, in its order, once the node is wide: the latency run's plans)
                     used = {n.get("Index Name") for n in _nodes(plan)}
                     assert any(str(u).startswith(("records_children_", "records_parent")) for u in used), f"{at}: {used}"
+                if name.startswith("undecided probe"):      # another connector's children of the node by records_child_app, whose predicate the statement implies
+                    assert "records_child_app" in {n.get("Index Name") for n in _nodes(plan)}, f"{at}: {[n.get('Index Name') for n in _nodes(plan)]}"
     finally:
         await con.close()
 
@@ -1019,6 +1025,136 @@ async def test_a_wide_nodes_total_counts_by_class_only_the_children_of_its_own_c
     monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)      # wide: the total is counted by class where the rows are
     page = await browse(p, org, "fold", ["fold", *KIDS[:8], "alien"])      # its id among the grants too: the class's own-grant arm would take it
     assert "alien" not in [r["id"] for r in page["rows"]] and page["total"] == 8, (page["total"], [r["id"] for r in page["rows"]])
+
+
+async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluates_is_counted_by_its_childrens_classes(pg_db, monkeypatch) -> None:
+    """The connector holds more classes than a page evaluates (CLASS_MAX), its children fewer. A wide node is decided by the classes of the children it reads, as a node held
+    whole is: its total is the count, not the lower bound of a sample (COUNT_SCAN), and the live walk is asked about none of its children."""
+    import asyncpg
+
+    from app.services.graph_db.postgres import access as access_sql
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    with ctx(org):      # elsewhere in the connector, records of classes of their own
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR",
+                                     **({"mimeType": "application/vnd.folder"} if k == "other" else {})} for k in ("other", "o1", "o2")], "records")
+        await p.batch_create_edges([edge("other", "records", k, "records", relationshipType="PARENT_CHILD") for k in ("o1", "o2")], "nodeRelations")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ("other", "o1")], "permission")
+    await flip(pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        every = await con.fetchval("SELECT count(*) FROM kg.scope_classes c JOIN kg.node_keys a ON a.org_id = c.org_id AND a.sk = c.app_sk WHERE c.org_id = $1 AND a.id = 'app1'", org)
+        page = await con.fetchval("SELECT count(DISTINCT r.class_id) FROM kg.records r JOIN kg.records f ON f.org_id = r.org_id AND (f.sk = r.parent_sk OR f.sk = r.sk) "
+                                  "WHERE r.org_id = $1 AND f.id = 'fold'", org)
+    finally:
+        await con.close()
+    assert 0 < page < every, (page, every)      # the classes of the folder and its children
+    monkeypatch.setattr(kh_listing, "CLASS_MAX", every - 1)      # every class of the connector is one too many; the children's are not
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)      # wide: read in windows of the children index
+    monkeypatch.setattr(kh_browse, "COUNT_SCAN", 3)      # a total counted from a sample would stop short of the eight children
+    walked: list[str] = []
+    real = access_sql.accessible_rows
+
+    async def spy(tx, org_, ids, *a, **kw) -> list:
+        walked.extend(ids)
+        return await real(tx, org_, ids, *a, **kw)
+    monkeypatch.setattr(access_sql, "accessible_rows", spy)
+    page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
+    assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
+    assert not set(walked) & set(KIDS), walked
+
+
+async def _children_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> dict[str, int]:
+    """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE: returned and removed by a filter), by its site. Each transaction
+    of the request is replayed in one of its own, every statement in order (its settings and savepoints too), so a read is planned as it was: under the profile it ran with."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    read: dict[str, int] = {}
+    try:
+        for tx in dict.fromkeys(t for t, _, _ in statements):
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for t, sql, args in statements:
+                    if t is not tx:
+                        continue
+                    body = sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper()
+                    if "kg.records" not in sql or not body.startswith(("SELECT", "WITH")) or "SET_CONFIG(" in body[:200]:
+                        await con.execute(sql, *args) if args else await con.execute(sql)
+                        continue
+                    plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+                    # the rows a scan examined: those it returned and those its filter (or a bitmap's recheck) rejected, so a scan that reads everything and keeps nothing counts
+                    n = sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0) + x.get("Rows Removed by Index Recheck", 0)) * x.get("Actual Loops", 1))
+                            for x in _nodes(plan) if x.get("Relation Name") == "records")
+                    site = re.search(r"pipeshub:(\S+)", sql)
+                    read[site.group(1) if site else sql[:40]] = read.get(site.group(1) if site else sql[:40], 0) + n
+    finally:
+        await con.close()
+    return read
+
+
+# The statements that read a node's children for its page, total and undecided rows: what this test holds to about a page whatever the width. (The start, its trail and
+# the hidden rows are read by their keys; with no statistics for a new organisation the planner may read them otherwise, which the plan gate covers.)
+CHILD_READS = {"kg.browse_once", "kg.browse_undecided_probe", "kg.browse_undecided", "kg.browse_count", "kg.listing_page", "kg.browse_children_held", "kg.browse_classes"}
+
+
+async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_whatever_its_width(pg_db, monkeypatch) -> None:
+    """A wide folder whose children kg decides, every one readable, of 300 and of 3,000 children. Its first page, its total (capped) and its undecided children (none) are read
+    by the children indexes: about a page and the count's cap of rows, the same at either width, not every child of the folder (the one read of every child is for classes no
+    index can find undecided: kgl.browse_once_sql)."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 40)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 40)
+    real = uow.Tx._run
+    read: dict[int, dict[str, int]] = {}
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))      # the Tx itself: an id() of a finished one could be reused by the next
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        read[width] = await _children_rows_read(org, ran)
+    small, large = (sum(v for k, v in read[w].items() if k in CHILD_READS) for w in (300, 3000))
+    assert large < small + 50, read      # ten times the children, about the same reads
+
+
+async def test_a_wide_nodes_child_of_a_class_its_sample_did_not_read_is_asked_of_the_check(pg_db, monkeypatch) -> None:
+    """The classes of a wide node's children are read from a sample of them (``kgl.browse_classes_sql``, up to the count's cap): a child of a class the sample missed is
+    undecided (``_browse_undecided``'s ``known``): left out of the count by class and asked of the access check, which admits it. Here the readable children's class is
+    left out of what the sample found."""
+    import asyncpg
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        missed = await con.fetchval("SELECT class_id FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c0001'", org)
+        every = await con.fetchval("SELECT count(*) FROM kg.scope_classes c JOIN kg.node_keys a ON a.org_id = c.org_id AND a.sk = c.app_sk WHERE c.org_id = $1 AND a.id = 'app1'", org)
+    finally:
+        await con.close()
+    monkeypatch.setattr(kh_listing, "CLASS_MAX", every - 1)      # the connector's every class is too many: the browse reads its children's
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)
+    real_sets = kh_browse.class_sets
+
+    async def sampled(tx, org_, app_sk, held, only=None) -> object:
+        return await real_sets(tx, org_, app_sk, held, None if only is None else [c for c in only if c != missed])
+    monkeypatch.setattr(kh_browse, "class_sets", sampled)
+    asked: list[str] = []
+    real_check = type(p)._kh_v3_accessible_rows
+
+    async def check(self, user_key, org_id, node_ids, *a, **kw) -> object:      # the access check the browse asks about rows its classes do not decide
+        asked.extend(node_ids)
+        return await real_check(self, user_key, org_id, node_ids, *a, **kw)
+    monkeypatch.setattr(type(p), "_kh_v3_accessible_rows", check)
+    page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
+    assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
+    assert set(KIDS[1:6]) <= set(asked), asked      # the children of the class the sample missed: the check's
 
 
 async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypatch) -> None:

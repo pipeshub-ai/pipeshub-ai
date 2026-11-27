@@ -18,8 +18,11 @@ mark its rows no longer give (:data:`BY_APP`, ``unsafe``). The writer only updat
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
+from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.writers import KgWriter
 
@@ -159,3 +162,81 @@ async def candidates(tx: Tx, org: str, app_sk: int, user_key: str) -> dict[int, 
     connector kg serves."""
     r = await tx.fetchrow(CANDIDATES, org, user_key, app_sk)
     return dict(zip(r["sks"], zip(r["grps"], r["pars"], strict=True), strict=True))
+
+
+# The root's judges (``ROOT_CHAIN``'s sks) as ``kg.read.BY_ID`` reads asked ids, by their sks: one seek of records_pkey each instead of one per collection of an id, and the
+# columns the root reads of a judge besides (its kind, its alien mark).
+JUDGES = """/* pipeshub:kg.root_judges */ SELECT r.sk, r.coll, r.id, r.kind, r.alien, r.deleted, r.placeholder, r.class_id, r.r13, r.path IS NULL AS no_path,
+      r.fence_job IS NOT NULL AS hidden, r.app_sk
+    FROM unnest($2::bigint[]) AS q(sk)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r"""
+# The connectors of the judges, once each (a handful): their ids, by node_keys' key as kg.read.BY_ID reads a row's connector.
+# Of the judges' ids, those kg holds in another of the collections kg.read.BY_ID asks (apps, groups, records): kg.read.decide leaves such an id to the walk,
+# whose answer is by id, and so does decide_sks. A seek of records_id per id and other collection, as BY_ID's; the judge's own collection is not sought again.
+JUDGE_SHARED_IDS = """/* pipeshub:kg.root_judge_shared_ids */ SELECT DISTINCT q.id FROM unnest($2::text[], $3::smallint[]) AS q(id, coll)
+    CROSS JOIN LATERAL (SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 1 AND s.id = q.id
+        UNION ALL SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 2 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 2 AND s.id = q.id
+        UNION ALL SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 3 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 3 AND s.id = q.id) o"""
+JUDGE_APPS = """/* pipeshub:kg.root_judge_apps */ SELECT n.sk, n.id FROM unnest($2::bigint[]) AS q(sk)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk AND s.coll = 1 OFFSET 0) n"""
+
+
+@dataclass
+class Judged:
+    rows: dict[int, Any] = field(default_factory=dict)          # sk -> its kg row (the judges kg holds)
+    admit: set[int] = field(default_factory=set)                # admitted by kg's classes (before the documents are read: ``access.admitted_rows``)
+    deny: set[int] = field(default_factory=set)                 # denied by kg
+    walk: set[int] = field(default_factory=set)                 # what ``kg.read.decide`` leaves to the walk: the access check decides them, by id
+
+
+async def decide_sks(tx: Tx, org: str, sks: list[int], access: dict[str, Any]) -> Judged:
+    """``kg.read.decide`` for nodes known by their sks (the root's judges), by the same rules in the same order; a sk kg holds no row of is left out of ``rows`` (the caller asks the
+    check about it by its id). Under the caller's kg.read.PROFILE."""
+    from app.services.graph_db.postgres.kg import (
+        read as kg_read,  # imports drainer, which imports project, which imports this module
+    )
+    j = Judged()
+    gated = set(access["gated_app_ids"])
+    granted = access_sql.grants_of(access)
+    for i in range(0, len(sks), kg_read.CHUNK):
+        for r in await tx.fetch(JUDGES, org, sks[i:i + kg_read.CHUNK]):
+            j.rows[r["sk"]] = r
+    rows = list(j.rows.values())
+    shared = {r["id"] for r in await tx.fetch(JUDGE_SHARED_IDS, org, [r["id"] for r in rows], [r["coll"] for r in rows])} if rows else set()
+    apps = sorted({r["app_sk"] for r in j.rows.values() if r["app_sk"] is not None})
+    app_id = {r["sk"]: r["id"] for r in await tx.fetch(JUDGE_APPS, org, apps)} if apps else {}
+    served: dict[str, bool] = {}
+    need: dict[int, int] = {}
+    for sk, r in j.rows.items():
+        if r["id"] in shared:      # one id in two collections: the walk's answer is by id (kg.read.decide's "ambiguous")
+            j.walk.add(sk)
+            continue
+        app = app_id.get(r["app_sk"])
+        if app is not None and app not in served:
+            served[app] = await kg_read.serves(tx, org, app)
+        if app is None or not served[app]:
+            j.walk.add(sk)
+        elif r["deleted"]:
+            j.deny.add(sk)
+        elif r["kind"] == 1:
+            (j.admit if app in gated else j.deny).add(sk)
+        elif r["placeholder"] or r["hidden"] or r["r13"] is not False or r["no_path"]:
+            j.walk.add(sk)
+        elif app not in gated:
+            j.deny.add(sk)
+        elif r["class_id"] is None:
+            j.walk.add(sk)
+        else:
+            need[sk] = r["class_id"]
+    if need:
+        classes = {c["id"]: (json.loads(c["clauses"]) if isinstance(c["clauses"], str) else list(c["clauses"]))
+                   for c in await tx.fetch(kg_read.CLASSES, org, sorted(set(need.values())))}
+        by_class = await kg_read.class_verdicts(tx, org, classes, granted)
+        await granted.see(tx, org, [j.rows[sk]["id"] for sk in need])
+        for sk, c in need.items():
+            if by_class.get(c) is None:
+                j.walk.add(sk)
+                continue
+            plain, own = by_class[c]  # type: ignore[misc]
+            (j.admit if plain or (own and j.rows[sk]["id"] in granted) else j.deny).add(sk)
+    return j
