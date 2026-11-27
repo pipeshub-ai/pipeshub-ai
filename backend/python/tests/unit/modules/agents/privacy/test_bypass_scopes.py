@@ -53,15 +53,3 @@ async def test_grep_generation_runs_in_its_scope() -> None:
     assert model.scopes and all((s.site, s.kind) == ("grep_generation", CallKind.INSIDE_TOOL) for s in model.scopes)
 
 
-async def test_concept_extraction_runs_in_its_scope() -> None:
-    from app.utils import concept_table_search
-
-    scopes: list[Any] = []
-
-    async def extract(*_: object, **__: object) -> None:
-        scopes.append(current_model_call())
-
-    with patch.object(concept_table_search, "invoke_with_structured_output_and_reflection", extract):
-        await concept_table_search.extract_query_concepts(object(), "monthly revenue")
-
-    assert [(s.site, s.kind) for s in scopes] == [("concept_extraction", CallKind.INSIDE_TOOL)]

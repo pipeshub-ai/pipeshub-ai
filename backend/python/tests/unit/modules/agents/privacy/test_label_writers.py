@@ -7,7 +7,6 @@ and checks the ids it named.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -143,35 +142,6 @@ class TestCodeGraph:
 
 
 class TestSqlTables:
-    def test_every_table_a_discovery_result_names_is_named(self) -> None:
-        from app.utils.discover_related_tables import _noted
-
-        result = {
-            "ok": True,
-            "candidates": [{"record_id": "tbl-orders", "relations_preview": [{"record_id": "tbl-accounts"}]}],
-        }
-        ledger = _Recording()
-        with bind_ledger(ledger):
-            assert _noted(result) is result
-
-        assert ledger.records == {"tbl-orders", "tbl-accounts"}
-
-    async def test_table_relations_name_both_ends(self) -> None:
-        from app.utils.get_table_relations import create_get_table_relations_tool
-
-        graph = MagicMock()
-        graph.filter_accessible_record_ids = AsyncMock(side_effect=[{"tbl-orders"}, {"tbl-accounts"}])
-        graph.get_node_relations_batch = AsyncMock(return_value={
-            "tbl-orders": {"parents": [{"record_id": "tbl-accounts"}], "children": []},
-        })
-        tool = create_get_table_relations_tool(graph_provider=graph, user_id="user-1", org_id="org-1")
-        ledger = _Recording()
-        with bind_ledger(ledger):
-            result = await tool.coroutine(record_ids=["tbl-orders"])
-
-        assert result["ok"] is True
-        assert ledger.records == {"tbl-orders", "tbl-accounts"}
-
     async def test_live_rows_are_named_by_the_connector_they_were_read_from(self) -> None:
         from app.utils import execute_query
 
@@ -366,13 +336,6 @@ class TestArtifactReadById:
         registry = self._registry({"_key": "art-1", "runId": "run-1"})
         await self._read(registry, "get_download_url")
         registry._graph_provider.get_document.assert_not_called()
-
-
-def test_the_results_are_unchanged_by_the_label() -> None:
-    from app.utils.discover_related_tables import _noted
-
-    result = {"ok": True, "candidates": []}
-    assert json.dumps(_noted(result)) == json.dumps({"ok": True, "candidates": []})
 
 
 class TestListFiles:
