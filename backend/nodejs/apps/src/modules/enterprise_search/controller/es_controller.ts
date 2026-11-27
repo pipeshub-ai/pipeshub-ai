@@ -755,7 +755,9 @@ const rowOwnerOf =
         : requestedBy;
     if (by !== undefined && by !== null) return by.toString();
     return ownerId === undefined
-      ? (message as { senderId?: { toString(): string } | null }).senderId?.toString()
+      ? (
+          message as { senderId?: { toString(): string } | null }
+        ).senderId?.toString()
       : messageActor(message, ownerId);
   };
 
