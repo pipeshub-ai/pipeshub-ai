@@ -424,7 +424,7 @@ class KhBrowseMixin(PgBase):
             else:
                 branches = kgl.after(sort_field, order, direction, boundary, q) if boundary is not None else None
                 sql = kgl.page_sql(sort_field, order, direction, where, branches, None, kgl.browse_scopes(links))
-                got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
+                got = await self._kq_page(sql, tuple(q.values), transaction)
             listed, n = await self._kh_listed(got, *walk, want=need - len(kept))
             kept += listed[:need - len(kept)]
             if len(kept) < need and n < len(got):      # the walks stopped before a placeholder: resume there (where the window began, if they decided none of it)

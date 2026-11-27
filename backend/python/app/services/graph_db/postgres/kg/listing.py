@@ -183,6 +183,15 @@ def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> 
     return "".join(f" AND {c}" for c in out)
 
 
+# A window of a page (``page_sql``) is read with sorts off, so the window's index of the order is the only plan that answers it in order: with analysed statistics a new
+# organisation's node or connector is estimated at a row or two, the window's LIMIT then saves nothing, and the planner read every row of it by the narrowest index and sorted
+# them all. A sort that remains (the window's own, under the admitted page's outer order) costs ``disable_cost`` on PostgreSQL 17, so JIT is off too, or it would compile it.
+# The statement returns both settings as they were, for ``PAGE_RESTORE`` (the page's other reads share its snapshot's transaction).
+PAGE_PROFILE = ("/* pipeshub:kg.page_profile */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS o, current_setting('jit') AS j) "
+                "SELECT o, j, set_config('enable_sort', 'off', true), set_config('jit', 'off', true) FROM s")
+PAGE_RESTORE = "/* pipeshub:kg.page_restore */ SELECT set_config('enable_sort', $1, true), set_config('jit', $2, true)"
+
+
 def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[tuple[str, str]] | None = None) -> str:
     """The window of the sort order past the boundary, ``$3`` rows; ``where`` is the connector's conditions and the filters (``$1`` the org, ``$2`` the connector). ``admit``, when given, is a condition
     on the rows of the window (alias ``w``: what the viewer's classes open), answered as the column ``ok`` of every row of the window, in the window's order. ``scopes`` replaces the connector's live

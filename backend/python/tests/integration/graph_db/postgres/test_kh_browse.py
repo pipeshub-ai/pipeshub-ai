@@ -1304,3 +1304,98 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
     assert len(body) == 1 and body[0].get("Actual Rows", 0) * max(1, body[0].get("Actual Loops", 1)) <= 14, body
     read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
     assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read
+
+
+async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> list[int]:
+    """The kg.records rows each window read of the page (kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after the settings its transaction set before it."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    read: list[int] = []
+    try:
+        for tx in dict.fromkeys(t for t, _, _ in statements):
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for t, sql, args in statements:
+                    if t is not tx:
+                        continue
+                    if "set_config(" in sql:
+                        await con.fetch(sql, *args)
+                    elif "pipeshub:kg.listing_page" in sql[:60]:
+                        plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+                        assert "JIT" not in plan[0], sql[:80]      # a sort the profile leaves (of the window) is not compiled
+                        read.append(sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0)) * x.get("Actual Loops", 1))
+                                        for x in _nodes(plan) if x.get("Relation Name") == "records"))
+    finally:
+        await con.close()
+    return read
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+@pytest.mark.parametrize(("field", "way"), [("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC"), ("updatedAt", "ASC")])
+async def test_a_wide_nodes_page_reads_a_window_of_its_children_once_the_table_is_analysed(pg_db, monkeypatch, field: str, way: str) -> None:
+    """A wide folder of 300 and of 3,000 children, every one readable, browsed by each order the children indexes serve after kg.records is analysed (autovacuum does, once the
+    sync has written enough). Each window read of the page reads about its window (100 rows) by the children index of the order, not every child of the folder and a sort:
+    the statistics put a new organisation's folder at a row or two, so without its profile the planner took the narrowest index and sorted what it read."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    real = uow.Tx._run
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10, sort_field=field, sort_dir=way, include_total=False)      # a page with no total: windows only
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert len(page["rows"]) == 10, page["rows"]
+        read = await _page_rows_read(org, ran)
+        assert read and all(n <= 150 for n in read), (width, read)
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+@pytest.mark.parametrize(("field", "way"), [("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC"), ("createdAt", "ASC"), ("sizeInBytes", "DESC")])
+async def test_a_connectors_flat_listing_reads_a_window_per_page_once_the_table_is_analysed(pg_db, monkeypatch, field: str, way: str) -> None:
+    """The flat listing of a connector of 300 and of 3,000 records, after kg.records is analysed: each window read of the page reads about its window by the connector's index
+    of the order, in every order the listing serves, not every record of the connector and a sort."""
+    import app.core.db.uow as uow
+    real = uow.Tx._run
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["fold", *kids], limit=10,
+                                                                sort_field=field, sort_dir=way, include_total=False)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert len(page["rows"]) == 10, page["rows"]
+        read = await _page_rows_read(org, ran)
+        assert read and all(n <= 150 for n in read), (width, read)
+
+
+async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:
+    """A page's windows are read with sorts and JIT off (``kgl.PAGE_PROFILE``): in the page's transaction (here a caller's) both are put back after the read, so what runs next plans as
+    it would have."""
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS)
+    with ctx(org):
+        t = await p.begin_transaction([], [])
+        try:
+            await p._q(lambda tx: tx.fetchval("SELECT set_config('jit', 'on', true)"), t)
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=KIDS, limit=3, transaction=t)
+            got = await p._q(lambda tx: tx.fetchrow("SELECT current_setting('enable_sort') AS s, current_setting('jit') AS j"), t)
+        finally:
+            await p.rollback_transaction(t)
+    assert page["rows"] and (got["s"], got["j"]) == ("on", "on"), dict(got)
+

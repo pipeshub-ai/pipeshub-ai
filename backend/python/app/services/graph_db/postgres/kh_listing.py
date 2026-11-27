@@ -218,6 +218,16 @@ class KhListingMixin(PgBase):
             return await self._q(fn, transaction)
         return await self._db.run(fn, jobs=current_or_system().kind == "system", custom_plan=True)
 
+    async def _kq_page(self, sql: str, values: tuple[Any, ...], transaction: str | None) -> list[Any]:
+        """A window of a listing's or a browse's page (``kgl.page_sql``) under ``kgl.PAGE_PROFILE``. The page's other reads share its transaction (its snapshot), so the settings
+        come back once the window answered (a failed read aborts the transaction anyway)."""
+        async def read(tx: Any) -> list[Any]:  # noqa: ANN401
+            was = await tx.fetchrow(kgl.PAGE_PROFILE)
+            got = list(await tx.fetch(sql, *values))
+            await tx.fetchval(kgl.PAGE_RESTORE, was["o"], was["j"])
+            return got
+        return await self._kq(read, transaction)
+
     async def get_knowledge_hub_connector_page_v3(
         self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None = None, limit: int = 50, *, flatten: bool = True,
         sort_field: str = "name", sort_dir: str = "ASC", after: dict[str, Any] | None = None, direction: str = "next", filters: dict[str, Any] | None = None, include_total: bool = True,
@@ -320,7 +330,7 @@ class KhListingMixin(PgBase):
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
             sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
-            got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
+            got = await self._kq_page(sql, tuple(p.values), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
             if found is not None:
