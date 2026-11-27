@@ -7098,6 +7098,8 @@
     "removeConfirmCurrentAccess": "현재 액세스: {{role}}",
     "checking": "액세스 확인 중…",
     "checkOk": "공유할 수 있음",
+    "checkBlocked": "공유할 수 없음",
+    "checkWarning": "공유할 수 있음, 공유 전에 확인하세요",
     "checkFailed": "액세스를 확인하지 못했습니다. 다시 시도하세요."
   },
   "demoData": {

@@ -7333,6 +7333,8 @@
     "removeConfirmCurrentAccess": "Aktuální přístup: {{role}}",
     "checking": "Kontrola přístupu…",
     "checkOk": "Lze sdílet",
+    "checkBlocked": "Nelze sdílet",
+    "checkWarning": "Lze sdílet; před sdílením zkontrolujte",
     "checkFailed": "Přístup se nepodařilo ověřit. Zkuste to znovu."
   },
   "demoData": {

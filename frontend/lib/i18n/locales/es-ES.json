@@ -7239,6 +7239,8 @@
     "removeConfirmCurrentAccess": "Acceso actual: {{role}}",
     "checking": "Comprobando el acceso…",
     "checkOk": "Se puede compartir",
+    "checkBlocked": "No se puede compartir",
+    "checkWarning": "Se puede compartir; revísalo antes",
     "checkFailed": "No se pudo comprobar el acceso. Inténtalo de nuevo."
   },
   "demoData": {

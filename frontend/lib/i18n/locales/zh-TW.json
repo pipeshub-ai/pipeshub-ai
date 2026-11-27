@@ -7098,6 +7098,8 @@
     "removeConfirmCurrentAccess": "目前權限：{{role}}",
     "checking": "正在檢查存取權…",
     "checkOk": "可以共用",
+    "checkBlocked": "無法分享",
+    "checkWarning": "可以分享，分享前請確認",
     "checkFailed": "無法檢查存取權，請再試一次。"
   },
   "demoData": {

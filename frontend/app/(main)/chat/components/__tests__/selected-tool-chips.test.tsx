@@ -42,6 +42,12 @@ describe('composer tool chips', () => {
     ]);
   });
 
+  it('puts a tool its instance list does not know yet on that instance chip, not a second one', () => {
+    const groups = groupSelectedTools(['j1:jira.search_issues', 'j1:jira.new_tool'], [jira]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.tools.map((tool) => tool.key)).toEqual(['j1:jira.search_issues', 'j1:jira.new_tool']);
+  });
+
   it('drops one instance and goes back to every tool when none are left', () => {
     const store = useChatStore.getState();
     store.setUniversalAgentStreamTools(['j1:jira.search_issues', 'm1:mcp_github_list_prs']);

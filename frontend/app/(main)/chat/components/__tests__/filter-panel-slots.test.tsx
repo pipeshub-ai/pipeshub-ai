@@ -6,6 +6,11 @@ import '@/lib/__tests__/test-i18n';
 
 const prompt = vi.hoisted(() => ({ show: true }));
 vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => prompt.show }));
+// These tests cover the default tab's notice, whatever the build's config provides.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
+}));
 import {
   FilterPanelFooterExtras,
   useFilterPanelExtraTab,

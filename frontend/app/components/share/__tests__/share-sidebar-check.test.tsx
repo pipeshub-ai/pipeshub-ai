@@ -60,6 +60,21 @@ describe('share sidebar pre-share check', () => {
     await waitFor(() => expect(share).toHaveBeenCalledWith(expect.objectContaining({ userIds: ['u1'] })));
   });
 
+  it('says a pick is blocked or needs a look when the check gives no message', async () => {
+    const checkSelection = vi.fn(async (picked: { id: string }[]) =>
+      Object.fromEntries(
+        picked.map((p) => [p.id, { status: p.id === 'u2' ? ('blocked' as const) : ('warning' as const) }])
+      )
+    );
+    renderInTheme(<ShareSidebar open onOpenChange={() => undefined} adapter={adapter({ checkSelection })} />);
+
+    fireEvent.click(await screen.findByText('Walter Writer'));
+    fireEvent.click(await screen.findByText('Rita Reader'));
+    expect(await screen.findByText("Can't be shared")).toBeTruthy();
+    expect(screen.getByText('Can be shared; check before sharing')).toBeTruthy();
+    expect(screen.queryByText('Can be shared')).toBeNull();
+  });
+
   it('shares as picked when the adapter has no check', async () => {
     const share = vi.fn().mockResolvedValue(undefined);
     renderInTheme(<ShareSidebar open onOpenChange={() => undefined} adapter={adapter({ share })} />);

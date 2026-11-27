@@ -7145,6 +7145,8 @@
     "removeConfirmCurrentAccess": "Aktueller Zugriff: {{role}}",
     "checking": "Zugriff wird geprüft…",
     "checkOk": "Kann geteilt werden",
+    "checkBlocked": "Kann nicht geteilt werden",
+    "checkWarning": "Kann geteilt werden; vor dem Teilen prüfen",
     "checkFailed": "Zugriff konnte nicht geprüft werden. Bitte erneut versuchen."
   },
   "demoData": {

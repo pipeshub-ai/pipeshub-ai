@@ -436,9 +436,10 @@ export function UniversalAgentResourcesPanel({
     } catch (err) {
       console.error('[UniversalAgentResourcesPanel] Failed to load my-mcp-servers', err);
       _mcpCache = { ..._mcpCache, lastFetchedAt: Date.now() };
-      setMcpError(
-        t('chat.universalAgent.mcpLoadError', { defaultValue: 'Failed to load MCP servers.' })
-      );
+      const message = t('chat.universalAgent.mcpLoadError', { defaultValue: 'Failed to load MCP servers.' });
+      // A background refresh that fails keeps the servers already shown, like the Actions list does.
+      if (quiet) toast.error(message);
+      else setMcpError(message);
       setMcpLoading(false);
       return undefined;
     } finally {
@@ -610,6 +611,8 @@ export function UniversalAgentResourcesPanel({
 
   const handleMcpConnected = useCallback(
     async (instanceId: string) => {
+      // A refresh still running would turn this one away, and could land with the list from before the sign-in.
+      while (isFetchingMcpRef.current) await new Promise((resolve) => setTimeout(resolve, 100));
       const groups = await loadMcp({ quiet: true });
       const connected = groups?.find((g) => g.instanceId === instanceId);
       // Someone who picked tools by hand gets the new server's on; "all tools" (null) already has them.

@@ -58,6 +58,12 @@ export function groupSelectedTools(
     unknown.set(id, [...(unknown.get(id) ?? []), k]);
   }
   for (const [instanceId, tools] of unknown) {
+    // A tool its instance's list doesn't know yet joins that instance's chip: one chip per instance.
+    const known = out.find((g) => g.instanceId === instanceId);
+    if (known) {
+      known.tools.push(...tools.map((k) => ({ key: k, label: bareToolFullName(k) })));
+      continue;
+    }
     out.push({
       instanceId,
       label: '',

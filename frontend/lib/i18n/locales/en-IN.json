@@ -7234,6 +7234,8 @@
     "removeConfirmCurrentAccess": "Current access: {{role}}",
     "checking": "Checking access…",
     "checkOk": "Can be shared",
+    "checkBlocked": "Can't be shared",
+    "checkWarning": "Can be shared; check before sharing",
     "checkFailed": "Couldn't check access. Try again."
   },
   "graph": {

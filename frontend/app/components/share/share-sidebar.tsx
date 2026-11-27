@@ -598,7 +598,16 @@ export function ShareSidebar({
                           {s.name || s.email}
                         </Text>
                         <Text size="1" style={{ color: check ? color : 'var(--slate-11)' }}>
-                          {check ? (check.message ?? t('shareSidebar.checkOk')) : t('shareSidebar.checking')}
+                          {check
+                            ? (check.message ??
+                              t(
+                                check.status === 'blocked'
+                                  ? 'shareSidebar.checkBlocked'
+                                  : check.status === 'warning'
+                                    ? 'shareSidebar.checkWarning'
+                                    : 'shareSidebar.checkOk'
+                              ))
+                            : t('shareSidebar.checking')}
                         </Text>
                       </Flex>
                     );

@@ -7145,6 +7145,8 @@
     "removeConfirmCurrentAccess": "मौजूदा पहुँच: {{role}}",
     "checking": "पहुँच जाँची जा रही है…",
     "checkOk": "साझा किया जा सकता है",
+    "checkBlocked": "साझा नहीं किया जा सकता",
+    "checkWarning": "साझा किया जा सकता है; साझा करने से पहले जाँच लें",
     "checkFailed": "पहुँच की जाँच नहीं हो सकी। फिर से कोशिश करें।"
   },
   "demoData": {

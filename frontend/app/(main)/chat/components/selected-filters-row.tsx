@@ -23,6 +23,7 @@ export function SelectedFiltersRow({
   onSelectionChange: _onSelectionChange,
   toolGroups,
   onRemoveToolGroup,
+  trailing,
   ...pills
 }: SelectedFiltersRowProps) {
   return (
@@ -30,8 +31,17 @@ export function SelectedFiltersRow({
       {...pills}
       trailing={
         toolGroups?.length ? (
-          <SelectedToolChips groups={toolGroups} onRemove={pills.removable ? onRemoveToolGroup : undefined} />
-        ) : undefined
+          <>
+            {trailing}
+            <SelectedToolChips
+              groups={toolGroups}
+              onRemove={pills.removable ? onRemoveToolGroup : undefined}
+              wrap={pills.wrap}
+            />
+          </>
+        ) : (
+          trailing
+        )
       }
     />
   );

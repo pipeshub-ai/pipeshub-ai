@@ -7098,6 +7098,8 @@
     "removeConfirmCurrentAccess": "当前权限：{{role}}",
     "checking": "正在检查访问权限…",
     "checkOk": "可以共享",
+    "checkBlocked": "无法共享",
+    "checkWarning": "可以共享，共享前请确认",
     "checkFailed": "无法检查访问权限，请重试。"
   },
   "demoData": {
