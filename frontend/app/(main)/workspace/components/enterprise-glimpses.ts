@@ -21,6 +21,22 @@ export const ENTERPRISE_GLIMPSES = {
       ],
     },
   },
+  // Shaped like the Enterprise Edition tenants list: search and Create Tenant above Name,
+  // Domain, Contact Email, Account Type and Created On.
+  tenants: {
+    toolbar: { search: 'Search tenants...', button: 'Create Tenant', icon: 'add' },
+    table: {
+      columns: ['Name', 'Domain', 'Contact Email', 'Account Type', 'Created On'],
+      widths: ['1.2fr', '1fr', '1.3fr', '0.9fr', '0.9fr'],
+      rows: [
+        [{ person: 'Acme Europe' }, 'eu.acme.io', { muted: 'it-eu@acme.io' }, { tags: ['Business'] }, 'Apr 3, 2026'],
+        [{ person: 'Acme Labs' }, 'labs.acme.io', { muted: 'ops@labs.acme.io' }, { tags: ['Business'] }, 'Jul 21, 2026'],
+        [{ person: 'Acme Retail' }, 'retail.acme.io', { muted: 'admin@retail.acme.io' }, { tags: ['Business'] }, 'Sep 9, 2026'],
+        [{ person: 'Acme Support' }, 'help.acme.io', { muted: 'desk@help.acme.io' }, { tags: ['Business'] }, 'Sep 30, 2026'],
+        [{ person: 'Northwind' }, 'northwind.io', { muted: 'it@northwind.io' }, { tags: ['Business'] }, 'Oct 14, 2026'],
+      ],
+    },
+  },
   // One page for usage, credits, billing and credit settings; the tabs show the four.
   usage: {
     tabs: { items: ['Usage', 'Credits', 'Billing', 'Credit settings'], buttons: ['This month', 'Export'] },

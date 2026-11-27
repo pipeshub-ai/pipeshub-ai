@@ -284,7 +284,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
 
   it("J26-N4: with the harness off the platform's 30 MB cap holds, and nothing is stored", async () => {
     await withEnv({ AGENT_HARNESS_WORKER_ENABLED: 'false', HARNESS_INPUT_MAX_MB: undefined }, async () => {
-      expect(await harnessObject(40 * 1000 * 1000)).to.equal(400)
+      expect(await harnessObject(40 * 1000 * 1000)).to.equal(413)
       expect(filesOnDisk()).to.have.length(0)
     })
   })

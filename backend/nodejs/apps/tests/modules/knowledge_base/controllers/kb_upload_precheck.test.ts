@@ -5,7 +5,7 @@
  * Critical invariants tested:
  *   - 404 from the KB endpoint → NotFoundError BEFORE any storage interaction
  *   - 403 from the KB endpoint → ForbiddenError BEFORE any storage interaction
- *   - 500/502 from the KB endpoint → InternalServerError
+ *   - 500/502 from the KB endpoint → BadGatewayError (502)
  *   - 503 from the KB endpoint → ServiceUnavailableError, keeping Retry-After
  *   - 200 with userRole = READER → ForbiddenError (Blocker 2: read-only users blocked)
  *   - 200 with userRole = COMMENTER → ForbiddenError
@@ -25,8 +25,8 @@ import {
   uploadRecords,
 } from '../../../../src/modules/knowledge_base/controllers/kb_controllers'
 import {
+  BadGatewayError,
   ForbiddenError,
-  InternalServerError,
   NotFoundError,
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
@@ -189,7 +189,7 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
 
   // -- Unexpected status codes ---------------------------------------------
 
-  it('throws InternalServerError when KB endpoint returns 500', async () => {
+  it('throws BadGatewayError when KB endpoint returns 500', async () => {
     stubConnectorCalls([{ statusCode: 500 }])
 
     const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
@@ -202,7 +202,7 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     await handler(req, createMockResponse(), next)
 
     expect(next.calledOnce).to.be.true
-    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    expect(next.firstCall.args[0]).to.be.instanceOf(BadGatewayError)
   })
 
   it('keeps a 503 from the KB endpoint retryable, with its Retry-After', async () => {
@@ -445,7 +445,7 @@ describe('uploadRecords — KB and folder pre-check', () => {
     expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
   })
 
-  it('throws InternalServerError when KB endpoint returns non-200/404/403', async () => {
+  it('throws BadGatewayError when KB endpoint returns non-200/404/403', async () => {
     stubConnectorCalls([{ statusCode: 502 }])
 
     const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
@@ -458,7 +458,7 @@ describe('uploadRecords — KB and folder pre-check', () => {
 
     await handler(req, createMockResponse(), next)
 
-    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    expect(next.firstCall.args[0]).to.be.instanceOf(BadGatewayError)
   })
 
   it('throws ForbiddenError when KB returns 200 but userRole is READER', async () => {
@@ -554,7 +554,7 @@ describe('uploadRecords — KB and folder pre-check', () => {
     expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
   })
 
-  it('throws InternalServerError when folder endpoint returns non-200/404/403', async () => {
+  it('throws BadGatewayError when folder endpoint returns non-200/404/403', async () => {
     stubConnectorCalls([
       { statusCode: 200, data: { userRole: 'WRITER' } },
       { statusCode: 500 },
@@ -570,7 +570,7 @@ describe('uploadRecords — KB and folder pre-check', () => {
 
     await handler(req, createMockResponse(), next)
 
-    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    expect(next.firstCall.args[0]).to.be.instanceOf(BadGatewayError)
   })
 
   it('proceeds to upload when KB = OWNER and folder check passes', async () => {

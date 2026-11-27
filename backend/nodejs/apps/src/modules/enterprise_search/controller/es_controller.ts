@@ -65,6 +65,11 @@ import {
   handleBackendError,
   SERVICE_UNAVAILABLE_MESSAGE,
 } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -124,6 +129,7 @@ import {
 import {
   historyForModel,
   newReadable,
+  messageActor,
   redactConversationFor,
   redactMessagesFor,
   redactSearchesFor,
@@ -157,6 +163,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { SharedCitationService } from '../../agent-harness/application/shared-citations';
 import { SharedArtifactService } from '../../agent-harness/application/shared-artifacts';
 import { messageArtifactIds } from '../../agent-harness/projection/artifact-access';
+import { messageSources } from '../../agent-harness/projection/citation-source';
 import type {
   ParticipantsChanged,
   SessionParticipantRecorder,
@@ -326,6 +333,13 @@ export interface ViewerChecks {
   artifacts?: SharedArtifactService;
 }
 
+/** Whose read it is, and whether its citation check could be made. */
+interface ViewerRead {
+  orgId: string;
+  sessionId: string;
+  checkFailed: boolean;
+}
+
 /** A message a collaborator sent, or their run answered (SS2). */
 const sentByCollaborator = (message: unknown): boolean => {
   const sender = (message as { senderId?: unknown } | null)?.senderId;
@@ -352,7 +366,7 @@ async function withViewerChecks<
   response: T,
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<T> {
   const checked = await withAccessChecks(response, req, checks, ids);
   const viewer = String(req.user?.userId);
@@ -367,22 +381,13 @@ async function withViewerChecks<
   };
 }
 
-/** Whose turn a message is: its sender's, or the initiator's when it names none (as session forks decide). */
-const messageActor = (message: unknown, owner: string): string => {
-  // An ObjectId as Mongo stores it, or its hex string.
-  const sender = (
-    message as { senderId?: { toString(): string } | null } | null
-  )?.senderId;
-  return sender === undefined || sender === null ? owner : sender.toString();
-};
-
 async function withAccessChecks<
   T extends { messages: unknown[]; access: { isOwner: boolean } },
 >(
   response: T,
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<T> {
   if (response.access.isOwner) {
     const foreign = response.messages.filter(sentByCollaborator);
@@ -408,7 +413,7 @@ async function checkedForViewer(
   messages: unknown[],
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<unknown[]> {
   const viewer = {
     authorization: req.headers.authorization,
@@ -420,18 +425,19 @@ async function checkedForViewer(
     surface: 'conversation' as const,
   };
   const citations = checks.citations ?? unconfiguredCitations;
-  const [cited, withArtifacts] = await Promise.all([
+  const [access, withArtifacts] = await Promise.all([
     // Without a record-access port the citations are left to the conversation's record-access redaction
     // (redactMessagesFor), which asks for them itself: one access decision per citation, never two.
     citations.checksRecords()
-      ? citations.messagesFor(viewer, messages)
-      : Promise.resolve(messages),
+      ? citations.decide(viewer, messageSources(messages))
+      : null,
     (checks.artifacts ?? unconfiguredArtifacts).decide(
       viewer,
       messageArtifactIds(messages),
     ),
   ]);
-  return withArtifacts.messages(cited);
+  if (access?.unavailable === true) ids.checkFailed = true;
+  return withArtifacts.messages(access?.messages(messages) ?? messages);
 }
 
 /** A share change and who may read the conversation before and after it (SS1). */
@@ -650,6 +656,7 @@ const redactPageFor = async <M extends ViewerMessage>(
   ownerOf: (message: M) => string | undefined,
   // The harness decided the citations of this page's messages for the viewer; rows read past its edges it never saw.
   citationsDecided = false,
+  checkFailed = false,
 ): Promise<M[]> => {
   const read = async (from: number, limit: number): Promise<M[]> =>
     (await getMessages(conversation._id, {
@@ -699,6 +706,7 @@ const redactPageFor = async <M extends ViewerMessage>(
     {
       leadUnknown,
       trailUnknown,
+      checkFailed,
       ...(citationsDecided && {
         citationsDecided: (m: M) => page.has(m),
       }),
@@ -924,6 +932,10 @@ export const uploadChatAttachments =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(aiResponse, 'Upload Chat Attachments');
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -1028,6 +1040,13 @@ export const uploadChatAttachmentsInternal =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(
+          aiResponse,
+          'Upload Chat Attachments (Internal)',
+        );
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -2135,45 +2154,53 @@ interface ConversationPermissionSyncOptions {
   maxAttempts?: number;
 }
 
-// Best-effort: a failure is logged and never fails the share/unshare/view.
-const syncConversationRecordPermissions = async ({
+/** One call to the query service's record-permission route: resolves on any status, rejects on a transport failure. */
+const requestConversationRecordPermissions = async ({
   appConfig,
   records,
   method,
   grantorUserId,
   orgId,
   body,
-  requestId,
-  conversationId,
   timeoutMs = CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS,
   maxAttempts,
-}: ConversationPermissionSyncOptions): Promise<void> => {
+}: ConversationPermissionSyncOptions): Promise<AIServiceResponse<unknown>> => {
+  const serviceToken = new AuthTokenService(
+    appConfig.jwtSecret,
+    appConfig.scopedJwtSecret,
+  ).generateScopedToken(
+    {
+      userId: grantorUserId,
+      orgId,
+      scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
+    },
+    '5m',
+  );
+  return new AIServiceCommand<unknown>({
+    uri: `${appConfig.aiBackend}/api/v1/chat/${records}/permissions`,
+    method,
+    headers: {
+      Authorization: `Bearer ${serviceToken}`,
+      'Content-Type': 'application/json',
+    },
+    body,
+    timeoutMs,
+    maxAttempts,
+  }).execute();
+};
+
+const isSuccess = (statusCode: number): boolean =>
+  statusCode >= 200 && statusCode < 300;
+
+// Best-effort: a failure is logged and never fails the share or the view.
+const syncConversationRecordPermissions = async (
+  options: ConversationPermissionSyncOptions,
+): Promise<void> => {
+  const { requestId, conversationId, records, method } = options;
   const logContext = { requestId, conversationId, records, method };
   try {
-    const serviceToken = new AuthTokenService(
-      appConfig.jwtSecret,
-      appConfig.scopedJwtSecret,
-    ).generateScopedToken(
-      {
-        userId: grantorUserId,
-        orgId,
-        scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
-      },
-      '5m',
-    );
-    const response = await new AIServiceCommand({
-      uri: `${appConfig.aiBackend}/api/v1/chat/${records}/permissions`,
-      method,
-      headers: {
-        Authorization: `Bearer ${serviceToken}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      timeoutMs,
-      maxAttempts,
-    }).execute();
-    // execute() resolves on 4xx/5xx; only transport errors reject.
-    if (response.statusCode < 200 || response.statusCode >= 300) {
+    const response = await requestConversationRecordPermissions(options);
+    if (!isSuccess(response.statusCode)) {
       logger.warn('Conversation record permission sync rejected', {
         ...logContext,
         statusCode: response.statusCode,
@@ -2186,6 +2213,31 @@ const syncConversationRecordPermissions = async ({
       error: error.message,
     });
   }
+};
+
+const UNSHARE_OPERATION = 'Unshare conversation';
+
+/** An unshare's revoke: anything but a 2xx fails the unshare (an outage keeps its Retry-After). */
+const requireRecordPermissionsRevoked = async (
+  options: ConversationPermissionSyncOptions,
+): Promise<void> => {
+  let response: AIServiceResponse<unknown>;
+  try {
+    response = await requestConversationRecordPermissions(options);
+  } catch (error) {
+    throw handleBackendError(error, UNSHARE_OPERATION);
+  }
+  if (isSuccess(response.statusCode)) return;
+  // Node writes this request's body and token, so a 4xx is our fault, not the owner's:
+  // relaying a 401 would send the owner's browser to re-login.
+  throw response.statusCode < 500
+    ? withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(UNSHARE_OPERATION)),
+        ),
+        { status: response.statusCode },
+      )
+    : handleBackendError(response, UNSHARE_OPERATION);
 };
 
 export const getConversationById =
@@ -2325,6 +2377,11 @@ export const getConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
+      const viewerRead = {
+        orgId: String(orgId),
+        sessionId,
+        checkFailed: false,
+      };
       const conversationResponse = await attachSharedByIfRecipient(
         await withViewerChecks(
           buildConversationResponse(
@@ -2346,7 +2403,7 @@ export const getConversationById =
           ),
           req,
           checks,
-          { orgId: String(orgId), sessionId },
+          viewerRead,
         ),
         orgId,
       );
@@ -2360,8 +2417,9 @@ export const getConversationById =
           conversationResponse.messages,
           skip,
           totalMessages,
-          () => initiatorId,
+          (m) => messageActor(m, initiatorId),
           checks.citations?.checksRecords() === true,
+          viewerRead.checkFailed,
         )) as never,
         messageSortOptions as { field: keyof IMessage },
       ) as unknown as typeof conversationResponse.messages;
@@ -2871,14 +2929,17 @@ const createUnshareConversationHandler =
         String(id).toLowerCase(),
       );
 
-      async function performUnshareConversation(
-        tx?: Tx,
-      ): Promise<ParticipantChange> {
-        const conversation = await convRepo().findForUnshare(
+      const findOwnedConversation = (): Promise<ChatSessionDto | null> =>
+        convRepo().findForUnshare(
           conversationId as string,
           actorOf(orgId, userId),
           scope,
         );
+
+      async function performUnshareConversation(
+        tx?: Tx,
+      ): Promise<ParticipantChange> {
+        const conversation = await findOwnedConversation();
 
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
@@ -2923,16 +2984,14 @@ const createUnshareConversationHandler =
         };
       }
 
-      const updatedConversation = await withParticipantRecord(
-        recorder,
-        performUnshareConversation,
-      );
-
+      // Revoke before the list changes: a refused revoke leaves the user listed, so the owner can retry.
+      if (!(await findOwnedConversation())) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
       // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
       const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
         String(conversationId),
       );
-
       const grantor = {
         appConfig,
         method: HttpMethod.DELETE,
@@ -2941,18 +3000,57 @@ const createUnshareConversationHandler =
         requestId,
         conversationId,
       } as const;
-      if (attachmentRecordIds.length > 0) {
-        await syncConversationRecordPermissions({
+      const revokesFor = (
+        recordIds: string[],
+      ): ConversationPermissionSyncOptions[] => [
+        ...(recordIds.length > 0
+          ? [
+              {
+                ...grantor,
+                records: 'attachments' as const,
+                body: { userIds: removedIds, recordIds },
+              },
+            ]
+          : []),
+        {
           ...grantor,
-          records: 'attachments',
-          body: { userIds: removedIds, recordIds: attachmentRecordIds },
+          records: 'artifacts',
+          body: { conversationId, userIds: removedIds },
+        },
+      ];
+      for (const revoke of revokesFor(attachmentRecordIds)) {
+        await requireRecordPermissionsRevoked(revoke);
+      }
+
+      const updatedConversation = await withParticipantRecord(
+        recorder,
+        performUnshareConversation,
+      );
+
+      // Again after the commit: a view that read the old list may have re-granted in between, also on an
+      // attachment added while the revokes ran, so the attachments are read again. It only has to beat that
+      // view's grant, so it gets the view's budget; the unshare is committed, so a failed read is only logged.
+      const latestAttachmentRecordIds =
+        await loadConversationChatAttachmentRecordIds(
+          String(conversationId),
+        ).catch((error: unknown) => {
+          logger.warn(
+            'Could not re-read chat attachments after unshare; repeating the revoke on the earlier list',
+            {
+              requestId,
+              conversationId,
+              errorType: error instanceof Error ? error.name : typeof error,
+            },
+          );
+          return attachmentRecordIds;
+        });
+      for (const revoke of revokesFor(latestAttachmentRecordIds)) {
+        await syncConversationRecordPermissions({
+          ...revoke,
+          timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+          maxAttempts: 1,
         });
       }
-      await syncConversationRecordPermissions({
-        ...grantor,
-        records: 'artifacts',
-        body: { conversationId, userIds: removedIds },
-      });
 
       logger.debug('Conversation unshared successfully', {
         requestId,
@@ -5023,7 +5121,11 @@ export const listAllArchivesConversation =
         appConfig,
         viewerOf(userId, orgId),
         entries.map((e) => e.dto),
-        (m) => ownerBySession.get(sessionOfMessage.get(m) ?? ''),
+        (m) =>
+          messageActor(
+            m,
+            ownerBySession.get(sessionOfMessage.get(m) ?? '') ?? '',
+          ),
       );
       // redactMessagesFor keeps the order, so each visible message belongs to the session of the stored one at its place.
       const messagesBySession = new Map<string, any[]>();
@@ -5271,27 +5373,17 @@ export const search =
         throw handleBackendError(error, 'Search');
       }
 
-      if (!aiResponse?.data) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
       // A search that found nothing, or could not check access, says why as codes the client words. The error is
       // mapped as for any other failure, so the body keeps its envelope (code, message, requestId); only the codes are added.
-      const noticed = (aiResponse.data as { accessNotices?: unknown })
-        .accessNotices;
+      // An error answer that was not JSON has no data: its status is still mapped below.
+      const noticed = (
+        aiResponse?.data as { accessNotices?: unknown } | undefined
+      )?.accessNotices;
       if (
         (aiResponse.statusCode === 404 || aiResponse.statusCode === 503) &&
         Array.isArray(noticed)
       ) {
-        const mapped = handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        const mapped = handleBackendError(aiResponse, 'Search');
         throw Object.assign(mapped, {
           metadata: {
             ...(mapped as { metadata?: object }).metadata,
@@ -5300,16 +5392,10 @@ export const search =
         });
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        throw handleBackendError(aiResponse, 'Search');
+      }
+      if (!aiResponse.data) {
+        throw new InternalServerError('Failed to get response from AI service');
       }
 
       // An agent searching on a user's behalf sends false: its searches are not
@@ -5477,20 +5563,11 @@ export const retrieve =
         throw handleBackendError(error, 'Retrieve');
       }
       const data = aiResponse.data;
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse, 'Retrieve');
+      }
       if (data === undefined) {
         throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Retrieve',
-        );
       }
       res.status(HTTP_STATUS.OK).json({
         requestId,
@@ -7876,6 +7953,11 @@ export const getAgentConversationById =
       const conversationWithMessages = attachMessages(session, messages);
 
       // Build conversation response using existing helper
+      const viewerRead = {
+        orgId: String(orgId),
+        sessionId,
+        checkFailed: false,
+      };
       const builtResponse = await withViewerChecks(
         buildConversationResponse(
           {
@@ -7896,7 +7978,7 @@ export const getAgentConversationById =
         ),
         req,
         checks,
-        { orgId: String(orgId), sessionId },
+        viewerRead,
       );
       // The recipient list is the owner's business: a viewer is told who shared
       // the chat, never who else can read it.
@@ -7916,8 +7998,9 @@ export const getAgentConversationById =
           conversationResponse.messages,
           skip,
           totalMessages,
-          () => initiatorId,
+          (m) => messageActor(m, initiatorId),
           checks.citations?.checksRecords() === true,
+          viewerRead.checkFailed,
         )) as never,
         messageSortOptions as { field: keyof IMessage },
       ) as unknown as typeof conversationResponse.messages;

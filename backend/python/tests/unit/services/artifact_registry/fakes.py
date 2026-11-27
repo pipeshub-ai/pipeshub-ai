@@ -88,7 +88,9 @@ class FakeGraphProvider:
         records = self.nodes["records"]
         return {rid: records[rid] for rid in record_ids if rid in records}
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+    async def get_user_by_user_id(
+        self, user_id: str, org_id: str | None = None, *, raise_on_error: bool = False,
+    ) -> dict | None:
         return self.users.get(user_id)
 
     async def get_document(

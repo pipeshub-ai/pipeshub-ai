@@ -6,7 +6,7 @@ import { RETIRED } from '../domain/operator-controls';
 import { APPROVAL_COUNTED } from '../domain/interactions';
 import type { YieldReason } from '../contracts/generated/core/enums';
 import { JournalEvent } from '../domain/journal';
-import { frameFor, isQuestionTool } from './audiences';
+import { type AnswerAccess, frameFor, isQuestionTool } from './audiences';
 import { shapedForViewer } from '../domain/token-redaction';
 import { ArtifactAccess } from './artifact-access';
 import type { ChildRef } from './child-interactions';
@@ -100,6 +100,8 @@ export interface ProjectorContext {
   citations?: () => CitationAccess;
   /** The shared viewer's artifact access (SS0). Absent: every artifact is hidden. */
   artifacts?: () => ArtifactAccess;
+  /** Whether a shared viewer may read the run's answer. Absent: never. */
+  answer?: () => AnswerAccess;
   /** A child run's parent (P6.1): its snapshots nest under it. */
   parentRunId?: string;
   /**
@@ -550,6 +552,7 @@ export class RunProjector {
         this.context.citations?.() ?? CitationAccess.denyRecords(),
       checkedArtifacts: () =>
         this.context.artifacts?.() ?? ArtifactAccess.hideAll(),
+      answer: () => this.context.answer?.() ?? 'withheld',
       asksUser: (toolCallId) => {
         const call =
           typeof toolCallId === 'string'

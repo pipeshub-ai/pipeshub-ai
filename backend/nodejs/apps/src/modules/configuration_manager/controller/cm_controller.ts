@@ -121,15 +121,27 @@ import {
   WebSearchProviderConfiguration,
   canSearch,
 } from '../types/web-search.types';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
   SMTP_SECRET_KEYS,
+  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS,
+  MICROSOFT_CONNECTOR_SECRET_KEYS,
+  maskConnectorSecrets,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
+  hasForwardingCredentials,
+  reusesSavedAiModelCredentials,
+  withoutForwardingCredentials,
   maskWebSearchProvider,
   maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
@@ -180,9 +192,9 @@ type SlackBotStore = {
 };
 
 
-/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
+/** Hides secrets unless HIDE_SECRET_CONFIG is explicitly "false", so an install that never sets it fails closed. */
 function shouldHideSecrets(): boolean {
-  return process.env.HIDE_SECRET_CONFIG === 'true';
+  return process.env.HIDE_SECRET_CONFIG !== 'false';
 }
 
 async function requesterIsOrgAdmin(
@@ -1351,31 +1363,41 @@ async function restoreStoredAuthSecrets<T extends Record<string, unknown>>(
   return config;
 }
 
+/**
+ * The Microsoft sign-in settings and the record they come from. Azure AD sign-in became Microsoft sign-in; until the
+ * startup migration copies its settings over, those are served, and a save restores its placeholders from them too.
+ */
+async function readMicrosoftAuthConfig(
+  keyValueStoreService: KeyValueStoreService,
+): Promise<{ path: string; config: Record<string, unknown> | null }> {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const read = async (
+    path: string,
+  ): Promise<Record<string, unknown> | null> => {
+    const encrypted = await keyValueStoreService.get<string>(path);
+    if (!encrypted) return null;
+    return JSON.parse(
+      EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).decrypt(encrypted),
+    ) as Record<string, unknown>;
+  };
+  const microsoft = await read(configPaths.auth.microsoft);
+  if (!microsoft?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
+    const azureAd = await read(configPaths.auth.azureAD);
+    if (azureAd?.clientId)
+      return { path: configPaths.auth.azureAD, config: azureAd };
+  }
+  return { path: configPaths.auth.microsoft, config: microsoft };
+}
+
 export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const readAuthConfig = async (
-        path: string,
-      ): Promise<Record<string, unknown> | null> => {
-        const encrypted = await keyValueStoreService.get<string>(path);
-        if (!encrypted) return null;
-        return JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encrypted),
-        ) as Record<string, unknown>;
-      };
-
-      let authConfig = await readAuthConfig(configPaths.auth.microsoft);
-      // Azure AD sign-in became Microsoft sign-in; until the startup migration
-      // copies its settings over, serve those.
-      if (!authConfig?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
-        const azureAd = await readAuthConfig(configPaths.auth.azureAD);
-        if (azureAd?.clientId) authConfig = azureAd;
-      }
+      const { config: authConfig } =
+        await readMicrosoftAuthConfig(keyValueStoreService);
 
       if (authConfig) {
         const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
@@ -1394,9 +1416,19 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
+      // Placeholders come back for what the read showed, so they are restored from the record it read. With none,
+      // nothing stored is read: a record that cannot be decrypted can still be replaced.
+      const masked = MICROSOFT_AUTH_SECRET_KEYS.some(
+        (key) =>
+          (req.body as Record<string, unknown> | undefined)?.[key] ===
+          CONFIG_SECRET_PLACEHOLDER,
+      );
+      const source = masked
+        ? (await readMicrosoftAuthConfig(keyValueStoreService)).path
+        : configPaths.auth.microsoft;
       const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
         keyValueStoreService,
-        configPaths.auth.microsoft,
+        source,
         req.body,
         MICROSOFT_AUTH_SECRET_KEYS,
       );
@@ -1699,7 +1731,15 @@ export const createGoogleWorkspaceCredentials =
       switch (userType.toLowerCase()) {
         case googleWorkspaceTypes.INDIVIDUAL.toLowerCase():
           {
-            configData = req.body;
+            // The read masks the tokens; a client saving what it read sends the placeholder for the stored one.
+            // Only the keys this record stores: the client id and secret the read also shows live in the OAuth
+            // config, and the schema drops them here.
+            configData = await restoreStoredAuthSecrets(
+              keyValueStoreService,
+              `${configPaths.connectors.googleWorkspace.credentials.individual}/${userId}`,
+              req.body,
+              ['access_token', 'refresh_token'],
+            );
 
             // validate config schema
 
@@ -1948,8 +1988,19 @@ export const createGoogleWorkspaceCredentials =
   };
 
 export const getGoogleWorkspaceCredentials =
-  (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (
+    keyValueStoreService: KeyValueStoreService,
+    userId: string,
+    orgId: string,
+    applyMasking = true,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const hideSecrets =
+      applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+    const shown = (config: Record<string, unknown>): Record<string, unknown> =>
+      hideSecrets
+        ? maskConnectorSecrets(config, GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS)
+        : config;
     try {
       const org = await findActiveOrgById(orgId);
       if (!org) {
@@ -1990,7 +2041,13 @@ export const getGoogleWorkspaceCredentials =
                 ...googleWorkspaceOauthConfig,
               };
 
-              res.status(200).json(combinedResponse).end();
+              res
+
+                .status(200)
+
+                .json(shown(combinedResponse as Record<string, unknown>))
+
+                .end();
             } else {
               res.status(200).json({}).end();
             }
@@ -2011,7 +2068,12 @@ export const getGoogleWorkspaceCredentials =
                 configManagerConfig.secretKey,
               ).decrypt(encryptedGoogleWorkspaceCredentials),
             );
-            res.status(200).json(googleWorkspaceCredentials).end();
+            res
+              .status(200)
+              .json(
+                shown(googleWorkspaceCredentials as Record<string, unknown>),
+              )
+              .end();
           } else {
             res.status(200).json({}).end();
           }
@@ -2094,7 +2156,14 @@ export const setGoogleWorkspaceOauthConfig =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { clientId, clientSecret, enableRealTimeUpdates } = req.body;
+      // A client that read the masked config may send the placeholder back.
+      const { clientId, clientSecret, enableRealTimeUpdates } =
+        await restoreStoredAuthSecrets(
+          keyValueStoreService,
+          configPaths.connectors.googleWorkspace.config,
+          req.body,
+          GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+        );
       let topicName = '';
       const realTimeUpdatesEnabled =
         enableRealTimeUpdates === undefined
@@ -2193,8 +2262,8 @@ export const setGoogleWorkspaceOauthConfig =
   };
 
 export const getGoogleWorkspaceOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedGoogleWorkSpaceConfig =
@@ -2208,7 +2277,19 @@ export const getGoogleWorkspaceOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedGoogleWorkSpaceConfig),
         );
-        res.status(200).json(googleWorkSpaceConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  googleWorkSpaceConfig,
+                  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+                )
+              : googleWorkSpaceConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2218,7 +2299,7 @@ export const getGoogleWorkspaceOauthConfig =
   };
 
 export const getAtlassianOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2240,7 +2321,19 @@ export const getAtlassianOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianConfig),
         );
-        res.status(200).json(atlassianConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianConfig,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2257,11 +2350,17 @@ export const setAtlassianOauthConfig =
     next: NextFunction,
   ) => {
     try {
-      const oauthConfig = req.body;
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const oauthConfig = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.config}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedAtlassianConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2280,7 +2379,7 @@ export const setAtlassianOauthConfig =
   };
 
 export const getAtlassianCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2303,7 +2402,19 @@ export const getAtlassianCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianCredentials),
         );
-        res.status(200).json(atlassianCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianCredentials,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2320,12 +2431,18 @@ export const setAtlassianCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedAtlassianCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2344,7 +2461,7 @@ export const setAtlassianCredentials =
   };
 
 export const getOneDriveCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2367,7 +2484,19 @@ export const getOneDriveCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedOneDriveCredentials),
         );
-        res.status(200).json(oneDriveCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  oneDriveCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : oneDriveCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2384,12 +2513,18 @@ export const setOneDriveCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.onedrive.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedOneDriveCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2408,7 +2543,7 @@ export const setOneDriveCredentials =
   };
 
 export const getSharePointCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2431,7 +2566,19 @@ export const getSharePointCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedSharePointCredentials),
         );
-        res.status(200).json(sharePointCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  sharePointCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : sharePointCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2448,12 +2595,18 @@ export const setSharePointCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.sharepoint.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedSharePointCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -3663,6 +3816,24 @@ export const addAIModelProvider =
     }
   };
 
+function destinationHost(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  provider: unknown,
+): string | undefined {
+  // A key the request leaves out is unchanged, so it is never the moved one.
+  const key = AI_MODEL_DESTINATION_KEYS.find(
+    (k) =>
+      k in incoming &&
+      aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
+  );
+  try {
+    return new URL(String(incoming[key as string])).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3749,11 +3920,62 @@ export const updateAIModelProvider =
         return;
       }
 
+      // Saved credentials are restored below, so a new destination must come
+      // with credentials typed again or they would be sent to it.
+      const savedConfiguration: Record<string, unknown> = stored ?? {};
+      const destinationChanged = aiModelDestinationChanged(
+        incoming,
+        savedConfiguration,
+        targetModel.provider,
+      );
+      const reusesCredentials = reusesSavedAiModelCredentials(
+        incoming,
+        savedConfiguration,
+      );
+      // The save keeps the stored provider, so a check run as another provider
+      // would not describe what is saved.
+      if (
+        targetModel.provider &&
+        String(provider).toLowerCase() !== targetModel.provider.toLowerCase()
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Provider does not match saved model',
+        });
+        return;
+      }
+
+      const securityContext: Record<string, unknown> = {
+        orgId: getCurrentOrgId(),
+        userId: req.user?.userId,
+        modelKey,
+        host: destinationChanged
+          ? destinationHost(incoming, savedConfiguration, targetModel.provider)
+          : undefined,
+      };
+      if (destinationChanged && reusesCredentials) {
+        logger.warn('AI model destination change refused', {
+          securityEvent: 'model_destination_change_refused',
+          ...securityContext,
+        });
+        res.status(400).json({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        });
+        return;
+      }
+
       // GET only returns the public allowlist, so the client can only send back
       // keys it retyped. Restore the rest from storage before the health check.
+      // Forwarding credentials are not retyped, so a new destination does not get them.
+      const restorable = (
+        saved: Record<string, unknown>,
+      ): Record<string, unknown> =>
+        destinationChanged ? withoutForwardingCredentials(saved) : saved;
       const mergedConfiguration = mergeAiModelCredentials(
         configuration,
-        targetModel.configuration as Record<string, unknown>,
+        restorable(targetModel.configuration as Record<string, unknown>),
       );
 
       const healthCheckPayload: Record<string, unknown> = {
@@ -3851,18 +4073,46 @@ export const updateAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let saved: AIModelsConfig;
+      // Set inside the mutate callback, so assert boolean to stop narrowing to false.
+      let forwardingCredentialsCleared = false as boolean;
+      let movedDuringCheck = false as boolean;
       try {
         saved = await aiModelsRepository(keyValueStoreService, save, req, [
           targetModelType,
         ]).mutate((latest) => {
+          movedDuringCheck = false;
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
           }
           // A credential rotation can land during the health check; keep its keys.
+          const latestSaved =
+            (current.model.configuration as
+              Record<string, unknown> | undefined) ?? {};
+          // Another save can also move the model during the check. Its stored
+          // credentials belong to that endpoint, which this check never used,
+          // so compare against the latest document, not the earlier read.
+          const latestDestinationChanged = aiModelDestinationChanged(
+            incoming,
+            latestSaved,
+            current.model.provider,
+          );
+          // The check ran against the endpoint read before it, which also
+          // covers a request that leaves the endpoint out.
+          if (
+            aiModelDestinationsDiffer(savedConfiguration, latestSaved) ||
+            (latestDestinationChanged &&
+              reusesSavedAiModelCredentials(incoming, latestSaved))
+          ) {
+            movedDuringCheck = true;
+            throw new AiModelsWriteAborted();
+          }
+          const moved = destinationChanged || latestDestinationChanged;
+          forwardingCredentialsCleared =
+            moved && hasForwardingCredentials(latestSaved);
           current.model.configuration = mergeAiModelCredentials(
             configuration,
-            current.model.configuration as Record<string, unknown>,
+            moved ? withoutForwardingCredentials(latestSaved) : latestSaved,
           );
           current.model.isMultimodal = isMultimodal;
           current.model.isDefault = isDefault;
@@ -3880,6 +4130,19 @@ export const updateAIModelProvider =
           }
         });
       } catch (error) {
+        if (error instanceof AiModelsWriteAborted && movedDuringCheck) {
+          logger.warn('AI model destination change refused', {
+            securityEvent: 'model_destination_change_refused',
+            ...securityContext,
+            reason: 'moved_during_check',
+          });
+          res.status(409).json({
+            status: 'error',
+            message:
+              'This model was moved to another endpoint while it was being checked. Reload it and enter the credentials again.',
+          });
+          return;
+        }
         if (error instanceof AiModelsWriteAborted) {
           res.status(404).json({
             status: 'error',
@@ -3890,6 +4153,12 @@ export const updateAIModelProvider =
         throw error;
       }
       const updatedModel = findModelEntry(saved, modelKey)?.model ?? targetModel;
+      if (destinationChanged) {
+        logger.warn('AI model destination changed', {
+          securityEvent: 'model_destination_changed',
+          ...securityContext,
+        });
+      }
 
       const event: Event =
         targetModelType === 'embedding'
@@ -3920,6 +4189,9 @@ export const updateAIModelProvider =
           contextLength: modelForResponse.contextLength,
           isMultimodal: modelForResponse.isMultimodal,
           isReasoning: modelForResponse.isReasoning,
+          ...(forwardingCredentialsCleared
+            ? { forwardingCredentialsCleared: true }
+            : {}),
         },
       });
     } catch (error: any) {

@@ -129,6 +129,8 @@ export const AGENT_HARNESS_RUN_FEEDBACK = 'AgentHarnessRunFeedback';
 export const AGENT_HARNESS_RATED_ANSWER_SINK = 'AgentHarnessRatedAnswerSink';
 export const AGENT_HARNESS_SCHEDULES = 'AgentHarnessSchedules';
 export const AGENT_HARNESS_SCHEDULE_FIRER = 'AgentHarnessScheduleFirer';
+/** ADR-SCH-01: schedules a harness chat asked for, made on its person's approval (the worker's route). */
+export const AGENT_HARNESS_CHAT_SCHEDULES = 'AgentHarnessChatSchedules';
 /** Who may see and act on schedules other people own (`ScheduleReach`); unbound: only their owners. */
 export const AGENT_HARNESS_SCHEDULE_REACH = 'AgentHarnessScheduleReach';
 /** P2.13: knowledge publications at the gateway (the Labs flag, then the query service). */

@@ -16,6 +16,7 @@ Focuses on:
 - on_new_app_users error path
 """
 
+import logging
 import uuid
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,6 +52,7 @@ from app.models.entities import (
     PullRequestRecord,
     Record,
     RecordGroup,
+    RecordGroupType,
     RecordType,
     RelatedExternalRecord,
     SQLTableRecord,
@@ -2539,7 +2541,7 @@ class TestHandleRecordGroupKeptForTheTrash:
         proc, tx_store = _make_processor(), _make_tx_store()
         tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
         tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
-        record = _make_record(external_record_group_id="ext-g")
+        record = _make_record(external_record_group_id="ext-g", record_group_type=RecordGroupType.DRIVE)
 
         group_id = await proc._handle_record_group(record, tx_store)
 
@@ -3211,6 +3213,21 @@ class TestOnUpdatedRecordPermissionsAdditional:
         tx_store.batch_update_nodes.assert_awaited_once_with(
             [{"_key": "rec-1", "accessRule": "RESTRICTED"}], CollectionNames.RECORDS.value,
         )
+
+    @pytest.mark.asyncio
+    async def test_a_record_whose_group_is_not_stored_does_not_inherit_from_a_parent_of_another_group(self) -> None:
+        """The same rule as _handle_parent_record: with the record's group not
+        stored, a parent the source puts in another group lends it no audience."""
+        proc, tx_store, record = self._nested(inherit=True)
+        parent = _make_record(external_record_id="ext-parent", external_record_group_id="ext-a", record_group_id="rg-a")
+        parent.id = "parent-1"
+        tx_store.get_record_by_external_id.return_value = parent
+        record.external_record_group_id = "ext-b"
+
+        await proc.on_updated_record_permissions(record, [])
+
+        tx_store.create_inherit_permissions_relation_record.assert_not_called()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("rec-1", "parent-1")
 
     @pytest.mark.asyncio
     async def test_no_belongs_to_edges_runs_process_record(self):
@@ -4956,19 +4973,32 @@ class TestResolvePrincipal:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_existing_person(self):
+        """The grant writer takes the person through the upsert (its lock, held to the commit), which finds it and changes nothing."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
         tx_store.get_person_by_email = AsyncMock(
             return_value=Person(id="person-9", email="out@x.io")
         )
-        tx_store.upsert_person_by_email = AsyncMock()
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-9")
 
         assert await proc._resolve_principal("out@x.io", tx_store) == (
             "person-9", CollectionNames.PEOPLE.value
         )
-        tx_store.upsert_person_by_email.assert_not_awaited()
+        tx_store.upsert_person_by_email.assert_awaited_once()
+        assert tx_store.upsert_person_by_email.await_args.args[0].email == "out@x.io"
         tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_an_existing_person_found_without_create_is_only_read(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=Person(id="person-9", email="out@x.io"))
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store, create_if_missing=False) == ("person-9", CollectionNames.PEOPLE.value)
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):
@@ -8850,6 +8880,24 @@ class TestOnRecordsMovedGroupChanged:
             "org-1", "records/conn-1/GroupOld/same.txt", "records/conn-1/GroupNew/same.txt"
         )
 
+    async def test_a_move_to_a_group_that_is_not_stored_leaves_the_old_group(self) -> None:
+        """No group to join (_handle_record_group returns None for an unstored,
+        untyped group), but the old group's membership and access must go."""
+        old_record = _make_old_record(record_id="rec-1", external_revision_id="sha-1")
+        old_record.record_group_id = "group-old"
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-1")
+        new_record.external_record_group_id = "ext-unstored"
+        new_record.shared_with_me_record_group_ids = []
+
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/same.txt", new_record, [])])
+
+        proc._link_record_to_group.assert_awaited_once()
+        args = proc._link_record_to_group.await_args.args
+        assert args[1] is None and args[3] is old_record
+
     async def test_same_group_name_and_parent_unchanged_computes_no_move(self) -> None:
         """Sanity counterpart: name, parent, and group all unchanged -> no
         move-tree call at all."""
@@ -9065,6 +9113,54 @@ class TestParentRecordInAnotherGroup:
         tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with(stub.id, "rg-b")
         assert _hierarchy_edges(tx_store) == [("rg-b", stub.id)]
         tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-b", "story-1"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("epic_group", "inherits"), [("ext-a", False), ("ext-b", True)])
+    async def test_a_record_whose_group_is_not_stored_inherits_only_from_a_parent_of_its_source_group(
+        self, epic_group: str, inherits: bool
+    ) -> None:
+        """The story's project is not stored and the story names no group type, so
+        it is in no group: an epic of another project still lends it no audience."""
+        proc = _make_processor()
+        epic = self._epic(record_group_id="rg-a" if epic_group == "ext-a" else None, external_record_group_id=epic_group)
+        tx_store = self._store({"ext-epic": epic})
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
+
+        await proc._process_record(self._story(record_group_type=None), [], tx_store)
+
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+        tx_store.create_record_relation.assert_awaited_once_with(
+            "epic-1", "story-1", RecordRelations.PARENT_CHILD.value
+        )
+        if inherits:
+            tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        else:
+            tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+            tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_moved_to_a_group_that_is_not_stored_leaves_its_old_group(self) -> None:
+        """Stored in project A, the story now names project B, which is not stored
+        and has no type to store it with: it leaves A now, not on its next write."""
+        proc = _make_processor()
+        stored = self._story(record_group_id="rg-a")
+        stored.external_record_group_id = "ext-a"
+        stored.parent_external_record_id = None
+        tx_store = self._store({"ext-story": stored})
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
+        incoming = self._story(record_group_type=None, record_group_id="rg-a")
+        incoming.parent_external_record_id = None
+
+        await proc._process_record(incoming, [], tx_store)
+
+        tx_store.link_record_to_group.assert_awaited_once()
+        args, kwargs = tx_store.link_record_to_group.await_args
+        assert args[1] is None and kwargs["leaving_group_id"] == "rg-a"
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-a")
+        tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-a", "story-1"))
+        written = [r for call in tx_store.batch_upsert_records.await_args_list for r in call.args[0]]
+        assert written and all(r.record_group_id is None for r in written)
 
     @pytest.mark.asyncio
     async def test_a_link_stub_without_a_group_joins_its_childs_group(self) -> None:
@@ -9516,7 +9612,7 @@ class TestMovesAgainstTheTransactionCache:
                 created_at=1, parsing_status=None, extraction_status=None,
                 processing_started_at=None, reason=None, is_vlm_ocr_processed=False,
                 md5_hash=None, size_in_bytes=None, storage_document_id=None,
-                parent_external_record_id=None,
+                parent_external_record_id=None, record_group_id=None,
             )
             for rid, ext in rows.items()
         }
@@ -9563,3 +9659,49 @@ class TestMovesAgainstTheTransactionCache:
 
         survivors = {rid: row.external_record_id for rid, row in graph.rows.items()}
         assert survivors == {"X": "log.2", "Y": "log.1"}
+
+
+def _store(*, transient: bool, tx_store: object) -> MagicMock:
+    """A data store that reports its failures as transient (a lost race) or not, as the decorator and the boundary read them."""
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    store = MagicMock(spec=DataStoreProvider)
+    store.is_transient_error = MagicMock(return_value=transient)
+    store.transaction = MagicMock(return_value=_make_ctx(tx_store))
+    return store
+
+
+class TestReapExternalAppUsersBoundary:
+    """The reaper is cleanup: a race lost to concurrent writers on its last attempt reaps nothing, returns 0 and logs one warning (no driver text, no
+    error record), so the sync that called it carries on. Any other failure still raises and logs as before."""
+
+    @staticmethod
+    def _proc(error: Exception, *, transient: bool) -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+        proc = _make_processor()
+        proc.logger = logging.getLogger("reap-boundary-test")
+        tx_store = _make_tx_store()
+        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=error)
+        proc.data_store_provider = _store(transient=transient, tx_store=tx_store)
+        return proc, tx_store.reap_stale_external_app_relations
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_outlasts_the_retries_reaps_nothing_with_one_warning(self, monkeypatch, caplog) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc, reap = self._proc(RuntimeError("Query failed: [1200] write-write conflict on key secret-key"), transient=True)
+        with caplog.at_level(logging.WARNING):
+            assert await proc.reap_external_app_users("conn-1") == 0
+        assert reap.await_count > 1      # retried first
+        ours = [r for r in caplog.records if r.name == "reap-boundary-test"]
+        assert [r.levelno for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert [r.levelno for r in ours] == [logging.WARNING] * reap.await_count      # one per attempt: the retries' warnings, then the skip
+        assert "secret-key" not in ours[-1].getMessage() and "not reaped" in ours[-1].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_still_raises_and_logs_an_error(self, monkeypatch, caplog) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc, reap = self._proc(RuntimeError("db down"), transient=False)
+        with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="db down"):
+            await proc.reap_external_app_users("conn-1")
+        assert reap.await_count == 1
+        assert [r.levelno for r in caplog.records if r.name == "reap-boundary-test"] == [logging.ERROR]

@@ -905,6 +905,8 @@ const streamKbUpload = async (opts: {
   keyValueStoreService: KeyValueStoreService;
   appConfig: AppConfig;
   pythonServiceUrl: string;
+  /** The destination folder, when the upload targets one; bound into the upload grant. */
+  folderId?: string;
 }): Promise<void> => {
   const {
     req,
@@ -917,6 +919,7 @@ const streamKbUpload = async (opts: {
     keyValueStoreService,
     appConfig,
     pythonServiceUrl,
+    folderId,
   } = opts;
 
   const userId = req.user?.userId;
@@ -1064,6 +1067,11 @@ const streamKbUpload = async (opts: {
         req.headers as Record<string, string>,
         logger,
         publish,
+        {
+          secret: appConfig.scopedJwtSecret,
+          userId: String(userId ?? ''),
+          folderId,
+        },
       );
       succeeded += counts.succeeded;
       failed += counts.failed;
@@ -1228,6 +1236,7 @@ export const uploadRecords =
         keyValueStoreService,
         appConfig,
         pythonServiceUrl,
+        folderId,
       });
     } catch (error: any) {
       // streamKbUpload handles its own errors after headers are sent, so this

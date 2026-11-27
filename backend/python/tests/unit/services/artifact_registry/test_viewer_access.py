@@ -73,8 +73,9 @@ class Graph:
             raise ConnectionError("graph down")
         return {rid: self.records[rid] for rid in record_ids if rid in self.records}
 
-    async def get_user_by_user_id(self, user_id: str) -> dict[str, str]:
-        return {"_key": f"key-{user_id}"}
+    async def get_user_by_user_id(self, user_id: str, *, org_id: str | None = None) -> dict[str, str] | None:
+        # Every user here is org-1's; a lookup bound to another org finds none.
+        return {"_key": f"key-{user_id}"} if org_id in (None, "org-1") else None
 
     async def get_edge(self, **kw: str) -> dict[str, str] | None:
         role = self.edges.get((kw["from_id"], kw["to_id"]))

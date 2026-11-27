@@ -458,7 +458,8 @@ def test_a_jobs_write_unit_runs_its_prologue(vdb):
 def test_the_catalog_and_the_manifests_agree(vdb):
     with vdb.admin() as c:
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
-        assert vetted.problems(c, FNS) == []
+        # every manifest the database was migrated with (extra migration locations' too), and the fixture's
+        assert vetted.problems(c, vetted.load_all([*vetted.manifest_files(), FIXTURE])) == []
 
 
 # ---- the checklist: a planted violation for every item ---------------------------------------------------------------
@@ -824,7 +825,7 @@ def test_each_function_belongs_to_its_schemas_vetted_owner(vdb):
     assert owners == {"kt.notes_by_title(text,integer)": "pipeshub_vetted_kt", "kt.set_note_title(text,text)": "pipeshub_vetted_kt",
                       "kt.token_owner(text)": "pipeshub_vetted_kt", "ku.item_labels(integer)": "pipeshub_vetted_ku",
                       "kernel.org_lineage(text)": "pipeshub_vetted_kernel", "kernel.org_parent_ids(text)": "pipeshub_vetted_kernel",
-                      "kernel.org_writes_held(text)": "pipeshub_vetted_kernel",
+                      "kernel.org_writes_held(text)": "pipeshub_vetted_kernel", "kernel.assert_org_writable(text)": "pipeshub_vetted_kernel",
                       "kernel.assert_profile_epoch(integer)": "pipeshub_vetted_kernel", "kernel.profile_epoch()": "pipeshub_vetted_kernel",
                           "kernel.assert_store_epoch(integer)": "pipeshub_vetted_kernel", "kernel.postgres_store_epoch()": "pipeshub_vetted_kernel",
                       **dict.fromkeys(("kt.w_grants_set(bigint[],bigint[],smallint[],smallint[])", "kt.w_grants_delete(bigint[],bigint[],smallint[])", "kt.w_fence_remove(bigint)",

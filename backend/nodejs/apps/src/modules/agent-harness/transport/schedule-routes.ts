@@ -102,6 +102,13 @@ const trigger = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('once'),
+      at: z.string().min(16).max(40),
+      timeZone: z.string().min(1).max(64),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('webhook'),
       coalesceS: coalesceS.optional(),
       auth: z.enum(['signature', 'token']).optional(),
