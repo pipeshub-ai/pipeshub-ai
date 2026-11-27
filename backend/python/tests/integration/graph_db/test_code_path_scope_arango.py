@@ -194,3 +194,22 @@ async def test_a_partial_upsert_naming_no_type_moves_a_code_files_scope(arango) 
         rid, new_group = world["records"][0], world["groups"][1][1]
         await arango.batch_upsert_nodes([{"_key": rid, "orgId": org, "recordGroupId": new_group}], "records")
         assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == new_group
+
+
+async def test_an_upsert_of_code_records_and_its_scope_copy_commit_together(arango, monkeypatch) -> None:
+    """With no caller transaction the record upsert and the code-file copy are two requests: they run in one stream transaction, so a copy
+    that fails takes the record write back with it, and no writer can commit between them."""
+    org, connector = _new_org()
+    with for_org(org, job="code-path-scope-test"):
+        world = await world_of.write_world(arango, org, connector, 2)
+        rid, old_group, new_group = world["records"][0], world["groups"][0][1], world["groups"][1][1]
+        doc = await arango.get_document(rid, "records")
+
+        async def fail(keys: list[str], transaction: str | None) -> None:
+            raise RuntimeError("the copy failed")
+        monkeypatch.setattr(arango, "_sync_code_file_scope", fail)
+        with pytest.raises(RuntimeError):
+            await arango.batch_upsert_nodes([{**doc, "recordGroupId": new_group}], "records")
+        monkeypatch.undo()
+        assert (await arango.get_document(rid, "records"))["recordGroupId"] == old_group
+        assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == old_group

@@ -4229,12 +4229,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     collection, arango_nodes, txn_id=transaction, overwrite=True
                 )
                 return result.get("errors", 0) == 0
-            written = await self._upsert_record_nodes(arango_nodes, transaction)
-            if code := _code_file_keys(arango_nodes):
-                # shortcut: the document API's upsert takes no AQL, so the copy is a second statement (in the caller's transaction when
-                # there is one); fold it into one AQL UPSERT if code records come through this path in bulk.
+            code = _code_file_keys(arango_nodes)
+            if not code:
+                return await self._upsert_record_nodes(arango_nodes, transaction)
+            if transaction is not None:
+                written = await self._upsert_record_nodes(arango_nodes, transaction)
                 await self._sync_code_file_scope(code, transaction)
-            return written
+                return written
+            # The document API's upsert takes no AQL, so the copy is a second request: one stream transaction holds the written records
+            # to the commit, so the copy reads them as written and no writer commits between the two (a batch of other records needs none).
+            txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
+            committed = False
+            try:
+                written = await self._upsert_record_nodes(arango_nodes, txn)
+                await self._sync_code_file_scope(code, txn)
+                await self.http_client.commit_transaction(txn)
+                committed = True
+                return written
+            finally:
+                if not committed:
+                    await asyncio.shield(self._abort_quietly(txn))
 
         except Exception:
             raise
