@@ -271,7 +271,7 @@ describe('reconcileConnectorSchedule', () => {
       const outcome = await reconcileConnectorSchedule(scheduler, makeLogger() as any, input(), NO_WAIT);
 
       expect(outcome).to.equal('unchanged');
-      expect(schedules().map((r) => r.key)).to.deep.equal([before.key]);
+      expect(schedules().map((r) => r.key)).to.deep.equal([before!.key]);
     });
 
     it('replaces a schedule whose interval changed, leaving one', async () => {

@@ -26,7 +26,8 @@ const statusAndCode = (error: unknown): VendorStatus => {
 
 /**
  * What a provider wrap keeps about a vendor failure: the text for the admin's S3 settings check
- * (`originalError`), and the status and code that may leave the provider.
+ * (`originalError`, which `StorageError` moves to `vendorText`, out of the metadata, so it is never
+ * logged), and the status and code that may leave the provider.
  */
 export const vendorFailure = (
   error: unknown,

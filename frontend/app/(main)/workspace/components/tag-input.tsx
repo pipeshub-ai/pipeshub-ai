@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useFormFieldControl } from './form-field';
 
 // ========================================
 // Types
@@ -59,6 +60,7 @@ export function TagInput({
   const [isFocused, setIsFocused] = useState(false);
   const [_editingTagId, setEditingTagId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const control = useFormFieldControl();
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when tags change
@@ -250,6 +252,7 @@ export function TagInput({
           {/* Input — hidden when disabled */}
           {!disabled && (
             <input
+            {...control}
             ref={inputRef}
             type="text"
             value={inputValue}
@@ -319,7 +322,7 @@ function TagPill({
     bgColor = 'var(--red-a3)';
     border = 'none';
     textColor = 'var(--slate-12)';
-    iconColor = 'var(--red-9)';
+    iconColor = 'var(--red-11)';
   } else if (isHighlighted) {
     bgColor = 'var(--accent-surface)';
     border = '1px solid var(--accent-a7)';

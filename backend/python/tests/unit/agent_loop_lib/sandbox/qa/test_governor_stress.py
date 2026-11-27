@@ -35,6 +35,7 @@ from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotDenied,
 )
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -258,7 +259,7 @@ class TestCancelAtEveryAwait:
         assert governor.held_total() == 0
         assert recorder.outcomes == [("cancelled", None)]
         # The next call does not wait for sizing again.
-        lease = await asyncio.wait_for(governor.acquire(), 0.5)
+        lease = await settle(governor.acquire())
         await governor.release(lease)
         capacity._task.cancel()
 
@@ -388,6 +389,7 @@ class TestWakeups:
         thread.start()
         lease = await asyncio.wait_for(waiter, 2)
         thread.join()
+        # wall-clock-ok: missed, the waiter waits for the 30 s poll or its 20 s wait; 1 s is a twentieth of that
         assert time.monotonic() - started < 1.0
         await governor.release(lease)
         await governor.release(held)
@@ -417,6 +419,7 @@ class TestWakeups:
         started = time.monotonic()
         governor.capacity_changed()
         thread.join(5)
+        # wall-clock-ok: missed, the other loop's waiter waits for the 30 s poll or its 20 s wait; 1 s is a twentieth of that
         assert got and got[0] - started < 1.0
         await governor.release(held)
 

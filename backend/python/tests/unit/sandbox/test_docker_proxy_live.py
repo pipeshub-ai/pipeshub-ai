@@ -12,9 +12,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import secrets
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -23,7 +24,7 @@ from app.sandbox.docker_proxy import DockerApiPolicy, DockerSocketProxy
 
 from ..agent_loop_lib.sandbox.contract.conftest import (
     DOCKER_TEST_IMAGE,
-    docker_available,
+    skip_without_docker,
 )
 
 if TYPE_CHECKING:
@@ -40,15 +41,14 @@ INSTANCE = os.environ.get("SANDBOX_TEST_PROXY_INSTANCE") or "default"
 
 @pytest.fixture
 def proxy_host(monkeypatch) -> Iterator[str]:
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
 
     loop = asyncio.new_event_loop()
     policy = DockerApiPolicy(
         allowed_images=frozenset({DOCKER_TEST_IMAGE}), allowed_networks=frozenset({EGRESS}),
     )
-    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", instance=INSTANCE)
+    token = secrets.token_hex(32)
+    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", caller_token=token, instance=INSTANCE)
     server = loop.run_until_complete(asyncio.start_server(proxy.handle, "127.0.0.1", 0))
     port = server.sockets[0].getsockname()[1]
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -56,6 +56,7 @@ def proxy_host(monkeypatch) -> Iterator[str]:
 
     host = f"tcp://127.0.0.1:{port}"
     monkeypatch.setenv("DOCKER_HOST", host)
+    monkeypatch.setenv("DOCKER_PROXY_TOKEN", token)
     yield host
 
     loop.call_soon_threadsafe(server.close)
@@ -119,7 +120,7 @@ async def test_legacy_executor_runs_through_proxy(proxy_host, tmp_path) -> None:
     from app.sandbox import docker_executor
 
     with patch.object(docker_executor, "SANDBOX_IMAGE", DOCKER_TEST_IMAGE), \
-            patch.object(docker_executor, "_SANDBOX_ROOT", str(tmp_path / "root")):
+            patch.object(docker_executor, "_sandbox_root", lambda: str(tmp_path / "root")):
         result = await docker_executor.DockerExecutor(egress_network=EGRESS).execute(
             "print(6 * 7)", "python", timeout_seconds=60,
         )
@@ -128,10 +129,9 @@ async def test_legacy_executor_runs_through_proxy(proxy_host, tmp_path) -> None:
 
 
 def test_escape_attempts_are_refused(proxy_host) -> None:
-    import docker
     from docker.errors import APIError
 
-    client = docker.DockerClient(base_url=proxy_host)
+    client = _fixture_client(proxy_host)
     try:
         attempts = [
             {"privileged": True, "network_mode": "none"},
@@ -156,11 +156,10 @@ def test_escape_attempts_are_refused(proxy_host) -> None:
 
 
 def test_info_answers_only_the_sizing_fields(proxy_host) -> None:
-    import docker
 
     from app.sandbox.docker_proxy import INFO_FIELDS
 
-    client = docker.DockerClient(base_url=proxy_host)
+    client = _fixture_client(proxy_host)
     try:
         info = client.info()
     finally:
@@ -171,11 +170,10 @@ def test_info_answers_only_the_sizing_fields(proxy_host) -> None:
 
 
 def test_host_route_matches_this_kernels_boot_id(proxy_host) -> None:
-    import docker
 
     from app.agent_loop_lib.sandbox.host_reading import boot_id_hash
 
-    client = docker.DockerClient(base_url=proxy_host)
+    client = _fixture_client(proxy_host)
     try:
         response = client.api.get(client.api._url("/_pipeshub/host"), timeout=5)
     finally:
@@ -198,7 +196,7 @@ def test_containers_the_proxy_did_not_create_are_untouchable(proxy_host) -> None
 
     direct = docker.DockerClient(base_url="unix:///var/run/docker.sock")
     victim = direct.containers.create(DOCKER_TEST_IMAGE, ["true"], network_mode="none")
-    proxied = docker.DockerClient(base_url=proxy_host)
+    proxied = _fixture_client(proxy_host)
     try:
         for call in (
             lambda: proxied.api.inspect_container(victim.id),
@@ -215,12 +213,42 @@ def test_containers_the_proxy_did_not_create_are_untouchable(proxy_host) -> None
         proxied.close()
 
 
+# What the proxy demands of every sandbox it creates (app/sandbox/sandbox_floor.py): a non-root user, every capability
+# dropped, no-new-privileges, a read-only root and no swap. The app's own creates carry it; a test's must too.
+SANDBOX_FLOOR = {"user": "sandbox", "cap_drop": ["ALL"], "security_opt": ["no-new-privileges:true"], "read_only": True}
+
+
+def _limited(mem_bytes: int, **more: Any) -> dict[str, Any]:  # noqa: ANN401 - docker-py keyword values
+    return {"mem_limit": mem_bytes, "memswap_limit": mem_bytes, **SANDBOX_FLOOR, **more}
+
+
+def _fixture_client(host: str) -> Any:  # noqa: ANN401 - docker-py is untyped
+    """A client of the ``proxy_host`` fixture's proxy, with the credential the fixture puts in DOCKER_PROXY_TOKEN."""
+    import docker
+
+    client = docker.DockerClient(base_url=host)
+    client.api.headers["Authorization"] = f"Bearer {os.environ['DOCKER_PROXY_TOKEN']}"
+    return client
+
+
+# Every caller sends the proxy's credential (SEC-A-04).
+_LIVE_TOKEN = secrets.token_hex(32)
+
+
+def _proxied_client(host: str) -> Any:  # noqa: ANN401 - docker-py is untyped
+    import docker
+
+    client = docker.DockerClient(base_url=host)
+    client.api.headers["Authorization"] = f"Bearer {_LIVE_TOKEN}"
+    return client
+
+
 def _start_proxy(instance: str) -> tuple[str, DockerSocketProxy, asyncio.AbstractEventLoop, threading.Thread]:
     loop = asyncio.new_event_loop()
     policy = DockerApiPolicy(
         allowed_images=frozenset({DOCKER_TEST_IMAGE}), allowed_networks=frozenset({EGRESS}),
     )
-    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", instance=instance)
+    proxy = DockerSocketProxy(policy, "/var/run/docker.sock", caller_token=_LIVE_TOKEN, instance=instance)
     server = loop.run_until_complete(asyncio.start_server(proxy.handle, "127.0.0.1", 0))
     port = server.sockets[0].getsockname()[1]
     thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -232,19 +260,16 @@ def test_reaper_removes_only_its_own_stacks_old_containers() -> None:
     import time
     import uuid
 
-    import docker
     from docker.errors import APIError
 
     from app.sandbox.docker_proxy import Reaper, ReaperSettings
 
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
     suffix = uuid.uuid4().hex[:8]
     host_a, proxy_a, loop_a, thread_a = _start_proxy(f"it-a-{suffix}")
     host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"it-b-{suffix}")
-    client_a, client_b = docker.DockerClient(base_url=host_a), docker.DockerClient(base_url=host_b)
-    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16, "network_mode": "none"}
+    client_a, client_b = _proxied_client(host_a), _proxied_client(host_b)
+    limits = _limited(64 * 1024 * 1024, nano_cpus=100_000_000, pids_limit=16, network_mode="none")
     a = client_a.containers.create(DOCKER_TEST_IMAGE, ["sleep", "100"], **limits)
     b = client_b.containers.create(DOCKER_TEST_IMAGE, ["sleep", "100"], **limits)
     try:
@@ -277,15 +302,13 @@ def test_containers_usage_counts_only_this_stacks_containers() -> None:
     import docker
     from docker.errors import APIError
 
-    available, reason = docker_available()
-    if not available:
-        pytest.skip(reason)
+    skip_without_docker()
     suffix = uuid.uuid4().hex[:8]
     host_a, proxy_a, loop_a, thread_a = _start_proxy(f"it-a-{suffix}")
     host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"it-b-{suffix}")
-    client_a, client_b = docker.DockerClient(base_url=host_a), docker.DockerClient(base_url=host_b)
+    client_a, client_b = _proxied_client(host_a), _proxied_client(host_b)
     direct = docker.DockerClient(base_url="unix:///var/run/docker.sock")
-    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16, "network_mode": "none"}
+    limits = _limited(64 * 1024 * 1024, nano_cpus=100_000_000, pids_limit=16, network_mode="none")
     hold = ["python3", "-c", "b = b'x' * (20 * 2**20); import time; time.sleep(60)"]
     ours = [client_a.containers.create(DOCKER_TEST_IMAGE, hold, **limits) for _ in range(2)]
     others = [
@@ -337,17 +360,16 @@ async def test_stop_removes_the_container_through_the_proxy(proxy_host, tmp_path
 
 
 def test_oversized_create_is_refused_and_swap_is_off(proxy_host) -> None:
-    import docker
     from docker.errors import APIError
 
-    client = docker.DockerClient(base_url=proxy_host)
-    limits = {"nano_cpus": 500_000_000, "pids_limit": 256, "network_mode": "none"}
+    client = _fixture_client(proxy_host)
+    limits = {"nano_cpus": 500_000_000, "pids_limit": 256, "network_mode": "none", **SANDBOX_FLOOR}
     try:
         with pytest.raises(APIError) as exc:
-            client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit="2g", **limits)
+            client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit="2g", memswap_limit="2g", **limits)
         assert exc.value.status_code == 403
         assert "exceeds the maximum of 1024 MB" in str(exc.value)
-        container = client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit=512 * 1024 * 1024, **limits)
+        container = client.containers.create(DOCKER_TEST_IMAGE, ["true"], mem_limit=512 * 1024 * 1024, memswap_limit=512 * 1024 * 1024, **limits)
         try:
             host = client.api.inspect_container(container.id)["HostConfig"]
             assert host["MemorySwap"] == host["Memory"] == 512 * 1024 * 1024
@@ -380,7 +402,6 @@ def test_another_stack_sees_neither_the_run_nor_the_network(proxy_host) -> None:
     this stack's containers on it, and cannot remove it."""
     import uuid
 
-    import docker
     from docker.errors import APIError
 
     from app.agent_loop_lib.sandbox.coding.docker_client import DockerClientProvider
@@ -394,9 +415,9 @@ def test_another_stack_sees_neither_the_run_nor_the_network(proxy_host) -> None:
     finally:
         provider.close()
     host_b, _proxy_b, loop_b, thread_b = _start_proxy(f"{INSTANCE}-b-{uuid.uuid4().hex[:6]}")
-    ours = docker.DockerClient(base_url=proxy_host)
-    theirs = docker.DockerClient(base_url=host_b)
-    limits = {"mem_limit": 64 * 1024 * 1024, "nano_cpus": 100_000_000, "pids_limit": 16}
+    ours = _fixture_client(proxy_host)
+    theirs = _proxied_client(host_b)
+    limits = _limited(64 * 1024 * 1024, nano_cpus=100_000_000, pids_limit=16)
     run = ours.containers.create(DOCKER_TEST_IMAGE, ["sleep", "60"], network=EGRESS, **limits)
     try:
         run.start()

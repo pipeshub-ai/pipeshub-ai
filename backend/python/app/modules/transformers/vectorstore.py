@@ -98,7 +98,6 @@ from app.modules.transformers.code_units import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
-from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway import wire
@@ -142,11 +141,11 @@ from app.services.vector_db.precision_guard import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
+    AMBIENT_MULTIMODAL_PROVIDERS,
     INDEXING_SDK_RETRIES,
     EmbeddingProvider,
+    _ambient_cloud_credentials_allowed,
     embedding_config_hash,
-    get_default_embedding_model,
-    get_embedding_model,
     is_local_cpu_embedding_provider,
 )
 from app.utils.embedding_gate import GateFailFast
@@ -159,7 +158,14 @@ from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.error_class import innermost_type
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import note, stage
-from app.utils.llm import load_ai_models
+from app.utils.llm import (
+    LLMUnavailableError,
+    ModelNotAllowedError,
+    build_embeddings,
+    build_multimodal_embeddings,
+    load_ai_models,
+    require_embeddings_placement,
+)
 from app.utils.openai_hosts import is_openai_api_url
 from app.utils.precision_witness import get_precision_witness
 
@@ -1395,6 +1401,7 @@ class VectorStore(Transformer):
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
+        self.allow_ambient_credentials = False
         self.base_url: str | None = None
 
         self._capabilities = self.vector_db_service.get_capabilities()
@@ -2399,6 +2406,13 @@ class VectorStore(Transformer):
         # HTTP connection pool that the previous one never gets to reuse, and
         # the dimension probe costs an extra embed round trip per record.
         if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            # A pin saved after the client was built binds it from the next record on (MG-15).
+            await require_embeddings_placement(
+                self.config_service,
+                next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
+                if embedding_configs
+                else None,
+            )
             return self.is_multimodal_embedding
 
         async with self._embedding_model_lock:
@@ -2420,7 +2434,9 @@ class VectorStore(Transformer):
                 "falling back to the local embedding service."
             )
             try:
-                dense_embeddings = get_default_embedding_model()
+                dense_embeddings = await build_embeddings(self.config_service, None)
+            except (ModelNotAllowedError, LLMUnavailableError):
+                raise
             except Exception as e:
                 raise EmbeddingNotConfiguredError(
                     "No embedding model is configured for this organisation "
@@ -2433,7 +2449,7 @@ class VectorStore(Transformer):
             )
             provider = config["provider"]
             configuration = config["configuration"]
-            dense_embeddings = get_embedding_model(provider, config, sdk_retries=INDEXING_SDK_RETRIES)
+            dense_embeddings = await build_embeddings(self.config_service, config, sdk_retries=INDEXING_SDK_RETRIES)
             is_multimodal = config.get("isMultimodal")
 
         try:
@@ -2484,6 +2500,9 @@ class VectorStore(Transformer):
         if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
+        self.allow_ambient_credentials = (
+            provider in AMBIENT_MULTIMODAL_PROVIDERS and _ambient_cloud_credentials_allowed(config)
+        )
         self.is_multimodal_embedding = bool(is_multimodal)
         self._embedding_config_hash = config_hash
         return self.is_multimodal_embedding
@@ -2664,6 +2683,7 @@ class VectorStore(Transformer):
             region_name=self.region_name,
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
+            allow_ambient_credentials=self.allow_ambient_credentials,
             base_url=getattr(self, "base_url", None),
             embedding_size=self.embedding_size,
             dense_embeddings=self.dense_embeddings,
@@ -2734,7 +2754,7 @@ class VectorStore(Transformer):
         if not image_base64s:
             return []
 
-        provider = MultimodalEmbeddingFactory.create(self._multimodal_provider_config())
+        provider = await build_multimodal_embeddings(self.config_service, self._multimodal_provider_config())
         if provider is None or not provider.supports_multimodal():
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"

@@ -140,9 +140,7 @@ export const fetchConnectorInstanceSummary = async (
     | { connector?: ConnectorInstanceSummary }
     | undefined;
   if (!data?.connector) {
-    throw new InternalServerError(
-      `Failed to fetch connector ${connectorId} state`,
-    );
+    throw new InternalServerError('Failed to fetch connector state');
   }
   return data.connector;
 };

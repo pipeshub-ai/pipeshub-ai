@@ -14,22 +14,23 @@ spec:
       app.kubernetes.io/component: etcd
   template:
     metadata:
+      annotations:
+        {{- include "pipeshub-ai.etcdTls.podAnnotation" . | nindent 8 }}
       labels:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
         app.kubernetes.io/component: etcd
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.etcd.podSecurityContext | nindent 8 }}
       containers:
         - name: etcd
-          image: "{{ .Values.etcd.image.repository }}:{{ .Values.etcd.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.etcd.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.etcd.image.pullPolicy }}
           ports:
             - name: client
               containerPort: 2379
-              protocol: TCP
-            - name: peer
-              containerPort: 2380
               protocol: TCP
           command:
             - etcd
@@ -37,12 +38,21 @@ spec:
             - etcd-node
             - --data-dir
             - /etcd-data
+            # TLS only, and only for a client with a certificate the chart issued (SEC-D-06). The one member has no
+            # peer, so the peer port listens on loopback.
             - --listen-client-urls
-            - http://0.0.0.0:2379
+            - https://0.0.0.0:2379
             - --advertise-client-urls
-            - http://{{ include "pipeshub-ai.fullname" . }}-etcd:2379
+            - https://{{ include "pipeshub-ai.fullname" . }}-etcd:2379
+            - --client-cert-auth
+            - --trusted-ca-file
+            - /tls/ca.crt
+            - --cert-file
+            - /tls/tls.crt
+            - --key-file
+            - /tls/tls.key
             - --listen-peer-urls
-            - http://0.0.0.0:2380
+            - http://127.0.0.1:2380
             - --initial-advertise-peer-urls
             - http://{{ include "pipeshub-ai.fullname" . }}-etcd:2380
             - --initial-cluster
@@ -51,6 +61,10 @@ spec:
             exec:
               command:
                 - etcdctl
+                - --endpoints=https://localhost:2379
+                - --cacert=/tls/ca.crt
+                - --cert=/tls/tls.crt
+                - --key=/tls/tls.key
                 - endpoint
                 - health
             initialDelaySeconds: 5
@@ -61,6 +75,10 @@ spec:
             exec:
               command:
                 - etcdctl
+                - --endpoints=https://localhost:2379
+                - --cacert=/tls/ca.crt
+                - --cert=/tls/tls.crt
+                - --key=/tls/tls.key
                 - endpoint
                 - health
             initialDelaySeconds: 5
@@ -70,11 +88,18 @@ spec:
           volumeMounts:
             - name: etcd-data
               mountPath: /etcd-data
+            - name: etcd-tls
+              mountPath: /tls
+              readOnly: true
           resources:
             {{- toYaml .Values.etcd.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.etcd.securityContext | nindent 12 }}
       volumes:
+        - name: etcd-tls
+          secret:
+            secretName: {{ include "pipeshub-ai.fullname" . }}-etcd-server-tls
+            defaultMode: 0440
         - name: etcd-data
           {{- if .Values.etcd.persistence.enabled }}
           persistentVolumeClaim:
@@ -97,10 +122,6 @@ spec:
     - name: client
       port: 2379
       targetPort: client
-      protocol: TCP
-    - name: peer
-      port: 2380
-      targetPort: peer
       protocol: TCP
   selector:
     {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}

@@ -11,6 +11,7 @@ import pytest
 
 from app.config import file_types
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.core import org_context
 from app.migrations.file_type_requeue import gate_v1
 from app.migrations.file_type_requeue.migration import (
     FLAG_KEY,
@@ -730,3 +731,63 @@ def test_a_pdf_refused_for_its_page_count_is_never_selected() -> None:
 
     record = _file("long", "big.pdf", ext="pdf", mime="application/pdf", reason=pdf_over_page_limit(900))
     assert is_selected(record, {"mimeType": "application/pdf", "reason": pdf_over_page_limit(900)}, frozenset()) == (False, None)
+
+
+async def test_a_type_one_org_turned_off_is_held_back_for_that_org_only() -> None:
+    """The indexer reads the setting in the record's org, so this does too: another org's records are not held back."""
+    other = {**DRIVE, "_key": "c-other", "orgId": "org-2"}
+    graph = FakeGraph([DRIVE, other], [
+        _file("r1", "plan.docm", ext="docm"), _file("r2", "plan.docm", ext="docm", connector="c-other"),
+    ])
+    graph.records["r2"].org_id = "org-2"
+    off = {"org-1"}
+
+    class PerOrgConfig(FakeConfig):
+        async def get_config(self, key: str, use_cache: bool = True, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+            if key == file_types.FILE_TYPES_CONFIG_KEY:
+                return {"disabled": ["docm"] if org_context.current_org_id() in off else []}
+            return await super().get_config(key, use_cache, raise_on_error=raise_on_error)
+
+    config = PerOrgConfig()
+    _, _, kafka = await _run(graph, config=config)
+    assert kafka.ids() == ["r2"] and graph.status("r1") == FTNS
+    assert config.values[FLAG_KEY]["skipped_disabled_by_org"] == {"org-1": ["docm"]}
+
+    _, _, nothing = await _run(graph, config=config)
+    assert nothing.events == []  # org-2 allowing the type is no reason to walk again
+
+    off.clear()
+    _, _, again = await _run(graph, config=config)
+    assert again.ids() == ["r1"]
+
+
+async def test_a_flag_written_before_types_were_held_back_per_org_is_still_read() -> None:
+    graph = FakeGraph([DRIVE], [_file("r1", "plan.docm", ext="docm")])
+    flag = {"version": file_types.REGISTRY_VERSION, "skipped_disabled": ["docm"]}
+    config = FakeConfig({FLAG_KEY: dict(flag), file_types.FILE_TYPES_CONFIG_KEY: {"disabled": ["docm"]}})
+
+    _, _, held = await _run(graph, config=config)
+    assert held.events == [] and graph.pages == 0
+
+    config.values[file_types.FILE_TYPES_CONFIG_KEY] = {"disabled": []}
+    _, _, kafka = await _run(graph, config=config)
+    assert kafka.ids() == ["r1"]
+
+
+async def test_an_org_whose_setting_cannot_be_read_waits_and_the_others_run() -> None:
+    other = {**DRIVE, "_key": "c-other", "orgId": "org-2"}
+    graph = FakeGraph([DRIVE, other], [
+        _file("r1", "plan.docm", ext="docm"), _file("r2", "plan.docm", ext="docm", connector="c-other"),
+    ])
+    graph.records["r2"].org_id = "org-2"
+
+    class OneUnreadable(FakeConfig):
+        async def get_config(self, key: str, use_cache: bool = True, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+            if key == file_types.FILE_TYPES_CONFIG_KEY and org_context.current_org_id() == "org-1":
+                raise RuntimeError("cannot decrypt")
+            return await super().get_config(key, use_cache, raise_on_error=raise_on_error)
+
+    config = OneUnreadable()
+    _, _, kafka = await _run(graph, config=config)
+    assert kafka.ids() == ["r2"] and graph.status("r1") == FTNS
+    assert FLAG_KEY not in config.values  # org-1's records are still owed

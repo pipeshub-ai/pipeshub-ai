@@ -280,6 +280,7 @@ class TestARecordThatStalls:
         consumer = Consumer(chain, cap=30.0, floor=0.15, ceiling=60.0, max_counted=1)
         started = asyncio.get_running_loop().time()
         outcome = await asyncio.wait_for(consumer.run(), timeout=6.0)
+        # wall-clock-ok: waiting out the cap is 30 s and the hang an hour; each stall cut comes at 0.15 s
         assert asyncio.get_running_loop().time() - started < 6.0
         # Each attempt added two batches until the points were all there or the ceiling ended the chain.
         assert consumer.uncounted >= 2

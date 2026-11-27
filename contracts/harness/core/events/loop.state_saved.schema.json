@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/loop.state_saved.schema.json",
+  "title": "LoopStateSavedEvent",
+  "description": "Persisted loop state: StateSlot(persist=True) values (loop-strategy phase, pinned pre-run step results). The fold keeps the latest value per key.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "loop.state_saved"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/LoopStateSavedData"
+    }
+  },
+  "$defs": {
+    "LoopStateSavedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slots"
+      ],
+      "properties": {
+        "slots": {
+          "description": "Slot key to JSON value; a key saved again replaces the earlier value.",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "loop.state_saved",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "slots": {
+          "pre_run.goal": {
+            "text": "Summarize Q3"
+          }
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "loop.state_saved",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "slots": {
+          "plan_critique.phase": "execute",
+          "plan_critique.round": 2
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

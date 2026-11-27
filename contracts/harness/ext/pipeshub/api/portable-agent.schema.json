@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/portable-agent.schema.json",
+  "title": "PortableAgent",
+  "description": "An agent's definition as one environment hands it to another (C4.08): what it does, with every reference by name and nothing that binds it to an organization. No ids (agent, org, user, team, toolset or MCP instance, connector, model key, model account), no credentials and no sharing: an import re-resolves each name in the importer's organization and reports what it could not.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "description",
+    "startMessage",
+    "systemPrompt",
+    "instructions",
+    "tags",
+    "sendUserContext",
+    "webSearch",
+    "defaultReasoningEffort",
+    "engineProfile",
+    "models",
+    "roleModels",
+    "toolsets",
+    "mcpServers",
+    "knowledge",
+    "skills",
+    "gates"
+  ],
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 256},
+    "description": {"type": "string", "maxLength": 10000},
+    "startMessage": {"type": "string", "maxLength": 10000},
+    "systemPrompt": {"type": "string", "maxLength": 200000},
+    "instructions": {"anyOf": [{"type": "string", "maxLength": 200000}, {"type": "null"}]},
+    "tags": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1, "maxLength": 100}},
+    "sendUserContext": {"type": "boolean"},
+    "webSearch": {
+      "description": "The web-search provider by its machine name; null: none.",
+      "anyOf": [{"type": "string", "pattern": "^[a-z0-9_-]{1,64}$"}, {"type": "null"}]
+    },
+    "defaultReasoningEffort": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 32}, {"type": "null"}]},
+    "engineProfile": {
+      "description": "The agent's engine profile (AG1); null: the agent runs on the native loop.",
+      "anyOf": [{"$ref": "../../../core/engine-profile-narrowing.schema.json"}, {"type": "null"}]
+    },
+    "models": {
+      "description": "The agent's models, in order; empty: the organization's default model.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/PortableModel"}
+    },
+    "roleModels": {
+      "description": "The model of each sub-agent role (MA1).",
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/PortableModel"}
+    },
+    "toolsets": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/PortableToolset"}},
+    "mcpServers": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/PortableMcpServer"}},
+    "knowledge": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/PortableKnowledge"}},
+    "skills": {
+      "description": "Skills by name.",
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "environment": {
+      "description": "The environment the agent's editor set for its engine runs (C20.18, WP100-FU-9): a setup script, non-secret variables and the folders the setup fills, or an imported devcontainer.json. It names nothing that binds it to an organization. Absent or null: it sets none (an export made before it travelled).",
+      "anyOf": [{"$ref": "../run-spec.schema.json#/$defs/Environment"}, {"type": "null"}]
+    },
+    "gates": {
+      "description": "The agent's own run gates (WP-31 D, WP-56): plan approval and the checks a run's result must pass, which every run of the agent is held to. null: it sets none. Never a dry run, which is chosen for one message.",
+      "anyOf": [{"$ref": "#/$defs/PortableGates"}, {"type": "null"}]
+    }
+  },
+  "$defs": {
+    "PortableGates": {
+      "description": "A run's gates without `dryRun` (run-spec RunGates): what an agent's builder sets under Safety and checks.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "planApproval": {"const": "required"},
+        "verify": {"$ref": "../../../core/run-spec.schema.json#/$defs/VerifyGate"}
+      }
+    },
+    "PortableModel": {
+      "description": "A configured model by provider and model name, never by the deployment's model key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "modelName"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1, "maxLength": 128},
+        "modelName": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "PortableTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "fullName", "description"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "fullName": {"type": "string", "minLength": 1, "maxLength": 512},
+        "description": {"type": "string", "maxLength": 10000}
+      }
+    },
+    "PortableToolset": {
+      "description": "An action (toolset) with the tools chosen from it. `instanceName` names the instance it was bound to; null: it was bound to none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "displayName", "type", "instanceName", "tools"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "displayName": {"type": "string", "maxLength": 256},
+        "type": {"type": "string", "minLength": 1, "maxLength": 64},
+        "instanceName": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 256}, {"type": "null"}]},
+        "tools": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/PortableTool"}}
+      }
+    },
+    "PortableMcpServer": {
+      "description": "An MCP server by the name of its instance, with the tools chosen from it (or all of them).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "displayName", "typeId", "allTools", "tools"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "displayName": {"type": "string", "maxLength": 256},
+        "typeId": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 128}, {"type": "null"}]},
+        "allTools": {"type": "boolean"},
+        "tools": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/PortableTool"}}
+      }
+    },
+    "PortableKnowledge": {
+      "description": "A knowledge source by its connector's name and type. `limited`: the agent searched only some of its folders or files (`limitedItems` of them), which name records of the exporting organization and are never carried; the importer chooses them again.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "scope", "limitedItems"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "type": {"type": "string", "minLength": 1, "maxLength": 64},
+        "scope": {"enum": ["whole", "limited"]},
+        "limitedItems": {"type": "integer", "minimum": 0, "maximum": 100000}
+      }
+    }
+  },
+  "examples": [
+    {
+      "name": "Support triage",
+      "description": "Sorts new tickets",
+      "startMessage": "Hi! Paste a ticket.",
+      "systemPrompt": "You triage support tickets.",
+      "instructions": null,
+      "tags": ["support"],
+      "sendUserContext": true,
+      "webSearch": "tavily",
+      "defaultReasoningEffort": "low",
+      "engineProfile": null,
+      "models": [{"provider": "openai", "modelName": "gpt-x"}],
+      "roleModels": {"default": {"provider": "openai", "modelName": "gpt-x-mini"}},
+      "toolsets": [
+        {
+          "name": "jira",
+          "displayName": "Jira",
+          "type": "app",
+          "instanceName": "Jira Cloud",
+          "tools": [{"name": "search", "fullName": "jira.search", "description": "Search issues"}]
+        }
+      ],
+      "mcpServers": [{"name": "github", "displayName": "GitHub", "typeId": "github", "allTools": true, "tools": []}],
+      "knowledge": [
+        {"name": "Support Drive", "type": "DRIVE", "scope": "whole", "limitedItems": 0},
+        {"name": "Collections", "type": "KB", "scope": "limited", "limitedItems": 2}
+      ],
+      "skills": ["xlsx"],
+      "gates": {"verify": {"checks": [{"kind": "citations"}], "onFail": "flag"}}
+    }
+  ]
+}

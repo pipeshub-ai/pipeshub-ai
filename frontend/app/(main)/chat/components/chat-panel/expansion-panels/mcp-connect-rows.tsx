@@ -124,7 +124,7 @@ export function McpConnectRows({ servers, rowStyle, onConnected }: McpConnectRow
             key={entry._id}
             testId="mcp-connect-row"
             rowStyle={rowStyle}
-            icon={<McpServerIcon instanceId={entry._id} typeId={entry.typeId} name={entry.name} size={18} color="var(--gray-9)" />}
+            icon={<McpServerIcon instanceId={entry._id} typeId={entry.typeId} name={entry.name} size={18} color="var(--gray-11)" />}
             name={entry.name}
             action={
               canConnect ? (

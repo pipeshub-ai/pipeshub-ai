@@ -1,7 +1,8 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import { UnauthorizedError } from '../errors/http.errors';
+import { ForbiddenError, UnauthorizedError } from '../errors/http.errors';
+import { orgLifecycle } from '../org-lifecycle';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
@@ -24,8 +25,15 @@ import { assertDelegationStillHolds } from '../../modules/oauth_provider/service
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import {
   isPatClientId,
+  PAT_TOKEN_PREFIX,
+  SERVICE_TOKEN_PREFIX,
   stripTokenDisplayPrefix,
 } from '../../modules/oauth_provider/constants/constants';
+import {
+  AuthAttemptMethod,
+  recordAuthAttempt,
+  refusalOutcome,
+} from '../services/telemetry/telemetry-impl';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
@@ -51,6 +59,14 @@ const WEB_CLIENT_NAME = 'pipeshub-ai';
 export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
+
+/** What kind of bearer the header carries, read before `extractToken` strips its display prefix. */
+function bearerMethod(header: string | undefined): AuthAttemptMethod {
+  const token = header?.split(' ')[1] ?? '';
+  if (token.startsWith(PAT_TOKEN_PREFIX)) return 'pat';
+  if (token.startsWith(SERVICE_TOKEN_PREFIX)) return 'service_token';
+  return 'session';
+}
 
 // Delay in milliseconds between password change activity and token generation
 
@@ -78,10 +94,24 @@ export class AuthMiddleware {
     res: Response,
     next: NextFunction,
   ) {
+    let method = bearerMethod(req.headers.authorization);
+    let presented = false;
+    let accepted = false;
     try {
       const token = this.extractToken(req);
       if (!token) {
         throw new UnauthorizedError('No token provided');
+      }
+      presented = true;
+
+      // A sign-in good for its own routes only (which verify it themselves) is
+      // refused here, after checking it is genuine, so a forged one reads as any bad token.
+      const limited = orgLifecycle().scopedTokenGuard(token);
+      if (limited !== false) {
+        await this.tokenService.verifyUserActionToken(token, limited.scope);
+        throw new ForbiddenError(limited.message, {
+          reasonCode: limited.reasonCode,
+        });
       }
 
       // peek at the token payload to determine token type
@@ -91,6 +121,7 @@ export class AuthMiddleware {
         // authenticate regular token
         await this.authenticateRegularToken(token, req);
       } else {
+        if (method === 'session') method = 'oauth_token';
         if (!this.oauthTokenServiceFactory()) {
           throw new UnauthorizedError('OAuth authentication is not configured');
         }
@@ -98,6 +129,8 @@ export class AuthMiddleware {
         await this.authenticateOAuthToken(token, req);
       }
 
+      accepted = true;
+      recordAuthAttempt(method, 'success');
       recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
@@ -116,6 +149,9 @@ export class AuthMiddleware {
         next();
       }
     } catch (error) {
+      // A request with no credential is not an attempt; a handler's error after acceptance is not a refusal.
+      if (presented && !accepted)
+        recordAuthAttempt(method, refusalOutcome(error));
       next(error);
     }
   }
@@ -334,6 +370,9 @@ export class AuthMiddleware {
       }
     }
 
+    // A decoded token's JSON may carry null where the type says absent.
+    const signedLimit: unknown = payload.knowledgeLimit;
+    const appLimitSigned = signedLimit !== undefined && signedLimit !== null;
     req.user = {
       userId,
       orgId,
@@ -352,6 +391,13 @@ export class AuthMiddleware {
       // token was signed. null: everything the owner can see.
       ...(isPatClientId(payload.client_id)
         ? { knowledgeLimit: payload.knowledgeLimit ?? null }
+        : {}),
+      // An OAuth app token keeps the limit its user agreed to, signed into the
+      // token, which Python reads from the token itself. The harness still has
+      // to see it: a durable run works later without the token and could not
+      // hold to it, so a limited credential never starts one.
+      ...(!isPatClientId(payload.client_id) && appLimitSigned
+        ? { oauthAppKnowledgeLimit: payload.knowledgeLimit }
         : {}),
     };
     setContextIdentity({ orgId, userId });
@@ -372,7 +418,7 @@ export class AuthMiddleware {
     });
   }
 
-  scopedTokenValidator = (scope: string): RequestHandler => {
+  scopedTokenValidator = (scope: string, audience?: string): RequestHandler => {
     return async (
       req: AuthenticatedServiceRequest,
       _res: Response,
@@ -389,7 +435,7 @@ export class AuthMiddleware {
         }
 
         const decoded = await this.tokenService
-          .verifyScopedToken(token, scope)
+          .verifyScopedToken(token, scope, audience)
           .catch((error: unknown) => {
             if (!(error instanceof UnauthorizedError)) throw error;
             const { cause } = error as { cause?: unknown };
@@ -441,7 +487,11 @@ export class AuthMiddleware {
           }
         }
 
-        this.logger.debug('User authenticated');
+        this.logger.debug('Scoped service token authenticated', {
+          scope,
+          audience: decoded.aud as unknown,
+          workerId: decoded.workerId as unknown,
+        });
         // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
         if (orgId) {
           runWithOrgContext(

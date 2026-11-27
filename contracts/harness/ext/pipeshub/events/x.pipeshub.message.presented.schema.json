@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.message.presented.schema.json",
+  "title": "PipeshubMessagePresentedEvent",
+  "description": "The assistant text of a model response as the stream shows it, journaled with the response so the projector never needs the worker's content store. Presentation only (non-critical).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.message.presented"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubMessagePresentedData"
+    }
+  },
+  "$defs": {
+    "PipeshubMessagePresentedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "reasoning": {
+          "type": "string",
+          "description": "The response's reasoning (thinking) text, when the model streamed one."
+        },
+        "answerFrom": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "Where in text (in code points) the answer a tool call streamed as its argument begins; absent when no call did."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "The reply was cut off at the output-token limit (the run asks the model to continue it)."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.message.presented",
+      "data": {
+        "text": "Let me look that up."
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

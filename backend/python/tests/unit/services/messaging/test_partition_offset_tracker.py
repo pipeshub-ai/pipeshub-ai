@@ -110,6 +110,23 @@ class TestRevoke:
         tracker.track(tp, 5)
         assert tracker.mark_done(tp, 5) == 6
 
+    def test_r16_kafka_1_a_late_completion_on_a_revoked_partition_commits_nothing(self) -> None:
+        """A delivery still in flight when its partition was revoked finishes later, after the next poll: its
+        watermark was cleared with the revoke, so folding its offset into high-water-seen would commit past
+        every offset the new owner has not read yet (the gate's flake on b0ac68e117 committed 505 over 450)."""
+        tracker = PartitionOffsetTracker()
+        tp = _tp()
+        for offset in (49, 50, 500):
+            tracker.track(tp, offset)
+        tracker.revoke(tp)
+        assert tracker.mark_done(tp, 500) is None
+        assert tracker.mark_redeliver(tp, 49) is None
+        # Assigned again: tracking starts afresh from what is read; an old delivery never commits past it.
+        tracker.track(tp, 50)
+        # A late completion of an offset this owner never read commits nothing (main #5357).
+        assert tracker.mark_done(tp, 49) is None
+        assert tracker.mark_done(tp, 50) == 51
+
     def test_revoke_of_untracked_partition_is_noop(self):
         tracker = PartitionOffsetTracker()
         tracker.revoke(_tp())  # must not raise

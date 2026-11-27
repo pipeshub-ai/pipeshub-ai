@@ -1,0 +1,123 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.copied",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only node writes session.forked",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41
+      }
+    }
+  },
+  {
+    "description": "fromSessionId is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "atSeq": 41
+      }
+    }
+  },
+  {
+    "description": "atSeq is not negative",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": -1
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 3,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "shared",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41,
+        "title": "copy"
+      }
+    }
+  },
+  {
+    "description": "intoSessionId is an id",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_0",
+      "streamId": "ses_0",
+      "seq": 42,
+      "type": "session.forked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_user2",
+        "fromSessionId": "ses_0",
+        "atSeq": 41,
+        "intoSessionId": ""
+      }
+    }
+  }
+]

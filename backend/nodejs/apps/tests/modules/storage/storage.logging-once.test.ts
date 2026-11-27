@@ -10,6 +10,7 @@ import express from 'express'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../src/modules/storage/routes/storage.routes'
 import { StorageController } from '../../../src/modules/storage/controllers/storage.controller'
+import AmazonS3Adapter from '../../../src/modules/storage/providers/s3.provider'
 import LocalStorageAdapter from '../../../src/modules/storage/providers/local-storage.provider'
 import { vendorFailure } from '../../../src/modules/storage/providers/vendor-failure'
 import { DocumentModel } from '../../../src/modules/storage/schema/document.schema'
@@ -400,6 +401,135 @@ describe('Storage routes log each failure once, with the vendor code and never i
         if (saved === undefined) delete process.env.NODE_ENV
         else process.env.NODE_ENV = saved
       }
+    })
+  })
+
+  describe('a read storage refuses', () => {
+    const S3_TEXT =
+      'n5o-vendor-text User: arn:aws:iam::123456789012:user/n5o is not authorized to perform s3:GetObject on resource arn:aws:s3:::n5o-bucket/org/report.pdf'
+    const s3Refusal = () => Object.assign(new Error(S3_TEXT), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })
+    const s3Url = 'https://n5o-bucket.s3.us-east-1.amazonaws.com/org/report.pdf'
+    const realS3 = (): AmazonS3Adapter =>
+      new AmazonS3Adapter({ accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 'n5o-secret', region: 'us-east-1', bucket: 'n5o-bucket' })
+    const filesUnder = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(path.join(dir, e.name)) : [path.join(dir, e.name)]))
+    const folderNamed = (dir: string, name: string): string => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue
+        const full = path.join(dir, e.name)
+        if (e.name === name) return full
+        try {
+          return folderNamed(full, name)
+        } catch {
+          // not under this one
+        }
+      }
+      throw new Error(`no folder ${name} under ${dir}`)
+    }
+
+    /** The one failure line: ERROR `internal` 500, as before; returns the error it logged. */
+    const expectOneInternalLine = (r: { status: number; lines: LogRecord[] }): Record<string, any> => {
+      expect(r.status).to.equal(500)
+      const failure = failureLines(r.lines)
+      expect(failure.map((x) => [level(x), x.error_class, x.status])).to.deep.equal([['error', 'internal', 500]])
+      return failure[0]!.metadata.error as Record<string, any>
+    }
+
+    /** A record's paid result, stored through the real local adapter; returns the record's folder. */
+    const paidResult = async (record: string): Promise<string> => {
+      const put = await send('PUT', `/internal/paid-results/${record}/files/manifests/a/b.json`, Buffer.from('{}'), {
+        'content-type': 'application/octet-stream',
+      })
+      expect(put.status, JSON.stringify(put.body)).to.equal(200)
+      return folderNamed(mountRoot(), record)
+    }
+
+    // Root ignores file modes, so the chmod cases cannot fail as root.
+    const skipAsRoot = (t: Mocha.Context) => {
+      if (process.getuid?.() === 0) t.skip()
+    }
+
+    /** Runs `read` with `folder` unreadable, restoring it so the home folder can be removed. */
+    const withUnreadable = async <T>(folder: string, read: () => Promise<T>): Promise<T> => {
+      fs.chmodSync(folder, 0o000)
+      try {
+        return await read()
+      } finally {
+        fs.chmodSync(folder, 0o755)
+      }
+    }
+
+    it('local: a stored file the OS refuses to read (GET buffer) logs its code, never its path', async function () {
+      skipAsRoot(this)
+      const id = await stored()
+      for (const f of filesUnder(mountRoot())) fs.chmodSync(f, 0o000)
+      const r = await send('GET', `/internal/${id}/buffer`)
+      expect(expectOneInternalLine(r).metadata).to.include({ code: 'EACCES' })
+      expect(written(r.lines)).to.not.contain(home)
+    })
+
+    it('S3: getObject refused (GET buffer) logs the vendor status and code, never its text', async () => {
+      const id = await stored()
+      const s3 = realS3()
+      sinon.stub((s3 as any).s3, 'getObject').returns({ promise: sinon.stub().rejects(s3Refusal()) })
+      sinon.stub(LocalStorageAdapter.prototype, 'getBufferFromStorageService').callsFake(() => s3.getBufferFromStorageService({ s3: { url: s3Url } } as any))
+      const r = await send('GET', `/internal/${id}/buffer`)
+      expect(expectOneInternalLine(r).metadata).to.include({ statusCode: 403, code: 'AccessDenied' })
+      expect(written(r.lines)).to.not.contain('n5o-vendor-text')
+    })
+
+    it('S3: signing refused (GET download) logs the vendor status and code, never its text', async () => {
+      const id = await stored()
+      const s3 = realS3()
+      sinon.stub((s3 as any).s3, 'getSignedUrlPromise').rejects(s3Refusal())
+      sinon.stub(LocalStorageAdapter.prototype, 'getSignedUrl').callsFake(() => s3.getSignedUrl({ s3: { url: s3Url } } as any))
+      const r = await send('GET', `/internal/${id}/download`)
+      expect(expectOneInternalLine(r).metadata).to.include({ statusCode: 403, code: 'AccessDenied' })
+      expect(written(r.lines)).to.not.contain('n5o-vendor-text')
+    })
+
+    it('local: storage that cannot be opened on a read (GET buffer) logs the code, never the fs text', async () => {
+      const id = await stored()
+      fs.rmSync(mountRoot(), { recursive: true, force: true })
+      fs.writeFileSync(mountRoot(), '')
+      kv.changed(storageEtcdPaths)
+      const r = await send('GET', `/internal/${id}/buffer`)
+      // The wrap's own mountPath key is still on this line (a path key, not the vendor's text): a follow-up.
+      expect(expectOneInternalLine(r).metadata).to.include({ code: 'EEXIST' })
+      expect(written(r.lines)).to.not.contain('file already exists')
+    })
+
+    it('local: a paid-results listing the OS refuses logs its code, never the folder path', async function () {
+      skipAsRoot(this)
+      const folder = await paidResult('rec1')
+      const r = await withUnreadable(folder, () => send('GET', '/internal/paid-results/rec1'))
+      const error = expectOneInternalLine(r)
+      expect(error.name).to.equal('StorageDownloadError')
+      expect(error.metadata).to.include({ code: 'EACCES' })
+      expect(written(r.lines)).to.not.contain(home)
+    })
+
+    it('local: a paid-result file in an unreadable folder logs its code, never its path', async function () {
+      skipAsRoot(this)
+      const folder = await paidResult('rec2')
+      const r = await withUnreadable(folder, () => send('GET', '/internal/paid-results/rec2/files/manifests/a/b.json'))
+      const error = expectOneInternalLine(r)
+      expect(error.name).to.equal('StorageDownloadError')
+      expect(error.metadata).to.include({ code: 'EACCES' })
+      expect(written(r.lines)).to.not.contain(home)
+    })
+  })
+
+  describe('a purge the vendor fails for some keys', () => {
+    it('logs no object key or vendor text (the S3 batch-removal error)', async () => {
+      sinon
+        .stub(LocalStorageAdapter.prototype, 'deleteTree')
+        .rejects(new StorageUploadError('Failed to delete some objects from S3', { originalError: 'org/n5o-key.pdf: AccessDenied n5o-vendor-text' }))
+      const r = await send('DELETE', '/internal/paid-results/org')
+      expect(r.status).to.equal(500)
+      expect(failureLines(r.lines)).to.have.length(1)
+      expect(written(r.lines)).to.not.contain('n5o-key.pdf')
+      expect(written(r.lines)).to.not.contain('n5o-vendor-text')
     })
   })
 })

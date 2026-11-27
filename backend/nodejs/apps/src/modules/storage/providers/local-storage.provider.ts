@@ -29,6 +29,12 @@ import { LocalStorageConfig } from '../config/storage.config';
 import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 import { withDeadline } from '../utils/call-deadline';
 
+/** A local read's fs failure as a StorageError: its text (an absolute path) becomes vendorText, never a log line. */
+const readFailure = (message: string, error: unknown): StorageError =>
+  error instanceof StorageError
+    ? error
+    : new StorageDownloadError(message, vendorFailure(error));
+
 /**
  * A key's lock lease. A holder that stalls longer (event-loop stall, SIGSTOP) loses it to a taker, which is why the
  * holder checks its token just before the unlink or rename that ends its operation.
@@ -715,7 +721,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') {
         return { objects: [] };
       }
-      throw error;
+      throw readFailure('Failed to list files in local storage', error);
     }
     // Keys first, sorted, so only the requested page (and one more, to know whether there is a next) is statted.
     const candidates: { key: string; full: string }[] = [];
@@ -742,7 +748,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
         // works from a reference set with a manifest silently missing.
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        throw error;
+        throw readFailure('Failed to list files in local storage', error);
       }
       if (!stat.isFile()) continue;
       listed.push({
@@ -1092,7 +1098,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
   ): Promise<{ handle: FileHandle; size: number } | null> {
     const located = await this.locateInsideRealMount(
       this.objectPathInMount(storageKey),
-    );
+    ).catch((error: unknown) => {
+      throw readFailure('Failed to open file in local storage', error);
+    });
     if (located === null) {
       return null;
     }
@@ -1111,7 +1119,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (code === 'ELOOP') {
         throw new StorageValidationError('Invalid document path');
       }
-      throw error;
+      throw readFailure('Failed to open file in local storage', error);
     }
     try {
       const [opened, atPath, relocated] = await Promise.all([
@@ -1130,7 +1138,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       return { handle, size: opened.size };
     } catch (error) {
       await handle.close();
-      throw error;
+      throw readFailure('Failed to open file in local storage', error);
     }
   }
 

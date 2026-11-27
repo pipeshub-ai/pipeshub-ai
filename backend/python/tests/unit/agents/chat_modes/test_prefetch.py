@@ -192,7 +192,7 @@ class TestSuccessfulPrefetch:
 
 
 class TestPrefetchImageCollection:
-    """`bridge.py` merges `PrefetchResult.collected_images` into
+    """`chat_modes/setup.py` merges `PrefetchResult.collected_images` into
     `context.attachment_image_blocks` so `shape_image_injection` can
     deliver them -- prefetch itself only needs to plumb `collected_images`/
     `image_budget` through to `build_message_content_array` correctly."""
@@ -226,7 +226,7 @@ class TestPrefetchImageCollection:
         }]
 
     async def test_shared_image_budget_is_forwarded_to_formatter(self) -> None:
-        """A shared `ImageBudget` passed in by the caller (`bridge.py`'s
+        """A shared `ImageBudget` passed in by the caller (`chat_modes/setup.py`'s
         per-request budget) must reach `build_message_content_array`
         unchanged -- not a fresh per-call budget -- so the 50-image cap is
         enforced across search/fetch/prefetch/attachments together."""

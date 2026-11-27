@@ -1,0 +1,85 @@
+# The org-admin surfaces this repository keeps (scripts/edition_guard.py, rule 7), each with why a person needs it.
+# One per line: `<kind> <name> -- <reason>`.
+#   route    METHOD and path as pipeshub-openapi.yaml writes them (harness and control-plane routes only an admin calls)
+#   page     a workspace settings page: its directory under frontend/app/(main)/workspace/ (or @sidebar/workspace/)
+#   section  a section of the run policy layer (contracts/harness/core/policy/policy-layer.schema.json)
+# Org-wide controls that govern how people use agents do not belong here; a line needs a reason a person needs it.
+
+# Routes
+route GET /agent-harness/admin/dependencies -- operational health: which store this server found degraded, so an admin sees an outage runs ride through
+route PUT /agent-harness/admin/coding-engine -- setup, not a control: the org's default coding engine and whether long work goes to it
+route GET /control-plane/bindings -- each person lists their own connections; the org's shared ones are listed to the admins who set them up
+
+# Pages on upstream main
+page actions -- upstream workspace page: actions
+page actions/personal -- upstream workspace page: a person's own actions
+page actions/team -- upstream workspace page: the team's actions
+page ai-models -- upstream workspace page: the AI models the org configures
+page api-toolsets -- upstream workspace page: API toolsets
+page archived-chats -- upstream workspace page: a person's archived chats
+page authentication -- upstream workspace page: sign-in methods
+page bots -- upstream workspace page: bots
+page connectors -- upstream workspace page: connectors
+page connectors/personal -- upstream workspace page: a person's own connectors
+page connectors/team -- upstream workspace page: the team's connectors
+page developer-settings/oauth2 -- upstream workspace page: OAuth 2 developer settings
+page developer-settings/personal-access-tokens -- upstream workspace page: a person's access tokens
+page enterprise/audit-logs -- upstream workspace page: a locked placeholder
+page enterprise/scim -- upstream workspace page: a locked placeholder
+page enterprise/usage -- upstream workspace page: a locked placeholder
+page general -- upstream workspace page: general settings
+page groups -- upstream workspace page: groups
+page groups/permissions -- upstream workspace page: group permissions
+page labs -- upstream workspace page: Labs switches, including the agent harness's own
+page mail -- upstream workspace page: mail settings
+page mcp-access -- upstream workspace page: MCP access
+page mcp-servers -- upstream workspace page: MCP servers
+page mcp-servers/personal -- upstream workspace page: a person's own MCP servers
+page mcp-servers/team -- upstream workspace page: the team's MCP servers
+page oauth-apps -- upstream workspace page: OAuth apps
+page orgs -- upstream workspace page: organisations
+page orgs/feature-flags -- upstream workspace page: an organisation's feature flags
+page orgs/groups -- upstream workspace page: an organisation's groups
+page orgs/users -- upstream workspace page: an organisation's users, with member deactivate and reactivate
+page profile -- upstream workspace page: a person's profile
+page prompts -- upstream workspace page: prompts
+page service-accounts -- upstream workspace page: service accounts
+page services -- upstream workspace page: services health
+page skills/personal -- upstream workspace page: a person's own skills
+page teams -- upstream workspace page: teams
+page tenants -- upstream workspace page: tenants
+page tenants/groups -- upstream workspace page: a tenant's groups
+page tenants/users -- upstream workspace page: a tenant's users
+page users -- upstream workspace page: users
+page web-search -- upstream workspace page: web search settings
+
+# Pages the agent harness adds
+page ai-access -- AI settings: the org's default coding engine and the switch that hands long work to it
+page ai-accounts -- a person's own AI accounts and sign-ins
+page approvals -- a page slot that renders not found here (config-pages.ts); no link leads to it
+page memories -- a person's own memories, with their own switch to turn memory off
+page schedules -- a person's own schedules
+
+# Sections of the run policy layer: the shared contract every pin folds; here the release and the deployment set them
+section access -- who may use the harness, engines and models; unset here, so every member may
+section approvals -- per-call approval rules; the deployment's rules and the built-in defaults set them here
+section budgets -- the per-run spend backstop the release sets
+section catalog -- what the catalog offers; here everything installed is available to every member
+section engineProfile -- the engine profile each run is pinned with; the release's defaults here
+section interactions -- how long a run waits for a person; the release's default here
+section locks -- which dimensions a layer locks; only the deployment's layers lock any here
+section memory -- memory's run settings; each person's own switch decides here
+section models -- which models a run may use; every configured model here
+section operator -- the deployment operator's rows (kill switch and rollout), set from its environment
+section quotas -- concurrency caps; the release's fixed caps here
+section recovery -- whether a run whose worker was lost resumes; the release's default here
+section repositories -- git hosts a run may clone public repositories from; the release's public presets here
+section retention -- how long conversations are kept; no expiry here
+section rollout -- Labs switches a run is pinned with
+section sandbox -- an engine run's sandbox resources; the release's defaults here
+section snapshots -- how long sandbox snapshots are kept; the release's default here
+section toolDisclosure -- what a run shows of each tool; the release's default here
+section toolResults -- the inline tool-result cap; the release's default here
+section triggers -- webhook limits and where completion notices go; the release's defaults here
+section ui -- what a conversation shows (reasoning, terminal); the release's default here
+section websites -- websites a sandbox may reach; none here, web goes through PipesHub's own tools

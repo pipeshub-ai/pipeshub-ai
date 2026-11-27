@@ -1,0 +1,18 @@
+id: chat-01-kb-answer
+category: plain_chat
+route: chat
+chat_mode: internal_search
+task: What is the refund policy?
+fixtures:
+  knowledge:
+    - {id: kb-refund, title: Refund policy, text: "Customers may request a refund within 30 days of purchase. Refunds go back to the original payment method."}
+script:
+  turns:
+    - reply:
+        text: "Refunds are accepted within 30 days of purchase [source](ref1)."
+        usage: {input_tokens: 1800, output_tokens: 40, cache_read_tokens: 1200}
+grader:
+  - contains: 30 days
+  - regex: "https://pipeshub\\.test/record/rec-kb-refund/"
+  - status: completed
+  - no_effects: true

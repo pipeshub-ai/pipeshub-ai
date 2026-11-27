@@ -1,0 +1,230 @@
+{
+ "journal": "agent_quick_tool_call",
+ "checkpoint": {
+  "run_id": "run-golden",
+  "stream_id": "ses-1",
+  "fold_version": 5,
+  "seq": 24,
+  "state": {
+   "run": {
+    "fold_version": 5,
+    "run_id": "run-golden",
+    "seq": 24,
+    "status": "completed",
+    "attempt": 1,
+    "fence": 1,
+    "spec_digest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "input_recorded": true,
+    "turn": 2,
+    "turn_completed": 2,
+    "responses": [
+     {
+      "seq": 10,
+      "turn": 1,
+      "message_ref": {
+       "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InF1ZXJ5IjoicGFpZCBsZWF2ZSJ9LCJpZCI6ImNhbGwtc2VhcmNoIiwibmFtZSI6ImdvbGRlbmRvY3NfX3NlYXJjaF9kb2NzIn1dfQ==",
+       "hash": "sha256:20a66bb0ae5a4b70567696462895f585fc637c6fb282c9ced1683ff133149ab6",
+       "size": 109
+      },
+      "raw_ref": {
+       "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1zZWFyY2giLCJuYW1lIjoiZ29sZGVuZG9jc19fc2VhcmNoX2RvY3MiLCJhcmd1bWVudHMiOnsicXVlcnkiOiJwYWlkIGxlYXZlIn19XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+       "hash": "sha256:2add6c8daa11fef1731b7fd02b755363a04faa8f03a83caaeeb7a04fd9125bd0",
+       "size": 155
+      },
+      "provider": "openai",
+      "transport": "scripted",
+      "tool_calls": [
+       {
+        "call_id": "call-search",
+        "name": "goldendocs__search_docs",
+        "args_digest": "sha256:38905961dcb60d90700f46c38c4e67a28e4c16f42712ecf599138cf2e3d2a3f1"
+       }
+      ]
+     },
+     {
+      "seq": 19,
+      "turn": 2,
+      "message_ref": {
+       "ref": "inline:eyJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiIsInRvb2xDYWxscyI6W119",
+       "hash": "sha256:59bee8f3b1f17f045cf6049a972b7027aa640cec89f282122a33f72990c5326f",
+       "size": 63
+      },
+      "raw_ref": {
+       "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiJ9XSwidG9vbF9jYWxscyI6bnVsbCwidHJ1bmNhdGVkIjpmYWxzZX0=",
+       "hash": "sha256:94f13e71d30415d0dd5f2b3f709fc0c0907e2aed45c733c100e13704178207c0",
+       "size": 131
+      },
+      "provider": "openai",
+      "transport": "scripted",
+      "tool_calls": []
+     }
+    ],
+    "invocations": {
+     "t1.0": {
+      "invocation_id": "t1.0",
+      "turn": 1,
+      "index": 0,
+      "call_id": "call-search",
+      "name": "goldendocs__search_docs",
+      "args_digest": "sha256:38905961dcb60d90700f46c38c4e67a28e4c16f42712ecf599138cf2e3d2a3f1",
+      "state": "completed",
+      "effect": "write",
+      "tool_id": "pipeshub@goldendocs/search_docs",
+      "intent_attempt_id": "run-golden.a1",
+      "status": "ok",
+      "result_ref": {
+       "ref": "inline:eyJjb250ZW50Ijoie1wicXVlcnlcIjogXCJwYWlkIGxlYXZlXCIsIFwiaGl0c1wiOiBbe1widGl0bGVcIjogXCJMZWF2ZSBwb2xpY3lcIiwgXCJleGNlcnB0XCI6IFwiMjUgZGF5cyBvZiBwYWlkIGxlYXZlLlwifV19IiwiaXNFcnJvciI6ZmFsc2V9",
+       "hash": "sha256:d7fc9f8e9fe0c6378b8c0de7af64e9be4e6de35f2d94c83a443c04699cb56c1a",
+       "size": 141
+      },
+      "receipt": null,
+      "interaction_id": null,
+      "decision": null,
+      "denied_rule": null
+     }
+    },
+    "interactions": {},
+    "consumed": {
+     "turns": 2,
+     "model_requests": 2,
+     "model_responses": 2,
+     "input_tokens": 0,
+     "output_tokens": 0,
+     "cache_read_tokens": 0,
+     "cache_write_tokens": 0
+    },
+    "slots": {
+     "capabilities.observed": {},
+     "pre_run.goal": {
+      "description": "How much paid leave do I get?",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>How much paid leave do I get?</original_query>"
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    },
+    "children": {},
+    "suspension": null,
+    "cancel_requested": false,
+    "queued_inputs": [],
+    "consumed_inputs": [],
+    "final_message_ref": {
+     "ref": "inline:WW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLg==",
+     "hash": "sha256:5217db8910ea6ad77d8d9512762f16987f6c6668a38d7fc96ce09d9b4e9fd5e5",
+     "size": 37
+    },
+    "outcome": "answered",
+    "context_label": "internal",
+    "ignored_events": 6
+   },
+   "session": {
+    "fold_version": 5,
+    "stream_id": "ses-1",
+    "seq": 24,
+    "entries": [
+     {
+      "seq": 7,
+      "run_id": "run-golden",
+      "role": "user",
+      "text_ref": {
+       "ref": "inline:SG93IG11Y2ggcGFpZCBsZWF2ZSBkbyBJIGdldD8=",
+       "hash": "sha256:92edaade48c54b2420baa708ecc07cb978a510ad1f492ffb4fb93e2a99c77ade",
+       "size": 29
+      },
+      "injected": false,
+      "input_seq": null,
+      "response": null,
+      "results": {}
+     },
+     {
+      "seq": 10,
+      "run_id": "run-golden",
+      "role": "assistant",
+      "text_ref": null,
+      "injected": false,
+      "input_seq": null,
+      "response": {
+       "seq": 10,
+       "turn": 1,
+       "message_ref": {
+        "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7InF1ZXJ5IjoicGFpZCBsZWF2ZSJ9LCJpZCI6ImNhbGwtc2VhcmNoIiwibmFtZSI6ImdvbGRlbmRvY3NfX3NlYXJjaF9kb2NzIn1dfQ==",
+        "hash": "sha256:20a66bb0ae5a4b70567696462895f585fc637c6fb282c9ced1683ff133149ab6",
+        "size": 109
+       },
+       "raw_ref": {
+        "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1zZWFyY2giLCJuYW1lIjoiZ29sZGVuZG9jc19fc2VhcmNoX2RvY3MiLCJhcmd1bWVudHMiOnsicXVlcnkiOiJwYWlkIGxlYXZlIn19XSwidHJ1bmNhdGVkIjpmYWxzZX0=",
+        "hash": "sha256:2add6c8daa11fef1731b7fd02b755363a04faa8f03a83caaeeb7a04fd9125bd0",
+        "size": 155
+       },
+       "provider": "openai",
+       "transport": "scripted",
+       "tool_calls": [
+        {
+         "call_id": "call-search",
+         "name": "goldendocs__search_docs",
+         "args_digest": "sha256:38905961dcb60d90700f46c38c4e67a28e4c16f42712ecf599138cf2e3d2a3f1"
+        }
+       ]
+      },
+      "results": {
+       "call-search": {
+        "invocation_id": "t1.0",
+        "status": "ok",
+        "result_ref": {
+         "ref": "inline:eyJjb250ZW50Ijoie1wicXVlcnlcIjogXCJwYWlkIGxlYXZlXCIsIFwiaGl0c1wiOiBbe1widGl0bGVcIjogXCJMZWF2ZSBwb2xpY3lcIiwgXCJleGNlcnB0XCI6IFwiMjUgZGF5cyBvZiBwYWlkIGxlYXZlLlwifV19IiwiaXNFcnJvciI6ZmFsc2V9",
+         "hash": "sha256:d7fc9f8e9fe0c6378b8c0de7af64e9be4e6de35f2d94c83a443c04699cb56c1a",
+         "size": 141
+        }
+       }
+      }
+     },
+     {
+      "seq": 19,
+      "run_id": "run-golden",
+      "role": "assistant",
+      "text_ref": null,
+      "injected": false,
+      "input_seq": null,
+      "response": {
+       "seq": 19,
+       "turn": 2,
+       "message_ref": {
+        "ref": "inline:eyJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiIsInRvb2xDYWxscyI6W119",
+        "hash": "sha256:59bee8f3b1f17f045cf6049a972b7027aa640cec89f282122a33f72990c5326f",
+        "size": 63
+       },
+       "raw_ref": {
+        "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiWW91IGdldCAyNSBkYXlzIG9mIHBhaWQgbGVhdmUgYSB5ZWFyLiJ9XSwidG9vbF9jYWxscyI6bnVsbCwidHJ1bmNhdGVkIjpmYWxzZX0=",
+        "hash": "sha256:94f13e71d30415d0dd5f2b3f709fc0c0907e2aed45c733c100e13704178207c0",
+        "size": 131
+       },
+       "provider": "openai",
+       "transport": "scripted",
+       "tool_calls": []
+      },
+      "results": {}
+     }
+    ],
+    "compacted": [],
+    "cleared": [],
+    "workspace_heads": {},
+    "open_interactions": {},
+    "tasks": {},
+    "memory_refs": [],
+    "doc_labels": {},
+    "run_turns": {
+     "run-golden": 2
+    },
+    "queued_inputs": {},
+    "ignored_events": 6
+   }
+  }
+ }
+}

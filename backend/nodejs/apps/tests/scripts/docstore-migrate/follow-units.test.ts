@@ -1,11 +1,14 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { deleteChildren, deleteDocs } from '../../../src/scripts/docstore-migrate/apply'
+import { ObjectId } from 'mongodb'
+import { deleteChildren, deleteDocs, deleteUnclaimedRows, liveEvents, replaceDocs } from '../../../src/scripts/docstore-migrate/apply'
 import { repositoryFor, sourceDb } from '../../../src/scripts/docstore-migrate/bulk'
 import { cancelDrain } from '../../../src/scripts/docstore-migrate/drain'
 import { MARKER_COLLECTION, clearMarkers, isHistoryLost, majorityPoint, watchOptions } from '../../../src/scripts/docstore-migrate/follow'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 import { outboxTableId } from '../../../src/scripts/docstore-migrate/mapping/content'
+import { setOutboxRepository } from '../../../src/libs/repositories/outbox'
+import { PgOutboxRepository } from '../../../src/libs/repositories/outbox/pg'
 
 const mapping = (name: string) => MAPPINGS.find((m) => m.collection === name)!
 /** A transaction that records every statement and its parameters. */
@@ -13,6 +16,23 @@ const record = () => {
   const log: Array<{ sql: string; params: unknown[] }> = []
   return { log, k: { query: async (sql: string, params: unknown[] = []) => (log.push({ sql, params }), { rows: [], rowCount: 0 }) } as never }
 }
+/** Same, answering the read of the rows under folded outbox ids with `stored`. */
+const recordWith = (stored: Array<Record<string, unknown>>) => {
+  const log: Array<{ sql: string; params: unknown[] }> = []
+  return { log, k: { query: async (sql: string, params: unknown[] = []) => (log.push({ sql, params }), { rows: /follow\.folded_rows/.test(sql) ? stored : [], rowCount: 0 }) } as never }
+}
+const ORG = '6afcbe98f03c0c4c54f37bce'
+const AT = '2026-11-17T20:57:34.349Z'
+/** An outbox event as MongoDB holds it, and the row the copy stores for it. */
+const outboxDoc = (hex: string, status: string, key = 'k', org = ORG) => ({
+  _id: new ObjectId(hex), topic: 'entity-events', key, status, attempts: 0, createdAt: new Date(AT),
+  value: JSON.stringify({ payload: { orgId: org } }),
+})
+const storedRow = (hex: string, key = 'k', org = ORG) => ({
+  org_id: org, id: outboxTableId(hex), topic: 'entity-events', msg_key: key, ordering_key: 'global',
+  value: JSON.stringify({ payload: { orgId: org } }), created_at: new Date(AT),
+})
+const outboxDeletes = (log: Array<{ sql: string; params: unknown[] }>) => log.filter((l) => /DELETE FROM platform\.outbox/.test(l.sql))
 
 describe('follow: deleting a document and what the stream asks for', () => {
   it('a delete removes the rows a document owns first, then its own row, by the key the table uses', async () => {
@@ -28,14 +48,43 @@ describe('follow: deleting a document and what the stream asks for', () => {
     expect(none.log).to.have.length(0)
   })
 
-  it('an outbox delete converts the ObjectId to the table\'s number and binds it as a bigint', async () => {
+  it('an outbox delete event removes, by organisation and the folded bigint id, only the rows that are no event still copied there', async () => {
+    const gone = '6ad8b333aaaaaaaaaa000001'
+    const live = '6ad8b333bbbbbbbbbb000001'   // same second and counter: the same table id
+    const other = '6afcbe98f03c0c4c54f37bcf'
+    const { log, k } = recordWith([storedRow(gone, 'gone'), storedRow(live, 'live'), storedRow(gone, 'gone', other)])
+    await deleteUnclaimedRows(k, mapping('outbox_events'), [gone], [storedRow(live, 'live')])
+    const read = log.find((l) => /follow\.folded_rows/.test(l.sql))!
+    expect(read.sql).to.match(/WHERE t\.id = ANY\(\$1::bigint\[\]\)/)
+    expect(read.params).to.deep.equal([[outboxTableId(gone)]])
+    const del = outboxDeletes(log)
+    expect(del).to.have.length(1)
+    expect(del[0]!.sql).to.match(/unnest\(\$1::text\[\], \$2::bigint\[\]\)/)
+    expect(del[0]!.params).to.deep.equal([[ORG, other], [outboxTableId(gone), outboxTableId(gone)]])
+    expect(outboxTableId(gone)).to.match(/^\d+$/)
+  })
+
+  it('a row that lacks the fields naming its event is kept, never deleted on a guess', async () => {
     const hex = '6ad8b333aaaaaaaaaa000001'
-    const { log, k } = record()
-    await deleteDocs(k, mapping('outbox_events'), [hex])
-    const root = log[log.length - 1]!
-    expect(root.sql).to.match(/DELETE FROM platform\.outbox WHERE id = ANY\(\$1::bigint\[\]\)/)
-    expect(root.params).to.deep.equal([[outboxTableId(hex)]])
-    expect(outboxTableId(hex)).to.match(/^\d+$/)
+    const { log, k } = recordWith([{ ...storedRow(hex), msg_key: null }])
+    await deleteUnclaimedRows(k, mapping('outbox_events'), [hex], [])
+    expect(outboxDeletes(log)).to.have.length(0)
+    const skippedLog = recordWith([{ ...storedRow(hex), msg_key: null }])
+    setOutboxRepository(new PgOutboxRepository())
+    try {
+      const rt = { jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: skippedLog.k } }, skippedLog.k) } as never
+      await replaceDocs(rt, mapping('outbox_events'), [outboxDoc(hex, 'published')])
+    } finally {
+      setOutboxRepository()
+    }
+    expect(outboxDeletes(skippedLog.log)).to.have.length(0)
+  })
+
+  it('a folded table is never deleted from by id alone', async () => {
+    const { k } = record()
+    let err: Error | undefined
+    await deleteDocs(k, mapping('outbox_events'), ['6ad8b333aaaaaaaaaa000001']).catch((e: Error) => (err = e))
+    expect(err?.message).to.match(/folded/)
   })
 
   it('names the databases and the resume position of the stream', () => {
@@ -78,5 +127,69 @@ describe('follow: deleting a document and what the stream asks for', () => {
     const rt = { cfg: { slackDb: 'slack' }, db: (n?: string) => n ?? 'api' } as never
     expect(sourceDb(rt, mapping('users'))).to.equal('api')
     expect(sourceDb(rt, { ...mapping('users'), collection: 'slack_conversations' })).to.equal('slack')
+  })
+
+  it('a document the copy now skips loses the row an earlier event wrote (an event published after it was copied pending)', async () => {
+    // the registry keeps the first repository built in this process, which another test may have built on MongoDB
+    setOutboxRepository(new PgOutboxRepository())
+    try {
+      const hex = '6afcbfbe0d70d44bb8638f31'
+      const run = async (status: string) => {
+        // the row the event was copied as while it was pending
+        const { log, k } = recordWith([storedRow(hex)])
+        const rt = { jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: k } }, k) } as never
+        await replaceDocs(rt, mapping('outbox_events'), [outboxDoc(hex, status)])
+        const del = log.findIndex((l) => /DELETE FROM platform\.outbox/.test(l.sql))
+        const ins = log.findIndex((l) => /INSERT INTO platform\.outbox/.test(l.sql))
+        return { deletes: outboxDeletes(log), del, ins }
+      }
+      // the event's own row goes first in every case; only an event the copy still holds is written again, after that
+      const published = await run('published')
+      expect(published.deletes).to.have.length(1)
+      expect(published.deletes[0]!.params).to.deep.equal([[ORG], [outboxTableId(hex)]])
+      expect(published.ins, 'a published event is not written again').to.equal(-1)
+      const pending = await run('pending')
+      expect(pending.deletes).to.have.length(1)
+      expect(pending.ins, 'a pending event is written again after its row was removed').to.be.greaterThan(pending.del)
+    } finally {
+      setOutboxRepository()
+    }
+  })
+
+  it('the remove-and-insert fallback keeps the row of another event of the same organisation under the same folded key', async () => {
+    setOutboxRepository(new PgOutboxRepository())
+    try {
+      // same second, same counter: the neighbour's row sits under the published event's table id, in the same organisation
+      const published = outboxDoc('6afcbfbe0d70d44bb8638f31', 'published')
+      const { log, k } = recordWith([storedRow('6afcbfbe1122334455638f31', 'neighbour')])
+      let first = true
+      const rt = {
+        jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => {
+          if (first) {
+            first = false
+            throw Object.assign(new Error('unique'), { code: '23505' })
+          }
+          return fn({ pgTx: { kernel: k } }, k)
+        },
+      } as never
+      await replaceDocs(rt, mapping('outbox_events'), [published])
+      expect(outboxDeletes(log), 'the row is the neighbour\'s, not the published event\'s').to.have.length(0)
+    } finally {
+      setOutboxRepository()
+    }
+  })
+
+  it('reads each second of deleted outbox ids once, and names the live, copied events that fold to their ids', async () => {
+    const reads: unknown[] = []
+    const gone1 = '6afcbfbe0d70d44bb8638f31'
+    const gone2 = '6afcbfbe0d70d44bb8638f32'                    // same second
+    const live = outboxDoc('6afcbfbe1122334455638f31', 'pending', 'live')     // folds to gone1's id
+    const published = outboxDoc('6afcbfbe2233445566638f32', 'published')       // folds to gone2's id, but is not copied
+    const elsewhere = outboxDoc('6afcbfbe3344556677000001', 'pending')        // same second, another id
+    const rt = { cfg: {}, db: () => ({ collection: () => ({ find: (q: unknown) => (reads.push(q), { toArray: async () => [live, published, elsewhere] }) }) }) } as never
+    const found = await liveEvents(rt, mapping('outbox_events'), [gone1, gone2])
+    expect(reads, 'one range read for the shared second').to.have.length(1)
+    expect(found.map((e) => e.msg_key)).to.deep.equal(['live'])
+    expect(found[0]!.id).to.equal(outboxTableId(gone1))
   })
 })

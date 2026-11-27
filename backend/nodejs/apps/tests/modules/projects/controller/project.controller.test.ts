@@ -999,8 +999,8 @@ describe('project.controller', () => {
 
     it('answers a team service 5xx as the outage it is (upstream_5xx), not "Team not found"', async () => {
       const forwarded = await teamCheck(async () => ({ statusCode: 500, data: { detail: 'graph down' } }))
-      // mapped like every upstream 5xx: our 500, classed by its { status } cause
-      expect(forwarded.statusCode).to.equal(500)
+      // mapped like every upstream 5xx: a 502, classed by its { status } cause
+      expect(forwarded.statusCode).to.equal(502)
       expect(classifyError(forwarded)).to.equal('upstream_5xx')
       expect(forwarded.message).to.not.include('Team not found')
     })

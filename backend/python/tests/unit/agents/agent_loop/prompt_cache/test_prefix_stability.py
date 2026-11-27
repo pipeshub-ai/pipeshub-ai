@@ -311,8 +311,10 @@ async def _mode_request(mode: str, question: str) -> tuple[str, dict[str, str | 
     from app.agent_loop_lib.agent.tool_loop import tool_schemas_for_turn
     from app.agent_loop_lib.roles.prompt_template import PromptTemplate
     from app.agents.agent_loop.factory import PipesHubAgentFactory
-    from app.agents.chat_modes.bridge import _apply_mode_instructions
     from app.agents.chat_modes.policy import INTERNAL_SEARCH_POLICY
+    from app.agents.chat_modes.setup import (
+        apply_mode_instructions as _apply_mode_instructions,
+    )
     from tests.unit.agents.adapter.conftest import FakeChatModel
 
     context = make_context(llm=FakeChatModel(), has_knowledge=True, timezone="Asia/Kolkata")
@@ -327,7 +329,6 @@ async def _mode_request(mode: str, question: str) -> tuple[str, dict[str, str | 
     with (
         patch("app.agents.registry.toolset_registry.get_toolset_registry",
               return_value=_knowledge_graph_registry()),
-        patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None),
     ):
         agent, runtime, goal, _ = await PipesHubAgentFactory().create(
             context, context.llm, loop_mode, query=question,

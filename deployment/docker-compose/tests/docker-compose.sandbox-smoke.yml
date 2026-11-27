@@ -1,0 +1,109 @@
+# DEV-ONLY overlay for sandbox_plane_smoke.sh: runs the real sandbox-broker
+# and egress-proxy services of docker-compose.yml from python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f with
+# this tree's backend/python and a dev venv's site-packages mounted read-only,
+# so the smoke needs no multi-GB app image build. Adds a fake model gateway
+# (under the model-gateway alias the app container has in production), a
+# seeding job standing in for Node (worker credential, the sealed component
+# documents and Redis ACL users of ADR-KEY-02, /services/endpoints)
+# and an in-network client standing in for the app. Nothing is published.
+#
+#   SMOKE_SOURCE         backend/python of the tree under test
+#   SMOKE_SITE_PACKAGES  site-packages of a Python 3.12 venv with its deps
+
+x-smoke-python: &smoke-python
+  image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+  # The source is mounted read-only; the logger writes ./logs under the cwd.
+  working_dir: /tmp
+  labels:
+    pipeshub.harness.owner: x-lead
+  volumes:
+    - ${SMOKE_SOURCE:?set SMOKE_SOURCE}:/app/python:ro
+    - ${SMOKE_SITE_PACKAGES:?set SMOKE_SITE_PACKAGES}:/site:ro
+
+services:
+  sandbox-broker:
+    <<: *smoke-python
+    entrypoint:
+      - python
+      - -c
+      - "import sys, runpy; sys.path[:0] = ['/app/python']; sys.path.append('/site'); runpy.run_module('app.sandbox_broker_main', run_name='__main__')"
+    volumes:
+      - ${SMOKE_SOURCE:?set SMOKE_SOURCE}:/app/python:ro
+      - ${SMOKE_SITE_PACKAGES:?set SMOKE_SITE_PACKAGES}:/site:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8095/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  egress-proxy:
+    <<: *smoke-python
+    entrypoint:
+      - python
+      - -c
+      - "import sys, runpy; sys.path[:0] = ['/app/python']; sys.path.append('/site'); runpy.run_module('app.egress_proxy_main', run_name='__main__')"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://egress-proxy-control:8098/healthz', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    labels:
+      pipeshub.harness.owner: x-lead
+
+  pxh-gateway:
+    image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+    labels:
+      pipeshub.harness.owner: x-lead
+    entrypoint: ["python", "-u", "/smoke/fake_gateway.py", "8096"]
+    volumes:
+      - ./tests/sandbox_smoke:/smoke:ro
+    environment:
+      SMOKE_PROXY_CREDENTIAL: ${SMOKE_PROXY_CREDENTIAL:?set SMOKE_PROXY_CREDENTIAL}
+    networks:
+      sandbox_plane:
+        aliases:
+          - model-gateway
+          # Node's gateway-token route for the proxy (AGENT_HARNESS_STATE_URL).
+          - harness-state
+
+  pxh-seed:
+    <<: *smoke-python
+    profiles: ["smoke-jobs"]
+    entrypoint: ["python", "/smoke/seed.py"]
+    volumes:
+      - ${SMOKE_SOURCE:?set SMOKE_SOURCE}:/app/python:ro
+      - ${SMOKE_SITE_PACKAGES:?set SMOKE_SITE_PACKAGES}:/site:ro
+      - ./tests/sandbox_smoke:/smoke:ro
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-}
+      KV_STORE_TYPE: redis
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SMOKE_WORKER_CREDENTIAL: ${SMOKE_WORKER_CREDENTIAL:?set SMOKE_WORKER_CREDENTIAL}
+      SMOKE_PROXY_CREDENTIAL: ${SMOKE_PROXY_CREDENTIAL:?set SMOKE_PROXY_CREDENTIAL}
+      SMOKE_BROKER_CREDENTIAL: ${SMOKE_BROKER_CREDENTIAL:?set SMOKE_BROKER_CREDENTIAL}
+      # Node holds both component keys to seal for them (ADR-KEY-02).
+      EGRESS_PROXY_COMPONENT_KEY: ${EGRESS_PROXY_COMPONENT_KEY:?set EGRESS_PROXY_COMPONENT_KEY}
+      SANDBOX_BROKER_COMPONENT_KEY: ${SANDBOX_BROKER_COMPONENT_KEY:?set SANDBOX_BROKER_COMPONENT_KEY}
+    networks:
+      - sandbox_kv
+
+  pxh-client:
+    <<: *smoke-python
+    profiles: ["smoke-jobs"]
+    entrypoint: ["python", "/smoke/client.py"]
+    volumes:
+      - ${SMOKE_SOURCE:?set SMOKE_SOURCE}:/app/python:ro
+      - ${SMOKE_SITE_PACKAGES:?set SMOKE_SITE_PACKAGES}:/site:ro
+      - ./tests/sandbox_smoke:/smoke:ro
+    environment:
+      SMOKE_WORKER_CREDENTIAL: ${SMOKE_WORKER_CREDENTIAL:?set SMOKE_WORKER_CREDENTIAL}
+      SANDBOX_DOCKER_IMAGE: ${SANDBOX_DOCKER_IMAGE:?set SANDBOX_DOCKER_IMAGE}
+    networks:
+      - sandbox_plane

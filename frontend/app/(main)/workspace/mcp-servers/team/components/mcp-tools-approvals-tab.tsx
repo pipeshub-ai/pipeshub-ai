@@ -78,7 +78,7 @@ export function McpToolsApprovalsTab({
                 {t('workspace.mcpServers.details.tools')}
               </Text>
               {load.status === 'ready' && load.syncedAt && (
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.mcpServers.configPanel.synced', { time: formatRelativeTime(load.syncedAt) })}
                 </Text>
               )}
@@ -102,7 +102,7 @@ export function McpToolsApprovalsTab({
           </Flex>
 
           {!canListTools ? (
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.mcpServers.configPanel.signInForTools')}
             </Text>
           ) : listing ? (
@@ -173,7 +173,7 @@ export function McpToolsApprovalsTab({
             backgroundColor: 'var(--olive-1)',
           }}
         >
-          <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-11)' }}>
             {editor.changes > 0
               ? t('workspace.mcpServers.configPanel.unsaved', { count: editor.changes })
               : t('workspace.mcpServers.configPanel.allSaved')}
@@ -209,7 +209,7 @@ function FindingTools() {
           {t('workspace.mcpServers.configPanel.findingTools')}
         </Text>
       </Flex>
-      <Text size="1" style={{ color: 'var(--gray-10)' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.mcpServers.configPanel.rulesUnlock')}
       </Text>
       {[0, 1, 2].map((row) => (
@@ -323,7 +323,7 @@ function SignInCard({
                 : 'workspace.mcpServers.configPanel.signedIn'
           )}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {signedIn && when
             ? t('workspace.mcpServers.configPanel.signedInDetail', { transport, time: when })
             : signedIn

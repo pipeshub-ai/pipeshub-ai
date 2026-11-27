@@ -1,0 +1,113 @@
+{
+  "_comment": "Engine licence policy (PROJECT-PLAN rule 8, D29). Permissive licences pass; weak copyleft passes with a notice and a source pointer; anything else fails, so a licence new to this file blocks an engine upgrade until it is reviewed here. 'reviewed' maps an engine's package (name@version) to the licence a human confirmed for it (a string, still judged by the lists above), or to a legal approval as found ({licence, approval: {by, date, ref}, bundled_in}): it passes only that version with exactly that licence, and a wheel-bundled library only while every carrier in 'bundled_in' is at the version named, so an upgrade, another licence or a new component fails until it is reviewed. 'reviewed_shared' holds the same kind of entries for components of the runtime layer every engine image carries (the tools lock's wheels and what they bundle, the npm packages, the Alpine packages that layer adds): an approval is of a component at a version, not of an engine, so it applies to every engine's scan, and an engine's own entry for the same component wins. 'reviewed_markers' approves one marker text in one asset member of one engine version the same way. An LGPL crate compiled into a static engine binary (a cargo engine) passes only with an engine entry here: relinking it needs the image's NOTICE.md to name it with its source and the engine's source tag, so a new one fails until that is written. Approvals never extend the lists above.",
+  "permissive": [
+    "0BSD",
+    "AFL-2.1",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BlueOak-1.0.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Python-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib"
+  ],
+  "weak_copyleft_with_notice": [
+    "LGPL-2.0",
+    "LGPL-2.0-only",
+    "LGPL-2.0-or-later",
+    "LGPL-2.1",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "MPL-2.0"
+  ],
+  "reviewed": {
+    "codex": {
+      "nucleo@0.5.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "nucleo-matcher@0.3.1": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "option-ext@0.2.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-bundle-mp3@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-common@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-core@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-format-isomp4@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-format-mkv@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-format-ogg@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-format-riff@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "symphonia-metadata@0.6.0": {"licence": "MPL-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}}
+    },
+    "acp-goose": {
+      "ansi_colours@1.2.3": {"licence": "LGPL-3.0-or-later", "approval": {"by": "maintainers, statically linked into the Goose release binary", "date": "2026-11-03", "ref": "R16-LIC; deployment/sandbox-images/acp-goose/licenses/NOTICE.md"}}
+    },
+    "opencode": {
+      "@openauthjs/openauth@0.0.0-20250322224806": {"licence": "UNKNOWN", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+      "poe-oauth@0.0.8": {"licence": "UNKNOWN", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}}
+    }
+  },
+  "reviewed_shared": {
+    "adobe-core14-afm@pdfkit": {"licence": "APAFML", "bundled_in": ["pdfkit@0.20.2"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "agg@pypdfium2 (static)": {"licence": "LicenseRef-AGG-2.3", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "bitstream-vera@reportlab": {"licence": "Bitstream-Vera", "bundled_in": ["reportlab@4.5.1"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "buffers@0.1.1": {"licence": "NOASSERTION", "approval": {"by": "maintainers, approving scipy and the Node office libraries in the engine images", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "freetype@pillow.libs": {"licence": "FTL OR GPL-2.0-or-later", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "freetype@pypdfium2 (static)": {"licence": "FTL", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "gdbm@1.26-r0": {"licence": "GPL-3.0-or-later", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "harfbuzz@pillow.libs": {"licence": "MIT-Modern-Variant", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "keyutils-libs@1.6.3-r4": {"licence": "GPL-2.0-or-later AND LGPL-2.0-or-later", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libbsd@pillow.libs": {"licence": "NOASSERTION", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libbz2@1.0.8-r6": {"licence": "bzip2-1.0.6", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libcom_err@1.47.4-r0": {"licence": "GPL-2.0-or-later AND LGPL-2.0-or-later AND BSD-3-Clause AND MIT", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libgcc_s@contourpy.libs kiwisolver.libs matplotlib.libs numpy.libs pandas.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["contourpy@1.4.0", "kiwisolver@1.5.1", "matplotlib@3.11.2", "numpy@2.5.3", "pandas@3.0.6"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libgcc_s@cryptography.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["cryptography@50.0.2"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libgcc_s@pypdfium2.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libgcc_s@scipy.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["scipy@1.18.1"], "approval": {"by": "maintainers, approving scipy and the Node office libraries in the engine images", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libgfortran@numpy.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["numpy@2.5.3"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libgfortran@scipy.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["scipy@1.18.1"], "approval": {"by": "maintainers, approving scipy and the Node office libraries in the engine images", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libjpeg-turbo@pillow.libs": {"licence": "IJG AND BSD-3-Clause AND Zlib", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libjpeg-turbo@pypdfium2 (static)": {"licence": "IJG AND BSD-3-Clause AND Zlib", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libmd@pillow.libs": {"licence": "NOASSERTION", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libpanelw@6.6_p20260516-r0": {"licence": "X11", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libpng16@pillow.libs": {"licence": "libpng-2.0", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libpng16@pypdfium2 (static)": {"licence": "libpng-2.0", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libstdc++@contourpy.libs kiwisolver.libs matplotlib.libs numpy.libs pandas.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["contourpy@1.4.0", "kiwisolver@1.5.1", "matplotlib@3.11.2", "numpy@2.5.3", "pandas@3.0.6"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libstdc++@pypdfium2.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libstdc++@scipy.libs": {"licence": "GPL-3.0-or-later WITH GCC-exception-3.1", "bundled_in": ["scipy@1.18.1"], "approval": {"by": "maintainers, approving scipy and the Node office libraries in the engine images", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libtiff@pillow.libs": {"licence": "libtiff", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "libtiff@pypdfium2 (static)": {"licence": "libtiff", "bundled_in": ["pypdfium2@5.14.0"], "approval": {"by": "maintainers, adding the pdf and pptx skill packs' libraries (legal sign-off pending)", "date": "2026-10-30", "ref": "SKILLPACKS licence review"}},
+    "libxcb@pillow.libs": {"licence": "X11", "bundled_in": ["pillow@12.3.0"], "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "matplotlib@3.11.2": {"licence": "LicenseRef-Matplotlib", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "pillow@12.3.0": {"licence": "MIT-CMU", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "sqlite-libs@3.53.4-r0": {"licence": "blessing", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "typing-extensions@4.16.0": {"licence": "PSF-2.0", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "tzdata@2026d-r0": {"licence": "Public-Domain", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}},
+    "xz-libs@5.8.4-r0": {"licence": "GPL-2.0-or-later AND 0BSD AND Public-Domain AND LGPL-2.1-or-later", "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}}
+  },
+  "reviewed_markers": {
+    "opencode": {
+      "1.18.34": [
+        {
+          "member": "opencode",
+          "marker": "GNU General Public License",
+          "component": "tinycc libtcc1 (inside Bun)",
+          "licence": "GPL-2.0-or-later WITH GCC-exception-2.0",
+          "source": "https://github.com/oven-sh/tinycc",
+          "approval": {"by": "maintainers, for legal (D29)", "date": "2026-10-04", "ref": "D29 legal review, item 4c.4"}
+        }
+      ]
+    }
+  }
+}

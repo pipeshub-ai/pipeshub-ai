@@ -19,6 +19,9 @@ import {
   startKbHarness,
 } from './kb-http-harness'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 const TRACEBACK = {
   detail:
@@ -145,7 +148,41 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       const r = await call(h, 'GET', `/record/${RECORD_ID}`, { token })
 
       expect(r.status).to.equal(404)
-      expect(errorMessage(r)).to.equal(`Record ${RECORD_ID} not found`)
+      expect(errorMessage(r)).to.equal('Record not found')
+    })
+
+    it('a record id that is an email: the 404 and every line of the request leave it out', async () => {
+      const email = 'n5n-fake-ada@example.com'
+      const requestId = newRequestId('kb-record-email')
+      const records = captureLogRecords()
+      const middlewareLogger = (ErrorMiddleware as any).logger
+      // Another file may have replaced the root since ErrorMiddleware took its logger at load.
+      ;(ErrorMiddleware as any).logger = Logger.getInstance({ service: 'ErrorMiddleware' })
+      try {
+        h.backend.on('GET', `/api/v1/records/${encodeURIComponent(email)}`, {
+          status: 404,
+          body: { detail: 'You do not have access to this record' },
+        })
+
+        const r = await call(h, 'GET', `/record/${email}`, { token, headers: { 'x-request-id': requestId } })
+        const deadline = Date.now() + 5000
+        while (Date.now() < deadline && !recordsOf(records, requestId).some((l) => l.message === 'http.request.end')) {
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+
+        expect(r.status).to.equal(404)
+        expect(errorMessage(r)).to.equal('Record not found')
+        expect(forwarded('GET', `/api/v1/records/${encodeURIComponent(email)}`)).to.have.length(1)
+        const lines = recordsOf(records, requestId)
+        const errorLine = lines.find((l) => l.message === 'http.request.error')!
+        expect(errorLine.metadata.params).to.deep.equal({ recordId: '[not an id]' })
+        expect(errorLine.metadata.error.message).to.equal('Record not found')
+        // An Error's message and stack are not enumerable: spell them out so the scan sees them.
+        const text = JSON.stringify(lines, (_k, v: unknown) => (v instanceof Error ? { ...Object.fromEntries(Object.entries(v)), message: v.message, stack: v.stack } : v))
+        expect(text).to.not.include('n5n-fake-ada')
+      } finally {
+        ;(ErrorMiddleware as any).logger = middlewareLogger
+      }
     })
 
     it('lists who has access to a knowledge base', async () => {
@@ -503,7 +540,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
 
         const r = await callRoute(h, route, route.caller ? sessionToken(h, route.caller) : token)
 
-        expect(r.status, `${route.method} ${route.pattern}`).to.equal(500)
+        expect(r.status, `${route.method} ${route.pattern}`).to.equal(502)
         expect(errorMessage(r), route.pattern).to.match(/^Something went wrong/)
         for (const pattern of INTERNAL_DETAIL) expect(r.text, `${route.pattern} ${pattern}`).to.not.match(pattern)
       }
@@ -549,6 +586,17 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(r.status).to.equal(503)
       expect(r.headers.get('retry-after')).to.equal('7')
       expect(errorMessage(r)).to.equal('This part of PipesHub is briefly unavailable. Please try again in 7 seconds.')
+    })
+
+    it('passes a listing the graph store could not answer through as a 503 with its wait time', async () => {
+      const unreachable = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      h.backend.on('GET', '/api/v1/knowledge-hub/nodes', { status: 503, headers: { 'retry-after': '5' }, body: { detail: unreachable } })
+
+      const r = await call(h, 'GET', '/knowledge-hub/nodes', { token })
+
+      expect(r.status).to.equal(503)
+      expect(r.headers.get('retry-after')).to.equal('5')
+      expect(errorMessage(r)).to.equal(unreachable)
     })
   })
 

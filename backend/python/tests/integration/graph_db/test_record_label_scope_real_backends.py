@@ -13,11 +13,12 @@ parse and return what the unit fakes assume:
   search_entities still finds the record;
 - the label repair restores a stored copy from the edges.
 
-Needs the graph services, and skips cleanly when they are not reachable:
+Needs the graph services, and skips each one whose variable is unset:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it        # or arango-graph-it
-  cd backend/python && pytest tests/integration/graph_db/test_record_label_scope_real_backends.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \\
+    pytest tests/integration/graph_db/test_record_label_scope_real_backends.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
@@ -54,6 +55,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support import it_backends
 from tests.unit.modules.entity_resolution.conftest import (
     FakeEntityVectorStore,
     ScriptedModel,
@@ -67,9 +69,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "record_label_scope_it"
 
@@ -97,7 +97,7 @@ class _Env:
 
 async def _connect(backend: str, monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
     if backend == "neo4j":
-        monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+        monkeypatch.setenv("NEO4J_URI", it_backends.endpoint("NEO4J_IT_URI"))
         monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
         monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
         monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -105,7 +105,7 @@ async def _connect(backend: str, monkeypatch: pytest.MonkeyPatch) -> IGraphDBPro
     else:
         config_service = MagicMock()
         config_service.get_config = AsyncMock(return_value={
-            "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+            "url": it_backends.endpoint("ARANGO_IT_URL"), "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
         })
         provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -517,6 +517,36 @@ class _Leader:
         return True
 
 
+class _OwnConnector:
+    """The graph with only this test's org and connector, for the sweep to pick from.
+
+    The sweep works one org a tick, the first with a pending connector (``ConnectorSweep.tick``), and the Neo4j job
+    shares one database with every other suite: their leftover orgs and connectors came first and used up the ticks
+    (and had their own repair state written by this test).
+    """
+
+    def __init__(self, graph: IGraphDBProvider, org_id: str, connector_id: str) -> None:
+        self._graph = graph
+        self._org_id = org_id
+        self._connector_id = connector_id
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - every other call goes to the real provider
+        return getattr(self._graph, name)
+
+    async def get_all_orgs(self, **kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        orgs = await self._graph.get_all_orgs(**kwargs)
+        return [o for o in orgs or [] if (o.get("_key") or o.get("id")) == self._org_id]
+
+    async def get_documents_paginated(self, collection: str, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        if collection != CollectionNames.APPS.value:
+            return await self._graph.get_documents_paginated(collection, *args, **kwargs)
+        # One page holding only this connector: filtering a real page could leave it on a later one.
+        if kwargs.get("after_key") is not None:
+            return []
+        own = await self._graph.get_document(self._connector_id, CollectionNames.APPS.value)
+        return [own] if own else []
+
+
 class TestTheRepairOnARealGraph:
     async def test_a_rewritten_copy_gets_its_own_labels_back(self, env: _Env) -> None:
         s = env.suffix
@@ -538,7 +568,7 @@ class TestTheRepairOnARealGraph:
             }
 
         repair = RecordLabelRepair(
-            logger=logger, graph_provider=env.graph, blob_store=blob, lock=_Leader(),
+            logger=logger, graph_provider=_OwnConnector(env.graph, env.org_id, env.connector_id), blob_store=blob, lock=_Leader(),
             cutoff_ms=get_epoch_timestamp_in_ms(), page_size=1,
         )
         for _ in range(20):

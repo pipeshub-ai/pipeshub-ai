@@ -61,8 +61,10 @@ import {
   JWT_BEARER_GRANT,
 } from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { clientTags } from '../../../libs/services/telemetry/identity';
+import {
+  clientTags,
+  recordEvent,
+} from '../../../libs/services/telemetry/telemetry-impl';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -1034,9 +1036,10 @@ export class OAuthProviderController {
       ? this.scopeValidatorService.parseScopes(request.scope)
       : undefined;
 
-    // Refresh tokens (implements token rotation per RFC 9700)
+    // Refresh tokens (implements token rotation per RFC 9700). The agent app's tokens are cut to the current
+    // MCP_SCOPES as every other grant of it is: its stored list only ever grows.
     const tokens = await this.oauthTokenService.refreshTokens(
-      app,
+      { ...app, allowedScopes: this.oauthDeviceService.allowedScopesOf(app) },
       request.refresh_token,
       requestedScopes,
       this.oauthTokenService.audienceFor(request.resource),

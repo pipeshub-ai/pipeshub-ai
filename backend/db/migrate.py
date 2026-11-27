@@ -10,6 +10,7 @@ import contextlib
 import functools
 import os
 import sys
+import threading
 import time
 from collections.abc import Iterator
 
@@ -108,7 +109,7 @@ def _ensure_kernel_schema(conn: psycopg.Connection) -> None:
 
 
 def kv_access_mode() -> str | None:
-    """``PG_KV_ACCESS``: ``shadow`` logs key-value access outside a service role's prefixes, ``enforce`` refuses it; unset keeps the stored mode."""
+    """``PG_KV_ACCESS``: ``enforce`` (the default since platform_0014) refuses key-value access outside a service role's prefixes, ``shadow`` only logs it; unset keeps the stored mode."""
     raw = os.environ.get("PG_KV_ACCESS", "").strip()
     if raw not in ("", "shadow", "enforce"):
         raise RunnerError(EXIT_CONFIG, f"PG_KV_ACCESS must be shadow or enforce (or unset to keep the stored mode), got {raw!r}")
@@ -123,6 +124,17 @@ def _set_kv_access(conn: psycopg.Connection, mode: str) -> None:
     finally:
         conn.execute("RESET ROLE")
     log(f"key-value access by prefix: {mode}")
+
+
+def _warn_kv_shadow(conn: psycopg.Connection) -> None:
+    conn.execute(f"SET ROLE {OWNER_ROLE}")
+    try:
+        enforce = conn.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
+    finally:
+        conn.execute("RESET ROLE")
+    if enforce is False:
+        log("WARNING key-value access by prefix is in shadow mode: each service role may read and write every key, and access outside "
+            "its prefixes is only logged; set PG_KV_ACCESS=enforce and run this job again to refuse it")
 
 
 def alembic_config(url: str) -> Config:
@@ -154,7 +166,7 @@ def build_memory() -> str | None:
     raw = os.environ.get("PG_INDEX_BUILD_MEMORY_MB", "").strip()
     if not raw:
         return None
-    if not raw.isdigit() or not 1 <= int(raw) <= 2_000_000:
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 2_000_000:     # "²" is a digit to isdigit(), not to int()
         raise RunnerError(EXIT_CONFIG, f"PG_INDEX_BUILD_MEMORY_MB must be a whole number of megabytes from 1, got {raw!r}")
     return f"{int(raw)}MB"
 
@@ -176,29 +188,73 @@ def _modules(cfg: Config, conn: psycopg.Connection, *, pending: bool) -> list:
     return [r.module for r in revs if int(r.revision.rsplit("_", 1)[1]) > epochs.get(r.revision.rsplit("_", 1)[0], 0)]
 
 
+PROGRESS_EVERY_S = 10.0
+
+
+@contextlib.contextmanager
+def _progress(c: Connection, qname: str) -> Iterator[None]:
+    """Log the build's ``pg_stat_progress_create_index`` row every ``PROGRESS_EVERY_S`` seconds, read from a second session."""
+    pid = c.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+    stop = threading.Event()
+
+    def poll() -> None:
+        try:
+            with c.engine.connect() as p:
+                # The view shows another session's progress only to a role with its session user's rights: the login, not the owner role.
+                p.exec_driver_sql("SET ROLE NONE")
+                while not stop.wait(PROGRESS_EVERY_S):
+                    row = p.exec_driver_sql("SELECT phase, blocks_done, blocks_total, partitions_done, partitions_total "
+                                            "FROM pg_stat_progress_create_index WHERE pid = %s", (pid,)).first()
+                    if row and not stop.is_set():          # a poll that outlived the join may read the next index's build on the same pid
+                        log(f"index {qname}: {row[0]}, blocks {row[1]}/{row[2]}, partitions {row[3]}/{row[4]}")
+        except Exception as exc:                        # progress is only reported: the build goes on without it
+            log(f"index {qname}: no progress report ({type(exc).__name__})")
+    t = threading.Thread(target=poll, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=10)
+
+
 def _build_online(c: Connection, modules: list, started: list[str]) -> None:
     """Build the ``ONLINE_INDEXES`` of the pending revisions before their transaction, without blocking writers (``ensure_partitioned_index``:
     ``ON ONLY`` the parent, CREATE INDEX CONCURRENTLY per leaf, ATTACH). The revision's own call then finds them valid and does nothing. An
-    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty."""
+    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty. A table
+    that got an index with an expression key is analyzed once at the end: the planner has no statistics for an expression until then."""
+    analyze: list[str] = []
     for ix in (ix for m in modules for ix in getattr(m, "ONLINE_INDEXES", ())):
-        schema = ix["table"].split(".")[0]
+        schema = ix["table"].split(".")[0] if "." in ix["table"] else "public"      # where ddl puts it
         qname = f"{schema}.{ix['name']}"
-        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar() or ddl._index_valid(c, qname):
+        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar():
             continue
-        started.append(qname)
+        if not ddl._index_valid(c, qname):
+            started.append(qname)
+            t0 = time.monotonic()
+            log(f"index {qname}: building online")
+            try:
+                with _progress(c, qname):
+                    ddl.ensure_partitioned_index(c, **ix, blocking=False)
+            except DBAPIError as exc:
+                # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
+                # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
+                if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
+                    raise
+                log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
+                    f"{str(exc.orig).strip().splitlines()[0]})")
+                continue
+            log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+        # The catalog says which key is an expression (pg_index.indexprs), not the text of the key. Also when a stopped run built the index:
+        # it may have stopped before the ANALYZE.
+        if ix["table"] not in analyze and c.exec_driver_sql(
+                "SELECT indexprs IS NOT NULL FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar():
+            analyze.append(ix["table"])
+    for table in analyze:
         t0 = time.monotonic()
-        log(f"index {qname}: building online")
-        try:
-            ddl.ensure_partitioned_index(c, **ix, blocking=False)
-        except DBAPIError as exc:
-            # A column, function or operator class the index names comes from an earlier pending revision (a database several releases behind).
-            # The first statement failed, so nothing was built: the revision builds it in its transaction, as before this step existed.
-            if getattr(exc.orig, "sqlstate", None) not in ("42703", "42883", "42704"):
-                raise
-            log(f"index {qname}: built in the upgrade's transaction instead (an earlier pending revision changes {ix['table']}: "
-                f"{str(exc.orig).strip().splitlines()[0]})")
-            continue
-        log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+        # ANALYZE of a partitioned table also analyzes each leaf, where the expression statistics of the leaves' indexes are kept.
+        c.exec_driver_sql(f"ANALYZE {ddl._ident(table)}")
+        log(f"table {table}: analyzed in {time.monotonic() - t0:.1f}s (statistics of its new expression indexes)")
 
 
 def drop_online(c: Connection, qname: str) -> None:
@@ -208,20 +264,21 @@ def drop_online(c: Connection, qname: str) -> None:
     ``nodes_def_<name>``) cannot be dropped CONCURRENTLY: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout. A
     leaf's index is dropped CONCURRENTLY."""
     schema, name = ddl._ident(qname).split(".")
-    tree: list[str] = []
+    tree: list[tuple[str, str | None]] = []           # (index, the partition it must be on)
 
     def walk(table: str, idx: str) -> None:
         for child in c.exec_driver_sql("SELECT inhrelid::regclass::text FROM pg_inherits WHERE inhparent = %s::regclass ORDER BY 1", (table,)).scalars().all():
             child_idx = f"{child.split('.')[-1]}_{idx}"
-            tree.append(f"{schema}.{child_idx}")
+            tree.append((f"{schema}.{child_idx}", child))
             walk(child, child_idx)
     table = c.exec_driver_sql("SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar()
     if table:
         walk(table, name)
-    for q in [*reversed(tree), qname]:                  # the leaves before their parents
-        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid) FROM pg_class c "
-                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (q,)).first()
-        if row is None or (row[1] and q != qname):     # not there, or attached: it goes with its parent
+    for q, on in [*reversed(tree), (qname, None)]:    # the leaves before their parents
+        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid), "
+                                "x.indrelid = to_regclass(%s) FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid "
+                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (on, q)).first()
+        if row is None or (row[1] and q != qname) or row[2] is False:     # not there, attached (it goes with its parent), or another table's
             continue
         if row[0] == "I":
             ddl._retry(c, lambda q=q: c.exec_driver_sql(f"DROP INDEX IF EXISTS {q}"), attempts=5)
@@ -361,6 +418,7 @@ def run(argv: list[str]) -> None:
                 log(ahead)
                 if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
                     _set_kv_access(conn, kv_mode)
+                _warn_kv_shadow(conn)
                 return
             engine = _online(url, memory)
             try:
@@ -395,6 +453,7 @@ def run(argv: list[str]) -> None:
                 engine.dispose()
             if kv_mode:
                 _set_kv_access(conn, kv_mode)
+            _warn_kv_shadow(conn)
         elif cmd == "current":
             command.current(cfg, verbose=True)
         elif cmd == "downgrade" and len(argv) == 2:

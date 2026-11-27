@@ -452,10 +452,10 @@ export class ServiceTokenService {
     );
 
     this.logger.info('Revoked every token held by a service account', {
-      orgId,
-      serviceAccountId,
-      actingClientIds: actingClientIds.length,
-      delegatedTokensRevoked: delegated,
+      org_id: orgId,
+      service_account_id: serviceAccountId,
+      acting_client_count: actingClientIds.length,
+      delegated_tokens_revoked: delegated,
     });
   }
 
@@ -481,8 +481,8 @@ export class ServiceTokenService {
       );
     if (revoked > 0) {
       this.logger.info('Revoked a service account’s delegated tokens', {
-        orgId,
-        serviceAccountId,
+        org_id: orgId,
+        service_account_id: serviceAccountId,
         revoked,
       });
     }

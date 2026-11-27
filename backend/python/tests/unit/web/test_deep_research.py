@@ -10,8 +10,10 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
-from app.agents.chat_modes.bridge import _apply_policy_to_chat_state
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.chat_modes.setup import (
+    apply_policy_to_chat_state as _apply_policy_to_chat_state,
+)
 from app.web.budget import DEEP_RESEARCH, STANDARD, WebBudget
 from app.web.chain import Cooldowns
 from app.web.deadline import Deadline

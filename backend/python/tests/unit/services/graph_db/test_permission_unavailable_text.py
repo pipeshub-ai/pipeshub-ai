@@ -45,7 +45,7 @@ def _provider(cls, *, user_error=None, rows_error=None, hint_error=None) -> IGra
     provider = cls.__new__(cls)
     provider.logger = MagicMock()
 
-    async def get_user_by_user_id(user_id, *, raise_on_error=False) -> dict:
+    async def get_user_by_user_id(user_id, *, raise_on_error=False, org_id=None) -> dict:
         if user_error:
             raise user_error
         return {"_key": "ukey", "id": "ukey"}

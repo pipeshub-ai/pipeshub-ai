@@ -18,7 +18,7 @@ Matches AG-UI ALIAS event types for the same occurrences `AGUIEventEmitter`
 reacts to (`RUN_STARTED`/`RUN_FINISHED`/`TOOL_CALL_START`/`TOOL_CALL_END`)
 and the same DIRECT types for turn-text/reasoning (`TEXT_MESSAGE_*`,
 `REASONING_MESSAGE_*`) — both legacy and AG-UI-aliased events fire for the
-same occurrence (`Agent.emit()`'s `_AG_UI_ALIASES` table), so matching only
+same occurrence (`AG_UI_ALIASES` in `app/agent_loop_lib/ag_ui.py`), so matching only
 the alias side (exactly like `AGUIEventEmitter` does) avoids collecting
 every tool call / run lifecycle event twice.
 
@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
+from app.edition import TOOL_ARGS_PREVIEW_CHARS
 from app.utils.citations import (
     kept_citation_link_text,
     rewrite_request_refs,
@@ -67,14 +68,15 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 
-__all__ = ["MessagePart", "TranscriptCollector", "serialize_tool_args"]
+__all__ = ["MessagePart", "TranscriptCollector", "request_refs", "saved_args", "saved_text", "serialize_tool_args"]
 
 logger = logging.getLogger(__name__)
 
 # Tool args are already bounded by whatever the model produced this turn;
 # this is a defensive cap, not the primary truncation mechanism (that's
-# tool_loop.py's result preview, which this matches).
-_MAX_TOOL_ARGS_CHARS = 2000
+# tool_loop.py's result preview, which the result cap matches). The args cap is
+# the edition's, so a deployment can keep longer arguments in full.
+_MAX_TOOL_ARGS_CHARS = TOOL_ARGS_PREVIEW_CHARS
 _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 
 # Longest single argument value kept verbatim. Anything longer is shortened
@@ -149,9 +151,11 @@ def serialize_tool_args(args: object) -> str:
 
 
 class MessagePart(TypedDict, total=False):
-    type: Literal["text", "reasoning", "tool_call", "sub_agent", "mcp_sign_in"]
+    type: Literal["text", "reasoning", "tool_call", "sub_agent", "mcp_sign_in", "context_compacted"]
     # On the `mcp_sign_in` part (`mcp_sign_in.py`): the servers to sign in to again.
     servers: list[dict[str, Any]]
+    # On the `context_compacted` part: the durable timeline's view of a reduction (QAFIX4), the chat's row.
+    compacted: dict[str, Any]
     content: str
     toolCallId: str
     toolName: str
@@ -161,6 +165,8 @@ class MessagePart(TypedDict, total=False):
     status: Literal["running", "completed", "failed", "blocked", "awaiting_approval"]
     resultPreview: str
     resultSummary: str
+    errorCode: str
+    nothingSent: bool
     # A small table / field list of the result for the tool card (`Tool.result_view`).
     resultView: dict[str, Any]
     artifactId: str
@@ -182,6 +188,47 @@ class MessagePart(TypedDict, total=False):
     # has no separate answer surface to deduplicate against (rendered in
     # full by `SubAgentGroup` on the frontend).
     isFinal: bool
+
+
+def request_refs(tool_state: Mapping[str, Any]) -> Mapping[str, str] | None:
+    """This request's citation refs and the URLs they stand for, read at call
+    time: the mapper in `tool_state` can be replaced mid-request."""
+    mapper = tool_state.get("citation_ref_mapper")
+    return mapper.ref_to_url if mapper is not None else None
+
+
+def saved_text(text: str, ref_to_url: Mapping[str, str] | None, cap: int | None = None) -> tuple[str, int, int]:
+    """`text` as a saved part keeps it: this request's citation refs replaced by
+    their URLs, within `cap` characters and never ending inside a URL. Returns
+    the counts of refs expanded and made uncitable too.
+
+    A signed storage link loses its signature: the stored step outlives the link's purpose,
+    and later turns read the step's summary, not this copy."""
+    text, expanded, unresolved = rewrite_request_refs(text, ref_to_url)
+    text = hide_storage_signatures(text)
+    if cap is not None and len(text) > cap:
+        text = _head_outside_url(text, cap - 1) + "…"
+    return text, expanded, unresolved
+
+
+def saved_args(args: object, ref_to_url: Mapping[str, str] | None) -> tuple[str, int, int]:
+    """Tool arguments as a saved part keeps them: refs replaced in every string value before any value is cut,
+    so a cut ref ("ref1" of "ref12") is never resolved as a shorter one."""
+    counts = [0, 0]
+
+    def _walk(value: object) -> object:
+        if isinstance(value, str):
+            text, expanded, unresolved = rewrite_request_refs(value, ref_to_url)
+            counts[0] += expanded
+            counts[1] += unresolved
+            return hide_storage_signatures(text)
+        if isinstance(value, dict):
+            return {key: _walk(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [_walk(item) for item in value]
+        return value
+
+    return serialize_tool_args(_walk(args)), counts[0], counts[1]
 
 
 class TranscriptCollector(EventEmitter):
@@ -212,10 +259,26 @@ class TranscriptCollector(EventEmitter):
         self._last_text: dict[str, tuple[MessagePart, str]] = {}
         # run_id -> where the current model call's parts start in its container.
         self._model_call_start: dict[str, int] = {}
+        # The root run's id, so a final text part written after a retracted call names it as a streamed one does.
+        self._root_run_id: str | None = None
         self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
         self._collect(event)
+
+    def record_context_compacted(self, compacted: dict[str, Any]) -> None:
+        """The answer's "Context compacted" row, saved first among its parts as the live frame shows it, once per
+        reply: the frontend renders one row per answer, the first reduction's."""
+        if any(part.get("type") == "context_compacted" for part in self.parts):
+            return
+        self.parts.insert(0, {"type": "context_compacted", "compacted": compacted})
+
+    def _final_text_part(self, content: str) -> MessagePart:
+        part: MessagePart = {"type": "text", "content": content}
+        if self._root_run_id is not None:
+            part["runId"] = self._root_run_id
+        part["isFinal"] = True
+        return part
 
     def append_final_text(self, content: str) -> None:
         """Adds the final answer after the text already streamed instead of replacing it: a
@@ -243,7 +306,7 @@ class TranscriptCollector(EventEmitter):
         # model turn produced neither tool calls nor text before the
         # empty-answer/error fallback) — append one so the final answer is
         # still represented in the transcript.
-        self.parts.append({"type": "text", "content": content, "isFinal": True})
+        self.parts.append(self._final_text_part(content))
 
     @staticmethod
     def _prenormalize_source_citations(text: str) -> str:
@@ -291,8 +354,8 @@ class TranscriptCollector(EventEmitter):
                 return raw
         return ""
 
-    def _rewrite_refs(self, text: str) -> tuple[str, int, int]:
-        return rewrite_request_refs(text, self._ref_to_url() if self._ref_to_url is not None else None)
+    def _refs(self) -> Mapping[str, str] | None:
+        return self._ref_to_url() if self._ref_to_url is not None else None
 
     @staticmethod
     def _log_rewrites(expanded: int, unresolved: int, tool_call_id: str) -> None:
@@ -303,43 +366,19 @@ class TranscriptCollector(EventEmitter):
             )
 
     def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
-        """`text` with this request's citation refs replaced by their URLs,
-        within `cap` characters and never ending inside a URL.
-
-        A signed storage link loses its signature: the stored step outlives the link's purpose,
-        and later turns read the step's summary, not this copy."""
-        text, expanded, unresolved = self._rewrite_refs(text)
+        text, expanded, unresolved = saved_text(text, self._refs(), cap)
         self._log_rewrites(expanded, unresolved, tool_call_id)
-        text = hide_storage_signatures(text)
-        if cap is None or len(text) <= cap:
-            return text
-        return _head_outside_url(text, cap - 1) + "…"
+        return text
 
     def _durable_args(self, args: object, tool_call_id: str) -> str:
-        """Tool arguments as saved: refs replaced in every string value before any value is cut,
-        so a cut ref ("ref1" of "ref12") is never resolved as a shorter one."""
-        counts = [0, 0]
-
-        def _walk(value: object) -> object:
-            if isinstance(value, str):
-                text, expanded, unresolved = self._rewrite_refs(value)
-                counts[0] += expanded
-                counts[1] += unresolved
-                return hide_storage_signatures(text)
-            if isinstance(value, dict):
-                return {key: _walk(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [_walk(item) for item in value]
-            return value
-
-        rewritten = _walk(args)
-        self._log_rewrites(counts[0], counts[1], tool_call_id)
-        return serialize_tool_args(rewritten)
+        saved, expanded, unresolved = saved_args(args, self._refs())
+        self._log_rewrites(expanded, unresolved, tool_call_id)
+        return saved
 
     def _container_for(self, run_id: str) -> list[MessagePart]:
         return self._containers.setdefault(run_id, self.parts)
 
-    def _collect(self, event: "AgentEvent") -> None:  # noqa: C901
+    def _collect(self, event: "AgentEvent") -> None:
         run_ctx: "RunContext" = event.run_context
         payload = event.payload
         run_id = run_ctx.run_id
@@ -349,6 +388,7 @@ class TranscriptCollector(EventEmitter):
         if event.event_type == EventType.RUN_STARTED:
             if not is_child:
                 self._containers[run_id] = self.parts
+                self._root_run_id = run_id
                 return
             sub_agent_part: MessagePart = {
                 "type": "sub_agent", "runId": run_id, "roleName": run_ctx.role_name, "parts": [],
@@ -409,6 +449,11 @@ class TranscriptCollector(EventEmitter):
                 part["resultPreview"] = self._durable(
                     str(payload.get("content", "")), tool_call_id, _MAX_TOOL_RESULT_CHARS,
                 )
+                error_code = payload.get("error_code")
+                if isinstance(error_code, str) and error_code:
+                    part["errorCode"] = error_code
+                if payload.get("nothing_sent"):
+                    part["nothingSent"] = True
                 result_summary = payload.get("result_summary")
                 if isinstance(result_summary, str):
                     part["resultSummary"] = self._durable(result_summary, tool_call_id)

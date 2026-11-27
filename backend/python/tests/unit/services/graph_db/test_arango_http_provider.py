@@ -22,6 +22,7 @@ Tests cover:
 - get_records_by_record_ids: success, empty, exception
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -792,7 +793,7 @@ class TestGetGraphUserKeysByMongoUserIds:
         ]
 
         result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-            ids, chunk_size=500
+            ids, org_id="org-1", chunk_size=500
         )
 
         assert len(result) == 501
@@ -803,7 +804,7 @@ class TestGetGraphUserKeysByMongoUserIds:
         connected_provider.http_client.execute_aql.return_value = []
         with pytest.raises(ValueError, match="Users not found in graph"):
             await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-                ["507f1f77bcf86cd799439011"], chunk_size=500
+                ["507f1f77bcf86cd799439011"], org_id="org-1", chunk_size=500
             )
 
     @pytest.mark.asyncio
@@ -811,8 +812,26 @@ class TestGetGraphUserKeysByMongoUserIds:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         with pytest.raises(Exception, match="fail"):
             await connected_provider.get_graph_user_keys_by_mongo_user_ids(
-                ["507f1f77bcf86cd799439011"], chunk_size=500
+                ["507f1f77bcf86cd799439011"], org_id="org-1", chunk_size=500
             )
+
+    @pytest.mark.asyncio
+    async def test_missing_org_is_refused_not_unscoped(self, connected_provider):
+        """A lookup with no org must not match users of every organisation."""
+        for org in (None, ""):
+            with pytest.raises(ValueError, match="org_id is required"):
+                await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+                    ["m1"], org_id=org, chunk_size=100,
+                )
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_always_filters_on_the_org(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [{"userId": "m1", "_key": "k1"}]
+        await connected_provider.get_graph_user_keys_by_mongo_user_ids(["m1"], org_id="org-1", chunk_size=100)
+        call = connected_provider.http_client.execute_aql.call_args
+        assert "@org_id == null" not in call[0][0]
+        assert call[1]["bind_vars"]["org_id"] == "org-1"
 
 
 # ---------------------------------------------------------------------------
@@ -2570,46 +2589,6 @@ class TestDeleteRecordByExternalId:
 
 
 # ---------------------------------------------------------------------------
-# get_key_by_external_file_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalFileIdNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_key_by_external_file_id("missing")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_key_by_external_file_id("ext_f1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# get_key_by_external_message_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalMessageIdNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_key_by_external_message_id("missing")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_key_by_external_message_id("ext_m1")
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # get_message_id_header_by_key
 # ---------------------------------------------------------------------------
 
@@ -2633,30 +2612,6 @@ class TestGetMessageIdHeaderByKeyNotFoundAndError:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.get_message_id_header_by_key("r1", "mails")
         assert result is None
-
-
-# ---------------------------------------------------------------------------
-# get_related_mails_by_message_id_header
-# ---------------------------------------------------------------------------
-
-
-class TestGetRelatedMailsByMessageIdHeaderNotFoundAndError:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            "<msg@test.com>", "r1", "mails"
-        )
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            "<msg@test.com>", "r1", "mails"
-        )
-        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -11472,7 +11427,7 @@ class TestValidateFolderCreation:
         result = await connected_provider._validate_folder_creation("kb1", "u1")
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_permission_check_falls_back_to_id_when_kb_name_unavailable(self, connected_provider):
@@ -11981,15 +11936,14 @@ class TestValidateFolderForUpload:
         connected_provider.get_and_validate_folder_in_kb.assert_awaited_once_with("kb1", "f1")
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_returns_404_with_names(self, connected_provider):
-        """Folder that exists globally but not in this KB: 404 with KB/folder names."""
+    async def test_folder_not_in_kb_names_the_kb_not_the_folder(self, connected_provider):
+        """Folder that exists but not in this KB: 404 naming the KB, not the folder."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
-        connected_provider._fetch_record_name = AsyncMock(return_value="Reports")
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="other-kb-folder", user_id="u1", org_id="org1"
@@ -11997,20 +11951,21 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "other-kb-folder" in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "Reports" in result["reason"]
+        assert "other-kb-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base 'Docs KB' (kb1). "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
-    async def test_folder_not_in_kb_falls_back_to_ids_when_names_unavailable(self, connected_provider):
-        """When name lookups return None the reason falls back to bare IDs."""
+    async def test_folder_not_in_kb_falls_back_to_the_kb_id_when_its_name_is_unavailable(self, connected_provider):
+        """With no KB name, the KB id stands in; the folder id the client sent is not quoted."""
         connected_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "userId": "u1"}
         )
         connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
         connected_provider._fetch_kb_name = AsyncMock(return_value=None)
-        connected_provider._fetch_record_name = AsyncMock(return_value=None)
 
         result = await connected_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="ghost-folder", user_id="u1", org_id="org1"
@@ -12018,8 +11973,11 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "ghost-folder" in result["reason"]
-        assert "kb1" in result["reason"]
+        assert "ghost-folder" not in result["reason"]
+        assert result["reason"] == (
+            "The folder was not found in knowledge base kb1. "
+            "The folder may not exist or may belong to a different knowledge base."
+        )
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_with_no_access_message(self, connected_provider):
@@ -12036,7 +11994,7 @@ class TestValidateFolderForUpload:
 
         assert result["valid"] is False
         assert result["code"] == 404
-        assert "kb1" in result["reason"]
+        assert result["reason"] == "Knowledge base not found"
 
     @pytest.mark.asyncio
     async def test_reader_role_returns_403_with_role_in_message(self, connected_provider):
@@ -14864,9 +14822,7 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
-            # mcp_server_ids (no MCP servers attached)
-            [],
-            # deleted_mcp_server_edges (none)
+            # agent -> MCP server edges removed (none attached)
             [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
@@ -14889,8 +14845,7 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
-            [],    # no mcp_server_ids
-            [],    # no deleted_mcp_server_edges
+            [],    # no agent -> MCP server edges (none removed, no server re-checked)
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -14910,8 +14865,7 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
-            [],                       # no mcp_server_ids
-            [],                       # no deleted_mcp_server_edges
+            [],                       # no agent -> MCP server edges (none removed, no server re-checked)
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -14930,8 +14884,7 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -14941,6 +14894,120 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
         assert result["mcp_servers_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_server_is_rechecked_after_the_agents_own_links_are_gone(self, connected_provider) -> None:
+        """The agent's server links go first; every server they named is then re-checked, so a server another agent let go of
+        concurrently (its link already removed) goes with this delete, tools and all."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed
+            ["agentMcpServers/s1"],              # re-check: no agent is attached to s1 any more
+            ["agentTools/t1"],                   # s1's tool links, removed
+            [{"_key": "t1"}],                    # t1, held by no other server
+            [{"_key": "s1"}],                    # s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        queries = [c.args[0] for c in connected_provider.execute_query.await_args_list]
+        assert "REMOVE edge IN agentHasMcpServer" in queries[3] and "RETURN OLD._to" in queries[3]
+        assert connected_provider.execute_query.await_args_list[4].kwargs["bind_vars"] == {"server_ids": ["agentMcpServers/s1"]}
+        assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_runs_the_mcp_cleanup_again_in_a_fresh_transaction(self, connected_provider) -> None:
+        """The MCP cleanup runs in a stream transaction of its own that holds the agent-to-server links exclusively; a
+        write-write conflict with another writer aborts it, and it is run again from the start."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        conflict = ArangoQueryError("Query failed", 409, '{"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=["tx1", "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # tx1: the agent's server links, removed
+            ["agentMcpServers/s1"],              # tx1: s1 is orphaned
+            conflict,                            # tx1: another writer holds s1's tool links
+            ["agentMcpServers/s1"],              # tx2 (tx1 rolled back): the links, removed again
+            ["agentMcpServers/s1"],              # tx2: s1 is orphaned
+            ["agentTools/t1"],                   # tx2: s1's tool links
+            [{"_key": "t1"}],                    # tx2: t1, held by no other server
+            [{"_key": "s1"}],                    # tx2: s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 1, 1)
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+        begin = connected_provider.http_client.begin_transaction.await_args
+        assert begin.kwargs["exclusive"] == [CollectionNames.AGENT_HAS_MCP_SERVER.value]
+        assert [c.kwargs["transaction"] for c in connected_provider.execute_query.await_args_list[3:11]] == ["tx1"] * 3 + ["tx2"] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_lock_timeout_taking_the_mcp_transaction_is_run_again(self, connected_provider) -> None:
+        """Another delete holds the agent-to-server links: taking them times out, and the cleanup is tried again. Nothing is
+        aborted for the attempt that never got a transaction."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        timeout = ArangoQueryError("Begin transaction failed", 409, '{"code":409,"error":true,"errorMessage":"timeout waiting to lock","errorNum":18}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=[timeout, "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            [],                                  # tx2: the agent has no server links
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 1
+        assert connected_provider.http_client.begin_transaction.await_count == 2
+        connected_provider.http_client.abort_transaction.assert_not_awaited()
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_mcp_cleanup_aborts_its_transaction(self, connected_provider) -> None:
+        """A cancellation is not an Exception: the transaction holding the links exclusively is still aborted, and the
+        cancellation goes on to the caller."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            asyncio.CancelledError(),            # cancelled inside the cleanup
+        ])
+
+        with pytest.raises(asyncio.CancelledError):
+            await connected_provider.hard_delete_agent("a1")
+
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_cleanup_keeps_the_agents_links_for_a_retry(self, connected_provider) -> None:
+        """A cleanup that fails after the agent's links were removed is rolled back with them: a later delete finds them again."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed in tx1
+            RuntimeError("server gone"),         # the cleanup fails
+        ])
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 0     # the delete failed and said so; nothing of it was committed
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -14960,8 +15027,7 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -18088,123 +18154,6 @@ class TestGetRecordsByRecordGroup:
 
 
 # ---------------------------------------------------------------------------
-# get_key_by_external_file_id & get_key_by_external_message_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetKeyByExternalFileId:
-    """Tests for get_key_by_external_file_id method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_key(self, connected_provider):
-        """Should return internal key when external ID found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["file_key_123"])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_456")
-        
-        assert result == "file_key_123"
-        connected_provider.logger.debug.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_none(self, connected_provider):
-        """Should return None and log warning when not found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_999")
-        
-        assert result is None
-        connected_provider.logger.warning.assert_called_once()
-        warning_msg = connected_provider.logger.warning.call_args[0][0]
-        assert "No internal key found" in warning_msg
-
-    @pytest.mark.asyncio
-    async def test_multiple_matches_returns_first(self, connected_provider):
-        """Should return first result when multiple matches found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key1", "key2"])
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_duplicate")
-        
-        assert result == "key1"
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider, caplog):
-        """Should return None and log error on exception."""
-        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_key_by_external_file_id("ext_file_err")
-        
-        assert result is None
-        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "DB error")
-        assert fields["op"] == "get_key_by_external_file_id"
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key"])
-        
-        await connected_provider.get_key_by_external_file_id("ext_file", transaction="txn_123")
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_123"
-
-
-class TestGetKeyByExternalMessageId:
-    """Tests for get_key_by_external_message_id method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_key(self, connected_provider):
-        """Should return internal key when external message ID found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["msg_key_789"])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_123")
-        
-        assert result == "msg_key_789"
-        connected_provider.logger.debug.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_not_found_returns_none(self, connected_provider):
-        """Should return None and log warning when not found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_999")
-        
-        assert result is None
-        connected_provider.logger.warning.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_multiple_matches_returns_first(self, connected_provider):
-        """Should return first result when multiple matches found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["msg1", "msg2"])
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_dup")
-        
-        assert result == "msg1"
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider, caplog):
-        """Should return None and log error on exception."""
-        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_key_by_external_message_id("ext_msg_err")
-        
-        assert result is None
-        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "DB error")
-        assert fields["op"] == "get_key_by_external_message_id"
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["key"])
-        
-        await connected_provider.get_key_by_external_message_id("ext_msg", transaction="txn_456")
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_456"
-
-
-# ---------------------------------------------------------------------------
 # get_related_records_by_relation_type, get_message_id_header_by_key, etc.
 # ---------------------------------------------------------------------------
 
@@ -18277,68 +18226,6 @@ class TestGetMessageIdHeaderByKey:
         
         call_args = connected_provider.http_client.execute_aql.call_args
         assert call_args[1]["txn_id"] == "txn_abc"
-
-
-class TestGetRelatedMailsByMessageIdHeader:
-    """Tests for get_related_mails_by_message_id_header method."""
-
-    @pytest.mark.asyncio
-    async def test_found_returns_keys(self, connected_provider):
-        """Should return list of keys when related mails found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["mail2", "mail3"])
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg123@example.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert len(result) == 2
-        assert "mail2" in result
-
-    @pytest.mark.asyncio
-    async def test_no_matches_returns_empty_list(self, connected_provider):
-        """Should return empty list when no related mails found."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg999@example.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, connected_provider, caplog):
-        """Should return empty list and log error on exception."""
-        connected_provider.logger = logging.getLogger("tests.arango_provider.swallowed")
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("DB error"))
-        
-        result = await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg@ex.com>",
-            exclude_key="mail1",
-            collection="mails"
-        )
-        
-        assert result == []
-        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "DB error")
-        assert fields["op"] == "get_related_mails_by_message_id_header"
-
-    @pytest.mark.asyncio
-    async def test_transaction_support(self, connected_provider):
-        """Should pass transaction ID to execute_aql."""
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        
-        await connected_provider.get_related_mails_by_message_id_header(
-            message_id_header="<msg@ex.com>",
-            exclude_key="mail1",
-            collection="mails",
-            transaction="txn_def"
-        )
-        
-        call_args = connected_provider.http_client.execute_aql.call_args
-        assert call_args[1]["txn_id"] == "txn_def"
 
 
 # ---------------------------------------------------------------------------
@@ -19614,3 +19501,43 @@ class TestTrashWalkIndexReadiness:
     async def test_an_index_of_another_definition_does_not_count(self, connected_provider, index) -> None:
         connected_provider.http_client.get_indexes = AsyncMock(return_value=[index])
         assert await connected_provider.is_trash_walk_index_ready() is False
+
+
+class TestDeleteNodeIfMatchCancellation:
+    """A cancelled delete must not leave its stream transaction open (CancelledError is a BaseException)."""
+
+    @staticmethod
+    def _wired(provider: ArangoHTTPProvider, commit: object) -> None:
+        provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
+        provider._logical_edge_collections = MagicMock(side_effect=lambda c: [c])
+        provider.begin_transaction = AsyncMock(return_value="txn-1")
+        provider.http_client.execute_aql = AsyncMock(return_value=[1])
+        provider.commit_transaction = commit
+        provider._abort_quietly = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_delete_aborts_the_transaction(self, connected_provider: ArangoHTTPProvider) -> None:
+        import asyncio
+
+        gate = asyncio.Event()
+
+        async def commit(txn: str) -> None:
+            await gate.wait()
+
+        self._wired(connected_provider, commit)
+        task = asyncio.create_task(connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}))
+        await asyncio.sleep(0.05)  # inside commit_transaction
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")
+
+    @pytest.mark.asyncio
+    async def test_a_miss_aborts_and_a_commit_does_not(self, connected_provider: ArangoHTTPProvider) -> None:
+        commit = AsyncMock()
+        self._wired(connected_provider, commit)
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is True
+        connected_provider._abort_quietly.assert_not_awaited()
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])  # the owner does not match: nothing removed
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is False
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")

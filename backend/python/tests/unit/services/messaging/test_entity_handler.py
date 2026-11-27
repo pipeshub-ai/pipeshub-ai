@@ -38,7 +38,13 @@ def _make_entity_service(graph_provider=None, app_container=None, logger=None):
 
     logger = logger or MagicMock()
     graph_provider = graph_provider or AsyncMock()
-    app_container = app_container or MagicMock()
+    if app_container is None:
+        app_container = MagicMock()
+        # An empty store: a user's deletion removes their OAuth apps, and that step raises on failure.
+        store = app_container.config_service.return_value
+        store.list_keys_in_directory = AsyncMock(return_value=[])
+        # EE reads each org's keys through an org-scoped wrapper of the raw service.
+        store.get_raw_service.return_value = store
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
 
@@ -1048,7 +1054,9 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")
@@ -1982,6 +1990,7 @@ class TestUserAddedConnectorLink:
         began = loop.time()
         with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
             assert await svc._link_connector("c1") is True
+        # wall-clock-ok: stopped 10 ms in; without the stop the pass waits out the 5 s rewrite
         assert loop.time() - began < 1      # stopped at the refused rewrite, 10 ms in
         assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
 
@@ -2013,6 +2022,7 @@ class TestUserAddedConnectorLink:
         with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
             assert await svc._link_connector("c1") is True
         assert stopped.is_set() and len(written) == 1       # cancelled at the rewrite's deadline; the stalled rewrite never landed
+        # wall-clock-ok: a watchdog: without the deadline the pass waits out the 5 s rewrite
         assert loop.time() - began < 1      # a watchdog only: without the deadline the pass waits out the 5 s rewrite
 
     @pytest.mark.asyncio

@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}, "thoughtSignature": "c2lnLXN0cmVhbQ=="}]}, "finishReason": "STOP", "index": 0}], "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 8, "totalTokenCount": 38}, "modelVersion": "gemini-2.5-flash", "responseId": "mgw21-stream-tool"}
+

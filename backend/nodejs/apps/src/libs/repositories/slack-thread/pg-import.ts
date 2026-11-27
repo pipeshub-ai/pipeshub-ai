@@ -36,6 +36,14 @@ export async function importSlackThreadDocs(
   const rows: Row[] = [];
   for (const d of docs) {
     const org = orgOf.get(idText(d.conversationId) ?? '');
+    if (org && typeof d.orgId === 'string' && d.orgId.toLowerCase() !== org) {
+      stats.skipped.push({
+        id: String(d._id),
+        reason:
+          'Slack link whose orgId names another organisation than its conversation',
+      });
+      continue;
+    }
     if (
       !org ||
       typeof d.threadId !== 'string' ||

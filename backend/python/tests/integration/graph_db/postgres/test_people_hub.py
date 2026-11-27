@@ -146,21 +146,14 @@ async def test_the_owner_of_a_record_is_a_user_with_an_owner_grant_of_type_user_
         assert await p.get_record_owner_source_user_email("noowner") is None
 
 
-async def test_mail_is_found_by_its_message_id_header_in_its_collection_and_org_only(w: World) -> None:
+async def test_mail_message_id_header_is_read_in_its_collection_and_org_only(w: World) -> None:
     await w.nodes("mails", {"_key": "m1", "messageIdHeader": "<a@x>"}, {"_key": "m2", "messageIdHeader": "<a@x>"}, {"_key": "m3", "messageIdHeader": "<b@x>"})
     await w.nodes("records", {"_key": "r1", "messageIdHeader": "<a@x>", "connectorId": APP})
     p = w.p
     assert await p.get_message_id_header_by_key("m1", "mails") == "<a@x>" and await p.get_message_id_header_by_key("m1", "records") is None
     assert await p.get_message_id_header_by_key("missing", "mails") is None
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m1", "m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "records") == ["r1"]
-    assert await p.get_related_mails_by_message_id_header("<zz@x>", "none", "mails") == []
-    other = _org()
-    with in_org(other):
-        await World(p, other).nodes("mails", {"_key": "m9", "messageIdHeader": "<a@x>"})
-        assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m9"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]          # not the other org's m9
+    with in_org(_org()):
+        assert await p.get_message_id_header_by_key("m1", "mails") is None
 
 
 async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,10 +161,9 @@ async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, 
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
     assert await w.p.get_message_id_header_by_key("m1", "mails") is None
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == []
     assert await w.p.get_record_owner_source_user_email("m1") is None
     monkeypatch.setattr(w.p, "_q", real)
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
+    assert await w.p.get_message_id_header_by_key("m1", "mails") == "<a@x>"
 
 
 # ---- the verified email of a login user ------------------------------------------------------------------------------------------------
@@ -498,6 +490,7 @@ async def _explain_seeking(tx: uow.Tx, sql: str, *args: object) -> object:
         return await tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs_to_it(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """``hasChildren`` of a collection at the root: a live, non-placeholder record of that collection (and this org) that belongs to it. One such record is enough,
     so the read stops at the first: a DISTINCT over every belongs-to edge of every collection read 258,000 buffers (245 ms) for 11 collections at a million records.
@@ -538,6 +531,7 @@ async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs
 
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_each_collections_children_are_read_by_target_on_every_edges_leaf_the_statistics_do_not_know_the_org_in(pg_db) -> None:
     """The edges are hash-partitioned by org, and each leaf has its own statistics and its own order of indexes. On a leaf whose statistics put the org at a
     row, the planner chose between edges_by_target (org, coll, to_id) and the primary key (org, coll, from_id, ...) by that order: on five of the sixteen

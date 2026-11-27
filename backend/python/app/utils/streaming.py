@@ -16,6 +16,7 @@ from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -41,6 +42,20 @@ from app.modules.retrieval import degraded_notice
 from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
+
+# The sanitizer lives in app.utils.answer_links (imports only ``re``); its names stay importable from here.
+from app.utils.answer_links import (
+    _flatten_unusable_markdown_links as _flatten_unusable_markdown_links,
+)
+from app.utils.answer_links import (
+    _strip_llm_authored_markers as _strip_llm_authored_markers,
+)
+from app.utils.answer_links import (
+    link_workspace_files as link_workspace_files,
+)
+from app.utils.answer_links import (
+    strip_llm_authored_markers_in_parts as strip_llm_authored_markers_in_parts,
+)
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
@@ -702,101 +717,6 @@ async def handle_simple_mode(
             yield event
 
 
-# Markers the frontend interprets as artifact / download cards. These are
-# authored ONLY by the backend (this function) — if an answer from the LLM
-# happens to contain the same syntax (directly or via prompt injection from
-# RAG content), the frontend would render attacker-controlled download cards
-# pointing at arbitrary URLs. Strip any pre-existing matches before we append
-# our own, trusted markers.
-_LLM_ARTIFACT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
-)
-# Mid-form: `::artifact[name]{meta}` — has the `{meta}` block but no `(url)`.
-_LLM_ARTIFACT_NO_URL_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\{[^}]*\}",
-)
-# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
-_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
-)
-_LLM_DOWNLOAD_MARKER_RE = re.compile(
-    r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
-)
-
-# A real, clickable download is ALWAYS delivered via the `::artifact`
-# marker this module appends below — never authored by the model itself.
-# When a generation step doesn't actually deliver a file (e.g. `run_code`
-# wrote outside `$OUTPUT_DIR`, or failed silently) a model can still hand-
-# write an ordinary markdown link like "[Download the report]
-# (sandbox://report.pdf)" claiming success anyway. The frontend's
-# `rehype-sanitize` schema only allows `http`/`https`/`mailto` hrefs
-# (`answer-content.tsx`) and drops anything else outright, so such a link
-# renders styled (colored, underlined) but is inert — worse than plain
-# text since it visually promises something that doesn't work. Flatten
-# markdown links to plain text (dropping the link, keeping the words) only
-# when the URL has an EXPLICIT non-allowed scheme — a genuine citation or
-# search-result link the model quotes always carries a real absolute
-# http(s) URL, and a same-origin relative link (no scheme at all) is left
-# untouched since the sanitizer renders those as-is.
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
-_URL_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
-_ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
-
-
-def _flatten_unusable_markdown_links(answer: str) -> str:
-    if not answer or "](" not in answer:
-        return answer
-
-    def _flatten_if_unusable(match: "re.Match[str]") -> str:
-        text, url = match.group(1), match.group(2).strip()
-        scheme_match = _URL_SCHEME_RE.match(url)
-        if scheme_match is None or scheme_match.group(1).lower() in _ALLOWED_LINK_SCHEMES:
-            return match.group(0)
-        return text
-
-    return _MARKDOWN_LINK_RE.sub(_flatten_if_unusable, answer)
-
-
-def _strip_llm_authored_markers(answer: str) -> str:
-    """Remove any LLM-authored artifact / download markers from *answer*,
-    and flatten any hand-written markdown link the model composed with a
-    URL scheme the frontend would render as dead (see
-    `_flatten_unusable_markdown_links`).
-
-    The frontend's marker parser runs against the full saved message, so a
-    marker anywhere in the stream is a URL-spoofing primitive. We drop them
-    before the backend appends its own known-good markers.
-    """
-    if not answer:
-        return answer
-    stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
-    stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
-    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
-    stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
-    return _flatten_unusable_markdown_links(stripped)
-
-
-def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
-    """Sanitize every `text` part of a transcript in place, recursing into
-    `sub_agent` children.
-
-    :func:`_append_task_markers` only sanitizes the answer string, but the
-    activity timeline renders every OTHER text part as raw markdown with no
-    marker parsing (`agent-activity.tsx`). A marker the model copied out of
-    an earlier turn — they are persisted in message content, so they are in
-    its context — therefore surfaces there verbatim: literal
-    ``::artifact[...]`` text plus an anchor whose ``record:`` href no
-    browser can follow.
-    """
-    for part in parts or []:
-        if not isinstance(part, dict):
-            continue
-        if part.get("type") == "sub_agent":
-            strip_llm_authored_markers_in_parts(part.get("parts"))
-        elif part.get("type") == "text" and part.get("content"):
-            part["content"] = _strip_llm_authored_markers(part["content"])
-
-
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task and ::artifact markers to the answer string.
 
@@ -1099,7 +1019,72 @@ def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
     return _Unbounded
 
 
+# langchain-aws forces the tool for every Bedrock model id with "claude" in it, and newer Claude models refuse that:
+# 'tool_choice: type "tool" and "any" are not supported for this model'.
+_FORCED_TOOL_REFUSED = re.compile(r"tool_choice\b.*\bnot supported", re.IGNORECASE | re.DOTALL)
+# Bedrock model ids that refused, so later calls skip the request that cannot work.
+_models_refusing_forced_tool: set[str] = set()
+
+
+def _refuses_forced_tool(error: BaseException) -> bool:
+    response = getattr(error, "response", None)
+    code = (response.get("Error") or {}).get("Code") if isinstance(response, dict) else None
+    return code == "ValidationException" and bool(_FORCED_TOOL_REFUSED.search(str(error)))
+
+
+class _UnforcedToolFallback(Runnable[Any, Any]):
+    """A Bedrock structured-output call that is sent again without forcing the tool when the model refuses forced
+    tool use. The model may then answer without the tool, which callers already handle as a reply with no answer."""
+
+    def __init__(self, forced: Runnable[Any, Any], unforced: Runnable[Any, Any], model_id: str) -> None:
+        self._forced = forced
+        self._unforced = unforced
+        self._model_id = model_id
+
+    def _refused(self, error: BaseException) -> bool:
+        if not _refuses_forced_tool(error):
+            return False
+        if self._model_id not in _models_refusing_forced_tool:
+            _models_refusing_forced_tool.add(self._model_id)
+            logger.warning(
+                "Bedrock model %s refuses forced tool use; structured answers are asked for without forcing it",
+                self._model_id,
+            )
+        return True
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._model_id not in _models_refusing_forced_tool:
+            try:
+                return self._forced.invoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return self._unforced.invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._model_id not in _models_refusing_forced_tool:
+            try:
+                return await self._forced.ainvoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return await self._unforced.ainvoke(input, config, **kwargs)
+
+
+def _bedrock_structured_output(llm: ChatBedrockConverse, schema: type[BaseModel], **kwargs: Any) -> Runnable[Any, Any]:  # noqa: ANN401
+    if not ({"tool", "any"} & set(getattr(llm, "supports_tool_choice_values", None) or ())):
+        return llm.with_structured_output(schema, **kwargs)
+    unforced = llm.model_copy(update={"supports_tool_choice_values": ("auto",)}).with_structured_output(schema, **kwargs)
+    model_id = str(getattr(llm, "model_id", "") or "")
+    if model_id in _models_refusing_forced_tool:
+        return unforced
+    return _UnforcedToolFallback(llm.with_structured_output(schema, **kwargs), unforced, model_id)
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
+    if getattr(llm, "native_structured_output", False) is True:
+        # A harness run's model: its own transport chooses how the provider is asked.
+        return llm.with_structured_output(schema, include_raw=include_raw)
     if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)) and isinstance(schema, type) and issubclass(schema, BaseModel):
         schema = _without_number_bounds(schema)
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
@@ -1123,10 +1108,13 @@ def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, inc
             additional_kwargs["include_raw"] = True
 
         try:
-            model_with_structure = llm.with_structured_output(
-                schema,
-                **additional_kwargs
-            )
+            if isinstance(llm, ChatBedrockConverse):
+                model_with_structure = _bedrock_structured_output(llm, schema, **additional_kwargs)
+            else:
+                model_with_structure = llm.with_structured_output(
+                    schema,
+                    **additional_kwargs
+                )
             logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
@@ -1158,8 +1146,17 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+class _NoStructuredAnswerError(ValueError):
+    """The model replied without the structured answer: a tool-calling parser yields None for a reply with no tool call."""
+
+
 # An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
-_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException, _NoStructuredAnswerError)
+
+
+def _require_answer(reply: Any) -> None:  # noqa: ANN401 - whatever the structured model returns
+    if reply is None:
+        raise _NoStructuredAnswerError("the reply did not contain the requested JSON answer")
 
 
 def _is_oversized_number(exc: BaseException) -> bool:
@@ -1523,7 +1520,10 @@ async def invoke_with_structured_output_and_reflection(
 
     # Try to parse the response
     parsed_response = None
+    # Unset when there is no reply text to show the model in the reflection turn.
+    response_content = None
     try:
+        _require_answer(response)
 
         if isinstance(response, dict):
             if 'content' in response:
@@ -1579,7 +1579,8 @@ async def invoke_with_structured_output_and_reflection(
         reflection_messages = list(messages)  # Copy the original messages
 
         # Add the failed response to context
-        reflection_messages.append(AIMessage(content=response_content))
+        if response_content is not None:
+            reflection_messages.append(AIMessage(content=response_content))
 
         reflection_prompt = f"""Your previous response could not be parsed correctly.
 Error: {str(parse_error)}
@@ -1595,6 +1596,7 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _call(reflection_messages)
+                _require_answer(reflection_response)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)

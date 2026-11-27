@@ -178,6 +178,38 @@ describe('disabling a service account', () => {
   });
 });
 
+describe('deleting a service account whose shared chats nobody can take over', () => {
+  it('says in plain words why, and what to do, instead of the server sentence', async () => {
+    const { useToastStore } = await import('@/lib/store/toast-store');
+    const addToast = useToastStore((s: { addToast: unknown }) => s.addToast) as ReturnType<typeof vi.fn>;
+    const refused = Object.assign(new Error('The account owns conversations shared with others'), {
+      originalError: {
+        response: { status: 400, data: { error: { code: 'BAD_REQUEST', reasonCode: 'owner_handover_no_admin' } } },
+      },
+    });
+    removeAccount.mockRejectedValue(refused);
+    render(
+      <Theme>
+        <ServiceAccountsPage />
+      </Theme>
+    );
+
+    // Delete lives in the row's actions menu (main's EntityRowActionMenu), then the dialog confirms it.
+    fireEvent.click(await screen.findByRole('button', { name: en.common.moreOptions }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.workspace.serviceAccounts.delete }));
+    fireEvent.click(await screen.findByRole('button', { name: en.workspace.serviceAccounts.delete }));
+
+    await waitFor(() =>
+      expect(addToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variant: 'error',
+          description: en.workspace.serviceAccounts.deleteNoAdminForHandover,
+        })
+      )
+    );
+  });
+});
+
 describe('revoking a service token', () => {
   it('asks before a live credential is destroyed', async () => {
     render(

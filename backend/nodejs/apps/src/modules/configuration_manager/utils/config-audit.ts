@@ -1,5 +1,5 @@
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { audit } from '../../../libs/services/audit';
+import { audit, AuditFields } from '../../../libs/services/audit';
 import { configPaths } from '../paths/paths';
 
 /** The settings a store path belongs to, for the audit event name. No prefix lies under another. */
@@ -36,13 +36,25 @@ export const configSection = (path: string): string =>
       path.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`),
   )?.[1] ?? 'other';
 
+export type ConfigAction = 'create' | 'update' | 'delete';
+
+/**
+ * One `config.<section>.<action>` audit line for a settings change an admin's request saved. `target` is shown only
+ * when it is a PipesHub id, `reason` only as a snake_case code. Never a name, a field or a value.
+ */
+export const auditSettingsChange = (
+  section: string,
+  action: ConfigAction,
+  fields: Pick<AuditFields, 'target' | 'reason'> = {},
+): void => {
+  audit(`config.${section}.${action}`, { ...fields, outcome: 'success' });
+};
+
 /** One `config.<section>.update|delete` audit line for a store write an admin made. Never the key or the value. */
 export const auditConfigChange = (
   key: string,
   action: 'update' | 'delete',
-): void => {
-  audit(`config.${configSection(key)}.${action}`, { outcome: 'success' });
-};
+): void => auditSettingsChange(configSection(key), action);
 
 /** The store methods that change a setting. */
 type ConfigWrites = Pick<

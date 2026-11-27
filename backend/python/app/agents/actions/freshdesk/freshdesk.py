@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -94,7 +95,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Freshdesk toolset
-@ToolsetBuilder("Freshdesk")\
+@ToolsetBuilder("Freshdesk", provider=ToolProvider.CONNECTOR)\
     .in_group("Customer Support")\
     .with_description("Freshdesk integration for customer support ticket management")\
     .with_category(ToolsetCategory.APP)\
@@ -235,7 +236,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_ticket(
         self,
@@ -287,7 +288,7 @@ class FreshDesk:
                 description="The ID of the ticket to retrieve (required)"
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_ticket(self, ticket_id: int, include: Optional[str] = None) -> Tuple[bool, str]:
         try:
@@ -344,7 +345,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_ticket(
         self,
@@ -387,7 +388,7 @@ class FreshDesk:
                 description="The ID of the ticket to delete (required)"
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_ticket(self, ticket_id: int) -> Tuple[bool, str]:
         try:
@@ -425,7 +426,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_note(
         self,
@@ -479,7 +480,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_reply(
         self,
@@ -545,7 +546,7 @@ class FreshDesk:
             ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Custom field values", required=False),
             ToolParameter(name="workspace_ids", type=ParameterType.ARRAY, description="Workspace IDs (array of numbers)", required=False)
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_agent(
         self,
@@ -627,7 +628,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     def search_tickets(
         self,

@@ -9,20 +9,22 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
 from app.agents.actions.util.tool_summaries import (
     args_template,
     confirmation,
     entity_summary,
     list_summary,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -65,6 +67,7 @@ def _clickup_error_message(response: ClickUpResponse) -> str:
     if status == HTTPStatus.TOO_MANY_REQUESTS:
         return "ClickUp's rate limit has been reached. Wait a minute and try again."
     if status == HTTPStatus.UNAUTHORIZED:
+        note_sign_in_rejected()
         return f"ClickUp did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
     if status == HTTPStatus.FORBIDDEN:
         return f"The signed-in ClickUp account is not allowed to do that.{said} Ask a workspace admin for access."
@@ -504,7 +507,7 @@ class UpdateChecklistItemInput(BaseModel):
 
 
 # Register ClickUp toolset (OAuth only); tools are auto-discovered from @tool decorators
-@ToolsetBuilder("ClickUp") \
+@ToolsetBuilder("ClickUp", provider=ToolProvider.CONNECTOR) \
     .in_group("Project Management") \
     .with_description("ClickUp integration for tasks, lists, spaces, and workspaces") \
     .with_category(ToolsetCategory.APP) \
@@ -579,7 +582,7 @@ class ClickUp:
         short_description="Get the authorized ClickUp user details",
         description="Returns the authenticated ClickUp user (id, username, email). Use to confirm who is logged in or get user context.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_authorized_user(self) -> tuple[bool, str]:
         """Get the authorized ClickUp user details."""
@@ -594,7 +597,7 @@ class ClickUp:
         short_description="Get the authorized teams (workspaces)",
         description="Returns list of ClickUp workspaces (teams). Use the returned team id as team_id in get_spaces. Call this first when user asks for spaces, folders, or lists.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_authorized_teams_workspaces(self) -> tuple[bool, str]:
         """Get the authorized teams (workspaces)."""
@@ -619,7 +622,7 @@ class ClickUp:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces.", required=True),
             ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived spaces", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_spaces(
         self,
@@ -650,7 +653,7 @@ class ClickUp:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for folder web_url.", required=True),
             ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived folders", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_folders(
         self,
@@ -687,7 +690,7 @@ class ClickUp:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for list web_url.", required=True),
             ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived lists", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_lists(
         self,
@@ -724,7 +727,7 @@ class ClickUp:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for list web_url.", required=True),
             ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived lists", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_folderless_lists(
         self,
@@ -762,7 +765,7 @@ class ClickUp:
             ToolParameter(name="multiple_assignees", type=ParameterType.BOOLEAN, description="Enable multiple assignees in the space", required=False),
             ToolParameter(name="features", type=ParameterType.DICT, description="Space features configuration", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_space(
         self,
@@ -800,7 +803,7 @@ class ClickUp:
             ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new folder.", required=True),
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Used for web_url in response.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_folder(
         self,
@@ -845,7 +848,7 @@ class ClickUp:
             ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assignee user ID", required=False),
             ToolParameter(name="status", type=ParameterType.STRING, description="Status name", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_list(
         self,
@@ -921,7 +924,7 @@ class ClickUp:
             ToolParameter(name="assignee_rem", type=ParameterType.INTEGER, description="Remove assignee by user ID", required=False),
             ToolParameter(name="unset_status", type=ParameterType.BOOLEAN, description="Remove the status field", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_list(
         self,
@@ -990,7 +993,7 @@ class ClickUp:
             ToolParameter(name="list_ids", type=ParameterType.LIST, description="Filter by list IDs", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.LIST, description="Filter by custom field values", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching ClickUp tasks for workspace {team_id}", "team_id"),
         result_summary=list_summary("tasks", _clickup_task_label, "task"),
     )
@@ -1066,7 +1069,7 @@ class ClickUp:
             ToolParameter(name="show_closed", type=ParameterType.BOOLEAN, description="Include closed (completed) tasks in search results", required=False),
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (0-based). 100 tasks per page.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="write")],
         args_summary=args_template('Searching ClickUp tasks: "{keyword}"', "keyword"),
         result_summary=list_summary("tasks", _clickup_task_label, "task"),
     )
@@ -1117,7 +1120,7 @@ class ClickUp:
         parameters=[
             ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID. Get from get_tasks, create_task, or search_tasks.", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_task(self, task_id: str) -> tuple[bool, str]:
         """Get a specific task."""
@@ -1143,7 +1146,7 @@ class ClickUp:
             ToolParameter(name="assignees", type=ParameterType.LIST, description="Assignee user IDs (e.g. from get_authorized_user or get_list_members)", required=False),
             ToolParameter(name="parent", type=ParameterType.STRING, description="Parent task ID to create this as a subtask", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating ClickUp task "{name}"', "name"),
         result_summary=entity_summary(lambda e: f"Created task: {_clickup_task_label(e)}"),
     )
@@ -1203,7 +1206,7 @@ class ClickUp:
             ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs; requires team_id if true", required=False),
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Team ID (required when custom_task_ids is true)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating ClickUp task {task_id}", "task_id"),
         result_summary=entity_summary(lambda e: f"Updated task: {_clickup_task_label(e)}"),
     )
@@ -1283,7 +1286,7 @@ class ClickUp:
             ToolParameter(name="start", type=ParameterType.INTEGER, description="Start timestamp for pagination (only when task_id is set).", required=False),
             ToolParameter(name="start_id", type=ParameterType.STRING, description="Start comment ID for pagination (only when task_id is set).", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: (
             f"Fetching replies to ClickUp comment {args['comment_id']}"
             if args.get("comment_id")
@@ -1366,7 +1369,7 @@ class ClickUp:
             ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs (only when task_id is set for new comment). If true, team_id is required.", required=False),
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Required when task_id is set and custom_task_ids is true.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=lambda args: (
             f"Replying to ClickUp comment {args['comment_id']}"
             if args.get("comment_id")
@@ -1438,7 +1441,7 @@ class ClickUp:
             ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs. If true, team_id is required.", required=False),
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Required when custom_task_ids is true.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_checklist(
         self,
@@ -1469,7 +1472,7 @@ class ClickUp:
             ToolParameter(name="name", type=ParameterType.STRING, description="Checklist item name.", required=True),
             ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assignee user ID.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_checklist_item(
         self,
@@ -1500,7 +1503,7 @@ class ClickUp:
             ToolParameter(name="resolved", type=ParameterType.BOOLEAN, description="Mark item resolved (checked) or unresolved.", required=False),
             ToolParameter(name="parent", type=ParameterType.STRING, description="Parent checklist item ID for nesting.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_checklist_item(
         self,
@@ -1541,7 +1544,7 @@ class ClickUp:
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Only set when user asks to limit (e.g. 'first 10 docs'); use 10 then. Leave unset for list all docs.", required=False),
             ToolParameter(name="cursor", type=ParameterType.STRING, description="Cursor for next page; only when paginating. Leave unset for first page.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_workspace_docs(
         self,
@@ -1587,7 +1590,7 @@ class ClickUp:
             ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
             ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_doc_pages(
         self,
@@ -1624,7 +1627,7 @@ class ClickUp:
             ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID. Get from get_doc_pages.", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_doc_page(
         self,
@@ -1663,7 +1666,7 @@ class ClickUp:
             ToolParameter(name="parent_type", type=ParameterType.INTEGER, description="Parent type: 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace. Use with parent_id.", required=False),
             ToolParameter(name="visibility", type=ParameterType.STRING, description="Visibility: PUBLIC or PRIVATE.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_doc(
         self,
@@ -1709,7 +1712,7 @@ class ClickUp:
             ToolParameter(name="content", type=ParameterType.STRING, description="Content of the new page.", required=False),
             ToolParameter(name="content_format", type=ParameterType.STRING, description="Content format: text/md (markdown) or text/plain.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_doc_page(
         self,
@@ -1763,7 +1766,7 @@ class ClickUp:
             ToolParameter(name="content_edit_mode", type=ParameterType.STRING, description="How to update content: replace, append, or prepend.", required=False),
             ToolParameter(name="content_format", type=ParameterType.STRING, description="Content format: text/md or text/plain.", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_doc_page(
         self,

@@ -326,7 +326,7 @@ export function OverviewTab({
       {/* Local watcher status */}
       {localSyncStatus && (
         <Flex align="center" justify="between" style={{ marginBottom: 4 }}>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.overview.localWatcherLabel')}
           </Text>
           <Text size="1" style={{ color: 'var(--gray-11)' }}>

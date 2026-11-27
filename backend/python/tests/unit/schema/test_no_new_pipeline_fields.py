@@ -29,7 +29,7 @@ STAGE_STATE_PROPERTIES = frozenset({
     "virtualRecordId", "workerId",
 })
 
-#: The record schema's property names as the previous release defined them.
+#: The record schema's property names: the previous release's, and the ones this release only accepts.
 RECORD_PROPERTIES = frozenset({
     "incarnationId",      # names the life of the vertex; identity, not pipeline state. Minted at insert, changed only by a restore
     "accessRule", "connectorId", "connectorName", "contentRev", "createdAtTimestamp", "definition",
@@ -70,6 +70,11 @@ RECORD_PROPERTIES = frozenset({
     # The parser that built a record's indexed copy, with the timestamp and virtual record it was written with and the source of
     # the label. This release accepts them and writes none unless RECORD_PARSER_IDENTITY_WRITE is on (off by default).
     "indexedParser", "indexedParserAt", "indexedParserVrid", "indexedParserSource",
+}) | frozenset({
+    # Accepted from this release, so the next can write them; written only by features that are off by default (a
+    # chat upload's uploader and send state with the agent harness on, an edition's source metadata reader), so
+    # with them off a record still validates against the previous release's schema.
+    "awaitingSend", "editionFields", "uploadConversationId", "uploaderAgentKey", "uploaderKind", "uploaderUserId",
 })
 
 

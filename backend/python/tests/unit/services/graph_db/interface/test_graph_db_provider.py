@@ -231,6 +231,7 @@ class TestAbstractMethodInventory:
         "delete_edges_to_groups",
         "delete_edges_between_collections",
         "delete_nodes_and_edges",
+        "delete_node_if_match",
         "update_edge",
         # Generic filter operations
         "remove_nodes_by_field",
@@ -261,6 +262,7 @@ class TestAbstractMethodInventory:
         "get_record_by_path",
         "get_records_by_file_path",
         "get_record_by_external_id",
+        "get_records_by_external_ids",
         "get_record_by_external_revision_id",
         "get_child_record_ids_by_relation_type",
         "get_parent_record_ids_by_relation_type",
@@ -339,6 +341,7 @@ class TestAbstractMethodInventory:
         "get_user_by_user_id",
         "apply_verified_user_email",
         "get_graph_user_keys_by_mongo_user_ids",
+        "get_graph_user_keys_by_mongo_user_ids_all_orgs",
         "get_account_type",
         "get_connector_stats",
         "get_users",
@@ -425,6 +428,7 @@ class TestAbstractMethodInventory:
         # File/parent operations
         # Sync point operations
         "get_sync_point",
+        "list_sync_points",
         "upsert_sync_point",
         "update_sync_point_if",
         "backfill_block_name_folded",
@@ -463,7 +467,6 @@ class TestAbstractMethodInventory:
         "delete_blocks_for_records",
         "sweep_deleted_connector_writes",
         "delete_connector_instance",
-        "get_key_by_external_file_id",
         "organization_exists",
         "get_user_sync_state",
         "update_user_sync_state",
@@ -497,9 +500,7 @@ class TestAbstractMethodInventory:
         "get_linked_records",
         "get_knowledge_hub_parent_node",
         "validate_folder_exists_in_kb",
-        "get_key_by_external_message_id",
         "get_message_id_header_by_key",
-        "get_related_mails_by_message_id_header",
         "check_connector_name_uniqueness",
         "batch_update_nodes",
         "get_connector_instances_with_filters",
@@ -507,6 +508,7 @@ class TestAbstractMethodInventory:
         # Team operations
         "get_team_with_users",
         "get_user_teams",
+        "get_user_team_roles",
         "find_team_by_name",
         "get_team_users",
         "delete_team_member_edges",

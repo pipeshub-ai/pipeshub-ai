@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_OUTPUT_DERIVED
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -70,7 +72,7 @@ class ParseHolidayDatesInput(BaseModel):
 # DateCalculator Toolset
 # ============================================================================
 
-@ToolsetBuilder("DateCalculator")\
+@ToolsetBuilder("DateCalculator", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description(
         "Date calculation utility — computes weekends, holidays, and exclusion "
@@ -111,7 +113,7 @@ class DateCalculator:
             ToolParameter(name="include_saturdays", type=ParameterType.BOOLEAN, description="Whether to include Saturdays in the exclusion list.", required=False, default=True),
             ToolParameter(name="include_sundays", type=ParameterType.BOOLEAN, description="Whether to include Sundays in the exclusion list.", required=False, default=True),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def get_exclusion_dates(
         self,
@@ -212,7 +214,7 @@ class DateCalculator:
             ToolParameter(name="start_date", type=ParameterType.STRING, description="Start of the date range (YYYY-MM-DD).", required=True),
             ToolParameter(name="end_date", type=ParameterType.STRING, description="End of the date range (YYYY-MM-DD).", required=True),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def list_weekend_dates(self, start_date: str, end_date: str) -> str:
         """List all weekend dates in the range."""
@@ -265,7 +267,7 @@ class DateCalculator:
             ToolParameter(name="text", type=ParameterType.STRING, description="Raw text content from a Confluence page or other source containing holiday dates. The tool will extract all dates it can find in any common format.", required=True),
             ToolParameter(name="year", type=ParameterType.INTEGER, description="If provided, only return holidays for this year.", required=False),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility"), Tag(key="effect", value="read"), TAG_OUTPUT_DERIVED],
     )
     async def parse_holiday_dates(self, text: str, year: Optional[int] = None) -> str:
         """Extract dates from raw text content."""

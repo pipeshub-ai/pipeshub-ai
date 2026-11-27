@@ -215,6 +215,26 @@ class TestGraphDBProviderFactoryCreateProvider:
 
         mock_logger.error.assert_called()
 
+    def test_the_default_postgres_provider_class_is_this_builds(self) -> None:
+        import app.edition_services as edition
+        from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+        assert edition.PostgresGraphProvider is PostgresGraphProvider
+
+    @pytest.mark.asyncio
+    async def test_postgres_provider_class_comes_from_the_edition_services(self) -> None:
+        """postgres resolves its provider class through app.edition_services, as neo4j does."""
+        mock_logger, config, db, provider = MagicMock(), MagicMock(), MagicMock(), MagicMock()
+
+        with patch.dict(os.environ, {"DATA_STORE": "postgres"}), \
+             patch("app.edition_services.PostgresGraphProvider", return_value=provider) as cls, \
+             patch("app.core.db.shared.acquire_db", new_callable=AsyncMock, return_value=db), \
+             patch("app.core.db.DbConfig.from_env", return_value=MagicMock()):
+            result = await GraphDBProviderFactory.create_provider(mock_logger, config)
+
+        assert result is provider
+        cls.assert_called_once_with(mock_logger, db, config_service=config)
+
 
 class TestGraphDBProviderFactoryCreateArangoHttpProvider:
     """Tests for GraphDBProviderFactory._create_arango_http_provider."""
