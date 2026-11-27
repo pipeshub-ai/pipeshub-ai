@@ -133,13 +133,19 @@ def test_legp_a_service_account_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert toolset_path("inst-1", "sa") not in fed.world.config.reads
 
 
-def test_legp_a_credential_the_store_does_not_hold_stops_both_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Nothing is bound for a credential nobody connected: the header-fed turn reads it and answers as today."""
+def test_legp_a_credential_the_store_does_not_hold_goes_on_without_it_both_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing is bound for a credential nobody connected: both turns run without the toolset and name it as one the
+    person can connect, the header-fed turn as the turn that reads it."""
     read, read_response, fed, fed_response = _pair(
         monkeypatch, lambda: World(toolset_owners=("u-alice",)), AGENT, agent="shared", owner=("u-bob", "user:u-bob")
     )
-    assert read.loop.calls == fed.loop.calls == []
-    assert "toolset_config_missing" in read_response.text
+    assert _handed(fed) == _handed(read)
+    info = _handed(read)["query_info"]
+    assert info["toolsets"] == [] and info["toolsetConfigs"] == {}
+    assert {(item["instanceId"], item["problem"]) for item in info["unavailableTools"]} == {
+        ("inst-1", "not_configured"), ("inst-2", "not_configured"),
+    }
+    assert "toolset_config_missing" not in read_response.text
     assert fed_response.text == read_response.text
 
 

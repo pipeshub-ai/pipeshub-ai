@@ -21,7 +21,12 @@ import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.harness.credentials.sources import ToolsetSecretSource
-from app.harness.credentials.tool_credentials import scope_of, toolset_reference
+from app.harness.credentials.tool_credentials import (
+    REF_KEY,
+    mcp_reference,
+    scope_of,
+    toolset_reference,
+)
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
@@ -315,7 +320,8 @@ class TestChatStreamToolsets:
         c, _ = make_client(graph, config)
         _stream(c, "sa", "bob")
         (call,) = loop.calls
-        assert call["query_info"]["toolsetConfigs"]["inst-1"]["who"] == "bob"
+        # A reference to the caller's own record, resolved at the effect boundary, never the record.
+        assert call["query_info"]["toolsetConfigs"]["inst-1"] == toolset_reference("inst-1", "u-bob")
 
     @pytest.mark.parametrize("stored,problem", [
         (None, "not_configured"),
@@ -359,7 +365,7 @@ class TestChatStreamToolsets:
 
         (call,) = loop.calls
         assert [t["instanceId"] for t in call["query_info"]["toolsets"]] == ["inst-1"]
-        assert call["query_info"]["toolsetConfigs"] == {"inst-1": {"isAuthenticated": True, "who": "bob"}}
+        assert call["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
         assert [i["instanceId"] for i in call["query_info"]["unavailableTools"]] == ["inst-2"]
 
     def test_everything_connected_sends_no_notice(self, graph, loop) -> None:
@@ -475,7 +481,8 @@ class TestChatStreamMcpServers:
 
         (call,) = loop.calls
         config = call["query_info"]["mcpServerConfigs"]["inst-m"]
-        assert config["auth"]["who"] == "bob" and config["ownerId"] == "u-bob"
+        # A reference to the user's own credential, resolved when the session opens, never the record.
+        assert config[REF_KEY] == mcp_reference("inst-m", "u-bob") and config["ownerId"] == "u-bob"
         assert call["query_info"]["unavailableTools"] == []
 
     def test_a_removed_server_is_marked_not_found(self, graph, loop) -> None:
