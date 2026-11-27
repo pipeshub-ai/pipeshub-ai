@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.core.db import ConnectionLost, DbError, DbTimeout, TooManyConnections
+from app.core.db import (
+    ConnectionLost,
+    DbError,
+    DbTimeout,
+    PoolTimeout,
+    TooManyConnections,
+)
 from app.services.vector_db.pgvector import dense, fusion, validate
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
@@ -393,9 +399,9 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
-    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 4,
                      ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
-                     ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("visibility.py", "admitted"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -483,12 +489,44 @@ async def test_connector_checks_that_miss_together_share_one_read() -> None:
         assert len(reads_made) == 1                                                   # and the answer is reused for its ttl
 
 
+@pytest.mark.asyncio
+async def test_the_unconnected_points_scan_runs_only_for_a_user_who_reads_every_connector() -> None:
+    """The scan of the org's points (22 s at 10 M points, so it always ran out of its budget) ran for every user with a connector arm, though
+    only a user who reads every connector can have the arms dropped."""
+    import asyncio
+
+    from app.core import org_context
+
+    asked: list[str] = []
+
+    class Db:
+        async def run(self, fn, **opts: object) -> object:
+            class Tx:
+                async def fetch(self, sql: str, *a: object) -> list:
+                    asked.append("list")
+                    return [{"member_id": "c1"}, {"member_id": "c2"}]
+
+                async def fetchval(self, sql: str, *a: object) -> object:
+                    asked.append("scan" if "unconnected" in sql else "budget")
+                    return False
+
+            return await fn(Tx())
+
+    for apps, scanned, found in ((["c1"], False, None), (["c1", "c2", "c9"], True, frozenset({"c1", "c2"}))):
+        asked.clear()
+        sizer = dense.Sizer(Db(), T)
+        with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+            assert await sizer.connectors(ORG, 1, apps) is None
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+            assert ("scan" in asked) is scanned and await sizer.connectors(ORG, 1, apps) == found
+
+
 class _SlowPoolDb:
     """A unit of work like the kernel's: it first waits ``wait_s`` for a pooled connection, and a caller's ``timeout_ms`` covers that wait
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
 
     def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
-        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+        self.wait_s, self.fail, self.runs, self.budgets, self.waited = wait_s, fail, 0, [], 0
 
     async def run(self, fn, **opts: object) -> object:
         import asyncio
@@ -497,6 +535,7 @@ class _SlowPoolDb:
 
         self.runs += 1
         await asyncio.sleep(self.wait_s)
+        self.waited += 1
         timeout_ms = opts.get("timeout_ms")
         if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
             raise DbTimeout("the statement ran out of the budget the pool wait used up")
@@ -539,18 +578,22 @@ async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_time
     import asyncio
 
     from app.core import org_context
-    from app.core.db import DbTimeout, PoolTimeout
+    from app.core.db import ConnectionLost, DbTimeout, PoolTimeout
 
     t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
-    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+    # a connection the server dropped (a restart, a failover) says nothing about the org's size either: asked again soon, as a busy pool is
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (ConnectionLost("connection was closed in the middle of operation", retry_safe=True), True),
+                        (DbTimeout("canceling statement due to statement timeout"), False)):
         db = _SlowPoolDb(0.0, fail=fail)
         sizer = dense.Sizer(db, t)
         with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
             assert await sizer.connectors(ORG, 1) is None
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)     # the first check has finished
             assert await sizer.connectors(ORG, 1) is None                              # fails closed: the arms stay on
-            await asyncio.sleep(0.05)
-            assert db.runs == (2 if again else 1), fail                                # a busy pool is asked again soon; a big org is not
+            # a busy pool or a lost connection is asked again soon (a second check runs); a big org is not (none is scheduled)
+            assert bool(sizer._connectors_inflight) is again, fail
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+            assert db.runs == (2 if again else 1), fail
 
 
 # ---- the lexical leg -------------------------------------------------------------------------------------------------------------------
@@ -682,7 +725,7 @@ def _lost() -> ConnectionLost:
     return ConnectionLost("cannot connect", retry_safe=True)
 
 
-@pytest.mark.parametrize("first", [None, DbTimeout("busy")], ids=["sizing-read", "degraded-read"])
+@pytest.mark.parametrize("first", [None, PoolTimeout("busy")], ids=["sizing-read", "degraded-read"])
 async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answering_an_empty_degraded_leg(first) -> None:
     db = _ScriptedDb(*([first] if first else []), _lost())
     with pytest.raises(ConnectionLost):
@@ -690,9 +733,92 @@ async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answe
 
 
 async def test_a_dense_leg_that_hits_another_database_failure_still_answers_an_empty_overload_leg() -> None:
-    db = _ScriptedDb(DbTimeout("busy"), DbError("no slot"))
+    db = _ScriptedDb(PoolTimeout("busy"), DbError("no slot"))
     leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
     assert leg.rows == [] and leg.degraded == "overload"
+
+
+def _rows(n: int) -> list[tuple[int, str]]:
+    return [(i, f"p{i}") for i in range(n)]
+
+
+async def test_a_count_that_runs_out_of_its_budget_is_remembered_as_too_many_and_the_index_serves_the_filter() -> None:
+    """At 10M points a broad filter's count never fit its budget: every query spent it again, then took the degraded path, and
+    under load that path failed too and the search answered nothing."""
+    q = query()
+    db = _AnswersDb(DbTimeout("canceling statement due to statement timeout"), _rows(q.leg), _rows(q.leg))
+    sizer = dense.Sizer(db, T)
+    for _ in range(2):
+        leg, sz = await dense.search(db, sizer, q, T)
+        assert leg.degraded is None and leg.plan.tier is dense.Tier.H and leg.rows == _rows(q.leg)
+        assert sz.assumed and sz.capped and sz.tombstones > T.tombstone_hash_max      # tombstones unread: the anti-join, safe at any count
+    assert db.answers == []                                                           # one count for both queries
+
+
+async def test_a_short_index_answer_after_an_assumed_count_is_read_exactly_by_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    narrow: list[bool] = []
+    real = dense._bounded
+
+    async def spy(tx, q, t, *, narrow: bool) -> list:
+        narrow_seen.append(narrow)
+        return await real(tx, q, t, narrow=narrow)
+
+    narrow_seen = narrow
+    monkeypatch.setattr(dense, "_bounded", spy)
+
+    class _Tx:
+        async def fetch(self, sql: str, *a: object) -> list:
+            return [{"point_sk": i, "point_id": f"p{i}"} for i in range(5)]
+
+    class _Db(_AnswersDb):
+        async def run(self, fn: object, **_: object) -> object:
+            answer = self.answers.pop(0)
+            if answer is _Tx:
+                return await fn(_Tx())                                                # the exact path runs its own statement
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    db = _Db(DbTimeout("statement timeout"), _rows(2), _Tx)                           # the count, the index tier, the exact path
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.rows == _rows(5) and leg.degraded == "sizing"                          # flagged: the size was never counted
+    assert db.answers == [] and narrow == [True]                                      # by groups: only the few candidates are read
+
+
+async def test_a_short_index_answer_is_kept_when_the_exact_read_cannot_run() -> None:
+    """The exact read after a short index answer ran out of time: the leg answered nothing, though the index had found rows."""
+    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), PoolTimeout("no connection"))
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.rows == _rows(2) and leg.degraded == "overload"
+    db = _AnswersDb(DbTimeout("statement timeout"), _rows(2), _lost())
+    with pytest.raises(ConnectionLost):
+        await dense.search(db, dense.Sizer(db, T), query(), T)
+
+
+async def test_an_assumed_count_is_reused_for_its_ttl_even_when_the_leaf_it_keeps_is_older(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leaf read earlier and expired since kept its old deadline, so every query of the minute ran the count again."""
+    clock = [1000.0]
+    monkeypatch.setattr(dense.time, "monotonic", lambda: clock[0])
+    q = query()
+    db = _AnswersDb((("points_o_x", 5_000_000), 10, False, 0), _rows(q.leg))         # first: counted, ten candidates
+    sizer = dense.Sizer(db, T)
+    await dense.search(db, sizer, q, T)
+    clock[0] += T.leaf_ttl_s + 1                                                      # leaf and count expired
+    db.answers = [DbTimeout("statement timeout"), _rows(q.leg), _rows(q.leg)]          # the count runs out of time once
+    for _ in range(2):
+        leg, sz = await dense.search(db, sizer, q, T)
+        assert sz.assumed and sz.own_leaf and sz.leaf_rows == 5_000_000               # the leaf keeps what was known
+    assert db.answers == []                                                           # the second query reused the assumed count
+
+
+@pytest.mark.parametrize("busy", [PoolTimeout("no connection"), DbError("other")], ids=["pool", "error"])
+async def test_a_count_that_could_not_run_is_not_remembered(busy) -> None:
+    db = _AnswersDb(busy, _rows(3), busy, _rows(3))
+    sizer = dense.Sizer(db, T)
+    for _ in range(2):
+        leg, _ = await dense.search(db, sizer, query(), T)
+        assert leg.degraded == "sizing"
+    assert db.answers == []                                                           # asked again: a busy pool says nothing about the filter
 
 
 async def test_a_pgvector_search_that_cannot_reach_the_database_ends_unavailable_after_one_retry() -> None:

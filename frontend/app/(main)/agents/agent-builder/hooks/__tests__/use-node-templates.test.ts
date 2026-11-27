@@ -1,13 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
-vi.mock('react-i18next', () => ({
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) =>
       opts ? `${key}:${JSON.stringify(opts)}` : key,
   }),
 }));
 
+import '@/lib/__tests__/test-i18n';
 import { useAgentBuilderNodeTemplates } from '../use-node-templates';
 import type { SkillForBuilder } from '../../../types';
 
@@ -64,5 +66,12 @@ describe('useAgentBuilderNodeTemplates — skills', () => {
 
     const template = result.current.nodeTemplates.find((t) => t.type === 'skill-pdf-toolkit')!;
     expect(template.description).toBe('agentBuilder.skillNodeTemplateDescription');
+  });
+
+  it('names a skill as the chat does: an office pack by its format, an acronym in capitals (FU-QUICK)', () => {
+    const skills = ['docx', 'xlsx', 'pptx', 'pdf', 'deploy-runbook'].map((name) => makeSkill({ name }));
+    const { result } = renderHook(() => useAgentBuilderNodeTemplates([], [], [], [], skills));
+    const labels = result.current.nodeTemplates.filter((t) => t.category === 'skills').map((t) => t.label);
+    expect(labels).toEqual(['Word document', 'Excel spreadsheet', 'PowerPoint presentation', 'PDF', 'Deploy Runbook']);
   });
 });

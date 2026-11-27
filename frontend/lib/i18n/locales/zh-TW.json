@@ -140,13 +140,127 @@
   "chatStream": {
     "thinkingFallback": "思考中…",
     "refiningResponse": "正在潤飾回應…",
+    "reconnecting": "正在重新連線…",
+    "durableStreamLost": "連線已中斷，但回答仍在產生中。請重新整理頁面查看。",
     "errorFallback": "發生錯誤。請再試一次。",
     "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
     "copyCode": "複製",
     "copiedCode": "已複製",
+    "queued": "等待開始…",
+    "admission": {
+      "quota": "你在短時間內傳送了太多訊息。請稍候一分鐘再傳送。",
+      "quotaActiveUser": "你正在執行的回答已達到工作區允許的上限。請等待其中一個完成或將其停止，然後再傳送。",
+      "quotaActiveOrg": "你的工作區正在執行的回答已達到允許的上限。請在其中一個完成後再試一次。",
+      "readOnly": "此對話僅以唯讀方式與你共用。如需提問，請使用「私下繼續」或開始新的聊天。",
+      "collaboratorTurns": "你的組織不允許被共用對話的人在其中傳送訊息。請使用「私下繼續」在你自己的副本中提問。",
+      "runActive": "代理仍在處理此對話。請等候其完成或將其停止，然後重試。",
+      "erased": "此對話已被刪除。請開始新的聊天以繼續。",
+      "regenerateNotLast": "只能重新產生最新的回答。請重新載入對話後重試。",
+      "historyTooLarge": "此對話太長，無法繼續。請開始新的聊天。",
+      "engineUnavailable": "此代理的程式設計引擎目前無法在此部署上執行。請聯絡你的管理員。",
+      "engineProfileUntrusted": "此代理的程式設計引擎未針對此部署簽署，因此無法在此執行。請聯絡你的管理員。",
+      "engineSandboxMissing": "程式設計引擎需要沙箱附加元件，此部署未安裝。請聯絡你的管理員。",
+      "configUnavailable": "暫時無法載入你所屬組織的設定，因此沒有啟動任何操作。請稍後重新傳送訊息。",
+      "placement": "此代理程式無法為你的組織在此伺服器上執行。請聯絡管理員。",
+      "accountMissing": "此代理的模型帳戶在這裡尚未設定。請讓你的管理員在 AI 模型中為此引擎設定一個模型，然後再傳送。",
+      "forbidden": "你無權存取此代理或此訊息提到的內容。請聯絡代理的擁有者或你的管理員。",
+      "notFound": "找不到此對話或代理。它可能已被刪除或取消共用。",
+      "network": "你的訊息未能到達伺服器。請檢查網路連線後重新傳送。",
+      "modelAccess": "你組織的 AI 規則不允許在此使用該模型或帳戶。請選擇其他模型，或聯絡你的管理員。",
+      "failed": "無法開始處理你的訊息。請重試；如果問題持續，請聯絡你的管理員。",
+      "sharedSessionEngine": "只有此對話的擁有者才能向其程式碼代理傳送訊息。如需提問，請使用「私下繼續」或開始新的聊天。",
+      "engineProfile": "此代理的設定超出了你的組織所允許的範圍。請讓你的管理員檢查引擎設定檔。",
+      "policyUnavailable": "目前無法讀取你所屬組織的 AI 規則，因此沒有傳送任何內容。請稍候片刻，然後重新傳送。",
+      "repositoryNeedsEngine": "儲存庫需要編碼引擎。請先為此聊天選擇引擎，再選擇儲存庫。",
+      "repositoryToolsetMissing": "你的 GitHub 連線不存在或已登出。請在「你的動作」中連線 GitHub，然後重新選擇儲存庫。",
+      "repositoryNotGithub": "只能使用 GitHub 儲存庫。請選擇一個 GitHub 儲存庫。",
+      "repositoryLocked": "此聊天的儲存庫已複製。如需處理其他儲存庫，請開始新的聊天。",
+      "repositoryFailed": "無法儲存儲存庫。請再試一次。",
+      "gatesNeedRuntime": "此代理程式的安全設定需要代理程式執行環境，但此工作區已將其關閉。請管理員開啟。",
+      "harnessGroup": "您的組織只允許部分群組使用代理程式。請請管理員將您加入其中一個群組。",
+      "modelGroup": "您的組織只允許部分群組使用此模型。請選擇其他模型，或請管理員將您加入。",
+      "engineGroup": "您的組織只允許部分群組使用此程式碼引擎。請選擇其他引擎，或請管理員將您加入。",
+      "operatorStopped": "你的管理員已暫時停止此處的代理工作。請聯絡你的管理員。"
+    },
+    "runError": {
+      "workerLost": "執行此任務的伺服器已停止，且此代理程式不會自動繼續，因此任務已結束。請重新傳送訊息再執行一次。",
+      "notStarted": "代理無法啟動：一分半鐘內沒有伺服器接手該請求。未執行任何操作。請重試；如果問題持續，請聯絡你的管理員。",
+      "noCompatibleWorker": "目前沒有伺服器可以執行此類任務。未執行任何操作。請聯絡你的管理員。",
+      "deadlineExceeded": "此次執行耗時過長，已被停止。不會再有後續動作。請重新傳送訊息再試一次。",
+      "quarantined": "此次執行多次失敗，已被停止。請重新傳送訊息再試一次。",
+      "capabilityLost": "此代理所需的工具或連線已無法使用。請重試；如果問題持續發生，請聯絡你的管理員。",
+      "modelNoLongerConfigured": "此對話使用的 AI 模型已不再設定。請重新傳送訊息以使用目前的模型繼續，或請管理員檢查 AI 模型設定。",
+      "engineUnavailable": "此代理的程式碼引擎目前無法在此部署上執行。未執行任何操作。請聯絡你的管理員。",
+      "mcpUnavailable": "目前無法連線 MCP 伺服器。請一分鐘後重試；如果問題持續發生，請聯絡你的管理員。",
+      "mcpToolWithdrawn_one": "{{servers}} 不再提供此任務正在使用的一個工具，因此任務已停止。重新傳送訊息即可在沒有該工具的情況下繼續，或請管理員檢查該應用程式的工具。",
+      "mcpToolWithdrawn_other": "{{servers}} 不再提供此任務正在使用的一個工具，因此任務已停止。重新傳送訊息即可在沒有該工具的情況下繼續，或請管理員檢查該應用程式的工具。",
+      "mcpToolWithdrawnUnnamed": "某個已連線的應用程式不再提供此任務正在使用的一個工具，因此任務已停止。重新傳送訊息即可在沒有該工具的情況下繼續，或請管理員檢查其工具。",
+      "providerUnavailable": "AI 模型供應商暫時無法使用，因此此任務已停止。這不是你這邊的問題：請幾分鐘後再試。",
+      "rateLimited": "AI 模型供應商正在限制請求，因此此任務已停止。請幾分鐘後再試。",
+      "sandboxUnavailable": "沒有可用的沙箱來執行此任務，因此未執行任何動作。請幾分鐘後重試；如果問題持續發生，請聯絡管理員。",
+      "storeUnavailable": "檔案儲存空間在幾分鐘內都無法連線，因此此任務已停止。請幾分鐘後重試；如果問題持續發生，請聯絡管理員。",
+      "eventFlood": "編碼引擎傳送的更新遠超過任務可承受的數量，因此已被停止。請重新傳送訊息；如果問題持續發生，請聯絡管理員。",
+      "gvisorUnavailable": "程式設計引擎需要此伺服器上的 gVisor 沙箱執行環境。請請管理員安裝 — 安裝指南：https://github.com/pipeshub-ai/pipeshub-ai/blob/main/deployment/docker-compose/GVISOR.md",
+      "engineToolsUnreachable": "程式碼引擎無法連線到 PipesHub 的工具，因此此任務在完成前已停止。請重新傳送你的訊息；如果問題持續發生，請聯絡管理員。",
+      "egressVolumeExceeded": "此任務傳輸的資料超過此伺服器上單一任務的上限，因此已停止。請改為較小的任務，或向管理員詢問該上限。",
+      "secretBlocked": "此任務的一個請求看起來包含金鑰（API 金鑰或存取權杖），PipesHub 已將其攔截，因此任務已停止。請從訊息或檔案中移除該金鑰後重新傳送。",
+      "operatorStopped": "你的管理員已暫時停止此代理工作。請聯絡你的管理員，或在管理員恢復後重新傳送你的訊息。",
+      "operatorStoppedSession": "你的管理員已暫時停止此對話中的代理工作。",
+      "operatorStoppedAgent": "你的管理員已暫時停止此代理。",
+      "operatorStoppedOrg": "你的管理員已暫時停止你所屬組織的代理工作。",
+      "operatorStoppedEngineVersion": "你的管理員已停止此程式碼引擎版本。請重新傳送你的訊息，以在其他版本上繼續。",
+      "operatorStoppedEngineVersionSecurity": "你的管理員因安全性修正已停止此程式碼引擎版本。請重新傳送你的訊息，以在較新的版本上繼續。",
+      "operatorStoppedInstance": "你的管理員已暫時停止此伺服器上的代理工作。",
+      "operatorStoppedEgress": "你的管理員已關閉程式碼沙箱的網際網路存取，因此此任務已停止。請重新傳送你的訊息；助理將在不使用程式碼引擎的情況下回答。",
+      "imageUntrusted": "此代理程式的沙箱映像檔未使用本伺服器信任的金鑰簽署，因此未啟動任何內容。請聯絡管理員。",
+      "outOfMemory": "此任務記憶體不足，已停止。請嘗試較小的任務，或向管理員詢問程式碼引擎的記憶體。",
+      "outOfMemoryLimit": "此任務記憶體不足（上限 {{limit}}），已停止。請嘗試較小的任務，或向管理員詢問程式碼引擎的記憶體。"
+    },
+    "toolFailure": {
+      "unavailable": "無法連線 {{tool}}。",
+      "timeout": "{{tool}} 未能及時回應。",
+      "rateLimited": "{{tool}} 目前正在限制請求。",
+      "auth": "{{tool}} 拒絕了該連線的憑證。請讓你的管理員檢查該連線。",
+      "notFound": "{{tool}} 找不到代理請求的內容。",
+      "invalidCall": "代理呼叫 {{tool}} 的方式不正確，它可以重試。",
+      "failed": "{{tool}} 失敗。",
+      "nothingSent": "未傳送任何內容。"
+    },
+    "answerError": {
+      "contentFilter": "AI 提供者的內容篩選器封鎖了此請求。這通常是由對話或所讀文件中的內容引起的誤判。請換個方式提問，或開始新的對話後重試。",
+      "quotaExceeded": "AI 模型的帳戶餘額已用完或已達使用上限。請讓工作區管理員儲值，或在「工作區 → AI 模型」中選擇其他模型。",
+      "rateLimit": "AI 模型提供者目前正在限制請求。請稍候一分鐘後重試。",
+      "authError": "AI 模型提供者拒絕了其 API 金鑰。請讓工作區管理員在「工作區 → AI 模型」中檢查該金鑰。",
+      "modelNotFound": "AI 模型提供者在其端點上找不到此模型。請讓工作區管理員在「工作區 → AI 模型」中檢查模型名稱和端點。",
+      "requestTooLarge": "此對話對所選模型來說太長。請縮短你的訊息或開始新的對話。",
+      "invalidRequest": "AI 模型拒絕了此請求。請讓工作區管理員在「工作區 → AI 模型」中檢查模型設定。",
+      "serverError": "AI 模型提供者目前沒有回應。請一分鐘後重試。",
+      "timeout": "AI 模型回應時間過長。請重試。",
+      "unknown": "回答時發生問題。請重試；如果問題持續發生，請聯絡你的工作區管理員。",
+      "needsReconciliation": "某個工具操作可能在其結果被記錄之前就已完成。管理員必須先核對該操作，此執行才能繼續。",
+      "deadlineExceeded": "此執行耗時過長，已被停止。請重新傳送你的訊息再試一次。",
+      "budgetExhausted": "此回覆已停止，因為已達到其支出上限。請請管理員提高上限，或每次少問一些。",
+      "budgetInsufficient": "此回覆已停止，因為其支出上限剩餘不足以完成下一步。請請管理員提高上限，或每次少問一些。",
+      "approvalExpired": "此任務一直在等待一項無人及時給予的核准，因此未執行該操作。請重新傳送你的訊息再試一次。"
+    },
+    "providerWait": "正在等待 AI 模型（忙碌或請求過多），{{seconds}} 秒後重試…",
+    "providerWaitNow": "正在等待 AI 模型（忙碌或請求過多），正在重試…",
+    "sandboxWait": "正在等待可用的沙箱…",
+    "engineVersionWait": "已暫停：正在等待相容的程式碼引擎版本…",
+    "storeWait": "檔案儲存空間暫無回應；恢復後任務會繼續…",
     "remoteImageBlocked": "未載入外部圖片",
     "remoteImageFrom": "來自 {{host}}",
-    "remoteImageLoad": "載入圖片"
+    "remoteImageLoad": "載入圖片",
+    "linkDataHint": "會向 {{host}} 傳送額外資料",
+    "linkDataTitle": "此連結會傳送額外資料",
+    "linkDataBody": "開啟後，網址中的資訊會傳送給 {{host}}。僅在信任其來源時開啟。",
+    "linkDataOpen": "開啟連結",
+    "nextStep": {
+      "retry": "重試",
+      "reload": "重新載入",
+      "newChat": "新聊天"
+    },
+    "sandboxWaitIn": "正在排隊等候閒置沙箱，{{seconds}} 秒後重試…"
   },
   "uploadProgress": {
     "uploadFailedDefault": "上傳失敗",
@@ -330,7 +444,10 @@
     "searchChats": "搜尋對話",
     "inbox": "收件匣",
     "notifications": "通知",
-    "home": "首頁"
+    "home": "首頁",
+    "needsYou": "待你處理",
+    "jobs": "任務",
+    "jobsWorkingAria_other": "{{count}} 項任務進行中"
   },
   "artifacts": {
     "title": "所有產物",
@@ -498,7 +615,6 @@
     "newFolder": "新增集合資料夾",
     "createCollection": "建立集合",
     "newCollection": "新增集合",
-    "deleteConfirmation": "刪除確認",
     "replaceFile": "取代檔案",
     "uploadData": "上傳資料",
     "moveFolder": "移動資料夾",
@@ -518,7 +634,16 @@
     "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。",
     "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被永久刪除。它也會從所有使用它的代理中移除。此操作無法復原。",
     "deleteFolderBody": "'{{name}}' 及其中的所有內容將從此集合中刪除。",
-    "deleteFileBody": "'{{name}}' 將從此集合中刪除。"
+    "deleteFileBody": "'{{name}}' 將從此集合中刪除。",
+    "typedConfirmMismatch": "不相符。請依顯示的內容準確輸入。",
+    "deleteCollectionTitle": "刪除集合？",
+    "deleteFolderTitle": "刪除資料夾？",
+    "deleteFileTitle": "刪除檔案？",
+    "bulkDeleteTitle_other": "刪除 {{count}} 個項目？",
+    "bulkDeleteBody": "此操作無法復原。所有選取的項目都將被永久刪除。",
+    "bulkDeleteConfirm_other": "刪除 {{count}} 個項目",
+    "replaceFileSupports": "支援：僅 {{fileType}}",
+    "folderDetails": "資料夾詳細資訊"
   },
   "table": {
     "fileName": "檔案名稱",
@@ -632,7 +757,26 @@
       "goToChat": "前往聊天",
       "notFoundTitle": "找不到頁面",
       "notFoundBody": "此頁面不存在或已移動。"
-    }
+    },
+    "estimatedCharge": {
+      "label": "估算（提前停止）",
+      "hint": "其中部分為估算值：某個步驟在服務供應商回報其用量之前被停止。如果服務供應商回報了用量，將會更正。"
+    },
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "previousMonth": "上個月",
+    "nextMonth": "下個月",
+    "scrollLeft": "向左捲動",
+    "scrollRight": "向右捲動",
+    "send": "傳送",
+    "showValue": "顯示值",
+    "hideValue": "隱藏值",
+    "settings": "設定",
+    "undo": "復原",
+    "redo": "重做",
+    "discard": "捨棄",
+    "showDetails": "查看詳細資料",
+    "clearAll": "全部清除"
   },
   "units": {
     "bytes": "位元組",
@@ -678,7 +822,12 @@
     "expand": "展開側邊欄",
     "close": "關閉側邊欄",
     "collapse": "收合側邊欄",
-    "navigation": "導覽"
+    "navigation": "導覽",
+    "dot": {
+      "needsYou": "待你處理",
+      "working": "進行中",
+      "finished": "在你上次查看後已完成"
+    }
   },
   "menu": {
     "reindex": "重新索引",
@@ -716,7 +865,7 @@
     "allRecordsView": "所有記錄檢視",
     "newFolder": "新增資料夾",
     "newFile": "新增檔案",
-    "emptyFolder": "此資料夾是空的",
+    "emptyFolder": "空白",
     "emptyCollection": "此集合是空的",
     "addFirstItem": "新增您的第一個項目以開始使用",
     "folderEmpty": "此資料夾是空的",
@@ -814,7 +963,8 @@
     "confluence": "Confluence",
     "github": "GitHub",
     "gitlab": "GitLab",
-    "localFs": "本機檔案系統"
+    "localFs": "本機檔案系統",
+    "repository": "程式碼儲存庫"
   },
   "itemType": {
     "knowledgeBase": "知識庫",
@@ -850,6 +1000,7 @@
     "voiceInputNotSupported": "此瀏覽器不支援語音輸入",
     "voiceError": "無法存取麥克風",
     "noModelsAvailable": "尚未設定任何 AI 模型",
+    "modelUnavailableGroup": "無法使用：貴組織只允許部分群組使用此模型",
     "failedToLoadModels": "無法載入 AI 模型",
     "failedToLoadAgentConfig": "無法載入此代理的模型設定",
     "openModels": "管理模型",
@@ -963,6 +1114,8 @@
     "copiedAsMarkdown": "已複製為 Markdown",
     "copiedAsText": "已複製為純文字",
     "citations": "引用",
+    "citationUnavailable": "您無法存取此來源",
+    "artifactUnavailable": "您無法存取此檔案",
     "showMoreCitations_one": "顯示另外 {{count}} 則引用",
     "showMoreCitations_other": "顯示另外 {{count}} 則引用",
     "markdownWithCitations": "含引用的 Markdown",
@@ -1009,7 +1162,8 @@
       "exporting": "正在匯出聊天…",
       "done": "聊天已匯出",
       "failed": "無法匯出聊天",
-      "assistant": "助理"
+      "assistant": "助理",
+      "untitled": "聊天"
     },
     "renaming": "重新命名中...",
     "archiving": "封存中...",
@@ -1042,6 +1196,17 @@
     "showDiagramSource": "顯示原始碼",
     "hideDiagramSource": "隱藏原始碼",
     "stoppedMarker": "已停止",
+    "cutShort": {
+      "budget": "提前停止：已達到費用上限",
+      "turns": "提前停止：已達到輪次上限",
+      "time": "提前停止：已達到時間上限",
+      "stall": "提前停止：步驟反覆重複且沒有進展",
+      "provider": "提前停止：AI 模型持續拒絕請求（忙碌或請求過多）",
+      "engineError": "提前停止：程式設計引擎發生錯誤",
+      "secretBlocked": "提前停止：PipesHub 攔截了一個看起來包含金鑰的請求",
+      "hint": "回答依據達到上限前收集到的資訊。傳送「繼續」即可接著處理。",
+      "providerHint": "回答依據此前收集到的資訊。請幾分鐘後重試，或請管理員檢查模型的限制。"
+    },
     "toolCard": {
       "arguments": "引數",
       "query": "查詢",
@@ -1057,7 +1222,11 @@
       "needsApproval": "需要核准",
       "approved": "已核准",
       "declined": "已拒絕",
-      "expired": "已過期"
+      "expired": "已過期",
+      "showResult": "顯示結果",
+      "hideResult": "隱藏結果",
+      "details": "詳細資料",
+      "hideDetails": "隱藏詳細資料"
     },
     "mcpConnect": {
       "title": "連線這些 MCP 伺服器以使用此代理程式",
@@ -1480,6 +1649,8 @@
       "pastedText": "貼上的文字",
       "uploadingNamed": "正在上傳貼上的文字",
       "removePastedText": "移除貼上的文字",
+      "removed": "附件已刪除",
+      "removedTitle": "包含 {{name}} 的另一個對話已被刪除，此附件也隨之刪除。",
       "showInTextField": "在文字欄位中顯示",
       "previewLoadFailed": "載入內容失敗",
       "copyText": "複製",
@@ -1537,9 +1708,47 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此代理程式未設定",
       "internalSearch": "內部搜尋",
-      "webSearch": "網路搜尋"
+      "webSearch": "網路搜尋",
+      "newHarness": "新版代理程式執行框架",
+      "newHarnessTooltip": "持久執行、即時時間軸與核准。關閉後使用經典聊天。",
+      "newHarnessAgentNeeds": "此代理程式需要新版代理程式執行框架",
+      "newHarnessNewChats": "適用於新聊天",
+      "newHarnessPaused": "你的組織已暫停新的 agent harness 執行。恢復之前，聊天使用經典聊天。",
+      "newHarnessPausedHint": "暫時暫停：聊天使用經典聊天"
     },
     "resizePanels": "調整對話與預覽面板大小",
+    "steering": {
+      "added": "已新增至進行中的任務",
+      "addedDescription": "將在下一步中納入考量。",
+      "nextRun": "已排在進行中的任務之後",
+      "nextRunDescription": "其他人的任務正在進行。任務結束後，你的訊息會作為你自己的任務開始。",
+      "failed": "無法新增至進行中的任務。請在任務完成後重新傳送。",
+      "send": "新增至進行中的任務",
+      "you": "你新增的",
+      "notTaken": "任務在使用此訊息前已結束。"
+    },
+    "continuePrivately": {
+      "action": "私下繼續",
+      "title": "私下繼續",
+      "description": "建立此對話的私人副本，只有你能看到。共用的對話保持不變。",
+      "copiedHeading": "複製到你的私人對話中",
+      "copiesYourTurns": "你自己的訊息及其回答",
+      "copiesSources": "這些回答中你能開啟的來源和檔案",
+      "copiesWorkspace": "此對話工作區中的檔案",
+      "notCopiedHeading": "不會複製",
+      "othersBecomePlaceholders": "其他人的訊息：每則都會變成預留位置",
+      "noToolResults": "工具結果、推理過程和附件",
+      "confirm": "私下繼續",
+      "forkTitle": "分岔此聊天",
+      "forkDescription": "建立此聊天的副本，僅您可見。此聊天保持不變。",
+      "forkConfirm": "分岔",
+      "working": "正在複製…",
+      "failed": "無法建立私人副本。請再試一次。",
+      "foreignTurn": "其他參與者的訊息不屬於你的私人副本。"
+    },
+    "copiedHistory": {
+      "note": "以上訊息複製自原始對話。其詳細活動記錄保留在原始對話中。"
+    },
     "toolApproval": {
       "noArguments": "無詳細資訊",
       "deny": "拒絕",
@@ -1643,7 +1852,105 @@
       "setUp": "設定網頁搜尋",
       "notNow": "暫時不要",
       "gotIt": "知道了"
-    }
+    },
+    "pendingEngine": {
+      "label": "此聊天使用 {{engine}}",
+      "clear": "使用我的預設引擎"
+    },
+    "repository": {
+      "menuTitle": "處理程式碼儲存庫",
+      "menuSubtitle": "將 GitHub 儲存庫複製到此聊天",
+      "chip": "{{repository}}，基於 {{branch}}",
+      "chipNoBranch": "{{repository}}",
+      "clear": "不使用此儲存庫",
+      "picker": {
+        "title": "處理程式碼儲存庫",
+        "loading": "載入中…",
+        "connectionsFailed": "無法載入你的 GitHub 連線。請再試一次。",
+        "connectFirst": "請先連線 GitHub。PipesHub 會使用你的 GitHub 連線複製儲存庫並推送引擎的分支。",
+        "cancel": "取消",
+        "connectGithub": "連線 GitHub",
+        "connection": "GitHub 連線",
+        "repository": "儲存庫",
+        "search": "搜尋，或貼上儲存庫連結",
+        "reposFailed": "無法載入儲存庫。請再試一次。",
+        "noMatch": "沒有符合的儲存庫。貼上其連結或 owner/name，即可開啟此 GitHub 登入可見的任何儲存庫。",
+        "none": "此連線沒有儲存庫。",
+        "loadMore": "載入更多",
+        "branch": "起始分支",
+        "branchFirst": "請先選擇儲存庫",
+        "defaultBranch": "{{branch}}（預設）",
+        "whatHappens": "會發生什麼：",
+        "noteCopy": "引擎啟動前，PipesHub 會將 {{repository}} 複製到此聊天的工作區。",
+        "noteBranch": "引擎在自己的分支 pipeshub/session-… 上工作，且只能推送到該分支。",
+        "noteToken": "它永遠看不到你的 GitHub 權杖，也不能推送到 {{branch}}、標籤或其他分支。",
+        "notePullRequest": "只有在你要求時，才會開啟合併到 {{branch}} 的提取要求。",
+        "use": "使用儲存庫",
+        "private": "私人",
+        "updated": "{{when}}更新"
+      }
+    },
+    "pastedSecret": {
+      "title": "此訊息包含機密資訊",
+      "description": "這看起來像密碼、API 金鑰或權杖。在聊天中傳送的機密資訊會保留在對話中並被模型看到，因此 PipesHub 會在傳送前將其移除。",
+      "credentialHint": "如需讓代理程式使用它，請改為在「動作」頁面將其儲存為憑證。代理程式使用憑證時不會看到其內容。",
+      "keepEditing": "繼續編輯",
+      "saveAsCredential": "儲存為憑證",
+      "sendWithout": "移除後傳送"
+    },
+    "runGates": {
+      "dryRun": "試執行",
+      "dryRunHint": "讀取真實資料；不會變更、傳送或刪除任何內容。你會看到它原本會做什麼。",
+      "planApproval": "先核准計畫",
+      "planApprovalHint": "代理程式先查詢資訊，然後在行動前向你展示計畫。",
+      "planApprovalAgent": "此代理程式在行動前一律會展示計畫。",
+      "verify": "檢查結果",
+      "verifyHint": "檢查回答引用的內容是否確實出現在其來源中。",
+      "verifyAgent": "使用此代理程式定義的檢查（在其建構器中設定）。",
+      "chipAgent": "{{gate}} · 由此代理程式設定",
+      "turnOff": "關閉{{gate}}"
+    },
+    "outcome": {
+      "unwritten": "{{name}} 尚未寫好。",
+      "endedWithout": "任務在沒有寫出它的情況下結束了本輪。",
+      "sources_one": "已讀取 {{count}} 個來源。",
+      "sources_other": "已讀取 {{count}} 個來源。",
+      "nothingGathered": "它在收集到任何內容之前就停止了。",
+      "kept": "收集到的內容已儲存在此對話的檔案中。",
+      "lost": "收集到的內容無法儲存，因此重試會從頭開始。",
+      "writtenByEngine": "{{name}} 包含任務停止時已寫的內容；最後一部分可能缺失。",
+      "savedPartial": "目前已儲存：{{name}}，標記為部分完成。",
+      "writtenFromGathered": "任務在沒有寫出 {{name}} 的情況下結束了本輪，因此根據收集到的來源寫出了它。",
+      "fullReport": "完整報告在 {{name}} 中。",
+      "partial": "此結果不完整",
+      "continue": "繼續",
+      "retry": "重試"
+    },
+    "responseTabs": "回答檢視",
+    "notFound": {
+      "title": "在您的知識庫中找不到關於「{{subject}}」的任何內容。",
+      "nothing": "此回答並非根據您關於該主題的任何文件。",
+      "related_one": "以下內容依據 {{count}} 份未提及該主題的相關文件，請在採用前核實。",
+      "related_other": "以下內容依據 {{count}} 份未提及該主題的相關文件，請在採用前核實。",
+      "near": "知識庫中最接近的內容：{{names}}",
+      "knowledge": "您的 PipesHub 知識庫",
+      "titleIn": "我在{{places}}中查找過，但找不到關於「{{subject}}」的任何內容。"
+    },
+    "couldNotDo": {
+      "declined": "我無法讀取 {{what}}：複製遭到拒絕。",
+      "refused": "我無法讀取 {{what}}：您組織的一條規則拒絕了複製。",
+      "notAllowed": "我無法讀取 {{what}}：此伺服器不能從其主機複製。",
+      "failed": "我無法讀取 {{what}}：複製失敗。",
+      "notCloned": "我無法讀取 {{what}}：它從未被複製，因此沒有檢查其程式碼。",
+      "repositories_one": "一個程式碼存放庫",
+      "repositories_other": "{{count}} 個程式碼存放庫",
+      "attachmentNotAccessible_other": "我無法讀取{{file}}：存取遭到拒絕。",
+      "attachmentUnreadable_other": "我無法讀取{{file}}：無法讀取其內容。",
+      "attachmentTooLarge_other": "我無法讀取{{file}}：超出了交給任務的檔案大小限制。",
+      "namedFile": "附件 {{name}}",
+      "unnamedFile_other": "其中 {{count}} 個附件"
+    },
+    "archiveChatTitle": "封存此對話？"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -1689,15 +1996,35 @@
         "demoteAdminBeforeRemoveTitle": "無法移除管理員",
         "demoteAdminBeforeRemove": "請先將管理員降級為成員，再將其移除。",
         "removeUserTitle": "要移除使用者嗎？",
-        "removeUserMessage": "確定要將 {{email}} 從 {{workspace}} 工作區移除嗎？",
+        "removeUserMessage": "要將 {{email}} 從 {{workspace}} 中移除嗎？",
         "removeUserOAuthAppsOne": "此使用者建立了 1 個 OAuth 應用程式。它將轉移給您，透過它連線的使用者會保持連線。",
         "removeUserOAuthAppsMany": "此使用者建立了 {{count}} 個 OAuth 應用程式。它們將轉移給您，透過它們連線的使用者會保持連線。",
+        "removeUserThisOrg": "此組織",
+        "removeUserErases": "此人的私人聊天、上傳的檔案、工作區、程式碼沙箱和引擎登入將被清除，且無法復原。",
+        "removeUserSharedChats": "此人與他人共享的聊天不會被清除，而是轉給一位管理員，共享對象仍可保留。",
         "removeButton": "移除",
         "cancelButton": "取消",
         "removeSuccess": "已成功移除使用者",
-        "removeSuccessDescription": "{{name}} 已不再是此工作區的成員",
+        "removeSuccessDescription": "已將 {{name}} 從 {{workspace}} 中移除",
         "removeError": "移除使用者失敗",
+        "removeNoAdminForHandover": "此使用者擁有與他人共用的聊天，且沒有其他在職的管理員可以接手。請先將其他人設為管理員，再刪除此使用者。",
         "deactivate": "停用",
+        "reactivate": "重新啟用",
+        "deactivateTitle": "停用 {{name}}？",
+        "deactivateStopsWork": "此使用者將無法登入，代理程式正在為其進行的工作會立即停止。",
+        "deactivatePausesSchedules": "其排程和觸發條件將暫停。",
+        "deactivateRevokesTokens": "其存取權杖將被撤銷。其聊天和檔案會保留。",
+        "deactivateButton": "停用",
+        "deactivateSuccess": "已停用使用者",
+        "deactivateSuccessDescription": "{{name}} 已無法登入，其工作已停止",
+        "deactivateError": "停用使用者失敗",
+        "reactivateTitle": "重新啟用 {{name}}？",
+        "reactivateNothingRestarts": "此使用者可以再次登入。已停止的內容不會重新開始：其排程會保持暫停，直到其本人恢復。",
+        "reactivateNewTokens": "此使用者需要建立新的存取權杖。",
+        "reactivateButton": "重新啟用",
+        "reactivateSuccess": "已重新啟用使用者",
+        "reactivateSuccessDescription": "{{name}} 可以再次登入。其排程會保持暫停，直到其本人恢復。",
+        "reactivateError": "重新啟用使用者失敗",
         "resendInvite": "重新傳送邀請",
         "editInvite": "編輯邀請",
         "cancelInvite": "取消邀請",
@@ -2498,7 +2825,11 @@
     "pagination": {
       "showing_other": "顯示第 {{from}}-{{to}} 項，共 {{count}} 項",
       "previous": "上一頁",
-      "next": "下一頁"
+      "next": "下一頁",
+      "showingRange": "顯示第 {{from}}–{{to}} 項",
+      "newer": "較新",
+      "older": "較舊",
+      "perPage": "每頁 {{count}} 項"
     },
     "sidebar": {
       "backToApp": "返回應用程式",
@@ -2545,7 +2876,11 @@
         "tenants": "租戶",
         "superOrgs": "組織",
         "oauthApps": "連接器 OAuth 應用程式",
-        "serviceAccounts": "服務帳戶"
+        "serviceAccounts": "服務帳戶",
+        "aiAccounts": "AI 帳戶",
+        "schedules": "排程",
+        "memories": "記憶",
+        "aiSettings": "AI 設定"
       }
     },
     "actions": {
@@ -2653,7 +2988,9 @@
         "availableActionsLabel": "可用動作",
         "enabledByLabel": "啟用者",
         "authBannerTitle": "驗證您的帳戶",
-        "authBannerBody": "登入即可以您的身分與權限使用此動作。"
+        "authBannerBody": "登入即可以您的身分與權限使用此動作。",
+        "signInRejected": "{{item}} 拒絕了已儲存的登入。請重新登入後使用。",
+        "signInRejectedAt": "{{item}} 於 {{time}} 拒絕了已儲存的登入。請重新登入後使用。"
       },
       "manage": {
         "panelTitle": "管理動作設定",
@@ -3028,6 +3365,30 @@
       "vectorStore": {
         "title": "向量儲存庫",
         "subtitle": "刪除所有嵌入，或依已儲存的內容重新產生每筆記錄的嵌入。"
+      },
+      "overrides": {
+        "changed": "已變更預設值",
+        "reset": "還原為預設（{{value}}）",
+        "resetLabel": "將 {{flag}} 還原為預設值",
+        "on": "開啟",
+        "off": "關閉"
+      },
+      "durableNotice": {
+        "title": "代理框架（Beta）現已可用",
+        "body": "此伺服器可以在代理框架上執行代理聊天。此功能處於 Beta 階段，預設關閉：在管理員於 Labs 中開啟 Agent harness 之前，組織中的所有人都使用傳統聊天。開啟後，使用者會看到以下變化：",
+        "openLabs": "開啟 Labs",
+        "dismiss": "略過",
+        "failed": "無法儲存您的選擇。請再試一次。",
+        "changes": {
+          "asks": "在將公司內容傳送到組織外部（Slack 貼文、電子郵件、新議題）之前，代理會先徵求使用者同意。",
+          "steering": "代理工作期間傳送的訊息會加入正在執行的任務，「停止」會保留已寫出的回答。",
+          "screens": "新的設定頁面：核准、記憶，以及管理員專用的「未知結果」。",
+          "legacy": "「計畫並執行」、通用代理模式和專案聊天照舊執行；在這些模式中，代理讀取公司內容後不會將其傳送到外部，並會說明這一點。"
+        }
+      },
+      "conflict": {
+        "message": "在您編輯期間，其他人變更了 Labs。頁面現在顯示他們儲存的內容，並保留了您未儲存的變更。請檢查後再次儲存。",
+        "badge": "已被他人變更"
       }
     },
     "authentication": {
@@ -3129,10 +3490,7 @@
         "createError": "無法建立連接器",
         "createSuccess": "已成功建立連接器執行個體「{{name}}」",
         "authSaveError": "無法儲存驗證設定",
-        "configSaveError": "無法儲存設定",
-        "oauthAppUnavailableTitle": "此連接器沒有可用的 OAuth 應用程式",
-        "oauthAppUnavailableDescription": "請先請您的工作區管理員為 {{name}} 建立 OAuth 應用程式，然後再試一次。",
-        "thisConnectorFallback": "此連接器"
+        "configSaveError": "無法儲存設定"
       },
       "tabs": {
         "authenticate": "驗證執行個體",
@@ -3268,6 +3626,8 @@
         "oauthAppNameLabel": "OAuth 應用程式名稱",
         "oauthAppNamePlaceholder": "例如：{{name}} OAuth",
         "oauthAppNameHelper": "此名稱會與 OAuth 註冊一起儲存，並在使用者為其他執行個體挑選已儲存的應用程式時顯示。",
+        "oauthAppNameHelperPersonal": "只有你可以檢視和使用此 OAuth 應用程式。你可以在同類型的其他連接器中再次選擇它。",
+        "oauthAppYours": "{{name}} · 我的",
         "oauthAppNameRequired": "請為新的 OAuth 應用程式輸入名稱。",
         "oauthAppChangeReauthWarning": "變更 OAuth 應用程式或其憑證後，您必須重新驗證您的連接器。"
       },
@@ -3863,6 +4223,10 @@
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
         }
       },
+      "enterprise": {
+        "userOAuthAppsTitle": "成員自己的 OAuth 應用程式",
+        "userOAuthAppsDescription": "檢視並移除組織成員為自己的連接器新增的 OAuth 應用程式。"
+      },
       "userAccess": {
         "connect": "連接",
         "reconnect": "重新連接",
@@ -4076,6 +4440,9 @@
         "argsPlaceholder": "新增引數",
         "requiredEnv": "必要環境變數",
         "requiredEnvPlaceholder": "新增環境變數名稱（例如 API_KEY）",
+        "egressHosts": "存取的主機",
+        "egressHostsPlaceholder": "新增主機（例如 api.example.com）",
+        "egressHostsHint": "其 MCP 執行器只能存取這些主機。變更後，所有人都會從此伺服器登出。",
         "defaultTokenEnvHint": "未列出變數時，權杖會以 {{name}} 傳給指令。",
         "url": "URL",
         "authMode": "驗證模式",
@@ -4400,7 +4767,20 @@
         "loadConfigs": "載入機器人設定失敗",
         "loadData": "載入資料失敗"
       },
-      "refreshed": "已重新整理"
+      "refreshed": "已重新整理",
+      "identityLinks": {
+        "title": "已連結的 Slack 帳戶",
+        "subtitle": "每位 Slack 使用者都以其登入後連結的 PipesHub 帳戶身分操作。尚未連結的人會從機器人收到私人登入連結。",
+        "empty": "還沒有人連結 Slack 帳戶。",
+        "loadFailed": "無法載入已連結的 Slack 帳戶。",
+        "slackPerson": "Slack 使用者",
+        "account": "PipesHub 帳戶",
+        "linkedAt": "連結時間",
+        "inactive": "帳戶已停用或移除",
+        "remove": "解除連結",
+        "removed": "已解除連結 Slack 帳戶",
+        "removeFailed": "無法解除連結 Slack 帳戶。"
+      }
     },
     "skills": {
       "title": "技能",
@@ -4466,7 +4846,8 @@
         "content": "內容",
         "metadata": "中繼資料",
         "resources": "資源",
-        "versions": "版本"
+        "versions": "版本",
+        "command": "指令"
       },
       "form": {
         "name": "名稱",
@@ -4551,6 +4932,61 @@
         "description": "關閉後，此技能仍保留在您的資料庫中，但代理程式無法探索或載入它。",
         "descriptionBuiltin": "關閉後，此內建技能仍保留在資料庫中，但整個組織的代理程式都無法探索或載入它。",
         "short": "可用"
+      },
+      "command": {
+        "toggle": "可作為 /指令 使用",
+        "toggleDescription": "顯示在聊天的 / 選單中。其文字會以你自己的訊息傳送。",
+        "modelToggle": "代理也可以自行使用",
+        "modelToggleDescription": "關閉：只有使用者可從 / 選單執行。",
+        "arguments": "引數",
+        "argumentsHint": "依序或以 name=value 的形式，從指令後面的內容填入。在文字中使用 $name、$1 或 $ARGUMENTS。",
+        "argName": "名稱",
+        "argDescription": "說明",
+        "argValues": "允許的值（以逗號分隔）",
+        "argDefault": "預設值",
+        "argRequired": "必填",
+        "addArgument": "新增引數",
+        "removeArgument": "移除引數",
+        "problemReserved": "/{{name}} 是保留名稱，請改用其他名稱。",
+        "problemArgumentName": "引數名稱只能包含小寫字母、數字和 _，並以字母開頭。",
+        "problemDuplicate": "每個引數都需要唯一的名稱。",
+        "preview": "預覽",
+        "sampleArguments": "範例引數",
+        "tryIt": "試用",
+        "saveFirst": "儲存變更後即可試用。",
+        "share": "誰可以使用",
+        "shareDescription": "分享的指令會顯示在所有分享對象的 / 選單中，並附上作者名稱。",
+        "sharePersonal": "僅限你自己",
+        "shareTeam": "團隊：{{team}}",
+        "shareOrg": "你組織中的所有人",
+        "shareError": "已儲存，但無法分享該指令。請再試一次。",
+        "problemShadowed": "被內建的 /{{name}} 隱藏。請重新命名後再使用。",
+        "shadowedTitle": "部分指令被內建指令隱藏",
+        "shadowedBody": "PipesHub 現已內建同名指令，因此會執行內建指令。請重新命名以下指令後再使用：",
+        "shadowedDismiss": "知道了"
+      },
+      "scan": {
+        "findingsTitle": "掃描器發現的內容",
+        "findingsHint": "發現项是閱讀該行的理由，並不是攻擊的證據。",
+        "at": "{{path}}，第 {{line}} 行",
+        "finding": {
+          "remote_code_execution": "下載并執行程式碼",
+          "encoded_code_execution": "解碼并執行隱藏程式碼",
+          "credential_access": "讀取憑證或機密",
+          "destructive_command": "刪除或覆寫檔案或磁碟",
+          "native_binary": "包含已編譯的程式",
+          "instruction_override": "要求 AI 忽略其指令",
+          "hidden_directive": "在標籤中隱藏指令",
+          "secret_access": "索取機密",
+          "exfiltration": "將資料傳送到別處",
+          "concealment": "要求 AI 對使用者隱瞞某些內容",
+          "tool_shadowing": "試圖改變其他工具的行為",
+          "invisible_text": "包含不可見字元",
+          "other": "需要仔細查看"
+        },
+        "flagged": "內容掃描器標記了這個匯入的技能，因此代理無法使用它。修改被標記的行後即可使用。",
+        "notUsable": "代理暫時無法使用這個匯入的技能。",
+        "importNote": "只有在匯入技能的內容可信後，代理才會使用它；請先閱讀掃描器發現的內容。"
       }
     },
     "mail": {
@@ -4939,6 +5375,19 @@
         "extraction": {
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
+        },
+        "agentHarness": {
+          "label": "代理程式執行",
+          "description": "重新啟動後仍可繼續的持久代理程式執行",
+          "statusUnavailable": "無法使用",
+          "reason": {
+            "standalone": "MongoDB 以單一伺服器而非複本集執行，因此持久代理程式執行維持關閉，聊天使用標準路徑。將 MongoDB 以複本集執行即可開啟。",
+            "arbiter": "MongoDB 有仲裁者，寫入可能僅由一個資料成員確認，並在容錯移轉時遺失。持久代理程式執行維持關閉。請使用三個資料成員且不使用仲裁者。",
+            "majorityUnavailable": "MongoDB 未能在多數成員上確認測試寫入。在大多數複本集成員執行之前，持久代理程式執行維持關閉。",
+            "probeFailed": "PipesHub 無法確認 MongoDB 能否安全儲存持久代理程式執行，因此維持關閉。請查看 Node 記錄。",
+            "preparationFailed": "PipesHub 無法為持久代理程式執行準備資料庫，正在持續重試。在此期間聊天使用標準路徑。請查看 Node 記錄。",
+            "unknown": "持久代理程式執行已關閉。請查看 Node 記錄。"
+          }
         }
       },
       "healthWarnings": {
@@ -5155,6 +5604,7 @@
       "deleteDescription": "{{name}} 會立即停止運作，其持有的所有 Token 都會被撤銷。仍在使用這些 Token 的一切都會開始失敗。",
       "deleteSuccessTitle": "服務帳戶已刪除",
       "deleteErrorTitle": "無法刪除服務帳戶",
+      "deleteNoAdminForHandover": "此服務帳戶擁有與他人共用的聊天，且沒有在職的管理員可以接手。請先將某人設為管理員，再刪除它。",
       "create": {
         "title": "新增服務帳戶",
         "intro": "自動化程式以此帳戶而非個人身分進行驗證，因此它能讀取的內容由此處決定，而不是繼承自設定它的人。",
@@ -5582,6 +6032,30 @@
     "responseSection": "回應",
     "connectModel": "連接模型",
     "usingOrgDefault": "使用組織預設模型",
+    "subAgentModels": {
+      "title": "子代理程式模型",
+      "hint": "為此代理程式啟動的子代理程式個別指定模型。未指定時，子代理程式會使用啟動它的代理程式的模型。",
+      "startsNone": "此智慧代理不會啟動子代理，因此不會使用這些模型。深入模式的請求由該代理自行回答。",
+      "allSubAgents": "所有子代理程式",
+      "unnamedRole": "未命名角色",
+      "roleNameLabel": "角色名稱",
+      "roleNamePlaceholder": "例如 researcher",
+      "savedAs": "將儲存為 {{key}}",
+      "sameAsAgent": "與代理程式相同",
+      "modelFor": "{{role}} 的模型",
+      "price": "每百萬權杖 {{price}}",
+      "notAllowed": "您的工作區已不再允許此模型：在您選擇其他模型之前，此角色的子代理程式將無法啟動。",
+      "notAllowedOption": "{{model}}（已不再允許）",
+      "duplicateRole": "此角色已在清單中。只會儲存第一項。",
+      "nameNeeded": "請輸入角色名稱以儲存此選擇。",
+      "loading": "正在載入允許的模型…",
+      "ceiling": "您的工作區將子代理程式模型限制為{{limit}}。",
+      "roleCeiling": "您的工作區將 {{role}} 限制為{{limit}}。",
+      "addAllSubAgents": "為所有子代理程式指定模型",
+      "addRole": "新增角色",
+      "removeRole": "移除 {{role}}",
+      "limit": "一個代理程式最多可以有 {{max}} 個角色。"
+    },
     "optional": "選填",
     "connectChatInput": "連接聊天輸入",
     "toChatOutput": "連至聊天輸出",
@@ -5769,12 +6243,26 @@
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
     "webSearchLocked": "此代理程式的網路搜尋無法變更",
     "webSearchLoading": "正在載入網路搜尋供應商…",
+    "webSearchNotSetUp": "網頁搜尋尚未設定。請聯絡管理員在 Workspace → 網頁搜尋 中選擇供應商。",
+    "webSearchLoadFailed": "無法載入網路搜尋供應商。",
     "webSearchConfigureFirst": "請先設定 {{name}}",
     "webSearch": "網路搜尋",
     "toolsetOAuthServerError": "驗證失敗。請重試或聯絡您的管理員。",
     "attached": "已附加",
     "mcpServerWithToolCount_other": "包含 {{count}} 個工具的 MCP 伺服器",
     "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}",
+    "mcpToolApproval": {
+      "unapproved": "未核准：管理員尚未核准此工具，因此不會新增",
+      "changed": "管理員核准後已變更",
+      "unknown": "目前無法檢查核准狀態"
+    },
+    "capability": {
+      "needsConnection": "需要你的連線",
+      "waitingApproval": "等待核准",
+      "disabled": "已停用",
+      "notShared": "未與你分享",
+      "blockedByPolicy": "已被組織政策封鎖"
+    },
     "mcpAllTools": "所有工具",
     "mcpAllToolsHint": "包括伺服器之後新增的工具。",
     "mcpServerUnavailable": "無法使用",
@@ -5792,12 +6280,151 @@
     "limitSource": "選擇 {{name}} 的搜尋範圍",
     "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
     "limitSourceCount": "僅限所選的 {{count}} 項",
+    "initDraftNote": "由 /init 根據您的聊天起草。請檢閱後儲存；在儲存代理程式之前不會儲存任何內容。",
     "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
     "apiToolsets": {
       "section": "API 動作",
       "connectTooltip": "請在「動作」中連線",
       "serviceAccountBlocked": "服務帳戶代理程式只能使用具有共用憑證或不需登入的 API 動作。"
+    },
+    "gates": {
+      "title": "安全與檢查",
+      "planApproval": "需要核准計畫",
+      "planApprovalHint": "每次執行在行動前都會展示計畫。適用於排程執行和背景執行。",
+      "verify": "完成前檢查結果",
+      "verifyHint": "確定性檢查，而不是模型自己的判斷。",
+      "kindLabel": "檢查",
+      "kind": {
+        "file": "檔案存在且可以開啟",
+        "json_schema": "JSON 檔案符合結構描述",
+        "citations": "引用都在其來源中",
+        "command": "指令通過（測試）"
+      },
+      "pathLabel": "「{{check}}」的檔案",
+      "pathPlaceholder": "out/report.pdf",
+      "formatLabel": "開啟格式",
+      "anyFormat": "任何檔案",
+      "schemaLabel": "JSON 結構描述",
+      "schemaPlaceholder": "{\"type\": \"object\"}",
+      "commandLabel": "指令",
+      "within": "時限",
+      "timeoutLabel": "時限（秒）",
+      "seconds": "秒",
+      "remove": "移除「{{check}}」",
+      "addCheck": "新增檢查",
+      "whenFails": "檢查失敗時",
+      "onFailContinue": "告知代理程式並讓它修正（最多 {{rounds}} 次）",
+      "onFailFlag": "結束並標示為未驗證",
+      "problem": {
+        "path": "請填寫任務工作區內的檔案路徑，例如 out/report.pdf。",
+        "schema": "結構描述必須是 JSON 物件。",
+        "command": "請填寫要執行的指令，例如 pytest -q。",
+        "timeout": "時限是 1 到 600 之間的整數秒。"
+      }
+    },
+    "runtime": {
+      "title": "執行方式",
+      "hint": "模型、程式設計引擎、支出、網站和排程。每一項在儲存時都會檢查。"
+    },
+    "schedules": {
+      "title": "排程",
+      "hint": "你自己的、會自動執行此代理程式的排程。",
+      "empty": "你還沒有執行此代理程式的排程。",
+      "saveFirst": "儲存代理程式後即可依排程執行它。",
+      "unavailable": "目前無法讀取排程。",
+      "add": "新增排程",
+      "manage": "管理所有排程",
+      "thisAgent": "此代理程式",
+      "pausedByYou": "已暫停。可在「管理所有排程」中繼續。"
+    },
+    "environment": {
+      "title": "環境",
+      "intro": "代理工作區啟動前需要的內容：工具、套件與設定。在代理使用程式設計引擎時生效。",
+      "howLabel": "環境的準備方式",
+      "steps": "設定步驟",
+      "devcontainer": "來自 devcontainer.json",
+      "setupLabel": "設定指令",
+      "setupHint": "在加入你的檔案之前於全新工作區中執行。最多 64 KB。",
+      "settingsLabel": "設定（每行一個，NAME=值）",
+      "settingsHint": "不用於機密資訊。不允許使用 PipesHub 自行設定的名稱（PATH、HOME、代理伺服器）。",
+      "devcontainerLabel": "devcontainer.json",
+      "devcontainerHint": "貼上你儲存庫中的檔案。會使用其中的設定與建立指令。",
+      "ignored": "未使用：{{keys}}（以程式設計引擎自己的映像檔為基礎）。",
+      "problem": {
+        "setting": "「{{name}}」不是 NAME=值 格式的行。",
+        "reserved": "{{name}} 由 PipesHub 設定，此處無法變更。",
+        "secret": "{{name}} 看起來像機密資訊。請改以帳戶連結；這裡的設定不是機密。",
+        "tooMany": "最多 64 項設定。",
+        "folder": "每個資料夾都是以 / 開頭的完整路徑，最多 16 個。",
+        "devcontainer": "這不是 JSON 物件。"
+      }
     }
+  },
+  "agentVersions": {
+    "liveVersion": "目前版本：{{version}}",
+    "unpublishedChanges": "有未發布的變更",
+    "notPublishedYet": "尚未發布",
+    "versions": "版本",
+    "versionsTooltip": "所有已發布的版本：發布者、發布時間，以及復原。",
+    "saveDraft": "儲存草稿",
+    "saveDraftTooltip": "保留您的編輯，不改變聊天正在使用的版本。",
+    "publish": "發布",
+    "publishing": "正在發布…",
+    "publishTooltip": "讓您的編輯成為聊天使用的版本。",
+    "nothingToPublish": "沒有可發布的內容：目前版本已與您的編輯一致。",
+    "draftSaved": "草稿已儲存。在您發布之前，聊天仍使用版本 {{version}}。",
+    "draftSavedNoVersion": "草稿已儲存。在您發布之前，聊天仍使用目前版本。",
+    "saveDraftFailed": "無法儲存草稿。請再試一次。",
+    "publishTitle": "發布版本 {{version}}？",
+    "publishTitleGeneric": "發布您的變更？",
+    "publishBody": "從現在起，與此代理的聊天將使用版本 {{version}}。排程會保留其版本，直到擁有者變更。",
+    "publishBodyGeneric": "從現在起，與此代理的聊天將使用您的變更。排程會保留其版本，直到擁有者變更。",
+    "noteLabel": "變更內容（選填）",
+    "notePlaceholder": "例如：將 P1 工單升級給支援負責人。",
+    "publishedTitle": "版本 {{version}} 已發布",
+    "publishedTitleGeneric": "已發布",
+    "publishedDesc": "從現在起，與此代理的聊天將使用它。",
+    "publishUnchanged": "自版本 {{version}} 以來沒有變更，因此未發布新版本。",
+    "publishIncomplete": "您的編輯已儲存為草稿，但發布失敗。請再次發布。",
+    "publishFailed": "無法發布此代理。請再試一次。",
+    "panelTitle": "版本",
+    "loading": "正在載入版本…",
+    "loadFailed": "無法載入版本。",
+    "retry": "再試一次",
+    "empty": "尚無已發布的版本。發布代理即可建立版本 1。",
+    "unpublishedCallout": "您有未發布的變更。復原到較早的版本會捨棄這些變更。",
+    "publishAs": "發布為版本 {{version}}",
+    "versionLabel": "版本 {{version}}",
+    "live": "目前",
+    "rolledBackFrom": "復原自版本 {{version}}",
+    "beforeVersions": "啟用版本前的狀態",
+    "migrationMeta": "啟用版本時建立 · {{when}}",
+    "publishedMeta": "{{who}} · {{when}}",
+    "unknownPublisher": "未知使用者",
+    "details": "此版本的內容",
+    "detailsLoading": "正在載入…",
+    "detailsFailed": "無法載入詳細資訊。",
+    "detailModels": "模型：{{list}}",
+    "detailOrgDefaultModel": "模型：組織預設模型",
+    "detailTools": "工具：{{list}}",
+    "detailMcpServers": "MCP 伺服器：{{list}}",
+    "detailKnowledge": "知識來源：{{amount}}",
+    "detailSkills": "技能：{{amount}}",
+    "detailInstructions": "指示：{{amount}} 個字元",
+    "rollback": "復原到此版本",
+    "rollbackTitle": "復原到版本 {{version}}？",
+    "rollbackBody": "這會將代理恢復為版本 {{version}}，並發布為版本 {{next}}。從現在起聊天將使用它。",
+    "rollbackBodyGeneric": "這會將代理恢復為版本 {{version}} 並重新發布。從現在起聊天將使用它。",
+    "rollbackDiscardWarning": "您未發布的變更將被捨棄。",
+    "rollbackNoteLabel": "原因（選填）",
+    "rollbackConfirm": "復原",
+    "rollingBack": "正在復原…",
+    "rolledBack": "已復原到版本 {{from}}。目前版本為 {{version}}。",
+    "rolledBackUnchanged": "版本 {{version}} 已與版本 {{from}} 一致，因此未發布新版本。",
+    "discarded": "您未發布的變更已被捨棄。",
+    "rollbackFailed": "復原未完成。請再試一次。",
+    "chatLabel": "{{name}} · 版本 {{version}}",
+    "chatLabelNoName": "代理版本 {{version}}"
   },
   "recordView": {
     "sections": {
@@ -6145,7 +6772,18 @@
     "selectMany": "選擇所有適用項目",
     "skipAll": "全部略過",
     "expired": "此問題已過期。請在聊天中回覆以繼續。",
-    "repliedInChat": "你已在聊天中回覆。"
+    "repliedInChat": "你已在聊天中回覆。",
+    "grounding": {
+      "header": "找不到",
+      "intent": "開始工作前，我在您可存取的內容中查找了「{{subject}}」。",
+      "questionNear": "在您的知識庫中找不到關於「{{subject}}」的任何內容。您指的是下列哪一項？",
+      "questionNone": "在您的知識庫中找不到關於「{{subject}}」的任何內容。接下來該怎麼做？",
+      "useFound": "使用能找到的內容",
+      "nameIt": "指定文件或資料夾",
+      "intentIn": "開始工作前，我在{{places}}中查找了「{{subject}}」。",
+      "questionNearIn": "我在{{places}}中查找過，但找不到關於「{{subject}}」的任何內容。您指的是下列哪一項？",
+      "questionNoneIn": "我在{{places}}中查找過，但找不到關於「{{subject}}」的任何內容。接下來該怎麼做？"
+    }
   },
   "agentClaim": {
     "title": "連接代理",
@@ -6159,6 +6797,161 @@
     "doneLine": "代理現在可以繼續。可以關閉此視窗。",
     "deniedTitle": "請求已拒絕",
     "deniedLine": "代理未獲得存取權限。"
+  },
+  "approvalCard": {
+    "title": "核准 {{tool}}？",
+    "description": "代理程式想要執行此工具。在您做出決定之前不會執行任何操作。",
+    "arguments": "參數",
+    "approve": "核准",
+    "deny": "拒絕",
+    "approveLabel": "核准執行 {{tool}}",
+    "denyLabel": "拒絕執行 {{tool}}",
+    "sending": "正在傳送您的決定…",
+    "approved": "已核准",
+    "denied": "已拒絕",
+    "closed": "已關閉",
+    "failed": "你的決定沒有送達伺服器。請檢查網路連線，然後重新選擇。",
+    "refusedApprover": "只有此任務所代表的使用者或核准者可以核准。",
+    "refusedNotAllowed": "您無法對此任務做出決定。",
+    "refusedClosed": "此請求已不再開放。",
+    "expired": "已過期",
+    "expiredDescription": "在有人做出決定之前，任務已結束。",
+    "noAuthority": "只有此任務所代表的使用者或審核者可以做出決定。",
+    "argumentsHidden": "參數只會顯示給可以核准或參與對話的人。",
+    "flow": {
+      "titleToIn": "在 {{app}} 中{{action}}到 {{destination}}？",
+      "titleTo": "{{action}}到 {{destination}}？",
+      "titleIn": "在 {{app}} 中{{action}}？",
+      "titleAction": "{{action}}？",
+      "whyPrivate": "在此對話中，代理先前讀取了私人內容，而此操作會將內容傳送到您的組織之外。在您決定之前不會傳送任何內容。",
+      "whyUnknown": "在此對話中，代理先前使用了來自已連結應用程式或工具、無法核實來源的內容，而此操作會將內容傳送到您的組織之外。在您決定之前不會傳送任何內容。",
+      "willSend": "將傳送的內容",
+      "nothingToSend": "沒有內容，只有操作本身。",
+      "redacted": "看起來像密碼或金鑰：此處已隱藏，但會依原樣傳送。",
+      "showAll": "顯示全部",
+      "showLess": "收合",
+      "sources": "此對話中先前讀取的內容",
+      "untitledSource": "無標題來源",
+      "moreSources": "以及另外 {{count}} 項",
+      "deny": "拒絕",
+      "denyLabel": "拒絕 {{tool}}：不會傳送任何內容",
+      "allowOnce": "允許一次",
+      "buttonName": "{{action}}：{{subject}}",
+      "allowConversation": "在此對話中允許",
+      "allowConversationFor": "在此對話中允許 {{destination}}",
+      "conversationScope": "在此對話中的允許僅適用於 {{destination}}，其他操作仍會詢問。",
+      "allowedConversationScope": "此對話中之後傳送到 {{destination}} 的呼叫將不再詢問。",
+      "allowedConversation": "已在此對話中允許",
+      "expiredDescription": "沒有人及時決定，因此未傳送任何內容。",
+      "refusedConversation": "此項只能允許一次。請選擇「允許一次」或「拒絕」。"
+    },
+    "engine": {
+      "why": "程式代理在進行任何會傳到您自己空間之外的其他人或系統的變更之前都會詢問。在您決定之前不會傳送任何內容。",
+      "whyRead": "程式代理在進行任何會傳到您自己空間之外的其他人或系統的變更之前都會詢問，而且它在本次對話中先前讀取了下方列出的內容。在您決定之前不會傳送任何內容。"
+    },
+    "policy": {
+      "why": "一條核准規則要求在此操作之前先作出決定。在您做出決定之前不會執行任何操作。",
+      "whyDeployment": "您的管理員要求代理程式在執行此操作之前先取得核准。在您做出決定之前不會執行任何操作。",
+      "whyOrg": "您的組織要求代理程式在執行此操作之前先取得核准。在您做出決定之前不會執行任何操作。",
+      "whyAgent": "此代理程式已設定為在執行此操作之前先請求核准。在您做出決定之前不會執行任何操作。",
+      "whyEngine": "程式代理的設定要求在執行此操作之前先取得核准。在您做出決定之前不會執行任何操作。"
+    },
+    "child": {
+      "from": "子代理「{{role}}」想要："
+    },
+    "refusedEnded": "此任務已經結束，沒有需要決定的內容了。",
+    "effect": {
+      "whatChanges": "將變更的內容",
+      "diffLabel": "對 {{target}} 的變更",
+      "diffUntitled": "檔案",
+      "showFull_one": "顯示完整變更（{{count}} 行）",
+      "showFull_other": "顯示完整變更（{{count}} 行）",
+      "showLess": "收合",
+      "truncated": "變更內容超出卡片可顯示的長度，因此結尾在此處被截斷。",
+      "cost": "預估費用：約 {{amount}}",
+      "costBasis": "依工具聲明",
+      "costEach": "每次呼叫 {{amount}} × {{calls}}，依工具聲明"
+    },
+    "denyReason": {
+      "label": "為什麼不？（選填，代理程式會讀取）",
+      "placeholder": "例如：改為發布到 #team-updates",
+      "counter": "{{count}} / {{max}}",
+      "cancel": "取消",
+      "given": "你的理由：「{{reason}}」"
+    },
+    "plan": {
+      "why": "代理寫了一個計畫。在你核准之前，任何會做出變更的操作都不會執行。"
+    },
+    "edit": {
+      "edit": "編輯",
+      "editLabel": "編輯 {{tool}} 要傳送的內容，然後核准",
+      "intro": "修改將要傳送的內容，然後核准。任務會被告知實際執行的內容。",
+      "changed": "已變更",
+      "cannotEdit": "無法在此編輯",
+      "yes": "是",
+      "no": "否",
+      "notANumber": "請輸入數字。",
+      "undo": "復原變更",
+      "cancel": "取消",
+      "approve": "依變更核准",
+      "keys": "Esc 取消。Ctrl 或 Cmd + Enter 依你的變更核准。",
+      "approvedWithChanges": "已依你的變更核准",
+      "before": "之前",
+      "after": "之後",
+      "showAll": "顯示傳送的全部內容",
+      "hideAll": "隱藏傳送的內容",
+      "hasSecret": "這看起來像密碼或金鑰。請在「動作」頁面將其儲存為憑證，而不是在此輸入。",
+      "openActions": "開啟動作",
+      "refusedNotAllowed": "只有此任務所代表的人可以變更它要傳送的內容。你可以依請求允許或拒絕。",
+      "refusedNotOffered": "此請求無法編輯。請依請求允許或拒絕。"
+    },
+    "externalPolicy": {
+      "why": "您組織的政策系統要求由人來核准此操作。在您做出決定之前不會執行任何操作。"
+    },
+    "editHasSecret": "您的修改中有看起來像密碼、API 金鑰或權杖的內容，因此未核准任何操作。請將其刪除。如需讓代理程式使用它，請改為在「動作」頁面將其儲存為憑證。代理程式使用憑證時不會看到其內容。",
+    "clone": {
+      "sizeAbout": "約 {{mb}} MB",
+      "sizeUpTo": "最多 {{mb}} MB",
+      "what": "公開，唯讀。",
+      "whatSized": "公開，唯讀，{{size}}。",
+      "nothingBack": "PipesHub 會將其複製到代理程式的工作區；不會向 {{host}} 傳回任何內容。",
+      "privateRead": "此對話讀取過私人資料。存放庫位址會傳送到 {{host}}。",
+      "privateReadShort": "此對話讀取過私人資料。",
+      "allowConversation": "在此對話中允許此存放庫",
+      "allowConversationShort": "在這裡允許此存放庫"
+    },
+    "siteUpload": {
+      "allowRun": "允許本次執行"
+    },
+    "textCheck": {
+      "hidden": "這裡有些字元原本不可見或會改變文字順序，因此顯示為 ⟨U+202E⟩ 這樣的代碼。請確認這正是您要傳送的內容。",
+      "host": "{{ascii}} 混用了不同文字，看起來像 {{unicode}}。它可能不是看起來的那個網站，因此以真實形式顯示。",
+      "markerTitle": "原本不可見或會改變文字順序的字元"
+    }
+  },
+  "codeTaskCard": {
+    "change": {
+      "added": "已新增",
+      "modified": "已修改",
+      "deleted": "已刪除"
+    },
+    "showDiff": "顯示 {{path}} 中的變更",
+    "hideDiff": "隱藏 {{path}} 中的變更",
+    "diffLabel": "{{path}} 中的變更",
+    "diffSummary": "新增 {{added}} 行，刪除 {{removed}} 行",
+    "diffTruncated": "差異已被截短。",
+    "binary": "二進位檔案，{{size}}。沒有文字差異。",
+    "tooLarge": "檔案太大，無法比較（{{size}}）。",
+    "noDiff": "尚無可用的差異。",
+    "versionReason": {
+      "autosave": "工作中儲存",
+      "turnEnd": "結束時儲存",
+      "beforeEffect": "呼叫工具前儲存",
+      "other": "已儲存",
+      "rollback": "已還原",
+      "merge": "已合併子任務的檔案"
+    },
+    "draft": "草稿"
   },
   "oauthDevice": {
     "title": "連接裝置",
@@ -6625,5 +7418,2411 @@
     "fileTooLarge": "每個檔案不得超過 5 MB。",
     "tooManyFiles": "最多只能附加 5 個檔案。",
     "filesTotalTooLarge": "檔案總大小不能超過 8 MB。"
+  },
+  "aiAccounts": {
+    "common": {
+      "loading": "載入中…",
+      "unavailable": "目前無法連線。未做任何變更。請稍後再試。",
+      "adminOnly": "只有組織管理員可以管理此項目。",
+      "forbidden": "你沒有變更此項目的權限。",
+      "notFound": "此項目已被移除。",
+      "failed": "發生問題。請再試一次。",
+      "tryAgain": "再試一次",
+      "offering": "安裝類型：{{offering}}",
+      "rulesVersion": "規則 {{version}}",
+      "conflict": "你開啟後有人儲存了此內容。請重新載入以查看其變更。"
+    },
+    "my": {
+      "title": "我的 AI 帳戶",
+      "subtitle": "你自己的 AI 設定：你的 Claude 登入、你的程式設計引擎，以及你可以使用的 AI 模型存取方式。",
+      "accessTitle": "你可以使用的項目",
+      "accessDescription": "此安裝與你的組織允許的 AI 模型存取方式，以及其他方式無法使用的原因。"
+    },
+    "table": {
+      "provider": "供應商",
+      "account": "帳戶",
+      "engines": "引擎",
+      "status": "狀態",
+      "consumer": "個人方案",
+      "allEngines": "全部",
+      "notAvailable": "無法使用"
+    },
+    "routes": {
+      "gateway": "透過 PipesHub",
+      "vendor_injected": "直接連線供應商",
+      "vendor_sandbox_login": "在工作內登入供應商"
+    },
+    "kinds": {
+      "org_api_key": "組織金鑰",
+      "org_cloud": "組織雲端帳戶",
+      "user_api_key": "個人金鑰",
+      "user_plan_injected": "個人訂閱（透過 PipesHub 登入）",
+      "user_plan_sandbox_login": "個人訂閱（在工作內登入）"
+    },
+    "offerings": {
+      "oss": "開源版",
+      "managed": "代管服務",
+      "unknown": "未知"
+    },
+    "reasons": {
+      "available": "可使用",
+      "vendor_prohibited": "供應商的條款不允許這樣做。",
+      "vendor_pending": "正在等待供應商確認允許此用法。",
+      "offering_not_permitted": "在此類安裝中無法使用。",
+      "org_policy_refused": "已被你的組織關閉。",
+      "route_not_built": "PipesHub 尚不支援。",
+      "transport_not_built": "可以儲存，但 PipesHub 目前還無法使用此供應商。",
+      "vendor_rule_missing": "沒有規則允許這樣做。",
+      "vendor_rules_invalid": "無法驗證此版本的存取規則，因此無法使用任何項目。請聯絡你的管理員。",
+      "access_policy_unavailable": "目前無法讀取你組織的存取設定。請稍後再試。",
+      "access_policy_invalid": "只能關閉此版本中的規則。",
+      "account_not_owned": "你只能使用自己的金鑰。",
+      "account_missing": "該帳戶已不存在。",
+      "account_provider_mismatch": "該帳戶與模型屬於不同的供應商。",
+      "account_requires_engine": "只有在引擎上執行的代理程式才能選擇帳戶。",
+      "account_model_required": "請選擇要搭配此帳戶使用的模型。",
+      "route_unavailable": "此模型存取方式無法使用。",
+      "route_not_configured": "此模型尚未設定。",
+      "unknown": "無法使用。",
+      "engine_unavailable": "此部署中未安裝該程式設計引擎。",
+      "engine_profile_untrusted": "此引擎的設定檔未針對此部署簽署。",
+      "engine_sandbox_missing": "程式設計引擎需要沙箱附加元件，此部署未安裝。",
+      "engine_profile_widening": "你的組織不允許這樣做。"
+    },
+    "agent": {
+      "title": "AI 帳戶",
+      "description": "此代理程式的引擎工作為模型使用哪種類型的帳戶。",
+      "any": "組織允許的任何帳戶",
+      "custom": "已設定為多種類型：{{kinds}}",
+      "unavailable": "目前無法載入帳戶選項。"
+    },
+    "codingEngine": {
+      "title": "程式設計引擎",
+      "label": "程式設計引擎",
+      "myDescription": "你在代理程式模式下的聊天要將程式碼和檔案工作交給哪個程式設計引擎。",
+      "myHelper": "在代理程式模式下，當問題需要程式碼、檔案或多個工作步驟時使用。",
+      "agentHelper": "在工作需要程式碼、檔案或多個工作步驟時使用；其他問題會直接回答。",
+      "orgLabel": "組織的預設程式設計引擎",
+      "orgHelper": "在代理程式模式下，當問題需要程式碼、檔案或多個工作步驟時使用，除非有人在「我的 AI 帳戶」中選擇其他引擎。",
+      "autoRoute": {
+        "label": "將長工作交給程式設計引擎",
+        "helper": "跨多個來源的研究、規劃、長篇報告以及其他需要多個步驟的工作會自動交給程式設計引擎。簡單問題仍在聊天中回答。",
+        "saved": "長工作設定已儲存"
+      },
+      "orgDefault": "組織預設值（{{name}}）",
+      "noneShort": "無",
+      "none": "無",
+      "noneLoop": "無 – 內建代理程式迴圈",
+      "noneLoopShort": "無 – 內建迴圈",
+      "noneSandbox": "無 – 在內建沙箱中執行程式碼",
+      "anyEngine": "組織允許的任何引擎",
+      "engineSettings": "引擎設定",
+      "saved": "程式設計引擎已儲存",
+      "orgSaved": "預設程式設計引擎已儲存",
+      "unavailable": "目前無法載入程式設計引擎。",
+      "reasons": {
+        "route_not_configured": "需要為組織設定 AI 模型",
+        "engine_unavailable": "此部署中未安裝",
+        "engine_profile_untrusted": "設定檔未針對此部署簽署",
+        "engine_sandbox_missing": "程式設計引擎需要沙箱附加元件，此部署未安裝",
+        "offering_not_permitted": "此安裝類型下，使用你組織的模型時無法使用",
+        "engine_profile_widening": "你的組織已不再允許",
+        "engine_isolation_unavailable": "此伺服器需要 gVisor 沙箱執行環境",
+        "engine_group_required": "您的組織中只有部分群組可以使用"
+      },
+      "isolation": {
+        "required": "程式碼引擎需要此伺服器上的 gVisor 沙箱執行環境 —",
+        "guide": "安裝指南",
+        "weaker": "程式碼引擎正在沒有 gVisor 的情況下執行 — 隔離較弱",
+        "noSyscallFilter": "程式碼引擎在 gVisor 上執行，但未啟用其自身的系統呼叫過濾器——少了一層防護。",
+        "syscallFilterGuide": "如何開啟"
+      },
+      "orgDescription": "成員未選擇其他引擎時，代理模式聊天將程式碼與檔案工作交給的引擎。"
+    },
+    "org": {
+      "title": "組織 AI 設定",
+      "subtitle": "組織成員所用代理程式的預設設定。"
+    }
+  },
+  "durableRun": {
+    "budget": {
+      "exhausted": "此任務已達到支出上限，已停止。",
+      "insufficient": "剩餘預算不足以執行下一步，任務已停止。",
+      "unavailable": "無法檢查支出上限，因此任務已停止。",
+      "closed": "此任務的預算已關閉。",
+      "childExceeds": "剩餘預算不足，無法啟動此子任務。"
+    },
+    "cost": {
+      "label": "費用",
+      "spent": "已花費 {{spent}}",
+      "spentOf": "已花費 {{spent}}，上限 {{cap}}",
+      "tokens": "{{tokens}} 個權杖",
+      "tokensOf": "{{tokens}} / {{cap}} 個權杖",
+      "exhausted": "預算已用完"
+    },
+    "child": {
+      "running": "執行中",
+      "completed": "已完成",
+      "failed": "未完成",
+      "loading": "正在載入時間軸…",
+      "loadFailed": "無法載入時間軸。",
+      "noStepsYet": "還沒有步驟。工作執行時會顯示在這裡。",
+      "noSteps": "此工作結束時沒有執行任何步驟。",
+      "answer": "回答"
+    },
+    "merge": {
+      "heading": "合併回來的檔案",
+      "upToDate": "沒有需要合併的檔案變更。",
+      "notMerged": "沒有合併任何檔案。",
+      "merged_other": "已將 {{count}} 個檔案合併到工作區版本 {{revision}}。",
+      "conflictsHeading": "衝突（保留了對話中的版本）",
+      "forkVersion": "子任務的版本儲存在其工作區版本 {{revision}} 中。",
+      "repositories": "未合併的程式碼存放庫：{{paths}}",
+      "kind": {
+        "bothChanged": "雙方都有變更",
+        "targetDeleted": "已在對話的工作區中刪除",
+        "forkDeleted": "已被子任務刪除"
+      }
+    },
+    "versions": {
+      "heading": "工作區版本",
+      "loadFailed": "無法載入版本。",
+      "empty": "尚無版本。",
+      "item": "版本 {{revision}}：{{files}} 個檔案（{{reason}}）",
+      "byYou": "由你還原",
+      "current": "目前",
+      "restore": "還原",
+      "restoreLabel": "還原版本 {{revision}}",
+      "confirm": "將版本 {{revision}} 還原為新版本？不會刪除任何內容。",
+      "confirmYes": "還原",
+      "cancel": "取消",
+      "restored": "已將版本 {{from}} 還原為版本 {{to}}。",
+      "conflict": "載入此清單後工作區已變更。清單已重新整理。",
+      "busy": "有任務正在寫入此工作區。請在其完成後重試。",
+      "failed": "無法還原該版本。"
+    }
+  },
+  "approvals": {
+    "policy": {
+      "removeNamed": "移除 {{name}}",
+      "none": "無",
+      "search": "搜尋",
+      "searchPlaceholder": "名稱",
+      "searchFailed": "目前無法搜尋。請再試一次。",
+      "noResults": "沒有符合的項目。",
+      "results": "{{label}}的符合項目",
+      "addNamed": "新增 {{name}}"
+    }
+  },
+  "memories": {
+    "title": "記憶",
+    "subtitle": "代理程式在多次對話中對您的記憶。只有您能看到您的記憶；僅在您仍能開啟其來源時才會使用。",
+    "listTitle": "您的記憶",
+    "listDescription": "可編輯或刪除其中任何一則。等待審核的記憶在您接受之前不會被使用。",
+    "remember": {
+      "sectionTitle": "記憶",
+      "title": "記住關於我的事情",
+      "description": "開啟：代理程式在你的對話中使用你的記憶並保存新的記憶。關閉：兩者都不做。下方的記憶會一直保留，直到你刪除它們。",
+      "unavailable": "目前無法讀取你的記憶設定。請稍後再試。",
+      "failed": "你的記憶設定未能儲存。請稍後再試。"
+    },
+    "filterLabel": "顯示",
+    "filter": {
+      "all": "全部",
+      "review": "等待審核",
+      "accepted": "已接受"
+    },
+    "empty": "尚未記住任何內容。",
+    "emptyReview": "沒有等待您審核的內容。",
+    "unavailable": "目前無法存取記憶。未做任何變更。請稍後再試。",
+    "rowLabel": "{{date}} 的記憶",
+    "content": "記憶",
+    "editedByYou": "由您編輯",
+    "unknownOrigin": "這來自來源不明的內容。只有您能看到它，在您接受之前不會被使用。",
+    "followedOutsideContent": "這是助理讀取了組織外部的內容（例如網頁或外部郵件）後提出的。接受之前，請確認這是您想要的。",
+    "status": {
+      "pending": "尚未審核",
+      "proposed": "等待審核",
+      "accepted": "已接受"
+    },
+    "kind": {
+      "fact": "事實",
+      "preference": "偏好"
+    },
+    "scope": {
+      "user": "您的所有對話",
+      "session": "一次對話",
+      "agent": "某個代理程式"
+    },
+    "actions": {
+      "accept": "接受",
+      "reject": "拒絕",
+      "edit": "編輯",
+      "delete": "刪除"
+    },
+    "confirmReject": {
+      "title": "要拒絕這則記憶嗎？",
+      "message": "它會被刪除，且不會被使用。"
+    },
+    "confirmDelete": {
+      "title": "要刪除這則記憶嗎？",
+      "message": "它會立即被刪除，之後的工作不會再使用它。"
+    },
+    "refusal": {
+      "notFound": "這則記憶已不存在。",
+      "invalid": "請檢查記憶。",
+      "writeNotGranted": "記憶只能由您本人變更，已連線的應用程式無法變更。",
+      "limit": "同時處理的記憶過多。請稍後再試。",
+      "notReviewable": "這則記憶已審核過。",
+      "policyInvalid": "請檢查記憶設定。",
+      "replaceUnknown": "此處無法替換該記憶。"
+    },
+    "notSaving": "持久化代理聊天關閉期間，代理不會儲存新的記憶。你仍可以在此檢視、編輯和刪除已儲存的內容。"
+  },
+  "publications": {
+    "open": "發佈",
+    "title": "發佈 {{name}}",
+    "description": "讓無法開啟此集合的人也能從中獲得答案。搜尋和代理程式也會為他們使用它。您可以隨時撤銷發佈。",
+    "ownersOnly": "只有此集合的擁有者和組織管理員可以發佈它。",
+    "empty": "此集合尚未發佈給任何人。",
+    "listLabel": "發佈",
+    "revoked": "已撤銷",
+    "expired": "已過期",
+    "until": "至 {{date}} 為止",
+    "noExpiry": "永不過期",
+    "revoke": "撤銷",
+    "confirmRevoke": {
+      "title": "要撤銷此發佈嗎？",
+      "message": "其對象從下一次提問起將不再從此集合獲得答案。發佈記錄會保留。"
+    },
+    "audience": {
+      "org": "組織中的所有人",
+      "wholeOrg": "組織中的所有人",
+      "people": "人員",
+      "searchPeople": "依姓名或電子郵件搜尋人員",
+      "matches": "符合的人員",
+      "removePerson": "移除 {{name}}",
+      "teams": "團隊"
+    },
+    "mode": {
+      "label": "他們能獲得什麼",
+      "answer_only": {
+        "label": "僅答案",
+        "hint": "答案可以引用並標註其出處，但對象中沒有人能開啟、下載或分享這些檔案。"
+      },
+      "full": {
+        "label": "完整存取",
+        "hint": "對象還可以開啟並下載這些檔案。"
+      }
+    },
+    "create": {
+      "title": "發佈給更多人",
+      "expiry": "到期時間：當天結束時（選填）",
+      "submit": "發佈"
+    },
+    "refusal": {
+      "forbidden": "只有此集合的擁有者和組織管理員可以發佈它。",
+      "invalid": "請檢查發佈。",
+      "notFound": "此發佈或集合已不存在。",
+      "disabled": "您的組織已關閉知識發佈功能。",
+      "unavailable": "目前無法存取發佈功能。未做任何變更。請稍後再試。",
+      "answerOnly": "此內容僅為答案而發佈。",
+      "refused": "知識服務拒絕了此請求。"
+    }
+  },
+  "schedules": {
+    "title": "排程",
+    "subtitle": "依排程或在呼叫 webhook 時執行代理程式。每次執行都以您的身分進行，並且每次都會重新檢查您的存取權限。",
+    "harnessPaused": "暫時暫停：在 agent harness 恢復之前，排程不會執行。",
+    "mineTitle": "您的排程",
+    "mineDescription": "無需您操作即可啟動的執行。需要核准的執行會等待您，直到截止時間。",
+    "new": "新增排程",
+    "tabs": {
+      "mine": "您的",
+      "org": "組織"
+    },
+    "empty": "尚無排程。",
+    "unavailable": "目前無法存取排程。未做任何變更。請稍後再試。",
+    "assistant": "助理",
+    "runsAs": "以 {{name}} 的身分執行",
+    "nextRun": "下次執行 {{date}}",
+    "noNextRun": "沒有預定的執行",
+    "budget": "每次執行最多 {{amount}} USD",
+    "budgetDefault": "每次執行的預設預算",
+    "pausedBecause": "已被 PipesHub 暫停：{{reason}}",
+    "disabledBecause": "已被 PipesHub 關閉：{{reason}}",
+    "started": "已啟動。",
+    "historyLabel": "{{name}} 的執行記錄",
+    "status": {
+      "active": "啟用中",
+      "paused": "已暫停",
+      "disabled": "已關閉"
+    },
+    "trigger": {
+      "cron": "Cron",
+      "webhook": "呼叫其 webhook 時",
+      "connector": "連接器收到新記錄時"
+    },
+    "actions": {
+      "pause": "暫停",
+      "resume": "恢復",
+      "runNow": "立即執行",
+      "history": "歷史記錄",
+      "delete": "刪除"
+    },
+    "delete": {
+      "title": "要刪除 {{name}} 嗎？",
+      "message": "它將停止執行，其歷史記錄會被刪除。其執行所開始的對話會保留。"
+    },
+    "firing": {
+      "kind": {
+        "cron": "依排程",
+        "manual": "立即執行",
+        "event": "已觸發",
+        "cronCaughtUp": "排程執行（補執行）"
+      },
+      "openConversation": "開啟對話",
+      "admitted": "已啟動",
+      "refused": "未啟動：{{reason}}",
+      "skipped": "已略過。PipesHub 停機期間錯過：{{count}}",
+      "skippedOverlap": "已略過：上一次執行仍在進行",
+      "skippedQueueFull": "已略過：已有一次執行在等待",
+      "waitingForLastRun": "正在等待上一次執行完成",
+      "pending": "啟動中…",
+      "none": "尚無執行記錄。"
+    },
+    "create": {
+      "title": "新增排程",
+      "name": "名稱",
+      "agent": "代理程式",
+      "prompt": "要問什麼",
+      "promptHint": "每次執行時都會作為您的訊息傳送。",
+      "when": "何時執行",
+      "kindCron": "依排程（cron）",
+      "kindWebhook": "呼叫 webhook 時",
+      "cron": "Cron 運算式",
+      "cronHint": "分鐘、小時、每月的某天、月份、每週的某天。例如 0 9 * * 1 表示每週一 9:00。最多每 5 分鐘一次。",
+      "timeZone": "時區",
+      "catchUp": "如果 PipesHub 當時停機",
+      "catchUpSkip": "略過錯過的執行",
+      "catchUpRunLatest": "為最近一次錯過的時間執行一次",
+      "webhookHint": "建立後，您只會獲得一次 webhook 的位址和密鑰。",
+      "budget": "每次執行的預算，USD（選填）",
+      "budgetHint": "最多 5 USD。留空則使用預設值。",
+      "deadline": "截止時間，小時（選填）",
+      "deadlineHint": "核准在此之前一直未回覆，執行即告結束。留空：8 小時。",
+      "submit": "建立",
+      "catchUpRunAll": "為每個錯過的時間各執行一次",
+      "catchUpRunAllHint": "最多 24 次，從最早的開始，依序執行。",
+      "overlap": "如果上一次執行仍在進行",
+      "overlapSkip": "略過本次執行",
+      "overlapQueue": "等它結束後再執行",
+      "overlapQueueHint": "只能有一次執行在等待。等待期間若又到了執行時間，該次會被略過。",
+      "overlapAllow": "同時執行兩者",
+      "notify": "執行結束時通知我",
+      "notifyInApp": "在 PipesHub 中",
+      "notifyInAppHint": "附上簡短摘要和它產生的檔案連結。",
+      "notifyEmail": "電子郵件",
+      "notifyEmailHint": "排程名稱、是否完成，以及一個連結。",
+      "notifySlack": "Slack",
+      "notifySlackHint": "來自此代理程式 Slack 機器人的訊息：排程名稱、是否完成，以及一個連結。",
+      "notifyNoSlackBot": "此代理程式沒有 Slack 機器人。在 Slack 設定中新增一個，即可在那裡收到訊息。",
+      "notifyNoSlackBotAssistant": "助理沒有 Slack 機器人。請選擇有機器人的代理程式，以便在那裡收到訊息。",
+      "notifyOrgOff": "你的組織已關閉此項。",
+      "notifyUnknown": "暫時無法使用。",
+      "notifyCheckFailed": "無法檢查你可以使用哪些管道，因此只提供 PipesHub。",
+      "webhookCantSign": "呼叫端無法簽署。改為在標頭中使用權杖",
+      "webhookCantSignHint": "任何看到權杖的人都能呼叫它。簽署較安全。"
+    },
+    "webhook": {
+      "title": "您的 webhook",
+      "shownOnce": "請立即複製密鑰。它只會顯示這一次；PipesHub 只保留其指紋。",
+      "url": "位址",
+      "copyUrl": "複製位址",
+      "secret": "密鑰",
+      "copySecret": "複製密鑰",
+      "copied": "已複製",
+      "howTo": "向該位址傳送 POST 請求，並在標頭中帶上密鑰",
+      "done": "完成",
+      "signedShownOnce": "請立即複製此密鑰。之後將無法再次查看。",
+      "signHowTo": "為每次呼叫簽署：傳送目前時間，以及該時間和本文的 HMAC-SHA256。",
+      "example": "簽署範例",
+      "copyExample": "複製範例"
+    },
+    "refusal": {
+      "disabledForOrg": "您的組織已關閉排程執行。",
+      "invalid": "請檢查排程。",
+      "notFound": "此排程已不存在。",
+      "forbidden": "您無法對此排程執行此操作。",
+      "scheduleDisabled": "此排程已被關閉，因為其擁有者已無法執行它。",
+      "limit": "您已達到允許的排程數量上限。請先刪除一個。",
+      "budgetCeiling": "每次執行的預算過高。",
+      "unavailable": "排程執行需要持久化代理聊天，而你的組織已將其關閉。",
+      "triggerTokenInvalid": "Webhook 的觸發權杖不相符。請從排程中複製目前的權杖後重試。"
+    },
+    "reason": {
+      "scheduledRunsDisabled": "組織已關閉排程執行",
+      "actorDeleted": "其擁有者已被移除",
+      "actorDisabled": "其擁有者的帳戶已被停用",
+      "actorNotPerson": "其擁有者不是真人",
+      "orgInactive": "組織未啟用",
+      "agentForbidden": "其擁有者已無法使用此代理程式",
+      "agentDeleted": "其代理程式已被刪除",
+      "narrowing": "代理程式的設定已不允許此次執行",
+      "rolloutLegacy": "組織已關閉持久化代理程式框架",
+      "unavailable": "PipesHub 未能及時啟動它",
+      "templateMissing": "其提示詞已遺失",
+      "catchUpSkip": "PipesHub 停機期間錯過",
+      "byActor": "已被其擁有者暫停",
+      "byAdmin": "已被管理員暫停",
+      "other": "PipesHub 拒絕了此次執行"
+    },
+    "version": {
+      "label": "代理版本",
+      "createPinned": "目前版本",
+      "createLatest": "一律使用目前版本",
+      "pinnedHint": "每次執行都使用您測試過的內容。之後可以變更。",
+      "runs": "執行版本 {{version}}",
+      "runsLatest": "執行目前版本",
+      "liveIs": "目前版本為 {{version}}",
+      "change": "變更版本",
+      "ownerOnly": "只有排程的擁有者可以變更。",
+      "keep": "保留版本 {{version}}",
+      "keepHint": "每次執行都使用您測試過的內容。",
+      "move": "改為版本 {{version}}",
+      "moveHint": "從下次執行開始。可以改回來。",
+      "latest": "一律使用目前版本",
+      "latestHint": "每次執行都使用最近發布的版本。",
+      "save": "儲存"
+    }
+  },
+  "unknownEffectCard": {
+    "title": "這件事完成了嗎？{{action}}",
+    "titleIn": "這件事完成了嗎？在 {{app}} 中{{action}}",
+    "why": "代理在執行時被中斷，無法確定是否已完成。請檢查後告訴它。不會自動重試。",
+    "whyIn": "代理在執行時被中斷，無法確定是否已完成。請檢查 {{app}} 後告訴它。不會自動重試。",
+    "checked": "自動檢查也無法確定。",
+    "done": "已完成",
+    "notDone": "未完成",
+    "doneLabel": "已完成：{{action}}",
+    "notDoneLabel": "未完成：{{action}}",
+    "markedDone": "已標記為完成",
+    "markedNotDone": "已標記為未完成",
+    "retried": "已重試",
+    "closed": "不再等待",
+    "adminRetry": "重試",
+    "adminNote": "如果它沒有完成但仍需要完成，管理員可以重試。",
+    "refusedNotAllowed": "只有此聊天所代表的人、對話擁有者或管理員可以回答。",
+    "refusedClosed": "此項已不再等待回答。",
+    "failed": "無法傳送你的回答。請重試。"
+  },
+  "memoryChip": {
+    "saved": "已儲存到你的記憶",
+    "review": "檢視"
+  },
+  "activityPanel": {
+    "title": "活動",
+    "close": "關閉活動面板",
+    "subtitle": "代理程式在其沙箱中執行的內容。唯讀。",
+    "subtitlePersonRan": "你在此聊天的沙箱中執行的內容。唯讀。",
+    "model": "模型：{{model}}",
+    "reconnecting": "正在重新連線…",
+    "loading": "正在載入活動…",
+    "unavailable": "無法查看此執行的活動。",
+    "unavailableHint": "可能已為你的組織關閉，或者此執行屬於其他人。",
+    "empty": "尚未執行任何內容。",
+    "emptyRunning": "代理程式工作時，指令、工具呼叫和變更的檔案會顯示在這裡。",
+    "emptyDone": "此執行沒有執行指令、呼叫工具或變更檔案。",
+    "jumpToLatest": "跳到最新",
+    "planCaption": "代理程式接下來打算做的事。",
+    "omittedCommands": "未顯示的較早指令：{{count}}",
+    "section": {
+      "plan": "計畫",
+      "commands": "指令",
+      "tools": "步驟",
+      "files": "已變更的檔案",
+      "workspace": "工作區檔案"
+    },
+    "status": {
+      "queued": "排隊中",
+      "running": "執行中",
+      "waiting": "等待你處理",
+      "completed": "已完成",
+      "failed": "失敗",
+      "cancelled": "已停止"
+    },
+    "command": {
+      "running": "執行中",
+      "timedOut": "已逾時",
+      "cancelled": "已取消",
+      "failed": "失敗",
+      "done": "完成",
+      "exit": "結束代碼 {{code}}",
+      "unnamed": "指令",
+      "truncated": "此處不顯示較早的輸出。完整記錄中有。",
+      "dropped": "有 {{size}} 的輸出未即時顯示。完整記錄中有。",
+      "outputLabel": "{{command}} 的輸出",
+      "waitingOutput": "正在等待輸出…",
+      "noOutput": "沒有輸出。",
+      "noOutputCaptured": "未擷取到任何輸出。",
+      "fullLog": "完整記錄",
+      "fullLogLabel": "{{command}} 的完整記錄"
+    },
+    "task": {
+      "pending": "待辦",
+      "inProgress": "進行中",
+      "completed": "完成",
+      "cancelled": "已取消"
+    },
+    "tool": {
+      "running": "執行中",
+      "completed": "完成",
+      "failed": "失敗",
+      "awaiting": "等待核准",
+      "denied": "已拒絕",
+      "blocked": "已封鎖",
+      "waitingGeneric": "此呼叫正在等待你的核准。",
+      "decideInChat": "請在聊天中的核准卡片上做決定。",
+      "refusedBy": "遭規則「{{rule}}」拒絕。",
+      "deniedGeneric": "此呼叫已被拒絕，未執行。",
+      "blockedBy": "遭規則「{{rule}}」封鎖。",
+      "blockedGeneric": "遭政策封鎖，未執行。",
+      "webAddressRefused": "未開啟：此網址並非來自搜尋結果或你本人，而對話已讀取了私人內容。",
+      "detail": "詳細資訊：{{detail}}",
+      "dryRun": "試執行：未執行",
+      "dryRunWouldAsk": "試執行：未執行（本會請求核准）"
+    },
+    "announce": {
+      "started": "指令已開始：{{command}}",
+      "finishedExit": "指令已結束，結束代碼 {{code}}：{{command}}",
+      "finished": "指令已完成：{{command}}",
+      "failed": "指令失敗：{{command}}",
+      "timedOut": "指令逾時：{{command}}",
+      "cancelled": "指令已取消：{{command}}",
+      "approval": "需要核准：{{tool}}",
+      "runCompleted": "執行已完成。",
+      "runFailed": "執行失敗。",
+      "runCancelled": "執行已停止。"
+    },
+    "log": {
+      "title": "完整記錄",
+      "loading": "正在載入完整記錄…",
+      "failed": "無法載入完整記錄，請再試一次。",
+      "label": "{{command}} 的完整記錄",
+      "download": "下載"
+    },
+    "viewActivity": "檢視活動",
+    "slashCommand": "已執行 /{{name}}（v{{version}}）· 已傳送 {{chars}} 個字元",
+    "steps": {
+      "running": "執行中…",
+      "done": "完成",
+      "noResults": "沒有結果",
+      "found_one": "找到 {{count}} 個結果",
+      "found_other": "找到 {{count}} 個結果",
+      "details": "詳細資訊",
+      "lookedUpTools": "查詢了可用工具",
+      "lookedUpSkills": "查詢了技能",
+      "groupTitle": "{{label}}（{{count}} 次）",
+      "groupFinished_one": "{{count}} 個已完成",
+      "groupFinished_other": "{{count}} 個已完成",
+      "groupRunning_one": "{{count}} 個執行中",
+      "groupRunning_other": "{{count}} 個執行中",
+      "groupFailed_one": "{{count}} 個失敗",
+      "groupFailed_other": "{{count}} 個失敗",
+      "childLoading": "正在載入其步驟…",
+      "childEmpty": "尚無步驟。",
+      "childUnavailable": "無法載入其步驟。",
+      "exitCode": "結束代碼 {{code}}",
+      "resultLoading": "正在載入結果…",
+      "resultUnavailable": "無法載入結果。關閉此步驟後重新開啟以重試。"
+    },
+    "workspace": {
+      "treeLabel": "工作區檔案，唯讀",
+      "failed": "無法列出這些檔案。",
+      "readOnly": "唯讀。要閱讀檔案，請在聊天中使用 /open 或 /download。"
+    }
+  },
+  "followups": {
+    "title": "建議的後續步驟",
+    "hint": "將文字放入訊息框，方便你編輯。在你送出之前不會傳送任何內容。",
+    "openFiles": "開啟已變更的檔案",
+    "runTests": "重新執行測試",
+    "runTestsPrompt": "重新執行測試：{{command}}"
+  },
+  "agentActivity": {
+    "summary": {
+      "steps": "已完成 {{done}}/{{total}} 步",
+      "thought_one": "思考了一下",
+      "thought_other": "思考了 {{count}} 次",
+      "tools_one": "使用了 {{count}} 個工具",
+      "tools_other": "使用了 {{count}} 個工具",
+      "delegated_one": "委派給 {{count}} 個子代理",
+      "delegated_other": "委派給 {{count}} 個子代理",
+      "fallback": "顯示步驟",
+      "repeated": "{{label}}（{{count}}）",
+      "more": "另外 {{count}} 項",
+      "usedApp": "使用了 {{app}}：{{tool}}",
+      "commands_one": "執行了 {{count}} 個指令",
+      "commands_other": "執行了 {{count}} 個指令",
+      "created": "建立了 {{name}}",
+      "edited": "編輯了 {{name}}",
+      "deleted": "刪除了 {{name}}",
+      "files_one": "編輯了 {{count}} 個檔案",
+      "files_other": "編輯了 {{count}} 個檔案",
+      "askedYou": "向您提了一個問題",
+      "approvals_one": "{{count}} 項批准",
+      "approvals_other": "{{count}} 項批准",
+      "costSoFar": "目前 {{cost}}"
+    },
+    "plan": {
+      "label": "計畫",
+      "status": {
+        "completed": "已完成",
+        "in_progress": "進行中",
+        "pending": "待辦",
+        "cancelled": "已放棄"
+      }
+    },
+    "duration": {
+      "seconds": "{{seconds}} 秒",
+      "minutes": "{{minutes}} 分 {{seconds}} 秒"
+    },
+    "notice": {
+      "mcpUnavailable": "您的部分 MCP 伺服器沒有回應或沒有已核准的工具，因此此回答無法使用它們。請在 MCP 伺服器中檢查後再試一次。",
+      "credentialMissingToolset": "您的帳戶尚未連接 {{item}}，因此此回答無法使用它。請在「動作」中連接後再提問。",
+      "credentialMissingMcp": "您的帳戶尚未連接 {{item}}，因此此回答無法使用它。請在 MCP 伺服器中連接後再提問。",
+      "connectItem": "連接 {{item}}",
+      "signinUnavailable": "此伺服器尚無法使用您的 Claude 帳戶，因此這項工作使用了組織的帳戶。",
+      "resumed": "此任務曾被中斷（伺服器重新啟動），已從中斷處繼續。",
+      "dryRun": "這是一次試執行：此回答中的任何內容都沒有真正被變更、傳送或刪除。",
+      "verified": "已檢查：此回答通過了檢查。",
+      "unverified": "未通過驗證：此回答沒有通過檢查。",
+      "unverifiedBecause": "未通過驗證：{{reason}}",
+      "engineRetired": "你的管理員已停用此任務所用的程式碼引擎版本。任務已暫停，有相容版本可用時會自動繼續。如想重新開始，請停止它並重新傳送你的訊息。",
+      "engineContinued": "已有相容的程式碼引擎版本可用，此任務已繼續。",
+      "timePlan": "時間計畫：最遲在 {{writeBy}} 前完成資料蒐集，然後開始撰寫；{{finishBy}} 前完成。",
+      "ranWithoutCodeTools": {
+        "notAvailable": "此回答未使用程式碼工具：此伺服器上的程式設計引擎目前無法使用。",
+        "pausedByAdmin": "此回答未使用程式碼工具：管理員已暫停程式設計引擎。",
+        "notAllowed": "此回答未使用程式碼工具：你所屬組織的設定不允許此聊天使用程式設計引擎。",
+        "isolationUnavailable": "此回答未使用程式碼工具：此伺服器無法以你所屬組織要求的隔離層級執行程式設計引擎。",
+        "engineOff": "此回答未使用程式碼工具：你的管理員關閉了此聊天或代理程式使用的程式設計引擎。請請管理員重新開啟，或選擇其他程式設計引擎。"
+      },
+      "modelSwitched": "平常使用的 AI 模型沒有回應，因此此回答由 {{model}} 撰寫。",
+      "engineSwitched": "你的組織已關閉 {{off}}，因此此工作的程式設計工作使用了 {{engine}}。",
+      "sandboxQueued": "此工作在執行前排隊等候了閒置的沙箱。",
+      "mcpUnused": {
+        "signIn_one": "此回答未使用 {{names}}：請先登入。",
+        "notApproved_one": "此回答未使用 {{names}}：管理員尚未核准其任何工具。",
+        "unreachable_one": "此回答未使用 {{names}}：它沒有回應。請在 MCP 伺服器中檢查，然後再問一次。",
+        "noTools_one": "此回答未使用 {{names}}：它不提供任何工具。",
+        "unknown_one": "此回答未使用 {{names}}。請在 MCP 伺服器中檢查，然後再問一次。",
+        "approveTools_one": "核准其工具",
+        "openServers": "開啟 MCP 伺服器",
+        "signInTo": "登入 {{name}}",
+        "signingIn": "正在登入 {{name}}…",
+        "signedIn": "已登入 {{name}}。再問一次即可使用。",
+        "signIn_other": "此回答未使用 {{names}}：請先登入。",
+        "notApproved_other": "此回答未使用 {{names}}：管理員尚未核准其任何工具。",
+        "unreachable_other": "此回答未使用 {{names}}：它們沒有回應。請在 MCP 伺服器中檢查，然後再問一次。",
+        "noTools_other": "此回答未使用 {{names}}：它們不提供任何工具。",
+        "unknown_other": "此回答未使用 {{names}}。請在 MCP 伺服器中檢查，然後再問一次。",
+        "approveTools_other": "核准其工具",
+        "flagged_one": "此回答未使用 {{names}}：其工具的描述看起來像是給模型的指令，基於安全考量已被暫扣。",
+        "held_one": "{{server}} 的工具 {{tools}} 基於安全考量已被暫扣：其描述看起來像是給模型的指令。",
+        "flagged_other": "此回答未使用 {{names}}：其工具的描述看起來像是給模型的指令，基於安全考量已被暫扣。",
+        "held_other": "{{server}} 的工具 {{tools}} 基於安全考量已被暫扣：其描述看起來像是給模型的指令。"
+      }
+    },
+    "command": {
+      "ran": "已執行",
+      "running": "執行中",
+      "exit": "結束代碼 {{code}}",
+      "showWhole": "顯示全部輸出",
+      "showTail": "僅顯示最後幾行",
+      "fullLogInActivity": "在活動中查看完整記錄"
+    },
+    "files": {
+      "title": "已變更的檔案",
+      "added": "新增",
+      "modified": "已修改",
+      "deleted": "已刪除",
+      "fullDiff": "完整差異請見「檢視活動」"
+    },
+    "codeTask": "程式碼任務：{{goal}}",
+    "engineHelper": "輔助代理",
+    "engineHelperTask": "輔助代理：{{task}}",
+    "handoff": {
+      "label": "已交給{{engine}}：{{reason}}",
+      "engineFallback": "程式設計引擎",
+      "reason": {
+        "research": "需要跨多個來源進行研究",
+        "analysis": "需要對多個項目進行分析",
+        "planning": "需要規劃",
+        "long_report": "需要撰寫長篇內容",
+        "many_steps": "需要很多步驟",
+        "context": "需要比一次聊天回覆更多的空間",
+        "budget": "已用掉回覆預算的很大一部分"
+      }
+    },
+    "slashCommand": {
+      "ran": "已執行 /{{name}}",
+      "ranVersion": "已執行 /{{name}}（v{{version}}）"
+    },
+    "fileStep": {
+      "added": "已建立",
+      "modified": "已編輯",
+      "deleted": "已刪除"
+    },
+    "skill": {
+      "read": "已讀取 {{skill}} 技能",
+      "reading": "正在讀取 {{skill}} 技能",
+      "readMany": "已讀取 {{skills}} 技能",
+      "readingMany": "正在讀取 {{skills}} 技能",
+      "names": {
+        "docx": "Word 文件",
+        "xlsx": "Excel 試算表",
+        "pptx": "PowerPoint 簡報"
+      }
+    },
+    "unavailable": {
+      "notConnected": "{{tool}} 未連線",
+      "notAvailable": "此代理程式無法使用 {{tool}}",
+      "connect": "連線",
+      "connectLabel": "連線 {{tool}}"
+    },
+    "repo": {
+      "copied": "已複製 {{repository}} · 分支 {{branch}}",
+      "copiedNoBranch": "已複製 {{repository}}",
+      "pushed": "已推送到 {{branch}}",
+      "pushedNoBranch": "已推送分支",
+      "pushFailed": "無法推送到 {{target}}",
+      "pushFailedNoTarget": "無法推送",
+      "refused": {
+        "otherBranch": "此聊天只能推送自己的分支",
+        "overwrite": "只能在其分支上新增內容，不能覆寫",
+        "delete": "不能刪除分支",
+        "tags": "不能推送標籤",
+        "other": "推送未成功"
+      },
+      "prOpened": "已在 {{repository}} 中開啟提取要求 #{{number}}",
+      "prOpenedPlain": "已開啟提取要求",
+      "prFailed": "無法開啟提取要求",
+      "viewOnGithub": "在 GitHub 上檢視"
+    },
+    "runSummary": {
+      "title": "摘要",
+      "outcome": {
+        "answered": "已回答",
+        "needs_input": "等待你的回答",
+        "failed": "失敗",
+        "cancelled": "已取消"
+      },
+      "cutShort": {
+        "budget": "提前停止：已達預算",
+        "turns": "提前停止：已達步驟上限",
+        "time": "提前停止：已達時間上限",
+        "stall": "提前停止：沒有進展",
+        "provider": "提前停止：供應商無法使用",
+        "engine_error": "提前停止：引擎錯誤",
+        "secret_blocked": "提前停止：已攔截金鑰"
+      },
+      "failed_one": "{{count}} 個失敗",
+      "failed_other": "{{count}} 個失敗",
+      "refused_one": "{{count}} 個被阻止",
+      "refused_other": "{{count}} 個被阻止",
+      "read_one": "讀取了 {{count}} 筆記錄",
+      "read_other": "讀取了 {{count}} 筆記錄",
+      "changed_one": "做了 {{count}} 處變更",
+      "changed_other": "做了 {{count}} 處變更",
+      "saved": "已儲存 {{names}}",
+      "approvals_one": "請求了 {{count}} 次核准",
+      "approvals_other": "請求了 {{count}} 次核准",
+      "approved_one": "{{count}} 次已核准",
+      "approved_other": "{{count}} 次已核准",
+      "denied_one": "{{count}} 次已拒絕",
+      "denied_other": "{{count}} 次已拒絕",
+      "unanswered_one": "{{count}} 次未回覆",
+      "unanswered_other": "{{count}} 次未回覆",
+      "cost": "費用 {{usd}} · {{tokens}} 個權杖"
+    },
+    "step": {
+      "results_one": "{{count}} 個結果",
+      "results_other": "{{count}} 個結果",
+      "noResults": "無結果",
+      "files_one": "{{count}} 個檔案",
+      "files_other": "{{count}} 個檔案",
+      "cited": "引用為 {{refs}}"
+    }
+  },
+  "controlPlane": {
+    "conflict": {
+      "message": "你開啟此區段後有人儲存了它。你的變更保留在下方。",
+      "reapply": "重新載入並重新套用",
+      "discard": "捨棄"
+    },
+    "recentChanges": {
+      "system": "PipesHub"
+    },
+    "agentData": {
+      "who": {
+        "actions": {
+          "email": "電子郵件",
+          "message": "聊天訊息",
+          "ticket": "工單與留言",
+          "document": "頁面與文件",
+          "event": "行事曆活動",
+          "commit": "提交"
+        }
+      }
+    }
+  },
+  "slashCommands": {
+    "menuLabel": "指令",
+    "owner": {
+      "you": "我",
+      "team": "團隊",
+      "org": "組織",
+      "pipeshub": "PipesHub"
+    },
+    "problem": {
+      "missing": "缺少：{{names}}",
+      "invalid": "無效的值：{{names}}",
+      "tooLong": "內容過長，無法傳送"
+    },
+    "preview": "預覽",
+    "previewNote": "將傳送以下文字。",
+    "queued": "/{{name}} 將在下一步執行",
+    "queuedDescription": "目前的工作完成後立即開始。",
+    "saveAsCommand": "儲存為指令",
+    "byYou": "由你建立",
+    "byPipeshub": "由 PipesHub 提供",
+    "whatWasSent": "已傳送的內容",
+    "byAuthor": "由 {{name}} 建立",
+    "byFormerMember": "由前成員建立",
+    "reviewOfFiles_one": "審查 {{count}} 個已變更的檔案",
+    "reviewOfFiles_other": "審查 {{count}} 個已變更的檔案",
+    "teamNamed": "團隊 {{team}}",
+    "group": {
+      "builtin": "內建",
+      "you": "你的指令",
+      "team": "團隊",
+      "org": "組織",
+      "sandbox": "沙盒"
+    },
+    "alsoAlias": "也可使用 {{alias}}",
+    "moreBuiltins": "更多內建指令…",
+    "moreCount": "還有 {{n}} 個",
+    "terminalWord": "PipesHub 沒有 /{{name}}。你輸入的文字將作為訊息傳送。",
+    "reason": {
+      "notRunning": "沒有正在執行的工作",
+      "wait": "請等待本次執行完成",
+      "noConversation": "請先傳送一則訊息",
+      "noAnswer": "還沒有回答",
+      "noWorkspace": "此聊天尚無工作區",
+      "sandboxOwner": "只有聊天的擁有者可以使用沙盒",
+      "sandboxLegacy": "沙盒命令需要新的 harness"
+    },
+    "builtin": {
+      "new": {
+        "description": "開始新聊天"
+      },
+      "model": {
+        "description": "選擇下一則訊息使用的模型"
+      },
+      "effort": {
+        "description": "設定下一則訊息的推理強度",
+        "reason": {
+          "noEffort": "此模型沒有強度設定"
+        }
+      },
+      "stop": {
+        "description": "停止正在產生的回覆"
+      },
+      "status": {
+        "description": "上一則回覆的模型、強度、執行器和工具"
+      },
+      "usage": {
+        "description": "本聊天的 Token 和費用",
+        "reason": {
+          "legacy": "僅新框架的聊天會記錄費用"
+        }
+      },
+      "fork": {
+        "description": "在副本中私下繼續本聊天",
+        "reason": {
+          "unavailable": "本聊天無法分支"
+        }
+      },
+      "copy": {
+        "description": "複製上一則回答"
+      },
+      "help": {
+        "description": "列出你可以使用的指令"
+      },
+      "resume": {
+        "description": "尋找之前的聊天"
+      },
+      "rename": {
+        "description": "重新命名本聊天"
+      },
+      "export": {
+        "description": "將本聊天下載為 Markdown"
+      },
+      "plan": {
+        "description": "下一則訊息改用規劃與執行",
+        "reason": {
+          "agentOnly": "規劃模式僅適用於代理聊天"
+        }
+      },
+      "skills": {
+        "description": "本聊天可使用的技能",
+        "reason": {
+          "off": "你的組織未啟用技能"
+        }
+      },
+      "mcp": {
+        "description": "你的 MCP 伺服器及其連線狀態",
+        "reason": {
+          "off": "你的組織已關閉 MCP"
+        }
+      },
+      "agents": {
+        "description": "可與你聊天的代理"
+      },
+      "memory": {
+        "description": "開啟你的記憶",
+        "reason": {
+          "off": "你的組織未啟用記憶"
+        }
+      },
+      "permissions": {
+        "description": "本聊天無需詢問即可執行的操作",
+        "reason": {
+          "legacy": "核准是新框架的功能"
+        }
+      },
+      "feedback": {
+        "description": "為上一則回答評分"
+      },
+      "compact": {
+        "description": "摘要本聊天以釋放上下文",
+        "reason": {
+          "legacy": "壓縮需要新版執行框架",
+          "nothing": "目前沒有可壓縮的內容",
+          "owner": "只有聊天的擁有者才能壓縮它"
+        },
+        "requested": "已儲存壓縮請求 · 將在你的下一則訊息前執行",
+        "requestedFocus": "重點保留：{{focus}}",
+        "row": {
+          "compacted": "上下文已壓縮",
+          "tokens": "{{before}} → {{after}} 個 token",
+          "kept": "你的訊息已保留",
+          "unsupported": "此引擎無法依要求壓縮",
+          "failed": "壓縮未完成；回覆使用了完整上下文"
+        }
+      },
+      "diff": {
+        "description": "本聊天變更過的檔案"
+      },
+      "undo": {
+        "description": "還原為上一則回覆之前的檔案狀態"
+      },
+      "review": {
+        "description": "檢閱本聊天工作區中的變更"
+      },
+      "init": {
+        "description": "根據本聊天草擬此代理的指示",
+        "reason": {
+          "noAgent": "請在與代理程式的聊天中使用 /init",
+          "notEditor": "只有代理程式的編輯者可以變更其指示"
+        }
+      },
+      "knowledge": {
+        "description": "為下一則訊息選擇集合與連接器",
+        "reason": {
+          "fixed": "此聊天的知識無法在此變更"
+        }
+      },
+      "files": {
+        "description": "本聊天工作區中的檔案"
+      },
+      "open": {
+        "description": "在此顯示檔案"
+      },
+      "download": {
+        "description": "單一檔案，或全部打包為 .zip"
+      },
+      "upload": {
+        "description": "向工作區新增檔案"
+      },
+      "run": {
+        "description": "執行命令，不經過模型",
+        "reason": {
+          "noRunCode": "此聊天無法執行程式碼",
+          "denied": "你的組織政策禁止執行程式碼"
+        }
+      },
+      "sandbox": {
+        "description": "執行本聊天程式碼的環境"
+      },
+      "engine": {
+        "description": "下一則訊息使用的編碼引擎",
+        "reason": {
+          "fixed": "此智慧體的引擎由其擁有者設定",
+          "quickChat": "編碼引擎在智慧體模式下執行"
+        }
+      },
+      "logs": {
+        "description": "命令及其輸出"
+      },
+      "repo": {
+        "description": "在此聊天中處理 GitHub 儲存庫",
+        "reason": {
+          "noEngine": "需要編碼引擎。請先選擇一個。",
+          "orgOff": "你的組織尚未啟用編碼引擎。",
+          "hasRepository": "此聊天已在處理 {{repo}}。如需其他儲存庫，請開始新的聊天。"
+        }
+      }
+    },
+    "result": {
+      "loading": "載入中…",
+      "failed": "無法載入。請重試。",
+      "none": "—",
+      "dismiss": "關閉",
+      "renamed": "已重新命名為「{{title}}」",
+      "noSuchModel": "沒有名為「{{name}}」的模型。請從清單中選擇。",
+      "noSuchEffort": "請使用以下其中之一：{{values}}",
+      "modelNext": "下一則訊息的模型：{{model}}",
+      "was": "原為 {{model}}",
+      "effortNext": "下一則訊息的推理強度：{{effort}}",
+      "planNext": "下一則訊息已啟用規劃與執行。",
+      "runKeepsPins": "進行中的回覆維持其原有設定。",
+      "manageCommands": "管理你的指令",
+      "mcpConnected": "已連線",
+      "mcpNotConnected": "未連線",
+      "openSkills": "開啟技能",
+      "noSkills": "尚無技能",
+      "openMcp": "開啟 MCP 伺服器",
+      "noMcp": "尚無 MCP 伺服器",
+      "openAgents": "所有代理",
+      "noAgents": "尚無代理",
+      "yes": "是",
+      "no": "否",
+      "status": {
+        "model": "模型",
+        "mode": "模式",
+        "effort": "強度",
+        "executor": "執行器",
+        "codingEngine": "編碼引擎",
+        "tools": "已授予的工具",
+        "approvals": "核准",
+        "run": "上一則回覆",
+        "tokens": "已使用的 Token",
+        "policyVersion": "設定版本",
+        "effortDefault": "模型預設值",
+        "executorLoop": "代理程式迴圈",
+        "approvalsNone": "未請求",
+        "approvalsAsked": "本次回覆請求了 {{count}} 次",
+        "legacy": "本聊天使用經典路徑執行，因此只顯示其模型和模式。"
+      },
+      "usage": {
+        "chat": "本聊天",
+        "chatValue": "{{tokens}} 個 Token · {{usd}} · 回覆數：{{runs}}",
+        "last": "上一則回覆",
+        "lastValue": "{{tokens}} 個 Token · {{usd}}",
+        "lastValueCap": "{{tokens}} 個 Token · {{usd}} · 剩餘額度 {{left}}"
+      },
+      "permissions": {
+        "approve": "你可以核准",
+        "deny": "你可以拒絕",
+        "readOnly": "唯讀。核准規則決定哪些操作無需詢問即可執行。",
+        "policy": "變更這些規則"
+      },
+      "knowledgeNext": "下一則訊息的知識：{{names}}",
+      "knowledgeAll": "下一則訊息將搜尋您可讀取的所有內容。",
+      "diff": {
+        "summary": "自本次聊天開始以來變更的檔案：{{count}}",
+        "none": "自本次聊天開始以來沒有變更任何檔案。",
+        "omitted": "其餘未顯示：{{count}}",
+        "undo": "復原上一輪",
+        "review": "檢閱這些變更"
+      },
+      "undo": {
+        "nothing": "沒有可復原的工作區變更",
+        "confirm": "要將這些檔案還原到上一則回覆之前的狀態嗎？檔案：{{count}}",
+        "confirmLabel": "確認復原",
+        "filesOnly": "只還原檔案。您的訊息保持不變；若要倒轉對話，請從某則訊息分支。",
+        "restore": "還原檔案",
+        "moved": "顯示後工作區已變更。請再次執行 /undo。",
+        "done": "檔案已還原到版本 {{from}}（還原 {{count}} 個）。目前版本 {{revision}}。",
+        "doneSaved": "您已還原工作區檔案。目前版本 {{revision}}。",
+        "forkHint": "您的訊息未變更。",
+        "savedHeading": "工作區已還原"
+      },
+      "init": {
+        "open": "在代理程式編輯器中開啟",
+        "notSaved": "在儲存代理程式之前，不會儲存任何內容。"
+      },
+      "files": {
+        "summary": "版本 {{revision}} · 檔案：{{count}} · {{size}}",
+        "lastSave": "截至 {{seconds}} 秒前的最後一次儲存。進行中的回覆可能有更新的變更。",
+        "treeLabel": "工作區檔案",
+        "more": "另外 {{label}} 個",
+        "hidden": "對引擎隱藏",
+        "open": "開啟 {{path}}",
+        "download": "下載 {{path}}",
+        "omitted": "未列出：{{count}}",
+        "downloadAll": "全部下載 (.zip)",
+        "notFound": "{{path}} 處沒有檔案或資料夾",
+        "reference": "{{label}}（{{version}}）— 擷取的副本，未儲存",
+        "referenceUnversioned": "{{label}} — 擷取的副本，未儲存"
+      },
+      "download": {
+        "file": "已下載 {{name}}",
+        "zip": "已下載 {{name}}",
+        "tooLarge": "這些檔案超過 2 GiB。請改為下載一個資料夾，例如 /download out/"
+      },
+      "logs": {
+        "none": "此聊天中尚未執行任何命令"
+      },
+      "open": {
+        "lastSave": "截至最後一次儲存。進行中的回覆可能有更新的變更。",
+        "download": "下載",
+        "image": "{{path}} · {{size}} · 版本 {{revision}}",
+        "binary": "{{path}} · 二進位檔案，{{size}}",
+        "csv": "{{path}} · 前幾列：{{rows}} · 版本 {{revision}}",
+        "moreRows": "檔案中還有更多列：下載後可查看全部",
+        "text": "{{path}} · 行數：{{lines}} · 版本 {{revision}}",
+        "moreLines": "未顯示的行：{{count}}。下載檔案即可閱讀全部內容。"
+      },
+      "sandbox": {
+        "executor": "執行器",
+        "noRunYet": "首次回覆後可知",
+        "codeRunsIn": "程式碼執行於",
+        "gvisor": "gVisor",
+        "runc": "runc",
+        "network": "網路",
+        "networkNone": "無",
+        "networkProxy": "經 PipesHub 代理存取公共主機，每次都需核准",
+        "approvals": "核准",
+        "approvalsAllow": "程式碼無需詢問即可執行（自有沙盒）",
+        "approvalsAsk": "執行程式碼前會詢問",
+        "workspace": "工作區",
+        "workspaceValue": "版本 {{revision}} · 檔案：{{count}} · {{size}}",
+        "kept": "保留的沙盒",
+        "keptValue": "已登入 Claude · 閒置 {{idle}} 分鐘後結束，最遲在登入 {{hours}} 小時後",
+        "endNowAsk": "立即結束…",
+        "endNow": "立即結束",
+        "endConfirm": "結束保留的沙盒？這會登出 Claude 並清除沙盒；下一則訊息會要求你重新登入。",
+        "ended": "保留的沙盒已結束。下一則訊息會重新登入。",
+        "foot": "沒有正在執行的沙盒。每則訊息都會用你的檔案啟動新的沙盒。",
+        "footKept": "每則訊息都會用你的檔案啟動新的沙盒。只有 Claude 登入沙盒會在訊息之間保留。",
+        "nextMessage": "下一則訊息：{{engine}}"
+      },
+      "run": {
+        "interactive": "不支援互動式程式：/run 執行一條命令後即返回。",
+        "install": "/run 無法安裝套件；請讓智慧體來安裝。",
+        "rateLimited": "/run 命令過多。請在 {{seconds}} 秒後重試。",
+        "ask": "就此提問",
+        "undo": "復原",
+        "viewOutput": "檢視完整輸出",
+        "notSent": "除非你就此提問，否則此輸出不會傳送給模型。"
+      },
+      "upload": {
+        "replace": "取代檔案：{{count}}？",
+        "replaceButton": "取代",
+        "added": "已作為版本 {{revision}} 新增到工作區 · 檔案：{{count}}",
+        "addedSaved": "由你上傳 · 版本 {{revision}}",
+        "savedHeading": "/upload",
+        "notAttachment": "這些檔案位於沙盒資料夾中供程式碼使用，不會附加到你的下一則訊息。",
+        "tooLarge": "太大：每個檔案最多 100 MiB，每次上傳 512 MiB，工作區 2 GiB。",
+        "refusedPath": "這些檔案不能放在那裡：某些電腦無法使用的名稱（如 CON 或以句點結尾的名稱）、引擎的設定資料夾，或位於工作區之外的路徑。",
+        "failed": "無法將檔案新增至工作區。請再試一次。"
+      },
+      "engine": {
+        "heading": "本聊天的編碼引擎",
+        "nextMessage": "從你的下一則訊息開始",
+        "asDefaultIs": "依我的預設設定 · {{engine}}",
+        "noEngine": "無",
+        "none": "無 – 內建智慧體迴圈",
+        "saved": "已儲存。你的下一則訊息將使用它；你的檔案會保留。",
+        "refused": "目前無法使用此引擎；選擇未儲存。",
+        "unknown": "沒有名為「{{name}}」的編碼引擎。請在下方選擇一個。",
+        "carryOver": "你的檔案會保留。進行中的回覆保持其引擎。",
+        "makeDefault": "設為我的預設",
+        "defaultSaved": "已儲存為新聊天的預設設定。",
+        "defaultFailed": "你的預設設定未變更。請在「我的 AI 帳戶」中重試。",
+        "firstMessage": "此聊天中的第一則訊息將使用它。",
+        "firstMessageHeading": "從你的第一則訊息開始",
+        "firstMessageHint": "傳送前不會儲存任何內容。重新載入頁面會捨棄此選擇。"
+      }
+    }
+  },
+  "interaction": {
+    "title": "{{what}}？",
+    "titleIn": "在 {{app}} 中{{what}}？",
+    "titleTo": "向 {{destination}}{{what}}？",
+    "titleToIn": "在 {{app}} 中向 {{destination}}{{what}}？",
+    "titleClone": "複製 {{destination}}？",
+    "titlePush": "推送到 {{destination}}？",
+    "verb": {
+      "web_search_one": "搜索網絡",
+      "web_search_other": "搜索網絡 {{count}} 次",
+      "fetch_url_one": "讀取網頁",
+      "fetch_url_other": "讀取 {{count}} 個網頁",
+      "generate_image_one": "生成圖片",
+      "generate_image_other": "生成 {{count}} 張圖片",
+      "run_code_one": "運行代碼",
+      "run_code_other": "運行代碼 {{count}} 次",
+      "generic_one": "{{action}}",
+      "generic_other": "{{action}}（{{count}} 次調用）",
+      "install_packages_one": "安裝套件",
+      "install_packages_other": "安裝套件 {{count}} 次"
+    },
+    "engineWants": "{{engine}} 想要：",
+    "childWants": "代碼任務想要：",
+    "engine": {
+      "codex": "Codex",
+      "claude_code": "Claude Code",
+      "opencode": "OpenCode"
+    },
+    "outside": "組織外部的網站",
+    "why": {
+      "flowReadUnknown_one": "這會把文字發送到 {{destination}}。之前的步驟帶入了無法核實的內容，因此在任何內容離開您的組織之前先詢問您。",
+      "flowReadUnknown_other": "這些會把文字發送到 {{destination}}。之前的步驟帶入了無法核實的內容，因此在任何內容離開您的組織之前先詢問您。",
+      "flowReadPrivate_one": "這會把文字發送到 {{destination}}。此對話中代理之前讀取了私密內容，因此在任何內容離開您的組織之前先詢問您。",
+      "flowReadPrivate_other": "這些會把文字發送到 {{destination}}。此對話中代理之前讀取了私密內容，因此在任何內容離開您的組織之前先詢問您。",
+      "siteUpload": "此對話讀取過私人資料，因此傳往 {{destination}} 的請求需等待您的核准：連結或上傳可能帶走它讀到的內容。在此期間，套件安裝照常進行。"
+    },
+    "paused": "已暫停，等待您決定",
+    "pausedHint": "您決定后運行將繼續。",
+    "keysHint": "按 Enter 允許一次，按 Escape 返回消息框。",
+    "keysHintAll_one": "按 Enter 允許，按 Escape 返回消息框。",
+    "keysHintAll_other": "按 Enter 允許全部 {{count}} 項，按 Escape 返回消息框。",
+    "keysHintQuestion": "按 Enter 繼續，按 Escape 返回消息框。",
+    "queued": "下一項：{{title}}",
+    "reviewEach": "逐項查看",
+    "hideEach": "一起決定",
+    "allowAll_one": "允許",
+    "allowAll_other": "全部允許（{{count}}）",
+    "denyAll_one": "拒絕",
+    "denyAll_other": "全部拒絕",
+    "allowItem": "允許一次：{{item}}",
+    "denyItem": "拒絕：{{item}}",
+    "moreItems_one": "還有 {{count}} 項",
+    "moreItems_other": "還有 {{count}} 項",
+    "receipt": {
+      "allowed_one": "您已允許一次",
+      "allowed_other": "您已允許全部 {{count}} 項",
+      "allowedConversation_one": "您已允許在此對話中使用",
+      "allowedConversation_other": "您已允許在此對話中使用",
+      "allowedConversationFor": "你已在此對話中允許 {{destination}}",
+      "denied_one": "您已拒絕 · 未發送任何內容",
+      "denied_other": "您已拒絕全部 {{count}} 項 · 未發送任何內容",
+      "mixed": "{{allowed}} 項已允許，{{denied}} 項未運行",
+      "lapsed": "無人及時決定 · 未發送任何內容",
+      "decided": "您已決定",
+      "answered": "您的回答：{{answer}}",
+      "skipped": "已跳過（您發送了新消息）",
+      "named": "{{title}} · {{decision}}",
+      "deniedBecause": "你已拒絕，理由：「{{reason}}」",
+      "approvedWithChanges": "已依你的變更核准"
+    },
+    "waitingCount_one": "{{count}} 項等待您處理",
+    "waitingCount_other": "{{count}} 項等待您處理",
+    "waitingCountSince_one": "{{count}} 項自 {{time}} 起等待您處理",
+    "waitingCountSince_other": "{{count}} 項自 {{time}} 起等待您處理",
+    "pill_one": "{{count}} 項等待您處理 · 前往第一項",
+    "pill_other": "{{count}} 項等待您處理 · 前往第一項",
+    "announce_one": "代理需要您的批准：{{title}}。{{count}} 項等待您處理。",
+    "announce_other": "代理需要您的批准：{{title}}。{{count}} 項等待您處理。",
+    "announceQuestion_one": "代理問您：{{title}}。{{count}} 項等待您處理。",
+    "announceQuestion_other": "代理問您：{{title}}。{{count}} 項等待您處理。",
+    "composerWaiting": "上方有內容等待您決定。輸入以引導運行",
+    "composerQuestion": "上方有一個問題。發送新消息將跳過它",
+    "steerQueued": "已排隊：運行將在下一步讀取",
+    "steerQueuedWaiting": "已排隊：您在上方決定后運行將讀取",
+    "waitingForOwner_one": "正在等待對話所有者對一個步驟作出決定",
+    "waitingForOwner_other": "正在等待對話所有者對 {{count}} 個步驟作出決定",
+    "denyAllLabel": "全部拒絕：{{title}}",
+    "titleSiteUpload": "允許本次執行上傳到 {{destination}}？"
+  },
+  "engineSignIn": {
+    "title": "程式設計引擎登入",
+    "description": "你啟動的程式設計工作會使用你自己的訂閱，其他情況則使用組織的帳戶。",
+    "plan": {
+      "pro": "Claude Pro",
+      "max": "Claude Max",
+      "team": "Claude Team",
+      "enterprise": "Claude Enterprise",
+      "other": "Claude 方案"
+    },
+    "can": {
+      "heading": "PipesHub 可以",
+      "run": "使用你的 Claude 方案執行 Claude Code，僅限你自己啟動的工作",
+      "plan": "顯示你登入後 Claude Code 回報的帳戶和方案"
+    },
+    "cannot": {
+      "heading": "PipesHub 無法",
+      "see": "查看、保存或複製你的密碼或登入資訊：Claude Code 只會保存在你的沙箱中",
+      "others": "將其用於其他人、共用對話、排程執行、Slack 或已連結的應用程式",
+      "keep_other": "在對話結束後保留。每個對話只需登入一次；閒置 {{count}} 分鐘或中斷連線後登入即結束。",
+      "keepMax_other": "最遲在登入 {{count}} 小時後結束。"
+    },
+    "consent": {
+      "limits": "用量計入你的 Claude 方案限額，而非組織預算。適用 Anthropic 針對你方案的條款。",
+      "operator": "此 PipesHub 的營運者在技術上可以存取執行中的沙箱。請僅在你信任此部署時登入。"
+    },
+    "error": {
+      "notAllowed": "你的組織不允許使用個人 Claude 帳戶。"
+    },
+    "state": {
+      "notAllowed": "組織不允許",
+      "available": "未連結",
+      "onWaiting": "已開啟：工作開始時登入",
+      "connected": "已連結",
+      "disconnected": "已中斷連結",
+      "waitingVendor": "等待 OpenAI",
+      "unavailable": "此伺服器無法使用"
+    },
+    "notAllowed": {
+      "org": "管理員未允許個人 Claude 帳戶。工作將使用組織的帳戶。",
+      "service": "服務帳戶無法使用個人 Claude 帳戶。"
+    },
+    "connected": {
+      "as": "已登入為 {{email}} · {{plan}}",
+      "when": "上次登入：{{date}}。每項新工作都會要求你在其自己的沙箱中重新登入。"
+    },
+    "disconnected": {
+      "body": "已於 {{date}} 中斷連結。所有保存你登入資訊的沙箱皆已登出並清除。若要一併結束 Anthropic 上的工作階段，"
+    },
+    "revokeAtClaude": "請開啟你的 Claude 設定",
+    "available": {
+      "onBody": "當你在 Claude Code 上啟動代理模式工作時，系統會要求你在自己的沙箱中登入 Claude。"
+    },
+    "plans": {
+      "workOnly": "你的組織僅允許 Team 和 Enterprise 方案。",
+      "any": "你的組織允許任何 Claude 方案，包括 Pro 和 Max。"
+    },
+    "action": {
+      "useMine": "我的工作使用我的 Claude 帳戶",
+      "connectAgain": "重新連結",
+      "connect": "連結",
+      "disconnect": "中斷連結",
+      "disconnecting": "正在中斷連結..."
+    },
+    "toast": {
+      "on": "你的工作將使用你的 Claude 帳戶",
+      "off": "你的 Claude 帳戶已中斷連結"
+    },
+    "confirm": {
+      "title": "要中斷連結你的 Claude 帳戶嗎？",
+      "message": "使用你的 Claude 方案執行中的工作將停止，其沙箱會在一分鐘內登出並清除。新工作將使用組織的帳戶。"
+    },
+    "claude": {
+      "title": "Claude 帳戶",
+      "engine": "你會直接在自己的沙箱中登入 Claude Code。"
+    },
+    "chatgpt": {
+      "title": "ChatGPT 帳戶",
+      "body": "由 Codex 使用。正在等待 OpenAI 核准 PipesHub；在此之前，Codex 會使用你所屬組織的 AI 模型。"
+    },
+    "card": {
+      "title": "登入 Claude Code",
+      "body": "此工作使用你的 Claude 帳戶。開啟 Anthropic 頁面並核准，然後貼上顯示的代碼。代碼會直接傳送到你沙箱中的 Claude Code；PipesHub 不會保存。",
+      "open": "開啟 Anthropic 登入頁面",
+      "codeLabel": "Anthropic 提供的代碼",
+      "continue": "繼續",
+      "checking": "正在檢查...",
+      "privacy": "請勿將此代碼貼到其他任何地方。",
+      "ended": "此次登入已結束。",
+      "useOrg": "改用組織帳戶",
+      "orgChosen": "你的 Claude 帳戶已關閉。請重新傳送訊息，以使用組織帳戶執行。",
+      "usingPlan": "正在使用你的 Claude 方案",
+      "usingPlanNamed": "正在使用你的 Claude 方案 · {{plan}}"
+    },
+    "reason": {
+      "codeInvalid": "這不是 Anthropic 為此次登入顯示的代碼。請複製完整代碼後再試一次。",
+      "failed": "Anthropic 未接受該代碼。請使用新代碼再試一次。",
+      "planNotAllowed": "你的組織僅允許 Team 和 Enterprise 方案。你已再次被登出。",
+      "timeout": "15 分鐘內無人登入，因此工作已停止。",
+      "cancelled": "登入已取消。",
+      "urlRefused": "Claude Code 顯示的登入連結不屬於 Anthropic，因此不予顯示。",
+      "unavailable": "此部署不支援個人 Claude 登入。",
+      "disconnected": "你的 Claude 登入已結束，因此工作已停止。",
+      "expired": "你的 Claude 登入已過期或遭撤銷。請重新傳送訊息以再次登入。",
+      "planLimit": "已達到你的 Claude 方案用量上限。請稍後再試，或使用組織的帳戶。",
+      "required": "Claude Code 尚未登入。請重新傳送訊息以登入。",
+      "shared": "共用對話中不會使用你的 Claude 帳戶。",
+      "interactive": "你的 Claude 帳戶僅用於你在網頁應用程式中自己啟動的工作。",
+      "orgOff": "你的組織目前不允許使用個人 Claude 帳戶。關閉「使用我的 Claude 帳戶」即可使用組織的帳戶。"
+    },
+    "unavailable": {
+      "reason": "個人 Claude 帳戶需要此伺服器安裝登入附加元件。",
+      "member": "在安裝之前，您的 Claude Code 工作會使用組織的帳戶。",
+      "guide": "查看安裝指南"
+    }
+  },
+  "toolNames": {
+    "webSearch": {
+      "present": "正在搜尋網路",
+      "past": "已搜尋網路"
+    },
+    "readPage": {
+      "present": "正在閱讀網頁",
+      "past": "已閱讀網頁"
+    },
+    "generateImage": {
+      "present": "正在產生圖片",
+      "past": "已產生圖片"
+    },
+    "runCode": {
+      "present": "正在執行程式碼",
+      "past": "已執行程式碼"
+    },
+    "installPackages": {
+      "present": "正在安裝套件",
+      "past": "已安裝套件"
+    },
+    "readFile": {
+      "present": "正在讀取檔案",
+      "past": "已讀取檔案"
+    },
+    "viewImage": {
+      "present": "正在檢視圖片",
+      "past": "已檢視圖片"
+    },
+    "askUser": {
+      "present": "正在向你提問",
+      "past": "已向你提問"
+    },
+    "readRecord": {
+      "present": "正在讀取完整記錄",
+      "past": "已讀取完整記錄"
+    },
+    "listSkills": {
+      "present": "正在列出技能",
+      "past": "已列出技能"
+    },
+    "searchSkills": {
+      "present": "正在搜尋技能",
+      "past": "已搜尋技能"
+    },
+    "loadSkill": {
+      "present": "正在載入技能",
+      "past": "已載入技能"
+    },
+    "loadSkillFile": {
+      "present": "正在載入技能檔案",
+      "past": "已載入技能檔案"
+    },
+    "manageSkill": {
+      "present": "正在管理技能",
+      "past": "已管理技能"
+    },
+    "using": "正在使用 {{tool}}",
+    "findFiles": {
+      "present": "正在尋找檔案",
+      "past": "已尋找檔案"
+    },
+    "searchFiles": {
+      "present": "正在搜尋檔案",
+      "past": "已搜尋檔案"
+    },
+    "listFiles": {
+      "present": "正在列出檔案",
+      "past": "已列出檔案"
+    },
+    "updatePlan": {
+      "present": "正在更新計畫",
+      "past": "已更新計畫"
+    }
+  },
+  "orgDeletion": {
+    "section": {
+      "title": "刪除組織",
+      "deleteLabel": "刪除 {{org}}",
+      "deleteButton": "刪除組織…",
+      "descriptionNow": "立即為所有人刪除 {{org}} 及其資料。此操作無法復原。",
+      "deleteNow": "所有人會立即登出，且任何人都無法取消。"
+    },
+    "dialog": {
+      "heading": "要刪除 {{org}} 嗎？",
+      "typeToConfirm": "輸入 {{name}} 以確認",
+      "keep": "保留 {{org}}",
+      "confirm": "刪除 {{org}}",
+      "deleting": "正在刪除…",
+      "failed": "無法刪除組織",
+      "nameMismatch": "你輸入的名稱不符。沒有刪除任何內容。",
+      "typedMismatch": "與組織名稱不相符",
+      "deletedNow": "確認後，所有人都會立即登出且無法再登入，包括你，{{org}} 及其資料會立即刪除。此操作無法復原。"
+    }
+  },
+  "agentTransfer": {
+    "export": {
+      "menuItem": "匯出設定…",
+      "title": "匯出設定",
+      "body": "下載此代理程式的設定，以便在另一個 PipesHub 中設定它。登入資訊、金鑰和共享對象絕不會包含在內。",
+      "what": "匯出內容",
+      "loading": "正在讀取版本…",
+      "liveVersion": "目前版本",
+      "versionLive": "版本 {{version}}（目前）",
+      "version": "版本 {{version}}",
+      "draft": "未發佈的草稿",
+      "notIncluded": "不包含，匯入後需重新設定：共享對象、使用的模型帳戶、組織對它的審核規則。",
+      "download": "下載",
+      "downloading": "正在下載…",
+      "failed": "无法匯出此代理程式。請重試。"
+    },
+    "import": {
+      "button": "匯入代理程式",
+      "title": "匯入代理程式",
+      "choose": "選擇從 PipesHub 匯出的檔案。",
+      "drop": "將 .agent.json 檔案拖曳到此處，或選擇檔案",
+      "dropAria": "選擇要匯入的代理程式檔案",
+      "fileAria": "代理程式檔案",
+      "previewTitle": "匯入“{{name}}”",
+      "fromVersion": "從版本 {{version}} 匯出。它將成為你的新代理程式，不共享。",
+      "fromDraft": "從未發佈的草稿匯出。它將成為你的新代理程式，不共享。",
+      "models": "模型",
+      "actions": "操作",
+      "knowledge": "知識",
+      "skills": "技能",
+      "limits": "限制",
+      "turns_other": "{{count}} 輪",
+      "costPerRun": "每次執行 {{cost}}",
+      "newAgentNote": "每個名稱都會與你自己的模型、操作、MCP 伺服器和來源比對。不做任何猜測：找不到或比對到兩個的項目會被排除，並在建置器中列出供你選擇。",
+      "refusedTitle": "無法匯入此檔案。",
+      "notExport": "這不是 PipesHub 可以匯入的代理程式匯出檔案。",
+      "newerSchema": "此匯出檔案的結構描述版本為 {{version}}；此 PipesHub 讀取版本 1 和 2。",
+      "tooBig": "此檔案太大，不可能是代理程式匯出檔案。",
+      "failed": "匯入未完成。請重試。",
+      "back": "傳回",
+      "cancel": "取消",
+      "import": "匯入",
+      "importing": "正在匯入…"
+    },
+    "needsChoice": {
+      "aria": "仍需你選擇的內容",
+      "title_other": "{{count}} 項需要你選擇",
+      "ready": "“{{name}}”已就緒",
+      "matched": "已在此處比對：{{names}}。",
+      "choose": "選擇",
+      "close": "關閉",
+      "setAgain": "需自行重新設定：{{items}}。",
+      "reason": {
+        "ambiguous": "這裡有多個名為“{{name}}”的項目；請選擇正確的一個。",
+        "limited": "它只搜尋了此來源的部分檔案夹或檔案；請重新選擇。",
+        "notReasoning": "它的模型在這裡都不是推理模型，因此會使用組織的預設模型。",
+        "notFound": {
+          "model": "這裡沒有提供“{{name}}”的模型。",
+          "roleModel": "這裡沒有提供“{{name}}”的模型。",
+          "toolset": "這裡沒有名為“{{name}}”的操作。",
+          "mcpServer": "這裡沒有名為“{{name}}”的 MCP 伺服器。",
+          "knowledge": "這裡沒有名為“{{name}}”的來源。",
+          "skill": "這裡沒有名為“{{name}}”的技能。"
+        }
+      }
+    },
+    "kind": {
+      "model": "模型",
+      "roleModel": "子代理程式模型",
+      "toolset": "操作",
+      "mcpServer": "MCP 伺服器",
+      "knowledge": "知識",
+      "skill": "技能"
+    },
+    "excluded": {
+      "modelAccount": "它使用的模型帳戶",
+      "sharing": "共享對象",
+      "ownerTeam": "所屬團隊",
+      "serviceAccount": "以服務帳戶執行",
+      "approvals": "組織對它的審核规则",
+      "gates": "它的安全與檢查"
+    },
+    "notImported": {
+      "other": "此版本不提供某項設定（{{section}}），因此未匯入。"
+    }
+  },
+  "connectCard": {
+    "title": "連結 {{item}} 以繼續",
+    "waitingTitle": "正在等待此任務的執行對象連結 {{item}}",
+    "othersBody": "只有對方才能連結自己的 {{item}} 帳戶。你可以替對方略過此步驟。",
+    "needsAccountTo": "此步驟需要你的 {{item}} 帳戶來{{action}}。連結後，任務會從這裡繼續。",
+    "needsAccount": "此步驟需要你的 {{item}} 帳戶。連結後，任務會從這裡繼續。",
+    "needsMcp": "此步驟需要你的 {{item}} MCP 伺服器。連結後，任務會從這裡繼續。",
+    "finishSigningIn": "請在開啟的視窗中完成 {{item}} 的登入。",
+    "connectedElsewhere": "已在其他分頁中連結？告訴任務繼續。",
+    "signInFailed": "{{item}} 未完成登入。請再試一次。",
+    "notConnectedYet": "{{item}} 尚未連結。請先連結，然後再試一次。",
+    "connect": "連結 {{item}}",
+    "connecting": "正在連結…",
+    "alreadyConnected": "我已連結",
+    "skip": "略過",
+    "refusedOwner": "只有此任務的執行對象才能連結。你可以略過它。",
+    "receipt": {
+      "connected": "{{item}} 已連結 · 任務已繼續",
+      "skipped": "已略過 · 任務在沒有 {{item}} 的情況下繼續",
+      "expired": "未及時連結 · 任務在沒有 {{item}} 的情況下繼續",
+      "closed": "任務在 {{item}} 連結前已結束"
+    },
+    "reconnectTitle": "重新連接 {{item}} 以繼續",
+    "reconnect": "重新連接 {{item}}",
+    "rejected": "{{item}} 拒絕了已儲存的登入。重新連接後，任務將從這裡繼續。",
+    "rejectedAt": "{{item}} 於 {{time}} 拒絕了已儲存的登入。重新連接後，任務將從這裡繼續。",
+    "waitingReconnectTitle": "正在等待此任務的發起人重新連接 {{item}}",
+    "waitingReconnectYou": "正在等待你重新連接 {{item}}",
+    "waitingConnectYou": "正在等待你連接 {{item}}"
+  },
+  "runGates": {
+    "plan": {
+      "title": "審閱代理程式的計畫",
+      "why": "代理程式寫了一份計畫。在你核准之前，任何會造成變更的操作都不會執行。",
+      "approve": "核准計畫",
+      "declineMore": "拒絕…",
+      "decline": "拒絕計畫",
+      "receiptApproved": "計畫已核准",
+      "receiptDeclined": "計畫已拒絕 · 未執行任何操作",
+      "receiptDeclinedBecause": "計畫已拒絕 · 未執行任何操作：{{reason}}"
+    },
+    "verify": {
+      "verified": "已驗證",
+      "unverified": "未驗證",
+      "passedCount_one": "{{count}} 項檢查通過",
+      "passedCount_other": "{{count}} 項檢查通過",
+      "failedCount_one": "{{count}} 項檢查中有 {{failed}} 項失敗",
+      "failedCount_other": "{{count}} 項檢查中有 {{failed}} 項失敗",
+      "checkedTwice": "檢查了兩次",
+      "checkedTimes": "檢查了 {{count}} 次",
+      "check": {
+        "filePassed": "{{target}} 可以開啟",
+        "fileFailed": "{{target}} 無法開啟",
+        "schemaPassed": "{{target}} 符合其結構描述",
+        "schemaFailed": "{{target}} 不符合其結構描述",
+        "citationsPassed": "回答引用的內容都在其來源中",
+        "citationsFailed": "回答引用的某些內容不在其來源中",
+        "commandPassed": "指令 {{target}} 已通過",
+        "commandFailed": "指令 {{target}} 失敗",
+        "otherPassed": "一項檢查通過",
+        "otherFailed": "一項檢查失敗"
+      }
+    }
+  },
+  "outsideAccess": {
+    "title": "外部存取（{{n}}）",
+    "showAll": "顯示全部 {{n}} 項",
+    "unavailable": {
+      "title": "無法複製",
+      "body": "此伺服器不能從 {{host}} 複製。",
+      "askAdmin": "請管理員在安全性設定中開啟 {{host}}",
+      "copy": "複製",
+      "copied": "已複製",
+      "adminAdd": "您可以在下列位置新增：",
+      "adminLink": "用於複製的 Git 主機"
+    },
+    "access": {
+      "read": "唯讀",
+      "readWrite": "讀寫",
+      "hostLevel": "僅主機層級"
+    },
+    "line": {
+      "read": "已讀取 {{at}}：已允許，{{access}}",
+      "write": "已向 {{at}} 傳送資料：已允許，{{access}}",
+      "hostLevel": "已連線 {{host}}：僅主機層級，未檢查",
+      "held": "傳往 {{at}} 的請求在您允許前保持等待：此對話讀取過私人資料",
+      "uploadAllowed": "已允許傳往 {{host}} 的請求",
+      "uploadDenied": "您已拒絕傳往 {{host}} 的請求",
+      "cloned": "已複製 {{at}}（{{size}}，唯讀）",
+      "cloneDenied": "您已拒絕複製",
+      "cloneDeniedAt": "您已拒絕複製 {{at}}",
+      "pushDenied": "您已拒絕推送",
+      "pushDeniedAt": "您已拒絕推送到 {{at}}"
+    },
+    "blocked": {
+      "site_read_only": "已封鎖向 {{at}} 上傳（唯讀）",
+      "site_relay": "已封鎖 {{at}}：它會轉送或顯示收到的內容，因此需要讀寫權限",
+      "site_path_not_allowed": "已封鎖 {{at}}：不在允許的路徑內",
+      "host_mismatch": "已封鎖傳往 {{at}} 但指向其他網站的請求",
+      "site_git_refused": "已封鎖 {{at}} 上的 git：請用 ph git clone 複製存放庫",
+      "destination_not_allowed": "已封鎖 {{at}}：不是允許的網站",
+      "destination_private_address": "已封鎖 {{at}}：它指向私人位址",
+      "destination_unresolvable": "無法連線 {{at}}：無法解析該名稱",
+      "tunnel_ip_literal": "已封鎖 {{at}}：網站須以名稱連線，而非位址",
+      "tunnel_refused": "已封鎖 {{at}}：不允許此連線",
+      "volume_cap_exceeded": "已封鎖 {{at}}：本次執行傳輸的資料超出上限",
+      "forbidden_pattern": "已封鎖傳往 {{at}} 且帶有憑證的請求",
+      "token_replayed": "已封鎖傳往 {{at}} 且帶有憑證的請求",
+      "generic": "已封鎖傳往 {{at}} 的請求"
+    }
+  },
+  "secretsHidden": {
+    "title_other": "已對模型隱藏 {{count}} 個類似金鑰的值",
+    "detail_other": "PipesHub 已在模型看到之前將其替換為預留位置：{{kinds}}。",
+    "kind": {
+      "anthropic_key": "Anthropic API 金鑰",
+      "aws_access_key": "AWS 存取金鑰",
+      "github_token": "GitHub 權杖",
+      "gitlab_token": "GitLab 權杖",
+      "google_api_key": "Google API 金鑰",
+      "jwt": "登入權杖",
+      "openai_key": "OpenAI API 金鑰",
+      "pipeshub_pat": "PipesHub 存取權杖",
+      "private_key": "私密金鑰",
+      "slack_token": "Slack 權杖",
+      "policy_pattern": "貴組織標示為機密的值",
+      "other": "機密資訊"
+    }
+  },
+  "ui": {
+    "common": {
+      "someoneInOrg": "你組織中的某人",
+      "anAgent": "一個代理程式"
+    },
+    "topBar": {
+      "inbox": "收件匣",
+      "inboxUnread": "收件匣，{{count}} 則未讀"
+    },
+    "status": {
+      "upNext": "下一個",
+      "working": "進行中",
+      "needsYou": "需要你",
+      "done": "已完成",
+      "couldntFinish": "未能完成",
+      "stopped": "已停止"
+    },
+    "trail": {
+      "reasoning": "進行了思考",
+      "readPage": "閱讀了 {{target}}",
+      "webSearch": "在網路上搜尋了 {{target}}",
+      "findFiles": "尋找了名為 {{target}} 的檔案",
+      "searchFiles": "在檔案中搜尋了 {{target}}",
+      "readFile": "閱讀了 {{target}}",
+      "listFiles": "列出了 {{target}} 中的檔案",
+      "usedTool": "使用了 {{tool}}",
+      "handedOff": "把工作交給了背景代理",
+      "ranCommand": "執行了一個指令",
+      "runningCommand": "正在執行指令",
+      "addedFile": "建立了 {{path}}",
+      "modifiedFile": "修改了 {{path}}",
+      "deletedFile": "刪除了 {{path}}",
+      "helper": "一個助手處理了其中一部分",
+      "helperTask": "一個助手處理了：{{task}}",
+      "approved": "你已核准",
+      "declined": "你已拒絕",
+      "expired": "未及時回覆，因此沒有繼續",
+      "closed": "未答覆即關閉",
+      "thinking": "正在思考",
+      "thoughtFor": "思考了 {{time}}",
+      "worked": "已處理完",
+      "record": "你的回答",
+      "waitingOnYou": "等待你回覆",
+      "answerBelow": "在下方回答即可繼續",
+      "steps_other": "{{count}} 個步驟",
+      "showAll": "顯示全部 {{count}} 個步驟",
+      "showFewer": "收合",
+      "ended": {
+        "stopped": "{{time}} 後已停止",
+        "offline": "{{time}} 後中斷",
+        "timeout": "{{time}} 後逾時",
+        "failed": "{{time}} 後失敗"
+      },
+      "state": {
+        "running": "進行中",
+        "waiting": "等待你回覆",
+        "failed": "未能完成"
+      },
+      "stamp": {
+        "approved": "你已核准：{{action}}",
+        "approvedChat": "你已在此聊天中允許：{{action}}",
+        "happened": "你確認已執行：{{action}}",
+        "declined": "你已拒絕：{{action}}",
+        "expired": "未及時回覆，因此沒有繼續：{{action}}",
+        "closed": "未答覆即關閉，因此沒有繼續：{{action}}",
+        "answered": "你的回答：{{answer}}",
+        "replied": "你已在聊天中回覆",
+        "unanswered": "未回答"
+      },
+      "waitingFor": "{{action}} · 等你處理",
+      "questions": {
+        "waiting_other": "向你提了 {{count}} 個問題 · 等你回答",
+        "waitingSome_other": "向你提了 {{count}} 個問題 · 已答 {{answered}} 個 · 等你回答",
+        "answered_other": "你回答了 {{count}} 個問題",
+        "answeredSome_other": "你回答了 {{count}} 個問題中的 {{answered}} 個"
+      }
+    },
+    "job": {
+      "untitled": "背景工作",
+      "commandFailed": "指令以代碼 {{code}} 結束。",
+      "allowQuestion": "允許執行：{{action}}？",
+      "allow": "允許",
+      "dontAllow": "不允許",
+      "adminStopped": "管理員已停止此工作：{{reason}}",
+      "stopReason": {
+        "security": "安全原因",
+        "cost": "成本原因",
+        "incident": "事故處理",
+        "maintenance": "維護",
+        "other": "其他原因"
+      },
+      "clock": {
+        "seconds": "{{s}} 秒",
+        "minutes": "{{m}} 分 {{s}} 秒",
+        "hours": "{{h}} 小時 {{m}} 分",
+        "days_other": "{{count}} 天"
+      },
+      "workingFor": "進行中 · {{time}}",
+      "doneIn": "用時 {{time}} 完成",
+      "doingFor": "{{doing}} · {{time}}",
+      "needsYouAt": "需要你 · {{doing}}",
+      "needsYouFor": "需要你 · {{time}}",
+      "byline": {
+        "failed": "未能完成",
+        "stopped": "已停止",
+        "done": "已完成",
+        "doneIn": "用時 {{time}} 完成"
+      }
+    },
+    "needsYou": {
+      "allow": "允許",
+      "allowAll": "全部允許（{{count}}）",
+      "dontAllow": "不允許",
+      "dontAllowAll": "全部不允許",
+      "allowChat": "在此聊天中允許",
+      "allowChatFor": "在此聊天中允許 {{destination}}",
+      "refused": "該決定未能生效。請再試一次。",
+      "reason": {
+        "outside": "因為這會將資料傳送到你的公司之外",
+        "upload": "因為上傳的內容會離開你的公司",
+        "engine": "因為背景代理想要變更某些內容",
+        "externalPolicy": "因為你公司的政策服務要求由人來確認",
+        "policy": "因為你的工作區要求在此類動作前先詢問",
+        "plan": "它希望在開始前先取得你對計畫的同意",
+        "unknownEffect": "它無法判斷這是否已執行，所以不會去猜",
+        "default": "它會先詢問再動作"
+      },
+      "why": {
+        "read": "此聊天中先前讀取的內容：{{sources}}。",
+        "more": "以及另外 {{count}} 項。"
+      },
+      "unknownEffect": {
+        "title": "這是否已執行：{{action}}？",
+        "happened": "已執行",
+        "didNot": "未執行"
+      },
+      "connect": {
+        "title": "連結 {{item}} 以繼續",
+        "reason": "{{action}} 需要 {{item}}，但你尚未連結",
+        "rejected": "{{item}} 拒絕了你儲存的登入資訊。請重新連結以繼續。",
+        "connect": "連結 {{item}}",
+        "done": "我已連結",
+        "skip": "略過"
+      },
+      "question": {
+        "title": "有 {{count}} 個問題需要你回答",
+        "reason": "你的回答決定接下來怎麼做",
+        "send": "傳送回答"
+      },
+      "mcp": {
+        "title": "登入 {{servers}} 以繼續",
+        "reason": "它需要一項尚未取得的權限",
+        "signIn": "登入",
+        "retry": "再試一次"
+      },
+      "engine": {
+        "title": "登入 Claude 以繼續",
+        "reason": "背景代理使用你自己的方案執行",
+        "signIn": "開啟登入頁面"
+      },
+      "sendsTo": "傳送到 {{destination}}"
+    },
+    "approval": {
+      "actionIn": "在 {{app}} 中{{action}}",
+      "question": "{{action}}？",
+      "times": "{{action}}，{{count}} 次"
+    },
+    "jobs": {
+      "request": "一個請求",
+      "section": {
+        "needsYou": "需要你",
+        "working": "進行中",
+        "upNext": "下一個",
+        "finished": "已結束"
+      },
+      "requestView": {
+        "ran_other": "執行了 {{count}} 個任務",
+        "back": "{{total}} 個中已返回 {{back}} 個",
+        "allBack": "全部已返回"
+      }
+    },
+    "activity": {
+      "answerInCard": "請在對話上方的卡片中回答。",
+      "youStopped": "它已被停止",
+      "stoppedText": "此後沒有再執行任何內容。重新開始會從頭開始。",
+      "couldntGoOn": "無法繼續",
+      "failedText": "它卡在了一個無法通過的步驟上。之前產生的內容已保留。",
+      "waitingFor": "等你確認：{{question}}"
+    },
+    "brief": {
+      "sent": {
+        "files_other": "此對話中的 {{count}} 個檔案",
+        "sources_other": "PipesHub 已讀取的 {{count}} 個來源",
+        "someSources": "PipesHub 已讀取的內容",
+        "sourcesIncomplete": "其中部分內容無法列出名稱",
+        "knowledge_other": "它可搜尋的 {{count}} 個應用程式和集合",
+        "skills": "技能：{{skills}}",
+        "continues": "它接著之前的工作繼續",
+        "taskOnly": "僅它的工作"
+      },
+      "withheld": {
+        "conversation": "此對話的其餘內容",
+        "credentials": "密碼、金鑰和登入資訊",
+        "tools": "工具",
+        "knowledge": "知識",
+        "skills": "技能",
+        "internet": "網站",
+        "files": "此對話的檔案"
+      },
+      "reason": {
+        "task_only": "只給了它工作本身",
+        "outside_sandbox": "它們留在 PipesHub 中，不進入它的沙盒",
+        "not_granted": "未交給它",
+        "not_handed_off": "未提供給它"
+      },
+      "reasonWithItems": "{{reason}}：{{items}}",
+      "reach": {
+        "noInternet": "不可存取網站",
+        "allowedSites": "僅限公司允許的網站",
+        "sandbox": "它自己的沙盒，結束時關閉",
+        "tools": "工具：{{tools}}",
+        "noTools": "不使用你的任何工具",
+        "granted_other": "此對話中無需詢問即可執行的 {{count}} 項操作",
+        "keys": "密碼和金鑰保留在 PipesHub 中，不會傳送出去。"
+      },
+      "change": {
+        "message": "你補充了：{{text}}",
+        "approved": "你選擇了允許：{{action}}",
+        "denied": "你選擇了拒絕：{{action}}",
+        "replanned": "交給了新任務：{{goal}}",
+        "replannedPlain": "交給了新任務"
+      }
+    },
+    "grants": {
+      "toolTo": "{{tool}} 到 {{destination}}",
+      "allowedBy": "{{name}} 於 {{when}} 允許",
+      "allowedOn": "於 {{when}} 允許",
+      "title": "此對話中的權限",
+      "empty": "此對話還沒有任何允許項目。你為此對話允許某項操作後，它會顯示在這裡。",
+      "remove": "移除",
+      "removeLabel": "移除 {{name}}",
+      "removed": "已移除：{{name}}",
+      "removedBody": "下次會再次詢問你。",
+      "removeFailed": "該權限仍然有效。請重試。",
+      "allowedByYou": "你於 {{when}} 允許",
+      "declinedBy": "{{name}} 於 {{when}} 拒絕",
+      "declinedOn": "於 {{when}} 拒絕",
+      "declinedByYou": "你於 {{when}} 拒絕"
+    },
+    "command": {
+      "done": {
+        "clone": "已複製儲存庫",
+        "cloneNamed": "已複製 {{name}} 儲存庫",
+        "gitStatus": "已檢查變更",
+        "gitCommit": "已儲存一次提交",
+        "gitPush": "已推送變更",
+        "gitSwitch": "已切換分支",
+        "install": "已安裝套件",
+        "build": "已建置專案",
+        "typecheck": "已檢查型別",
+        "look": "已查看檔案",
+        "search": "已搜尋檔案",
+        "mkdir": "已建立資料夾",
+        "tests": "已執行測試",
+        "testsNamed": "已執行 {{name}} 測試",
+        "script": "已執行 {{script}}"
+      },
+      "running": {
+        "clone": "正在複製儲存庫",
+        "cloneNamed": "正在複製 {{name}} 儲存庫",
+        "gitStatus": "正在檢查變更",
+        "gitCommit": "正在儲存提交",
+        "gitPush": "正在推送變更",
+        "gitSwitch": "正在切換分支",
+        "install": "正在安裝套件",
+        "build": "正在建置專案",
+        "typecheck": "正在檢查型別",
+        "look": "正在查看檔案",
+        "search": "正在搜尋檔案",
+        "mkdir": "正在建立資料夾",
+        "tests": "正在執行測試",
+        "testsNamed": "正在執行 {{name}} 測試",
+        "script": "正在執行 {{script}}"
+      },
+      "result": {
+        "passed": "全部通過",
+        "someFailed": "部分失敗",
+        "failed_other": "{{count}} 個失敗"
+      }
+    },
+    "workflows": {
+      "summary": {
+        "inApp": "在 {{app}} 中{{what}}",
+        "aStep": "某一步"
+      }
+    },
+    "inbox": {
+      "justNow": "剛剛",
+      "glyphPaused": "收件匣，通知已暫停",
+      "glyphPausedCount": "收件匣，通知已暫停，{{count}} 項等你處理",
+      "action": {
+        "reviewInChat": "在聊天中查看",
+        "answerInChat": "在聊天中回答",
+        "reviewMemory": "查看記憶",
+        "reviewSkill": "審核技能",
+        "approve": "核准",
+        "edit": "編輯",
+        "reject": "拒絕",
+        "openChat": "開啟聊天",
+        "open": "開啟",
+        "viewRun": "查看執行",
+        "muteWorkflow": "將工作流程設為靜音",
+        "unmuteWorkflow": "取消工作流程靜音",
+        "restore": "還原"
+      },
+      "pause": {
+        "untilResumedLabel": "你重新開啟",
+        "tomorrowAt": "明天 {{time}}"
+      },
+      "words": {
+        "approvalTitle": "核准：{{what}}",
+        "connectTitle": "連接 {{what}} 以繼續",
+        "approvalWaiting": "一項工作在繼續之前等待你的決定。",
+        "connectWaiting": "一項工作在繼續之前等待你連接此項目。",
+        "questionTitle": "有一個問題要問你",
+        "memoryOwnTitle": "保留這則記憶？",
+        "memoryAgentTitle": "一個代理程式想記住這件事",
+        "skillTitle": "新技能提案：{{name}}",
+        "skillReviewTitle": "審核匯入的技能 {{name}}",
+        "skillReviewFlagged": "內容掃描發現了需要在核准前檢查的內容。",
+        "yourChat": "你的聊天",
+        "finished": "已完成。答案已就緒。",
+        "finishedEarly": "提早完成：它在上限處停止，並以已有內容作答。",
+        "notFinished": "未能完成。開啟聊天查看發生了什麼，然後再試一次。",
+        "workflowRan": "已執行。",
+        "workflowFailed": "未能完成。",
+        "workflowRefused": "未執行。開啟排程頁面，在其歷程記錄中查看原因。",
+        "workflowRefusedWhy": {
+          "workflow_changed": "未執行：工作流程在預定時間前被變更、暫停或移除。",
+          "scheduled_runs_off": "未執行：此工作區已關閉排程執行。",
+          "no_agent_access": "未執行：你已無法使用它的代理程式。",
+          "model_not_allowed": "未執行：你無法使用它的模型。",
+          "engine_not_allowed": "未執行：它的程式設計引擎不被允許。",
+          "stopped_by_admin": "未執行：管理員已暫時停止它。",
+          "budget_reached": "未執行：已達到支出上限。",
+          "too_busy": "未執行：同時進行的執行太多。",
+          "not_found": "未執行：它需要的內容已不存在。",
+          "unavailable": "未執行：PipesHub 無法啟動它。"
+        },
+        "workflowWaiting": "在寫入前暫停。請核准或拒絕，否則它會停止。",
+        "workflowWaitingBy": "在寫入前暫停。請在 {{time}} 前核准或拒絕，否則屆時會停止。",
+        "sharedChat": "{{name}} 與你共用了一個聊天",
+        "sharedAgentChat": "{{name}} 與你共用了一個代理程式聊天",
+        "sharedOpen": "你現在可以開啟「{{title}}」。",
+        "sharedOpenList": "你現在可以從共用的聊天中開啟它。",
+        "colleague": "一位同事",
+        "mentionTitle": "有人提及了你",
+        "approvalTitleIn": "核准：{{app}} 中的 {{what}}",
+        "mentionIn": "在「{{chat}}」中"
+      }
+    },
+    "actionKey": {
+      "name": {
+        "send_message": "傳送訊息",
+        "post_message": "發布訊息",
+        "send_email": "傳送電子郵件",
+        "reply_to_email": "回覆電子郵件",
+        "create_draft": "建立草稿",
+        "create_issue": "建立議題",
+        "update_issue": "更新議題",
+        "create_ticket": "建立工單",
+        "create_page": "建立頁面",
+        "update_page": "更新頁面",
+        "create_pull_request": "建立提取要求",
+        "add_comment": "新增留言",
+        "create_event": "建立活動",
+        "create_task": "建立任務",
+        "create_record": "建立記錄",
+        "update_record": "更新記錄",
+        "upload_file": "上傳檔案"
+      },
+      "verb": {
+        "send": "傳送內容",
+        "post": "發布內容",
+        "reply": "回覆",
+        "create": "建立一個項目",
+        "add": "新增一個項目",
+        "update": "變更一個項目",
+        "edit": "變更一個項目",
+        "delete": "刪除一個項目",
+        "remove": "移除一個項目",
+        "comment": "新增留言",
+        "upload": "上傳檔案",
+        "draft": "起草內容",
+        "assign": "指派一個項目",
+        "move": "移動一個項目",
+        "close": "關閉一個項目",
+        "schedule": "排定內容"
+      }
+    }
+  },
+  "jobCard": {
+    "status": {
+      "upNext": "正在啟動",
+      "working": "進行中",
+      "needsYou": "需要你處理",
+      "done": "已完成",
+      "couldntFinish": "未能完成",
+      "stopped": "已停止"
+    },
+    "stopped": {
+      "byYou": "已由你停止",
+      "byAdmin": "已由管理員停止：{{reason}}",
+      "budget": "已停止：預算用盡",
+      "time": "已停止：耗時過長"
+    },
+    "adminReason": {
+      "security": "安全",
+      "cost": "費用",
+      "incident": "事故",
+      "maintenance": "維護",
+      "other": "其他原因"
+    },
+    "made": "已產生 {{file}}",
+    "changedFiles_other": "已變更 {{count}} 個檔案",
+    "finished": "已完成",
+    "hasQuestion": "有一個問題要問你",
+    "wantsTo": "想要使用 {{tool}}",
+    "booting": "正在準備機器",
+    "steps_other": "{{count}} 個步驟",
+    "showSteps": "步驟",
+    "groupLabel": "{{title}}，{{status}}",
+    "needsYouAlert": "{{title}} 需要你處理",
+    "stopAria": "停止工作：{{title}}",
+    "stopGone": "它已經完成了",
+    "stopFailed": "無法停止，請再試一次。",
+    "untitled": "背景工作",
+    "region": "背景代理",
+    "board": {
+      "count_other": "{{count}} 個代理",
+      "hide": "隱藏代理",
+      "show": "顯示代理"
+    }
+  },
+  "jobReport": {
+    "region": "背景代理的報告",
+    "groupLabel": "{{title}} 的報告：{{outcome}}",
+    "finished": "已完成",
+    "finishedIn": "用時 {{time}} 完成",
+    "couldntFinish": "未能完成",
+    "stoppedByYou": "已被你停止",
+    "stoppedByAdmin": "已被管理員停止：{{reason}}",
+    "outOfBudget": "預算已用完",
+    "outOfTime": "時間已用完",
+    "stopped": "已停止",
+    "partial": "部分",
+    "workingFiles_other": "{{count}} 個工作檔案"
+  },
+  "jobPanel": {
+    "title": "工作詳細資料",
+    "sections": "工作區段",
+    "brief": "工作說明",
+    "activity": "活動",
+    "terminal": "終端機",
+    "outputs": "產出",
+    "changed": "已變更的檔案",
+    "goalErased": "其工作已隨此對話的內容一併清除。",
+    "sent": "已傳送",
+    "keptBack": "已保留",
+    "canReach": "可存取",
+    "connectedSources": "已連線的來源",
+    "howItChanged": "變更紀錄",
+    "unchanged": "自開始以來未變更",
+    "briefLoading": "正在讀取工作說明",
+    "briefFailed": "無法載入工作說明。",
+    "tryAgain": "重試",
+    "ownerOnly": "只有啟動此工作的人可以查看其詳細資料",
+    "noFiles": "尚無檔案",
+    "noSteps": "尚未執行任何內容",
+    "stop": "停止",
+    "stopAria": "停止工作：{{title}}",
+    "stopGone": "它已經結束了",
+    "stopFailed": "無法停止，請重試。",
+    "stoppedByYou": "已由你停止",
+    "withTime": "{{status}} · {{time}}",
+    "withReason": "{{status}} · {{reason}}",
+    "askWaiting_other": "它正在等待你的 {{count}} 個回答",
+    "answerInChat": "在對話中回答",
+    "openOutput": "開啟 {{name}}",
+    "downloadOutput": "下載 {{name}}",
+    "outputGone": "已無法使用",
+    "close": "關閉工作詳細資料",
+    "machine": "機器",
+    "breadcrumb": "目前位置",
+    "backgroundAgents": "背景代理程式",
+    "widen": "加寬面板",
+    "narrow": "收窄面板",
+    "cameOut": "結果如何",
+    "whatItWasGiven": "提供給它的內容",
+    "noCommands": "尚無命令",
+    "showMachine": "前往機器",
+    "ranCommandsMachine_other": "執行了 {{count}} 個命令，見機器",
+    "youAsked": "你的請求：「{{request}}」",
+    "limits": {
+      "due": "截止 {{when}}",
+      "cost": "最多 {{amount}}",
+      "file": "交付 {{name}}"
+    },
+    "startedWith": "開始時已有的內容",
+    "alreadyDone": "交接前已完成",
+    "earlier": "本對話先前的結果",
+    "carried": {
+      "skill": "已載入 {{skill}} 技能",
+      "failed": "未成功",
+      "times": "{{text}}（×{{count}}）"
+    },
+    "showMore": "顯示更多",
+    "showLess": "收合",
+    "workingFiles_other": "{{count}} 個工作檔案",
+    "delivered_other": "交付的檔案",
+    "outputsWillShow": "它產生的檔案會顯示在這裡",
+    "outputsNone": "它沒有產生任何檔案",
+    "workingFilesHint": "它在過程中用到的筆記、指令碼和草稿，保留在此對話的工作區中。",
+    "allFilesMachine": "在「機器」中查看整個工作區"
+  },
+  "needsYou": {
+    "fromChats": "來自你的對話和任務",
+    "reviews": "審核",
+    "empty": "現在沒有需要你處理的事項。",
+    "seeJobs": "查看你的任務",
+    "loading": "正在載入",
+    "loadFailed": "無法載入。請重試。",
+    "partial": "部分請求暫時無法載入，此清單可能不完整。",
+    "skillApproved": "已核准技能 {{name}}",
+    "skillRejected": "已拒絕技能 {{name}}",
+    "skillFailed": "無法儲存。請重試。",
+    "skillGone": "該提議已不再等待處理",
+    "badgeAria_other": "{{count}} 項待你處理"
+  },
+  "jobsPage": {
+    "title": "任務",
+    "tabsLabel": "待你處理和任務",
+    "tab": {
+      "needsYou": "待你處理",
+      "jobs": "任務"
+    },
+    "empty": "還沒有任務。當代理把工作交給背景任務時，會顯示在這裡。",
+    "nothingRunning": "沒有正在執行的任務。",
+    "allCleared": "你已在此裝置上清除所有已完成的任務。",
+    "clearFinished": "清除已完成",
+    "undo": "復原",
+    "loadMore": "載入更多",
+    "loading": "正在載入你的任務",
+    "loadFailed": "無法載入你的任務。請重試。",
+    "retry": "重試",
+    "open": "開啟",
+    "openAria": "開啟任務：{{title}}",
+    "stop": "停止",
+    "stopAria": "停止任務：{{title}}",
+    "stopGone": "它已經結束了",
+    "stopFailed": "無法停止。請重試。",
+    "stoppedByYou": "已由你停止",
+    "harnessOff": "你的工作區未開啟背景任務。",
+    "backToChat": "返回對話",
+    "cleared_other": "已清除 {{count}} 個已完成的任務"
+  },
+  "backgroundAgents": {
+    "title": "背景代理程式",
+    "openerRunning_other": "背景代理程式，{{count}} 個正在執行",
+    "openerNeedsYou_other": "背景代理程式，{{count}} 個需要你處理",
+    "close": "關閉背景代理程式",
+    "back": "返回背景代理程式",
+    "clearFinished": "清除已完成的代理程式",
+    "cleared_other": "已清除 {{count}} 個已完成的代理程式",
+    "clearedBody": "它們的卡片仍保留在聊天中。",
+    "undo": "復原",
+    "empty": "這裡沒有任何項目",
+    "emptyBody": "此聊天啟動的代理程式會顯示在這裡。",
+    "jobCount_other": "{{count}} 個工作",
+    "tasks_other": "{{count}} 個步驟",
+    "showEarlier_other": "顯示先前的 {{count}} 個步驟",
+    "taskNow": "{{title}}…",
+    "stop": "停止 {{name}}",
+    "stopGone": "它已經完成了。",
+    "stopFailed": "無法停止，請再試一次。",
+    "requestAsked": "你的要求",
+    "requestLoading": "正在載入要求",
+    "requestUnavailable": "目前無法顯示此要求。",
+    "requestErased": "要求內容已被刪除。"
+  },
+  "jobAsk": {
+    "asking": "{{job}} 需要你先確認",
+    "signIn": "{{job}} 需要你登入",
+    "connect": "{{job}} 需要你連接 {{item}}",
+    "where": "{{job}} · 第 {{n}}/{{total}} 步：{{doing}}",
+    "seeActivity": "查看活動",
+    "seeJob": "查看工作",
+    "position": "{{n}}/{{total}}",
+    "previous": "上一個請求",
+    "next": "下一個請求",
+    "announce": "{{job}} 需要你：{{title}}",
+    "pointer": "正在等你。請在訊息框上方的卡片中回答。",
+    "showIt": "顯示",
+    "paused": "{{job}} 已暫停。所有內容皆已儲存。",
+    "signInAction": "登入",
+    "connectAction": "連線",
+    "review": "檢視",
+    "keepOut": "不允許",
+    "keepOutAll": "全部不允許",
+    "details": "詳細資料",
+    "hideDetails": "隱藏詳細資料"
+  },
+  "cardSend": {
+    "reason": {
+      "restarting": "PipesHub 正在重新啟動",
+      "offline": "無法連線到 PipesHub",
+      "server": "PipesHub 發生問題"
+    },
+    "retrying": "無法傳送你的回答：{{reason}}。正在重試…",
+    "stopped": "無法傳送你的回答：{{reason}}。",
+    "codeRetrying": "無法傳送你的驗證碼：{{reason}}。正在重試…",
+    "codeStopped": "無法傳送你的驗證碼：{{reason}}。",
+    "tryAgain": "重試"
+  },
+  "fullNameDialog": {
+    "title": "完成個人資料",
+    "description": "請填寫您的全名以繼續。這樣您的同事可以在各個工作區中認出您。",
+    "label": "全名",
+    "placeholder": "例如：王小明",
+    "submit": "儲存並繼續",
+    "required": "請填寫全名",
+    "tooShort": "全名至少需要 2 個字元",
+    "noUser": "無法識別使用者。請重新整理後再試一次。",
+    "saveFailed": "無法儲存您的姓名。請再試一次。"
+  },
+  "slackLink": {
+    "title": "連結你的 Slack 帳戶",
+    "loading": "正在檢查連結…",
+    "missingLink": "此頁面需要 PipesHub 機器人在 Slack 中傳給你的連結。傳一則訊息給機器人即可取得。",
+    "summary": "工作區 {{workspace}} 中的 Slack 使用者 {{slackPerson}} 將以你的 PipesHub 帳戶 {{account}} 的身分操作。",
+    "effect": "當你在 Slack 中詢問 PipesHub 機器人時，它會以你在 PipesHub 的權限回答，就像你在這裡詢問一樣。",
+    "replacesOther": "此 Slack 帳戶目前連結到另一個 PipesHub 帳戶。核准後連結將轉移給你。",
+    "onlyIfYou": "只有在你親自向機器人要求此連結時才核准。",
+    "approve": "連結我的帳戶",
+    "deny": "取消",
+    "doneTitle": "你的 Slack 帳戶已連結",
+    "doneLine": "回到 Slack 並重新傳送你的訊息。",
+    "deniedTitle": "未連結任何內容",
+    "deniedLine": "連結已取消。你可以關閉此頁面。",
+    "otherOrg": "此連結屬於另一個組織。請登入傳送此連結的 Slack 機器人所屬組織的 PipesHub 帳戶。"
   }
 }

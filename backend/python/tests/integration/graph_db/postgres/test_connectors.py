@@ -393,6 +393,7 @@ async def test_a_failed_instances_list_is_empty_and_comes_back(w: World, monkeyp
     assert (await w.p.get_connector_instances_with_filters("apps", user_id="boss", is_admin=True))[1] == 1
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_stats_read_the_connector_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """The stats of a connector read the record edges of its own record groups, and a collection's those of its app: the cost does not grow with the records of
     the organisation's other connectors. Every read of graph.edges must be a range of the to_id index bounded by ``to_id =``, and every read of graph.nodes a probe of

@@ -1,0 +1,110 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "Export Q3 revenue as CSV",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "Export Q3 revenue as CSV",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1"
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-promote",
+          "toolName": "artifacts__promote_artifact",
+          "args": "{\"artifact_id\": \"art-q3\"}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Promote Artifact — artifact_id: \"art-q3\"",
+          "resultPreview": "{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply.\"}",
+          "resultSummary": "Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."
+        },
+        {
+          "type": "text",
+          "content": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}",
+          "runId": "uuid-1",
+          "isFinal": true
+        }
+      ],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

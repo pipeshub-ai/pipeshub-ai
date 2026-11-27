@@ -1,0 +1,22 @@
+{
+ "scenario": "agent_ask_user_question",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-ask",
+   "toolName": "internaltools__ask_user_question",
+   "args": "{\"user_intent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"question\": \"Which region should the report cover?\", \"options\": [{\"label\": \"North America\"}, {\"label\": \"Europe\"}, {\"label\": \"Asia Pacific\"}, {\"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Ask User Question — user_intent: \"The user wants a report but did not say which region.\", questions: [1 item]",
+   "resultPreview": "{\"name\": \"ask_user_question\", \"userIntent\": \"The user wants a report but did not say which region.\", \"questions\": [{\"uuid\": \"00000000-0000-0000-0000-000000000001\", \"question\": \"Which region should the report cover?\", \"options\": [{\"id\": \"opt_north_america\", \"label\": \"North America\", \"isUserInput\": false}, {\"id\": \"opt_europe\", \"label\": \"Europe\", \"isUserInput\": false}, {\"id\": \"opt_asia_pacific\", \"label\": \"Asia Pacific\", \"isUserInput\": false}, {\"id\": \"opt_enter_a_region\", \"label\": \"Enter a region\", \"isUserInput\": true}], \"multiSelect\": false}]}",
+   "resultSummary": "Completed successfully"
+  }
+ ]
+}

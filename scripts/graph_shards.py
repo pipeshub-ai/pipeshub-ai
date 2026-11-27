@@ -27,6 +27,13 @@ PYTHON_ROOT = Path(__file__).resolve().parent.parent / "backend" / "python"
 
 SHARD_COUNT = 4
 
+# What makes a file a real-graph test: the integration suites' endpoints, the harness suites' (tests/support/it_backends.py)
+# and a connection through tests/integration/real_graph.py. backend/python/tests/cohesion/test_backend_matrix_graph_discovery.py
+# holds that every suite reading a graph endpoint is found by it, and tests/integration/store_lane.py runs the same set locally.
+GRAPH_NEEDS = r"NEO4J_IT_URI|ARANGO_IT_URL|NEO4J_TEST_URI|ARANGO_TEST_URL|tests\.integration\.real_graph"
+GRAPH_NOT = "ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET"
+GRAPH_EXCLUDED_DIRS = ("tests/integration/gitlab_simulated", "tests/integration/graph_db/postgres", "tests/integration/kh_browse_cost")
+
 # Neo4j / ArangoDB minutes per shard: 1: 8.6 / 8.0, 2: 9.0 / 2.2, 3: 9.4 / 3.6, 4 (the rest): 9.2 / 9.3.
 NAMED: dict[int, tuple[str, ...]] = {
     1: (
@@ -61,11 +68,7 @@ def discovered() -> list[str]:
     """
     with contextlib.chdir(PYTHON_ROOT):  # discovery names modules after paths relative to the import root
         return discover(
-            Path("tests/integration"),
-            "NEO4J_IT_URI|ARANGO_IT_URL",
-            "ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET",
-            exclude_dirs=[Path("tests/integration/gitlab_simulated"), Path("tests/integration/graph_db/postgres"),
-                          Path("tests/integration/kh_browse_cost")],
+            Path("tests/integration"), GRAPH_NEEDS, GRAPH_NOT, exclude_dirs=[Path(d) for d in GRAPH_EXCLUDED_DIRS]
         )
 
 

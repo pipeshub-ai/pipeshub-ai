@@ -7,7 +7,9 @@ import fakeredis
 import fakeredis.aioredis
 import pytest
 
+from app import edition
 from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+from app.core import org_context
 from app.scripts.kv_redis_to_postgres import copy_kv
 
 
@@ -190,3 +192,43 @@ async def test_a_configuration_key_only_postgres_holds_is_a_conflict_and_runtime
     out = await copy_kv(_src(redis), dst, overwrite=True)
     assert "/services/removed" not in dst.rows and dst.rows["lease:sync:1"] == b"runtime"
     assert out["different_after"] == 0
+
+
+class OrgRecordingPg(FakePg):
+    """Records the org bound for each call, by key."""
+
+    def __init__(self, existing=None) -> None:
+        super().__init__(existing)
+        self.orgs: dict[str, set[str | None]] = {}
+
+    def _note(self, key) -> None:
+        ctx = org_context.peek()
+        self.orgs.setdefault(key, set()).add(ctx.org_id if ctx else None)
+
+    async def create_key(self, key, value, overwrite=True, ttl=None) -> bool:
+        self._note(key)
+        return await super().create_key(key, value, overwrite, ttl)
+
+    async def get_key(self, key) -> bytes | None:
+        self._note(key)
+        return await super().get_key(key)
+
+    async def delete_key(self, key) -> bool:
+        self._note(key)
+        return await super().delete_key(key)
+
+
+async def test_each_entry_is_copied_for_the_org_the_edition_names(redis, monkeypatch) -> None:
+    await redis.set("pipeshub:kv:o1/services/x", b"enc-x")
+    dst = OrgRecordingPg()
+    monkeypatch.setattr(edition, "kv_key_org", lambda key: key.split("/", 1)[0] if key.startswith("o1/") else None)
+    out = await copy_kv(_src(redis), dst)
+    assert out["different_after"] == 0 and dst.rows["o1/services/x"] == b"enc-x"
+    assert dst.orgs["o1/services/x"] == {"o1"}
+    assert dst.orgs["/services/a"] == {None}
+
+
+async def test_by_default_no_entry_is_copied_for_an_org(redis) -> None:
+    dst = OrgRecordingPg()
+    await copy_kv(_src(redis), dst)
+    assert set().union(*dst.orgs.values()) == {None}

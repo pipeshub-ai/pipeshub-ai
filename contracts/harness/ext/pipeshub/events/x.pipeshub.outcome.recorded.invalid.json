@@ -1,0 +1,93 @@
+[
+  {
+    "description": "written by Node",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "node",
+      "type": "x.pipeshub.outcome.recorded",
+      "data": {
+        "facts": [
+          {
+            "kind": "step_completed",
+            "turn": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "no facts",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.outcome.recorded",
+      "data": {
+        "facts": []
+      }
+    }
+  },
+  {
+    "description": "an unknown fact",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.outcome.recorded",
+      "data": {
+        "facts": [
+          {
+            "kind": "guessed",
+            "path": "out/x.md"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "a limit that is not one",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.outcome.recorded",
+      "data": {
+        "facts": [
+          {
+            "kind": "limit_reached",
+            "limit": "patience"
+          }
+        ]
+      }
+    }
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {"functionCall": {"name": "get_weather", "args": {"city": "Paris", "unit": "celsius"}}, "thoughtSignature": "c2lnLW1ndzIx"}
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {"promptTokenCount": 30, "candidatesTokenCount": 12, "totalTokenCount": 42},
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "mgw21-complete-tool"
+}

@@ -9,16 +9,19 @@ established for POST_MODEL: set it, and `Agent.step()` injects it and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import hashlib
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agent_loop_lib.hooks.middleware.context import ModelResponseContext
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.agent_loop_lib.hooks.middleware.pipeline import Next
     from app.agents.agent_loop.context import AgentContext
 
-__all__ = ["completion_gate"]
+__all__ = ["completion_gate", "restore_gate_state"]
 
 _DEFAULT_MAX_NUDGES = 2
 
@@ -35,6 +38,21 @@ def _response_text(message: object) -> str:
     if isinstance(message, AssistantMessage):
         return message.text
     return ""
+
+
+def restore_gate_state(context: "AgentContext", events: "Iterable[Any]") -> None:
+    """The nudge budget from the nudges a durable run journaled (each an injected
+    user message whose content hash is its text's), so a resumed attempt nudges
+    exactly as an uninterrupted one would."""
+    nudge = f"sha256:{hashlib.sha256(_EMPTY_RESPONSE_NUDGE.encode('utf-8')).hexdigest()}"
+    context.completion_gate_nudges = sum(
+        1
+        for e in events
+        if e.type == "message.completed"
+        and (e.data or {}).get("injected")
+        and (e.data or {}).get("role") == "user"
+        and ((e.data or {}).get("textRef") or {}).get("hash") == nudge
+    )
 
 
 def completion_gate(context: "AgentContext", *, max_nudges: int = _DEFAULT_MAX_NUDGES):

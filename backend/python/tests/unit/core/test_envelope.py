@@ -336,7 +336,7 @@ async def test_producer_signs_the_event_type(monkeypatch) -> None:
 
 async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     old = _msg(issued_at=int(time.time()) - 901)
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     before = envelope.STALE._metric.labels(TOPIC)._value.get()
     with caplog.at_level("ERROR"):
@@ -399,7 +399,7 @@ async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypat
     await _open(legacy)  # producer flag off: plain v1
     assert (stripped._value.get(), missing._value.get()) == (s0, m0 + 1)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     assert (await _open(legacy)).ctx.source == "legacy-payload"  # shadow: counted, accepted
     assert (stripped._value.get(), missing._value.get()) == (s0 + 1, m0 + 1)
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
@@ -427,7 +427,7 @@ async def test_wire_org_ctx_key_is_dropped() -> None:
 
 async def test_no_key_while_signing_is_never_silent(monkeypatch, caplog) -> None:
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     with caplog.at_level("ERROR"):
@@ -447,7 +447,7 @@ async def test_producer_without_a_key_is_counted_and_fails_closed_in_enforce(mon
     counter = envelope.UNSIGNED._metric.labels(TOPIC, "no_key")
     before = counter._value.get()
     with bind(CTX_B):
-        monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+        monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
         sent = envelope.sign_message(TOPIC, flat)
         assert {k: v for k, v in sent.items() if k != "eventId"} == flat and sent["eventId"]
         assert counter._value.get() == before + 1

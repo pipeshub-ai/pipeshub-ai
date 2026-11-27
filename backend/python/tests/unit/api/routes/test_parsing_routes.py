@@ -41,6 +41,7 @@ from app.services.resource_governor.models import ResourceSnapshot
 from app.utils.error_class import log_failure
 from tests.support.log_capture import assert_text_free, failure_line
 from tests.support.provider_errors import SENTINELS, openai_error
+from tests.support.settle import settle
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -525,7 +526,7 @@ async def test_light_request_proceeds_while_heavy_pool_saturated(monkeypatch: py
 
     def _resolve(_mime: str, extension: str, _provider: object) -> MagicMock:
         if extension == "pdf":
-            return _slow_parser(heavy_release, hold_seconds=1.0)
+            return _slow_parser(heavy_release)
         return light_parser
 
     registry = MagicMock(spec=ParserRegistry)
@@ -543,14 +544,15 @@ async def test_light_request_proceeds_while_heavy_pool_saturated(monkeypatch: py
         )
         await asyncio.sleep(0.05)  # let the heavy request saturate the heavy-parse gate
 
-        light_response = await asyncio.wait_for(
+        light_response = await settle(
             client.post(
                 "/api/v1/parse",
                 files={"file": ("b.csv", b"a,b\n1,2", "text/csv")},
                 data={"mime_type": "text/csv", "extension": "csv", "provider": "default"},
             ),
-            timeout=1.0,
         )
+        # Answered while the heavy parse still held its slot, not after it.
+        assert not heavy_task.done()
 
         heavy_release.set()
         await heavy_task
@@ -565,7 +567,7 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
     request."""
     release_event = asyncio.Event()
     registry = MagicMock(spec=ParserRegistry)
-    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    registry.resolve = MagicMock(return_value=_slow_parser(release_event))
 
     app = _build_app(registry, heavy_limit=1)
 
@@ -579,7 +581,8 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
         )
         await asyncio.sleep(0.05)  # let the parse request acquire the slot and start "working"
 
-        health_response = await asyncio.wait_for(client.get("/health"), timeout=1.0)
+        health_response = await settle(client.get("/health"))
+        assert not parse_task.done()
         assert health_response.status_code == 200
         assert health_response.json()["status"] == "ok"
 

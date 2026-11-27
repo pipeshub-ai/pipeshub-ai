@@ -10,7 +10,8 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => search.params,
 }));
 
-vi.mock('@/config', () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
   AgentBuilder: ({ agentKey }: { agentKey: string | null }) => (
     <div data-testid="agent-builder">{agentKey ?? 'new agent'}</div>
   ),

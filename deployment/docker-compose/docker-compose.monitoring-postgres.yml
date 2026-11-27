@@ -1,0 +1,26 @@
+# PostgreSQL and PgBouncer alerts for the monitoring overlay: Prometheus scrapes the `postgres-metrics` exporters and
+# loads deployment/monitoring/prometheus/postgres.rules.yml. Name it after docker-compose.monitoring.yml, with the
+# `postgres` and `postgres-metrics` profiles on:
+#
+#   COMPOSE_PROFILES=...,postgres,postgres-metrics GRAFANA_ADMIN_PASSWORD=... docker compose -f docker-compose.yml \
+#     -f docker-compose.agent-harness.yml -f docker-compose.monitoring.yml -f docker-compose.monitoring-postgres.yml up -d
+#
+# It is separate because an install without the exporters would otherwise page PostgresExporterDown for ever.
+
+services:
+  prometheus:
+    # Repeats docker-compose.monitoring.yml's image, open-file limit and baseline (ADR-OPS-02), so that this file read
+    # alone runs the same service; tests/postgres_alert_rules_test.sh checks the image is the same.
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: 256m
+    volumes:
+      - ../monitoring/prometheus/postgres.scrape.yml:/etc/prometheus/scrape.d/postgres.yml:ro
+      - ../monitoring/prometheus/postgres.rules.yml:/etc/prometheus/rules/postgres.rules.yml:ro

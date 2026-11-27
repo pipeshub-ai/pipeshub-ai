@@ -3,12 +3,13 @@
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { sidePanelFrame } from '@/app/components/ui/responsive';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { Dialog, Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import type { KnowledgeHubNode } from '../../types';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
+import { useTranslation } from 'react-i18next';
 
 // File type to MIME type mapping
 const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
@@ -54,6 +55,7 @@ export function ReplaceFileDialog({
   onReplace,
   isReplacing = false,
 }: ReplaceFileDialogProps) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [replacementFile, setReplacementFile] = useState<File | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -171,10 +173,6 @@ export function ReplaceFileDialog({
           animation: 'slideInFromRight 0.2s ease-out',
         }}
       >
-        <VisuallyHidden>
-          <Dialog.Title>Replace File</Dialog.Title>
-        </VisuallyHidden>
-
         {/* Header */}
         <Flex
           align="center"
@@ -188,11 +186,12 @@ export function ReplaceFileDialog({
         >
           <Flex align="center" gap="2">
             <MaterialIcon name="drive_folder_upload" size={24} color="var(--slate-12)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Replace File
-            </Text>
+            <Dialog.Title size="2" weight="medium" mb="0" style={{ color: 'var(--slate-12)' }}>
+              {t('dialog.replaceFile')}
+            </Dialog.Title>
           </Flex>
           <IconButton
+            aria-label={t('common.close')}
             variant="ghost"
             color="gray"
             size="2"
@@ -218,7 +217,7 @@ export function ReplaceFileDialog({
             {/* Name Field */}
             <Flex direction="column" gap="2">
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                Name
+                {t('form.name')}
               </Text>
               <Box
                 style={{
@@ -282,7 +281,7 @@ export function ReplaceFileDialog({
                     >
                       {item.name}
                     </Text>
-                    <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
                       {formatSize(item.sizeInBytes ?? undefined)}
                     </Text>
                   </Flex>
@@ -324,7 +323,7 @@ export function ReplaceFileDialog({
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   Replace File
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   You can upload files up to the limit of {maxFileSizeMB} MB
                 </Text>
               </Flex>
@@ -375,12 +374,13 @@ export function ReplaceFileDialog({
                       >
                         {replacementFile.name}
                       </Text>
-                      <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
                         {formatSize(replacementFile.size)}
                       </Text>
                     </Flex>
                   </Flex>
                   <IconButton
+                    aria-label={t('action.remove')}
                     variant="ghost"
                     color="gray"
                     size="1"
@@ -433,13 +433,13 @@ export function ReplaceFileDialog({
                     <MaterialIcon
                       name="add"
                       size={24}
-                      color={isDragOver ? 'var(--accent-9)' : 'var(--slate-9)'}
+                      color={isDragOver ? 'var(--accent-11)' : 'var(--slate-11)'}
                     />
                     <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                      Upload
+                      {t('action.upload')}
                     </Text>
                     <Text size="1" weight="light" style={{ color: 'var(--slate-12)' }}>
-                      Supports: Only {fileType}
+                      {t('dialog.replaceFileSupports', { fileType })}
                     </Text>
                   </Flex>
                 </Box>
@@ -472,7 +472,7 @@ export function ReplaceFileDialog({
               // border: '1px solid var(--slate-a8)',
             }}
           >
-            Cancel
+            {t('action.cancel')}
           </Button>
           <LoadingButton
             variant={isSaveDisabled ? 'soft' : 'solid'}
@@ -480,10 +480,10 @@ export function ReplaceFileDialog({
             onClick={handleSave}
             disabled={!replacementFile}
             loading={isReplacing}
-            loadingLabel="Saving..."
+            loadingLabel={t('common.saving')}
             style={{backgroundColor: isSaveDisabled ? 'var(--slate-a3)' : 'var(--emerald-10)'}}
           >
-            Save
+            {t('action.save')}
           </LoadingButton>
         </Flex>
       </Dialog.Content>

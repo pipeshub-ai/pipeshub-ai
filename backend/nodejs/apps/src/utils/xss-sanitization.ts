@@ -9,28 +9,26 @@ import { BadRequestError } from '../libs/errors/http.errors';
 // Case-insensitive patterns to catch variations like <scrIpt>, <ScRiPt>, etc.
 // Optimized to prevent ReDoS: use limited quantifiers to prevent exponential backtracking
 // Max tag length: 10000 characters to prevent ReDoS
-const HTML_TAG_PATTERN = /<[^>]{0,10000}>/i;
-// Pattern matches: <script...>...</script> including </script > with spaces
-// Uses [^>] instead of [\s\S] to prevent matching across tag boundaries and ReDoS
-// Closing tag uses [^>]{0,10000} to match any characters (except >) between script and >
-// This catches </script >, </script\t\n bar>, </script xyz>, etc.
-const SCRIPT_TAG_PATTERN = /<[\s]*script[^>]{0,10000}>[\s\S]{0,100000}?<\/[\s]*script[^>]{0,10000}>/gi;
+// A tag body never holds `<` (SEC-C-17): with `[^>]`, a run of `<` and no `>` cost every start position up to
+// 10 000 steps, about 160 ms a string on the public app's pre-authentication check. A tag that holds a `<` still
+// matches from that inner `<`, so `test` answers the same.
+const HTML_TAG_PATTERN = /<[^<>]{0,10000}>/i;
 // More comprehensive script tag detection (case-insensitive, catches variations)
 // Catches opening script tags with optional whitespace - uses [^>] to prevent ReDoS
-const SCRIPT_TAG_VARIATIONS = /<[\s]*script[^>]{0,10000}>/gi;
+const SCRIPT_TAG_VARIATIONS = /<[\s]*script[^<>]{0,10000}>/gi;
 // Explicit pattern for closing script tags - matches any characters (except >) between script and >
 // This catches </script >, </script\t\n bar>, </script xyz>, etc.
 // Limited to 10000 chars to prevent ReDoS
-const SCRIPT_CLOSING_TAG_PATTERN = /<\/[\s]*script[^>]{0,10000}>/gi;
+const SCRIPT_CLOSING_TAG_PATTERN = /<\/[\s]*script[^<>]{0,10000}>/gi;
 // Optimized to prevent ReDoS: limit attribute value length
 const EVENT_HANDLER_PATTERN = /\b(on\w+\s*=\s*["']?[^"'>]{0,1000}["']?)/i;
 const JAVASCRIPT_PROTOCOL_PATTERN = /javascript:/i;
 const DATA_PROTOCOL_PATTERN = /data:\s*text\/html/i;
 // Additional dangerous patterns - optimized to prevent ReDoS with limited quantifiers
-const IFRAME_TAG_PATTERN = /<[\s]*iframe[^>]{0,10000}>/gi;
-const OBJECT_TAG_PATTERN = /<[\s]*object[^>]{0,10000}>/gi;
-const EMBED_TAG_PATTERN = /<[\s]*embed[^>]{0,10000}>/gi;
-const SVG_TAG_PATTERN = /<[\s]*svg[^>]{0,10000}>/gi;
+const IFRAME_TAG_PATTERN = /<[\s]*iframe[^<>]{0,10000}>/gi;
+const OBJECT_TAG_PATTERN = /<[\s]*object[^<>]{0,10000}>/gi;
+const EMBED_TAG_PATTERN = /<[\s]*embed[^<>]{0,10000}>/gi;
+const SVG_TAG_PATTERN = /<[\s]*svg[^<>]{0,10000}>/gi;
 
 // Format string specifier pattern - matches %s, %x, %n, %1$s, %-10s, %.2f, etc.
 // Pattern matches: % followed by optional positional (digits$), flags, width, precision, and type
@@ -108,7 +106,6 @@ export function containsXSSPattern(value: string | undefined | null): boolean {
   // Only check if 'script' is present in the string
   if (hasScript) {
     if (
-      SCRIPT_TAG_PATTERN.test(checkValue) ||
       SCRIPT_TAG_VARIATIONS.test(checkValue) ||
       SCRIPT_CLOSING_TAG_PATTERN.test(checkValue)
     ) {
@@ -260,31 +257,31 @@ export function sanitizeString(value: string | undefined | null): string {
     // Remove all dangerous tags in each iteration
     sanitized = sanitized
       // Remove script closing tags
-      .replace(/<\/[\s]*script[^>]{0,10000}>/gi, '')
+      .replace(/<\/[\s]*script[^<>]{0,10000}>/gi, '')
       // Remove script opening tags (complete and incomplete)
-      .replace(/<[\s]*script[\s]*[^>]{0,10000}>?/gi, '')
+      .replace(/<[\s]*script[\s]*[^<>]{0,10000}>?/gi, '')
       // Remove any remaining <script pattern
       .replace(/<[\s]*script/gi, '')
       // Remove iframe closing tags
-      .replace(/<\/[\s]*iframe[^>]{0,10000}>/gi, '')
+      .replace(/<\/[\s]*iframe[^<>]{0,10000}>/gi, '')
       // Remove iframe opening tags (complete and incomplete)
-      .replace(/<[\s]*iframe[\s]*[^>]{0,10000}>?/gi, '')
+      .replace(/<[\s]*iframe[\s]*[^<>]{0,10000}>?/gi, '')
       // Remove any remaining <iframe pattern
       .replace(/<[\s]*iframe/gi, '')
       // Remove object closing tags
-      .replace(/<\/[\s]*object[^>]{0,10000}>/gi, '')
+      .replace(/<\/[\s]*object[^<>]{0,10000}>/gi, '')
       // Remove object opening tags (complete and incomplete)
-      .replace(/<[\s]*object[\s]*[^>]{0,10000}>?/gi, '')
+      .replace(/<[\s]*object[\s]*[^<>]{0,10000}>?/gi, '')
       // Remove any remaining <object pattern
       .replace(/<[\s]*object/gi, '')
       // Remove embed tags (complete and incomplete)
-      .replace(/<[\s]*embed[\s]*[^>]{0,10000}>?/gi, '')
+      .replace(/<[\s]*embed[\s]*[^<>]{0,10000}>?/gi, '')
       // Remove any remaining <embed pattern
       .replace(/<[\s]*embed/gi, '')
       // Remove svg closing tags
-      .replace(/<\/[\s]*svg[^>]{0,10000}>/gi, '')
+      .replace(/<\/[\s]*svg[^<>]{0,10000}>/gi, '')
       // Remove svg opening tags (complete and incomplete)
-      .replace(/<[\s]*svg[\s]*[^>]{0,10000}>?/gi, '')
+      .replace(/<[\s]*svg[\s]*[^<>]{0,10000}>?/gi, '')
       // Remove any remaining <svg pattern
       .replace(/<[\s]*svg/gi, '');
   }
@@ -297,7 +294,7 @@ export function sanitizeString(value: string | undefined | null): string {
     previousValue = sanitized;
     iterations++;
     // Remove any HTML-like tags
-    sanitized = sanitized.replace(/<[^>]{0,10000}>/gi, '');
+    sanitized = sanitized.replace(/<[^<>]{0,10000}>/gi, '');
   }
   
   // Final pass: Encode special characters to prevent any remaining XSS

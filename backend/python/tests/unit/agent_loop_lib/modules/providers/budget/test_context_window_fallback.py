@@ -14,7 +14,8 @@ from app.agent_loop_lib.modules.providers.budget.pricing import get_context_wind
 if TYPE_CHECKING:
     import pytest
 
-_LOGGER = "app.agent_loop_lib.modules.providers.budget.pricing"
+# The module lives in harness_core; the legacy path is a shim, so its logger has the new name.
+_LOGGER = pricing.__name__
 
 
 def _fallback_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:

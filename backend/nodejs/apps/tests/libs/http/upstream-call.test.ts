@@ -45,7 +45,7 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
     const root = Logger.getInstance()
     ;(root as any).logger.level = 'debug'
     records = []
-    sinon.stub((root as any).logger, 'log').callsFake((r: Record<string, any>) => {
+    sinon.stub((root as any).logger, 'log').callsFake((r: any) => {
       records.push(r)
     })
   }
@@ -53,9 +53,9 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
   const winstonRoot = (): winston.Logger => (Logger.getInstance() as any).logger
   /** What the console transport prints for a record, under the current LOG_FORMAT. */
   const consoleLine = (r: Record<string, unknown>): string => {
-    const shaped = winstonRoot().format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const shaped = winstonRoot().format.transform({ ...r } as any, {}) as Record<string | symbol, unknown>
     const console = winstonRoot().transports.find((t) => t instanceof winston.transports.Console)!
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const inRequest = <T>(rootId: string, fn: () => Promise<T>): Promise<T> =>
     runWithRequestContext({ rootId }, () => {

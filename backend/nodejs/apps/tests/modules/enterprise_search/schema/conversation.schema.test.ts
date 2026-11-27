@@ -116,7 +116,7 @@ describe('enterprise_search/schema/conversation.schema', () => {
     it('should define messageType enum', () => {
       const messageSchema = Conversation.schema.path('messages').schema
       expect(messageSchema).to.exist
-      const messageTypePath = messageSchema.path('messageType')
+      const messageTypePath = messageSchema!.path('messageType')
       expect(messageTypePath).to.exist
       expect(messageTypePath.options.enum).to.include.members([
         'user_query',
@@ -132,7 +132,7 @@ describe('enterprise_search/schema/conversation.schema', () => {
       // `tool_call` messages (e.g. `ask_user_question`) carry no text content --
       // mirrors agent.conversation.schema.ts's identical relaxation.
       const messageSchema = Conversation.schema.path('messages').schema
-      const contentPath = messageSchema.path('content')
+      const contentPath = messageSchema!.path('content')
       expect(contentPath).to.exist
       expect(contentPath).to.not.have.property('isRequired', true)
       expect(contentPath.defaultValue).to.equal('')
@@ -140,14 +140,14 @@ describe('enterprise_search/schema/conversation.schema', () => {
 
     it('should define tools, reasoning, and parts fields for agent-loop transcripts', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('tools')).to.exist
-      expect(messageSchema.path('reasoning')).to.exist
-      expect(messageSchema.path('parts')).to.exist
+      expect(messageSchema!.path('tools')).to.exist
+      expect(messageSchema!.path('reasoning')).to.exist
+      expect(messageSchema!.path('parts')).to.exist
     })
 
     it('should define contentFormat enum', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      const contentFormatPath = messageSchema.path('contentFormat')
+      const contentFormatPath = messageSchema!.path('contentFormat')
       expect(contentFormatPath).to.exist
       expect(contentFormatPath.options.enum).to.include.members([
         'MARKDOWN',
@@ -158,46 +158,46 @@ describe('enterprise_search/schema/conversation.schema', () => {
 
     it('should have citations array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('citations')).to.exist
+      expect(messageSchema!.path('citations')).to.exist
     })
 
     it('should have followUpQuestions array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('followUpQuestions')).to.exist
+      expect(messageSchema!.path('followUpQuestions')).to.exist
     })
 
     it('should have feedback array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('feedback')).to.exist
+      expect(messageSchema!.path('feedback')).to.exist
     })
 
     it('should have referenceData array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('referenceData')).to.exist
+      expect(messageSchema!.path('referenceData')).to.exist
     })
 
     it('should have updated referenceData item fields in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      expect(messageSchema.path('referenceData.name')).to.exist
-      expect(messageSchema.path('referenceData.id')).to.exist
-      expect(messageSchema.path('referenceData.type')).to.exist
-      expect(messageSchema.path('referenceData.app')).to.exist
-      expect(messageSchema.path('referenceData.webUrl')).to.exist
-      expect(messageSchema.path('referenceData.metadata')).to.exist
-      expect(messageSchema.path('referenceData.key')).to.not.exist
-      expect(messageSchema.path('referenceData.accountId')).to.not.exist
+      expect(messageSchema!.path('referenceData.name')).to.exist
+      expect(messageSchema!.path('referenceData.id')).to.exist
+      expect(messageSchema!.path('referenceData.type')).to.exist
+      expect(messageSchema!.path('referenceData.app')).to.exist
+      expect(messageSchema!.path('referenceData.webUrl')).to.exist
+      expect(messageSchema!.path('referenceData.metadata')).to.exist
+      expect(messageSchema!.path('referenceData.key')).to.not.exist
+      expect(messageSchema!.path('referenceData.accountId')).to.not.exist
     })
 
     it('should have appliedFilters.apps as an array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      const path = messageSchema.path('appliedFilters.apps')
+      const path = messageSchema!.path('appliedFilters.apps')
       expect(path).to.exist
       expect(path.instance).to.equal('Array')
     })
 
     it('should have appliedFilters.kb as an array in messages', () => {
       const messageSchema = Conversation.schema.path('messages').schema
-      const path = messageSchema.path('appliedFilters.kb')
+      const path = messageSchema!.path('appliedFilters.kb')
       expect(path).to.exist
       expect(path.instance).to.equal('Array')
     })

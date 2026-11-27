@@ -254,8 +254,11 @@ the auth middleware bound.
   anywhere below is handed over by the exception handler, which then calls the handler registered before it.
 - Ids: `bind_request_log_fields(request, toolset_id=…)` puts them on the route's lines and on this one. A router binds its path
   parameters with `dependencies=[Depends(path_log_fields(instance_id="toolset_id"))]` (an async dependency: a sync one runs in
-  a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
-  raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
+  a thread, and the route's own lines would lose the binding). A path value is bound only when it is shaped like an id (letters,
+  digits, `._:-`, at most 128), the rule Node applies to an id field it binds from a route's params; an email, a name with a
+  space or a path is not bound, and a single token such as `ada` still is. A route marks the
+  `HTTPException` it raises, not its cause, then raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds
+  a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
   first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
   `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
@@ -621,7 +624,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
   claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
   one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
-  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text), and a toolset callback
+  state that cannot be decoded or is not a string `state`, `instance_id` and `user_id` (`reason=OAuthConfigError`). The toolset callback's line carries `toolset_id`
+  (and `agent_id` for an agent's sign-in) only once the instance is found for the caller: the state is the caller's own text.
   Both callbacks class their token exchange's failure as a refresh classes the same answer
   (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
   `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer

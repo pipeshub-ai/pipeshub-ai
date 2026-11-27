@@ -49,6 +49,7 @@ from app.services.messaging.kafka.handlers.record import (
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import indexing_timing, user_errors
 from tests.support.record_handler import make_record_handler
+from tests.support.settle import settle
 from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
@@ -490,10 +491,32 @@ class TestDeleteConnectorEntitiesEvent:
         store = AsyncMock()
         handler = self._handler_with_store(store)
         handler.config_service.delete_config = AsyncMock(return_value=True)
+        handler.config_service.list_keys_in_directory = AsyncMock(side_effect=lambda prefix: [f"{prefix}r"])
+        handler.config_service.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "o", "connectorId": "c", "requestedAt": 1} if "/pending/o/" in key else None)
         await _collect_events(
             handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
         )
-        handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/c")
+        handler.config_service.delete_config.assert_awaited_once_with("/services/entityCleanup/pending/o/c/r")
+
+    @pytest.mark.asyncio
+    async def test_a_delete_recorded_while_the_cleanup_runs_stays_pending(self) -> None:
+        prefix = "/services/entityCleanup/pending/o/c/"
+        kv = {f"{prefix}first": {"orgId": "o", "connectorId": "c", "requestedAt": 1}}
+
+        async def clean(**_kw: object) -> None:
+            kv[f"{prefix}second"] = {"orgId": "o", "connectorId": "c", "requestedAt": 2}
+
+        store = AsyncMock()
+        store.delete_entities_by_connector = AsyncMock(side_effect=clean)
+        handler = self._handler_with_store(store)
+        config = handler.config_service
+        config.list_keys_in_directory = AsyncMock(side_effect=lambda directory: [k for k in kv if k.startswith(directory)])
+        config.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: kv.get(key))
+        config.delete_config = AsyncMock(side_effect=lambda key: kv.pop(key, None) is not None)
+        await _collect_events(
+            handler, EventTypes.DELETE_CONNECTOR_ENTITIES.value, {"orgId": "o", "connectorId": "c"},
+        )
+        assert list(kv) == [f"{prefix}second"]
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_keeps_its_pending_intent(self) -> None:
@@ -4289,7 +4312,7 @@ class TestProcessEventErrors:
             )
             assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
-            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            await settle(entered_processor.wait())
             processing.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await processing
@@ -4354,7 +4377,7 @@ class TestProcessEventErrors:
             )
             assert (await anext(event_generator)).event == IndexingEvent.START_DOWNLOAD
             processing = asyncio.create_task(anext(event_generator))
-            await asyncio.wait_for(entered_processor.wait(), timeout=1)
+            await settle(entered_processor.wait())
             processing.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await processing

@@ -29,7 +29,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
-from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
+from app.connectors.services.entity_cleanup_intents import (
+    clear_pending_entity_cleanup,
+    read_pending_entity_cleanup,
+)
 from app.core.org_context import (
     MissingOrgContext,
     current_or_system,
@@ -980,6 +983,12 @@ class RecordEventHandler(BaseEventService):
                 details={"org_id": org_id, "connector_id": connector_id},
             )
         graph_provider = self.event_processor.graph_provider
+        # Before the cleanup: a delete recorded while it runs is not settled by it.
+        pending = unread = None
+        try:
+            pending = await read_pending_entity_cleanup(self.config_service, org_id=org_id, connector_id=connector_id)
+        except Exception as exc:
+            unread = exc
         try:
             await store.delete_entities_by_connector(
                 org_id=org_id,
@@ -995,7 +1004,9 @@ class RecordEventHandler(BaseEventService):
                 details={"org_id": org_id, "connector_id": connector_id},
             ) from exc
         self.logger.info("Entity points removed for connector %s (org %s)", connector_id, org_id)
-        if not await clear_pending_entity_cleanup(self.config_service, connector_id):
+        if unread is not None or (
+            pending is not None and not await clear_pending_entity_cleanup(self.config_service, pending)
+        ):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
 

@@ -3,7 +3,6 @@ DEFLATE data in zip members, UTF-16 text outside ASCII, and long unbroken lines.
 from __future__ import annotations
 
 import io
-import time
 import zipfile
 import zlib
 from unittest.mock import patch
@@ -14,6 +13,7 @@ import pytest
 from app.modules.parsers.email.rtf_deencapsulate import deencapsulate_html
 from app.services.parsing.interface import UnreadableFileError
 from tests.support import new_type_samples as samples
+from tests.support.cpu_budget import thread_cpu
 from tests.unit.modules.parsers.test_msg_to_html import _message, _Props
 
 _SMILE = "\U0001f600"
@@ -133,14 +133,16 @@ def test_utf16_text_with_letters_outside_ascii_is_text(codec: str) -> None:
 
 
 def test_a_long_unbroken_line_is_split_in_linear_time() -> None:
-    from app.modules.parsers.text.plain_text_parser import plain_text_to_blocks
+    from app.modules.parsers.text.plain_text_parser import (
+        _split_line,
+        plain_text_to_blocks,
+    )
 
-    started = time.perf_counter()
     size = 20 * 1024 * 1024
-    from app.modules.parsers.text.plain_text_parser import _split_line
-
-    parts = _split_line("x" * size)
-    assert time.perf_counter() - started < 1.0
+    line = "x" * size
+    with thread_cpu() as cpu:
+        parts = _split_line(line)
+    assert cpu.seconds < 1.0
     assert sum(len(p) for p in parts) == size
     assert sum(len(b.data) for b in plain_text_to_blocks("x" * 100_000).blocks) == 100_000
 

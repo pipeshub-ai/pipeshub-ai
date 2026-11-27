@@ -27,6 +27,7 @@ import {
   setPlatformSettings,
   getPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  AGENT_HARNESS_OFF_MESSAGE,
   getEffectivePlatformFeatureFlags,
   getMicrosoftAuthConfig,
   setMicrosoftAuthConfig,
@@ -84,10 +85,16 @@ import {
   getModelRoles,
   updateModelRoles,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
+import { AGENT_HARNESS_LABS_FLAGS } from '../../../../src/modules/configuration_manager/constants/constants'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { testControlPlane } from '../../control-plane/support/in-memory'
 import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { inRequestOrg } from '../../../helpers/request-org-context'
+
+/** The opt-out (ADR-OPS-06 as amended 2026-11-20): the switch is on by default, so off is said. */
+const HARNESS_OFF = { AGENT_HARNESS_WORKER_ENABLED: 'false' }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -732,7 +739,7 @@ describe('ConfigurationManager Controller', () => {
   describe('setPlatformSettings', () => {
     it('should save platform settings successfully', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({
         body: { fileUploadMaxSizeBytes: 10485760, featureFlags: { ENABLE_BETA_CONNECTORS: true } },
       })
@@ -741,16 +748,91 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(kvs.set.calledOnce).to.be.true
+      // UX2: a compare-and-set against what was read (nothing stored yet), never a blind set.
+      expect(kvs.compareAndSet.calledOnce).to.be.true
+      expect(kvs.compareAndSet.firstCall.args[1]).to.equal(null)
+      expect(kvs.set.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].message).to.equal('Platform settings saved')
     })
 
+    it('keeps stored harness rollout settings the Labs page does not send', async () => {
+      mockEncService.decrypt.returns(
+        JSON.stringify({ agentHarness: { modelFamilies: ['anthropic'] } }),
+      )
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
+      const req = createMockRequest({
+        body: { fileUploadMaxSizeBytes: 10485760, featureFlags: { ENABLE_BETA_CONNECTORS: true } },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved.agentHarness).to.deep.equal({ modelFamilies: ['anthropic'] })
+      expect(saved.featureFlags).to.deep.equal({ ENABLE_BETA_CONNECTORS: true })
+    })
+
+    it('replaces harness rollout settings when the request sends them', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
+      const req = createMockRequest({
+        body: {
+          fileUploadMaxSizeBytes: 10485760,
+          featureFlags: {},
+          agentHarness: { modelFamilies: null },
+        },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const saved = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(saved.agentHarness).to.deep.equal({ modelFamilies: null })
+    })
+
+    // R50-OFF (ADR-OPS-06): a harness Labs setting cannot be saved while the harness is switched off.
+    for (const [label, body] of [
+      ['a harness Labs flag', { featureFlags: { enable_agent_harness: true } }],
+      ['scheduled runs', { featureFlags: { ENABLE_SCHEDULED_RUNS: true } }],
+      ['knowledge publications', { featureFlags: { ENABLE_KNOWLEDGE_PUBLICATIONS: false } }],
+      ['the harness rollout settings', { featureFlags: {}, agentHarness: { modelFamilies: null } }],
+    ] as const) {
+      it(`refuses ${label} with a plain message while the harness is switched off`, async () => {
+        const kvs = createMockKeyValueStore()
+        const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane(), HARNESS_OFF))
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(AGENT_HARNESS_OFF_MESSAGE)
+        expect(mockEncService.encrypt.called).to.equal(false)
+      })
+    }
+
+    it('saves the other flags as before while the harness is switched off', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane(), HARNESS_OFF))
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { featureFlags: { ENABLE_PROJECTS: true } } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.equal(false)
+      expect(JSON.parse(mockEncService.encrypt.firstCall.args[0]).featureFlags).to.deep.equal({
+        ENABLE_PROJECTS: true,
+      })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
-        set: sinon.stub().rejects(new Error('store failed')),
+        compareAndSet: sinon.stub().rejects(new Error('store failed')),
       })
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({ body: { fileUploadMaxSizeBytes: 100, featureFlags: {} } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -780,6 +862,203 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0]).to.have.property('flags')
+      const harness = res.json.firstCall.args[0].flags.find((f: any) => f.key === 'ENABLE_AGENT_HARNESS')
+      // BETA (2026-11-20): off by default; an admin turns it on in Labs.
+      expect(harness).to.include({ label: 'Agent harness', defaultEnabled: false })
+      // CTL-5: no Labs toggle can silently override "Agent harness".
+      expect(res.json.firstCall.args[0].flags.map((f: any) => f.key)).to.not.include('AGENT_HARNESS_KILL_SWITCH')
+    })
+
+    it('lists no harness flag while the harness is switched off (R50-OFF, ADR-OPS-06)', async () => {
+      const res = createMockResponse()
+
+      await getAvailablePlatformFeatureFlags(HARNESS_OFF)(createMockRequest(), res, createMockNext())
+
+      const keys = res.json.firstCall.args[0].flags.map((f: any) => f.key)
+      expect(keys).to.include('ENABLE_MCP')
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+        expect(keys).to.not.include(key)
+      }
+    })
+
+    it('marks each harness flag for the Labs Beta badge, and every one defaults off (BETA)', async () => {
+      const res = createMockResponse()
+
+      // Unset: the server setting's default (on since 2026-11-20) lists them.
+      await getAvailablePlatformFeatureFlags({})(createMockRequest(), res, createMockNext())
+
+      const flags: any[] = res.json.firstCall.args[0].flags
+      const harness = flags.filter((f) => f.requiresAgentHarness === true)
+      expect(harness.map((f) => f.key)).to.have.members([...AGENT_HARNESS_LABS_FLAGS])
+      for (const flag of harness) {
+        expect(flag.defaultEnabled, flag.key).to.equal(false)
+      }
+      expect(flags.find((f) => f.key === 'ENABLE_MCP')).to.not.have.property('requiresAgentHarness')
+    })
+
+    it('reports the agent harness through the rollout policy for the caller org', async () => {
+      const decision = {
+        useHarness: false,
+        harnessMajor: 1,
+        reason: 'kill_switch',
+        resumeInFlightRuns: true,
+      }
+      const rollout = {
+        decide: sinon.stub(),
+        decideForOrg: sinon.stub().resolves(decision),
+      }
+      const stored = `encrypted:${JSON.stringify({
+        featureFlags: { ENABLE_AGENT_HARNESS: true },
+      })}`
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore({ get: sinon.stub().resolves(stored) }),
+        rollout as never,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      expect(rollout.decideForOrg.calledOnceWithExactly('org-1')).to.equal(true)
+      const body = res.json.firstCall.args[0]
+      expect(body.featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(body.agentHarness).to.deep.equal(decision)
+    })
+
+    // The org's harness on (ADR-OPS-08): each harness surface below is reported only for such an org.
+    const ORG_ON = { useHarness: true, harnessMajor: 2, reason: 'enabled', harnessOn: true, resumeInFlightRuns: true }
+    const ORG_OFF = { useHarness: false, harnessMajor: 2, reason: 'org_disabled', harnessOn: false, resumeInFlightRuns: false }
+
+    // H3 BE-4: HARNESS_RECONCILE, a deployment flag, for the unknown-effects entry.
+    for (const [value, expected] of [['true', true], ['0', false], [undefined, false]] as const) {
+      it(`reports harnessReconcile=${String(expected)} for HARNESS_RECONCILE=${String(value)}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          { HARNESS_RECONCILE: value, AGENT_HARNESS_WORKER_ENABLED: 'true' },
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].harnessReconcile).to.equal(expected)
+      })
+    }
+
+    // UX3 SE-4: personal AI accounts are offered only while a worker runs engine runs.
+    for (const [label, probe, expected] of [
+      ['an engine worker was seen', async () => true, true],
+      ['none was', async () => false, false],
+      ['the probe failed', async () => { throw new Error('mongo down') }, false],
+    ] as const) {
+      it(`reports engineRuns=${String(expected)} when ${label}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          { AGENT_HARNESS_WORKER_ENABLED: 'true' },
+          probe,
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].engineRuns).to.equal(expected)
+      })
+    }
+
+    // PR1-DK-1: "Continue privately" (SS3) is offered exactly when the fork route can serve it.
+    const readyEnv = {
+      REPLICA_SET_AVAILABLE: 'true',
+      AGENT_HARNESS_RELAY_ENABLED: 'true',
+      AGENT_HARNESS_WORKER_ENABLED: 'true',
+    }
+    for (const [label, env, expected] of [
+      ['with every flag at its default', {}, false],
+      ['without the worker', { ...readyEnv, AGENT_HARNESS_WORKER_ENABLED: 'false' }, false],
+      ['with the durable infrastructure ready', readyEnv, true],
+    ] as const) {
+      it(`reports continuePrivately=${String(expected)} ${label}`, async () => {
+        const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_ON) }
+        const handler = getEffectivePlatformFeatureFlags(
+          createMockKeyValueStore(),
+          rollout as never,
+          env,
+        )
+        const res = createMockResponse()
+
+        await handler(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0].continuePrivately).to.equal(expected)
+      })
+    }
+
+    // ADR-OPS-08: with the switch on and the org's Labs off, every harness surface reads as with the switch off; only
+    // the rollout decision stays, for the admin notice that links to Labs.
+    it('with the switch on and the org\'s Labs off answers every harness surface as the switch off does', async () => {
+      const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub().resolves(ORG_OFF) }
+      const env = { ...readyEnv, HARNESS_RECONCILE: 'true' }
+      const handler = getEffectivePlatformFeatureFlags(createMockKeyValueStore(), rollout as never, env, async () => true)
+      const offHandler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        rollout as never,
+        { ...env, AGENT_HARNESS_WORKER_ENABLED: 'false' },
+        async () => true,
+      )
+      const res = createMockResponse()
+      const offRes = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+      await offHandler(createMockRequest(), offRes, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      const off = offRes.json.firstCall.args[0]
+      for (const key of ['harnessReconcile', 'continuePrivately', 'engineRuns'] as const) {
+        expect(body[key], key).to.equal(off[key])
+        expect(body[key], key).to.equal(false)
+      }
+      expect(body.featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(body.agentHarness).to.deep.equal(ORG_OFF)
+    })
+
+    // R50-OFF (ADR-OPS-06): with the harness switched off the browser is told nothing of it.
+    it('with the harness switched off (the opt-out) answers no harness flag, rollout or surface', async () => {
+      const decideForOrg = sinon.stub().resolves({ useHarness: true, reason: 'enabled', resumeInFlightRuns: true })
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        { decide: sinon.stub(), decideForOrg } as never,
+        { ...HARNESS_OFF, REPLICA_SET_AVAILABLE: 'true', HARNESS_RECONCILE: 'true' },
+        async () => true,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.agentHarness).to.equal(null)
+      expect(body.harnessReconcile).to.equal(false)
+      expect(body.continuePrivately).to.equal(false)
+      expect(body.engineRuns).to.equal(false)
+      for (const key of ['ENABLE_AGENT_HARNESS', 'ENABLE_SCHEDULED_RUNS', 'ENABLE_KNOWLEDGE_PUBLICATIONS']) {
+        expect(body.featureFlags).to.not.have.property(key)
+      }
+      expect(body.featureFlags).to.have.property('ENABLE_MCP')
+      expect(decideForOrg.called).to.equal(false)
+    })
+
+    it('does not advertise the harness without an org identity', async () => {
+      const rollout = { decide: sinon.stub(), decideForOrg: sinon.stub() }
+      const handler = getEffectivePlatformFeatureFlags(
+        createMockKeyValueStore(),
+        rollout as never,
+      )
+      const res = createMockResponse()
+
+      await handler(createMockRequest({ user: undefined }), res, createMockNext())
+
+      expect(rollout.decideForOrg.called).to.equal(false)
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_AGENT_HARNESS).to.equal(false)
+      expect(res.json.firstCall.args[0].agentHarness).to.equal(null)
     })
 
     it('should include ENABLE_MCP, defaulting to enabled', async () => {
@@ -3423,6 +3702,35 @@ describe('ConfigurationManager Controller', () => {
       expect(response.models[0]).to.have.property('modelFriendlyName', 'GPT-4')
     })
 
+    it('P2.2 DN-3: names each model of a stored multi-model entry by its display name, never a deployment or key', async () => {
+      const aiModels = {
+        llm: [{
+          provider: 'azureOpenAI',
+          modelKey: 'k2',
+          modelFriendlyName: 'Team GPT',
+          configuration: { model: 'gpt-4o, gpt-4o-mini', deploymentName: 'prod-eastus-7', apiKey: 'secret' },
+        }, {
+          provider: 'openai',
+          modelKey: 'k3',
+          configuration: { model: 'gpt-4.1' },
+        }],
+      }
+      mockEncService.decrypt.returns(JSON.stringify(aiModels))
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
+      const res = createMockResponse()
+      await getAvailableModelsByType(kvs)(createMockRequest({ params: { modelType: 'llm' } }), res, createMockNext())
+
+      const models = res.json.firstCall.args[0].models
+      expect(models.map((m: any) => m.modelFriendlyName)).to.deep.equal([
+        'Team GPT (gpt-4o)',
+        'Team GPT (gpt-4o-mini)',
+        undefined,
+      ])
+      const body = JSON.stringify(models)
+      expect(body).to.not.include('prod-eastus-7')
+      expect(body).to.not.include('secret')
+    })
+
     describe('defaultReasoningEffort', () => {
       async function availableLlms(entries: Record<string, unknown>[]): Promise<any[]> {
         mockEncService.decrypt.returns(JSON.stringify({ llm: entries }))
@@ -4590,10 +4898,10 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // setPlatformSettings - additional tests
   // -----------------------------------------------------------------------
-  describe('setPlatformSettings (additional)', () => {
+  describe('inRequestOrg(setPlatformSettings (additional))', () => {
     it('should include updatedAt in the encrypted payload', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setPlatformSettings(kvs)
+      const handler = inRequestOrg(setPlatformSettings(kvs, testControlPlane()))
       const req = createMockRequest({
         body: { fileUploadMaxSizeBytes: 100, featureFlags: {} },
       })

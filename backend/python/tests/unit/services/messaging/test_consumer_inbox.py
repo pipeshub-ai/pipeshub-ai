@@ -23,6 +23,9 @@ from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsume
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery
+from app.services.messaging.redis_streams.broadcast_consumer import (
+    RedisStreamsBroadcastConsumer,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 
 LOG = logging.getLogger("test.consumer_inbox")
@@ -189,6 +192,17 @@ def test_the_factory_gives_the_inbox_to_simple_consumers_only(monkeypatch) -> No
     kafka_cfg = KafkaConsumerConfig(topics=[TOPIC], client_id="c", group_id=GROUP, auto_offset_reset="earliest",
                                     enable_auto_commit=False, bootstrap_servers=["localhost:9092"])
     assert MessagingFactory.create_consumer(LOG, kafka_cfg, broker_type=MessageBrokerType.KAFKA).inbox is marker  # type: ignore[attr-defined]
+
+
+def test_a_redis_broadcast_subscriber_has_no_inbox(monkeypatch) -> None:
+    """XREAD from a position kept in memory never redelivers, so an inbox would only write a row per process per event."""
+    monkeypatch.setattr("app.services.messaging.messaging_factory.shared_inbox", lambda: object())
+    cfg = RedisStreamsConfig(client_id="c", group_id=f"{GROUP}-proc", topics=[TOPIC], broadcast=True)
+    with patch("app.services.messaging.redis_streams.consumer.get_redis_provider", MagicMock()):
+        consumer = MessagingFactory.create_consumer(LOG, cfg, broker_type=MessageBrokerType.REDIS)
+    assert isinstance(consumer, RedisStreamsBroadcastConsumer)
+    assert consumer.inbox is None
+    assert consumer.retry_manager is None
 
 
 @pytest.mark.parametrize(

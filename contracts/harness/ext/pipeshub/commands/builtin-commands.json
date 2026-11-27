@@ -1,0 +1,646 @@
+{
+  "schemaVersion": 1,
+  "description": "PipesHub's built-in /commands (SLASH2). Menu order is this order: the first eight general ones show while the query is empty, the rest after \"More built-ins\"; the Sandbox group (SLASH3) is listed whole after them. Every name, alias and reserved word is reserved: no user command may take one, and a built-in always wins over a user command of the same name (O2). Generated as BUILTIN_COMMANDS in every target.",
+  "commands": [
+    {
+      "name": "new",
+      "aliases": [
+        "clear"
+      ],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.new"
+    },
+    {
+      "name": "model",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code",
+        "legacy"
+      ],
+      "needs": [],
+      "duringRun": "next",
+      "args": "name?",
+      "i18n": "slashCommands.builtin.model"
+    },
+    {
+      "name": "effort",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code",
+        "legacy"
+      ],
+      "needs": [],
+      "duringRun": "next",
+      "args": "low|medium|high|max",
+      "i18n": "slashCommands.builtin.effort"
+    },
+    {
+      "name": "stop",
+      "aliases": [],
+      "kind": "server",
+      "package": "C1",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "run"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.stop"
+    },
+    {
+      "name": "status",
+      "aliases": [],
+      "kind": "server",
+      "package": "C1",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code",
+        "legacy"
+      ],
+      "needs": [
+        "conversation"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.status"
+    },
+    {
+      "name": "usage",
+      "aliases": [
+        "cost"
+      ],
+      "kind": "server",
+      "package": "C1",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "conversation",
+        "harness"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.usage"
+    },
+    {
+      "name": "fork",
+      "aliases": [
+        "branch"
+      ],
+      "kind": "server",
+      "package": "C1",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation"
+      ],
+      "duringRun": "wait",
+      "args": "",
+      "i18n": "slashCommands.builtin.fork"
+    },
+    {
+      "name": "copy",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "answer"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.copy"
+    },
+    {
+      "name": "help",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.help"
+    },
+    {
+      "name": "resume",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "text?",
+      "i18n": "slashCommands.builtin.resume"
+    },
+    {
+      "name": "rename",
+      "aliases": [],
+      "kind": "server",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation"
+      ],
+      "duringRun": "wait",
+      "args": "title",
+      "i18n": "slashCommands.builtin.rename"
+    },
+    {
+      "name": "export",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation"
+      ],
+      "duringRun": "wait",
+      "args": "",
+      "i18n": "slashCommands.builtin.export"
+    },
+    {
+      "name": "plan",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "legacy"
+      ],
+      "needs": [],
+      "duringRun": "next",
+      "args": "",
+      "i18n": "slashCommands.builtin.plan"
+    },
+    {
+      "name": "skills",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.skills"
+    },
+    {
+      "name": "mcp",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.mcp"
+    },
+    {
+      "name": "knowledge",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "next",
+      "args": "",
+      "i18n": "slashCommands.builtin.knowledge"
+    },
+    {
+      "name": "agents",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.agents"
+    },
+    {
+      "name": "memory",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.memory"
+    },
+    {
+      "name": "permissions",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "conversation",
+        "harness"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.permissions"
+    },
+    {
+      "name": "feedback",
+      "aliases": [],
+      "kind": "client",
+      "package": "C0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "answer"
+      ],
+      "duringRun": "wait",
+      "args": "good|bad?",
+      "i18n": "slashCommands.builtin.feedback"
+    },
+    {
+      "name": "compact",
+      "aliases": [],
+      "kind": "server",
+      "package": "C2",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "conversation",
+        "harness"
+      ],
+      "duringRun": "wait",
+      "args": "focus?",
+      "i18n": "slashCommands.builtin.compact"
+    },
+    {
+      "name": "diff",
+      "aliases": [],
+      "kind": "server",
+      "package": "C3",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "workspace"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.diff"
+    },
+    {
+      "name": "undo",
+      "aliases": [],
+      "kind": "server",
+      "package": "C3",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "workspace"
+      ],
+      "duringRun": "wait",
+      "args": "",
+      "i18n": "slashCommands.builtin.undo"
+    },
+    {
+      "name": "review",
+      "aliases": [],
+      "kind": "prompt",
+      "package": "C3",
+      "shipped": true,
+      "executors": [
+        "loop",
+        "opencode",
+        "codex",
+        "claude_code"
+      ],
+      "needs": [
+        "workspace"
+      ],
+      "duringRun": "wait",
+      "args": "focus?",
+      "i18n": "slashCommands.builtin.review"
+    },
+    {
+      "name": "init",
+      "aliases": [],
+      "kind": "prompt",
+      "package": "C4",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "agentEditor"
+      ],
+      "duringRun": "wait",
+      "args": "",
+      "i18n": "slashCommands.builtin.init"
+    },
+    {
+      "name": "files",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner",
+        "workspace"
+      ],
+      "duringRun": "now",
+      "args": "path?",
+      "i18n": "slashCommands.builtin.files"
+    },
+    {
+      "name": "open",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner",
+        "workspace"
+      ],
+      "duringRun": "now",
+      "args": "path",
+      "i18n": "slashCommands.builtin.open"
+    },
+    {
+      "name": "download",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner",
+        "workspace"
+      ],
+      "duringRun": "now",
+      "args": "path?",
+      "i18n": "slashCommands.builtin.download"
+    },
+    {
+      "name": "upload",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB2",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner"
+      ],
+      "duringRun": "wait",
+      "args": "folder?",
+      "i18n": "slashCommands.builtin.upload"
+    },
+    {
+      "name": "run",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB3",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner",
+        "runCode"
+      ],
+      "duringRun": "wait",
+      "args": "command",
+      "i18n": "slashCommands.builtin.run"
+    },
+    {
+      "name": "sandbox",
+      "aliases": [
+        "env"
+      ],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB1",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.sandbox"
+    },
+    {
+      "name": "engine",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "SB4",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "harness",
+        "owner",
+        "engineChoice"
+      ],
+      "duringRun": "next",
+      "args": "codex|claude_code|opencode|none?",
+      "i18n": "slashCommands.builtin.engine"
+    },
+    {
+      "name": "repo",
+      "aliases": [],
+      "kind": "server",
+      "group": "sandbox",
+      "package": "GF1",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "harness",
+        "owner"
+      ],
+      "duringRun": "next",
+      "args": "",
+      "i18n": "slashCommands.builtin.repo"
+    },
+    {
+      "name": "logs",
+      "aliases": [],
+      "kind": "client",
+      "group": "sandbox",
+      "package": "SB0",
+      "shipped": true,
+      "executors": [
+        "any"
+      ],
+      "needs": [
+        "conversation",
+        "harness",
+        "owner"
+      ],
+      "duringRun": "now",
+      "args": "",
+      "i18n": "slashCommands.builtin.logs"
+    }
+  ],
+  "reservedWords": [
+    {
+      "name": "config",
+      "why": "terminal"
+    },
+    {
+      "name": "exit",
+      "why": "terminal"
+    },
+    {
+      "name": "login",
+      "why": "terminal"
+    },
+    {
+      "name": "logout",
+      "why": "terminal"
+    },
+    {
+      "name": "theme",
+      "why": "terminal"
+    },
+    {
+      "name": "btw",
+      "why": "unmapped"
+    },
+    {
+      "name": "goal",
+      "why": "unmapped"
+    },
+    {
+      "name": "share",
+      "why": "unmapped"
+    },
+    {
+      "name": "side",
+      "why": "unmapped"
+    },
+    {
+      "name": "clear-workspace",
+      "why": "unmapped"
+    },
+    {
+      "name": "secrets",
+      "why": "unmapped"
+    }
+  ]
+}

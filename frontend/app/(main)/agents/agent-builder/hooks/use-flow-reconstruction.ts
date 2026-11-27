@@ -21,6 +21,11 @@ import type {
 } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 import { skillNodeWarning } from '../skill-node-warning';
+import { skillDisplayName } from '@/chat/utils/tool-display';
+import { isEngineProfile } from '../agent-account';
+import { agentGatesOf } from '../../agent-gates';
+import { agentEnvironmentOf } from '../../agent-environment';
+import { toRoleModels } from '../role-models';
 import { apiToolsetsOnAgent } from '../api-toolset-attachments';
 import type { ApiToolset } from '../../../workspace/api-toolsets/types';
 import { flowLayerX } from '../flow-layout';
@@ -42,6 +47,8 @@ interface ModelConfigObject {
   modelKey: string;
   provider: string;
   modelName: string;
+  /** The display name the agents API resolved (P2.2); a removed model's is "Unavailable model". */
+  modelFriendlyName?: string;
   isReasoning?: boolean;
   isMultimodal?: boolean;
   isDefault?: boolean;
@@ -403,13 +410,14 @@ export function useAgentBuilderReconstruction(): {
             }
           }
 
-          // Use friendly name if available, otherwise fallback to modelName
+          // The catalog's display name, else the one the agent API resolved; never the raw id first.
+          const modelFriendlyName =
+            matchingModel?.modelFriendlyName || modelConfigObj?.modelFriendlyName || undefined;
           const displayName =
-            matchingModel?.modelFriendlyName ||
+            modelFriendlyName ||
             modelConfigObj?.modelName ||
             modelConfigString ||
             t('agentBuilder.placeholderAiModel');
-          const modelFriendlyName = matchingModel?.modelFriendlyName;
 
           nodeCounter += 1;
           const nodeId = `llm-${nodeCounter}`;
@@ -712,7 +720,7 @@ export function useAgentBuilderReconstruction(): {
             data: {
               id: nodeId,
               type: `skill-${skillName}`,
-              label: normalizeDisplayName(skillName),
+              label: skillDisplayName(skillName),
               description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
               icon: 'psychology',
               category: 'skills',
@@ -800,6 +808,13 @@ export function useAgentBuilderReconstruction(): {
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
             defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
             sendUserContext: agent.sendUserContext !== false,
+            ...(isEngineProfile(agent.engineProfile) ? { engineProfile: agent.engineProfile } : {}),
+            ...(Object.keys(toRoleModels(agent.roleModels)).length > 0
+              ? { roleModels: toRoleModels(agent.roleModels) }
+              : {}),
+            ...(agentGatesOf(agent.gates) ? { gates: agentGatesOf(agent.gates) } : {}),
+            ...(agent.maxChildren === 0 ? { maxChildren: 0 } : {}),
+            ...(agentEnvironmentOf(agent.environment) ? { environment: agentEnvironmentOf(agent.environment) } : {}),
             routing: 'auto',
             allowMultipleLLMs: true,
           },

@@ -174,7 +174,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       if (written.status === 'rejected') throw written.reason
       const frozenAt = frozen.value
       const [row] = await commitTimes('slow')
-      expect(row.ts.getTime()).to.be.at.most(frozenAt.getTime())
+      expect(row!.ts.getTime()).to.be.at.most(frozenAt.getTime())
       expect(await insert(rt, 'late').catch((x) => x)).to.be.instanceOf(DbReadOnly)
     })
 
@@ -320,11 +320,12 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           'content.documents', 'content.project_members', 'content.projects',
           'conversation.chat_messages', 'conversation.chat_session_members', 'conversation.chat_sessions', 'conversation.citations',
           'conversation.semantic_search_members', 'conversation.semantic_searches',
-          'identity.org_auth_config', 'identity.org_logos', 'identity.orgs', 'identity.slug_counters', 'identity.used_reset_links',
-          'identity.user_activities', 'identity.user_credentials', 'identity.user_group_members', 'identity.user_groups', 'identity.user_pictures', 'identity.users', 'integrations.slack_threads', 'oauth.access_tokens',
+          'identity.org_auth_config', 'identity.org_logos', 'identity.orgs', 'identity.session_families', 'identity.slug_counters', 'identity.used_reset_links',
+          'identity.user_activities', 'identity.user_credentials', 'identity.user_group_members', 'identity.user_groups', 'identity.user_pictures', 'identity.users', 'integrations.slack_threads', 'integrations.slack_user_links', 'oauth.access_tokens',
           'oauth.agent_call_events', 'oauth.agent_registrations', 'oauth.apps', 'oauth.authorization_codes', 'oauth.delegation_events', 'oauth.device_authorizations', 'oauth.refresh_tokens',
           'oauth.service_account_delegations',
-          'platform.connectors_config', 'platform.docstore_changes', 'platform.mail_log', 'platform.notifications', 'platform.outbox', 'platform.store_epoch',
+          'platform.connectors_config', 'platform.docstore_changes', 'platform.docstore_keymap', 'platform.docstore_keymap_deployment', 'platform.docstore_refused',
+          'platform.mail_log', 'platform.notifications', 'platform.outbox', 'platform.store_epoch',
         ])
       })
 

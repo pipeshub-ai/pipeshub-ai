@@ -1,0 +1,28 @@
+[
+  {
+    "description": "an item names what stopped it",
+    "instance": {
+      "repository": "github.com/onyx-dot-app/onyx"
+    }
+  },
+  {
+    "description": "a kind the chat does not word is refused",
+    "instance": {
+      "kind": "web"
+    }
+  },
+  {
+    "description": "an item never carries a model's words",
+    "instance": {
+      "kind": "repository.declined",
+      "why": "the model said so"
+    }
+  },
+  {
+    "description": "a count stands for more than one",
+    "instance": {
+      "kind": "repository.failed",
+      "count": 1
+    }
+  }
+]

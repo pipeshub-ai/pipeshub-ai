@@ -3,11 +3,14 @@ client, image/network caches, and bounded executor."""
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from docker.types import IPAMConfig, IPAMPool
 
+# The client property imports docker_proxy on first use; loaded here, the tests' patch.dict(sys.modules) does not
+# drop it on exit.
+import app.sandbox.docker_proxy  # noqa: F401
 from app.agent_loop_lib.sandbox.coding.docker_client import (
     DockerClientProvider,
 )
@@ -28,24 +31,19 @@ class TestDockerClientProvider:
         provider = DockerClientProvider()
         assert provider._client is None
 
-        mock_docker = MagicMock()
-        mock_docker.from_env.return_value = MagicMock()
-        with patch.dict(sys.modules, {"docker": mock_docker}):
+        with patch("docker.from_env", return_value=MagicMock()) as from_env:
             _ = provider.client
-            mock_docker.from_env.assert_called_once()
+            from_env.assert_called_once()
             assert provider._client is not None
         provider.close()
 
     def test_client_is_singleton(self) -> None:
         provider = DockerClientProvider()
-        mock_docker = MagicMock()
-        fake_client = MagicMock()
-        mock_docker.from_env.return_value = fake_client
-        with patch.dict(sys.modules, {"docker": mock_docker}):
+        with patch("docker.from_env", return_value=MagicMock()) as from_env:
             c1 = provider.client
             c2 = provider.client
             assert c1 is c2
-            mock_docker.from_env.assert_called_once()
+            from_env.assert_called_once()
         provider.close()
 
     async def test_ensure_image_caches(self) -> None:
@@ -100,12 +98,14 @@ class TestDockerClientProvider:
         # default network, or compose siblings (mongo, arango, redis) would
         # be reachable by name. ICC off keeps one org's sandbox from
         # reaching another's on the same bridge.
+        # Its subnet is the install's own, never one of the daemon's default pools.
         fake_client.networks.create.assert_called_once_with(
             name="new_net",
             driver="bridge",
             internal=False,
             enable_ipv6=False,
             options={"com.docker.network.bridge.enable_icc": "false"},
+            ipam=IPAMConfig(pool_configs=[IPAMPool(subnet="10.212.0.0/22", gateway="10.212.0.1")]),
             labels={"agent_loop.sandbox": "egress"},
             check_duplicate=True,
         )

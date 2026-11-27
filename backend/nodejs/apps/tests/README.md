@@ -12,17 +12,20 @@ npm install
 ## Running Tests
 
 ```bash
-# Run all unit tests (parallel, 4 workers)
+# Run all unit tests (parallel, 4 workers). Reports coverage; fails only on the
+# unit-only floor for src/modules/*/domain and */application.
 npm run test
 
 # Run tests with detailed coverage report (text + lcov + html)
 npm run test:coverage
 
-# Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)
-npm run test:coverage-check
-
-# Run in CI mode (coverage thresholds + text + lcov output)
-npm run test:ci
+# The coverage gate CI enforces: unit tests, then the MongoDB and Redis itests,
+# then the threshold checks on the coverage of both: all of src at .c8rc.json's
+# floor, the harness's own code at coverage:harness's. Store adapters
+# count through their itests, so do not add unit tests over fake collections
+# to raise the figure. Needs a MongoDB replica set and a Redis.
+MONGO_IT_URI='mongodb://localhost:27017/itest?replicaSet=rs0&directConnection=true' \
+  REDIS_IT_URL=redis://127.0.0.1:6379 npm run test:coverage-gate
 ```
 
 ## Running Specific Tests
@@ -71,11 +74,21 @@ tests/
 Files ending in `.itest.ts` talk to a real server instead of mocks, so `npm run test` skips them. The `Storage backends` workflow (`.github/workflows/storage-backends.yml`) runs them against MinIO (S3), Azurite (Azure Blob) and MongoDB, both as a replica set and as a single server. Each file's header lists the environment variables it needs. To run one locally:
 
 ```bash
-docker run -d --name mongo-rs -p 27017:27017 mongo:8.0.17 mongod --replSet rs0 --bind_ip_all
+docker run -d --name mongo-rs --ulimit nofile=64000:64000 -p 27017:27017 mongo:8.0.17 mongod --replSet rs0 --bind_ip_all
 docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
 MONGO_IT_URI='mongodb://localhost:27017/?replicaSet=rs0' REPLICA_SET_AVAILABLE=true \
   TS_NODE_PROJECT=tsconfig.test.json npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts
 ```
+
+The agent harness keeps its Mongo suite next to its unit tests: `tests/modules/agent-harness/execution-store.mongo.itest.ts` runs the shared `ExecutionStore` contract (also run in-memory by `execution-store.contract.test.ts`) plus outbox, sweeper and admission cases. It needs a replica set and no `REPLICA_SET_AVAILABLE`:
+
+```bash
+MONGO_IT_URI='mongodb://localhost:27017/?replicaSet=rs0&directConnection=true' \
+  TS_NODE_PROJECT=tsconfig.test.json npx mocha --no-config --require reflect-metadata \
+  --require ts-node/register --exit tests/modules/agent-harness/execution-store.mongo.itest.ts
+```
+
+CI runs it through `deployment/docker-compose/tests/agent_harness_replset_test.sh` (`Agent Harness Infrastructure` workflow).
 
 ## Coverage Reports
 

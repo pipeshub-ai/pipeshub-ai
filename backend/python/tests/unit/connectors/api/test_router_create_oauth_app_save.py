@@ -139,7 +139,8 @@ async def test_a_failed_update_of_a_named_app_fails_and_leaves_the_app_as_it_was
     store = Store(failing=(OAUTH_APPS_PATH,))
     store.values[OAUTH_APPS_PATH] = [copy.deepcopy(EXISTING_APP)]
 
-    answer, _ = await _create(store, _body(oauthConfigId="app-1"))
+    # An org app changes only from a team connector.
+    answer, _ = await _create(store, _body(oauthConfigId="app-1", scope="team"))
 
     assert isinstance(answer, HTTPException)
     assert (answer.status_code, answer.detail) == (500, APP_FAILED)

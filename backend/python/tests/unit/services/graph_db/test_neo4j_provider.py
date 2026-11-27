@@ -987,6 +987,8 @@ class TestHardDeleteAgent:
                 [{"deleted_count": 2}],  # step 5 tool delete
                 [{"rel_count": 2}],  # step 6 agent->toolset rel delete
                 [{"deleted_count": 2}],  # step 7 toolset delete
+                # step 7b, one statement: 1 agent->MCP server rel, 1 orphaned server, 1 tool only it held, its 2 server->tool rels
+                [{"agent_rels": 1, "deleted_count": 1, "tool_count": 1, "rel_count": 2}],
                 [{"deleted_count": 1}],  # step 8 delete agent
             ]
         )
@@ -996,11 +998,15 @@ class TestHardDeleteAgent:
         assert result == {
             "agents_deleted": 1,
             "toolsets_deleted": 2,
-            "tools_deleted": 2,
+            "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 7,  # 2 + 3 + 2
+            "edges_deleted": 10,  # 2 + 3 + 2 + 1 agent->server + 2 server->tool
+            "mcp_servers_deleted": 1,
         }
-        assert neo4j_provider.client.execute_query.await_count == 8
+        assert neo4j_provider.client.execute_query.await_count == 9
+        # the agent's server links and the cleanup they lead to are one statement: a failed cleanup keeps the links for a retry
+        step_7b = neo4j_provider.client.execute_query.await_args_list[7].args[0]
+        assert "DELETE x" in step_7b and "DETACH DELETE tool" in step_7b and "DETACH DELETE server" in step_7b
 
     @pytest.mark.asyncio
     async def test_skips_knowledge_and_toolset_branches_when_lists_empty(
@@ -1011,6 +1017,7 @@ class TestHardDeleteAgent:
                 [{"kid_list": [], "rel_count": 0}],  # step 1
                 [{"toolset_ids": []}],  # step 3
                 [{"rel_count": 0}],  # step 6
+                [],  # step 7b: no MCP server
                 [{"deleted_count": 1}],  # step 8
             ]
         )
@@ -1023,9 +1030,10 @@ class TestHardDeleteAgent:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
-        # Only steps 1, 3, 6, 8 should execute in this branch
-        assert neo4j_provider.client.execute_query.await_count == 4
+        # Only steps 1, 3, 6, 7b (the MCP server lookup), 8 should execute in this branch
+        assert neo4j_provider.client.execute_query.await_count == 5
 
     @pytest.mark.asyncio
     async def test_handles_none_results_without_crashing(self, neo4j_provider: Neo4jProvider):
@@ -1034,6 +1042,7 @@ class TestHardDeleteAgent:
                 None,  # step 1
                 None,  # step 3
                 None,  # step 6
+                None,  # step 7b
                 None,  # step 8
             ]
         )
@@ -1046,6 +1055,7 @@ class TestHardDeleteAgent:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
 
@@ -1065,6 +1075,9 @@ class TestHardDeleteAllAgents:
                 [{"tool_count": 2}],  # step 7
                 [{"rel_count": 1}],  # step 8
                 [{"toolset_count": 1}],  # step 9
+                # step 9b, one statement: 1 MCP tool with its link, 1 agent -> server link, 1 server with a link to a tool a
+                # server outside the set holds
+                [{"tool_count": 1, "server_count": 1, "rel_count": 3}],
                 [{"perm_count": 4}],  # step 10
                 [{"agent_count": 5}],  # step 11 count
                 [],  # step 11 detach delete
@@ -1076,9 +1089,10 @@ class TestHardDeleteAllAgents:
         assert result == {
             "agents_deleted": 5,
             "toolsets_deleted": 1,
-            "tools_deleted": 2,
+            "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 10,  # 3 + 2 + 1 + 4
+            "edges_deleted": 13,  # 3 + 2 + 1 + 1 + 1 + 1 + 4
+            "mcp_servers_deleted": 1,
         }
 
     @pytest.mark.asyncio
@@ -1089,6 +1103,7 @@ class TestHardDeleteAllAgents:
                 [{"rel_count": 0}],  # step 2
                 [{"toolset_ids": []}],  # step 4
                 [{"rel_count": 0}],  # step 8
+                [{"tool_count": 0, "server_count": 0, "rel_count": 0}],  # step 9b: no MCP server
                 [{"perm_count": 0}],  # step 10
                 [{"agent_count": 0}],  # step 11 count
                 [],  # detach delete
@@ -1103,6 +1118,7 @@ class TestHardDeleteAllAgents:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
     @pytest.mark.asyncio
@@ -1117,6 +1133,7 @@ class TestHardDeleteAllAgents:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
 
@@ -2566,13 +2583,15 @@ class TestUserAndOrganizationLookups:
                 [{"deleted_count": 1}],  # step 2 knowledge deleted only one -> warn
                 [{"toolset_ids": []}],  # step 3
                 [{"rel_count": 0}],  # step 6
+                [{"sid_list": [], "rel_count": 0}],  # step 7b: no MCP server
                 [{"deleted_count": 1}],  # step 8
             ]
         )
 
-        await neo4j_provider.hard_delete_agent("agent-1")
+        result = await neo4j_provider.hard_delete_agent("agent-1")
 
         assert neo4j_provider.logger.warning.called
+        assert result["agents_deleted"] == 1      # the cleanup went on to delete the agent
 
     @pytest.mark.asyncio
     async def test_returns_zero_counts_on_exception(self, neo4j_provider: Neo4jProvider):
@@ -2586,6 +2605,7 @@ class TestUserAndOrganizationLookups:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
     @pytest.mark.asyncio
@@ -6611,14 +6631,21 @@ class TestReplaceEdgesToStatementShape:
 
     def test_shape_rules(self, neo4j_provider: Neo4jProvider) -> None:
         statement, _ = self._build(neo4j_provider, [self._edge("u1")])
-        # Optional scan and lock, each folded back to one row; no top-level UNWIND; no collect over old edges.
-        assert statement.index("OPTIONAL MATCH (target:Group") < statement.index("OPTIONAL MATCH (source)")
+        # The target and every member, old and new, are locked in one order before the old edges are
+        # scanned: a target locked first could wait on a member another replace holds while it waits
+        # for this target.
+        lock = statement.index("ORDER BY elementId(member)")
+        assert statement.index("OPTIONAL MATCH (member:Group {id: $to_id})") < lock
+        assert lock < statement.index("OPTIONAL MATCH (source)")
         assert "matchLock" in statement
-        assert statement.count("WITH count(*) AS _") == 2
+        # Each step folds back to one row; no top-level UNWIND; no collect over old edges.
+        assert statement.count("WITH count(*) AS locked") == 1
+        assert statement.count("WITH count(*) AS _") == 1
         assert "collect(" not in statement.lower()
         first_unwind = statement.index("UNWIND")
-        assert statement.rindex("CALL {", 0, first_unwind) < first_unwind  # inside a unit subquery
-        assert "RETURN" not in statement
+        assert statement.rindex("CALL {", 0, first_unwind) < first_unwind  # inside a subquery
+        # No RETURN but the lock subquery's own: the caller appends the statement's.
+        assert statement.count("RETURN") == statement.count("RETURN member")
         assert "IN $keep" in statement
 
     @pytest.mark.asyncio

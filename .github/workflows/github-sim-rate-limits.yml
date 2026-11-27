@@ -1,0 +1,179 @@
+name: github-sim-rate-limits
+
+# The real GitHub connector, entities processor and graph store against the GitHub simulator
+# (pipeshub-ai/connectors-simulator, harness/github/run.py), compared with the simulator's oracle for every user and
+# record (extra 0, missing 0).
+#
+#   rate-limits  every pull request that touches the GitHub connectors or the HTTP layer they share: GitHub's primary
+#                and secondary rate limits (403 and 429, with and without retry-after) mid-sync, repeatedly, during an
+#                incremental sync, spent by the agent toolset on the same token, a restart while waiting, and a reset that
+#                looks passed. Each ends with a completed sync. Waits run on the simulator's clock, so an hour's reset
+#                costs no real time; the job takes a few minutes.
+#   nightly      every GitHub scenario on Neo4j and ArangoDB, with the rate-limit worlds five times larger.
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/python/app/connectors/sources/github/**'
+      - 'backend/python/app/connectors/sources/github_teams/**'
+      - 'backend/python/app/sources/client/github/**'
+      - 'backend/python/app/sources/external/github/**'
+      - 'backend/python/app/connectors/core/sync/run_context.py'
+      - 'backend/python/app/connectors/core/sync/sync_runner.py'
+      - '.github/workflows/github-sim-rate-limits.yml'
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-sim-rate-limits-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The connectors-simulator commit with the GitHub simulator's rate-limit model and these scenarios.
+  CONNSIM_GITHUB_REF: 824f9be2439f5cfda410ebd5f131ca72de81d344
+  NEO4J_IT_URI: bolt://localhost:7689
+  NEO4J_IT_PASSWORD: ghsimpass
+  ARANGO_IT_URL: http://localhost:8531
+  ARANGO_IT_PASSWORD: ghsimpass
+
+jobs:
+  rate-limits:
+    # Secrets only for code from this repository: a fork's pull request never reaches the simulator token.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Its required reviewers are the approval gate before a pull request's code runs with the simulator token, as
+    # in integration-tests.yml; the schedule uses integration-test-daily, which has none.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+    services:
+      neo4j:
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+        ports:
+          - 7689:7687
+        env:
+          NEO4J_AUTH: neo4j/ghsimpass
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # The simulator repository is private: without CONNSIM_REPO_TOKEN this step fails rather than skipping the scenarios.
+      - name: Check out the connector simulator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_GITHUB_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          requirements/install.sh dev --project . --editable
+          cd "$GITHUB_WORKSPACE/connectors-simulator"
+          uv sync --locked
+
+      - name: Run the rate-limit scenarios
+        run: .github/scripts/github_sim_harness.sh neo4j rate-limits resilience
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: github-sim-rate-limits
+          path: ${{ runner.temp }}/github-sim
+          retention-days: 14
+
+  nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    # Its required reviewers are the approval gate before a pull request's code runs with the simulator token, as
+    # in integration-tests.yml; the schedule uses integration-test-daily, which has none.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+    services:
+      neo4j:
+        image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+        ports:
+          - 7689:7687
+        env:
+          NEO4J_AUTH: neo4j/ghsimpass
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+      arango:
+        image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+        ports:
+          - 8531:8529
+        env:
+          ARANGO_ROOT_PASSWORD: ghsimpass
+          ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY: 768M
+        options: >-
+          --health-cmd "arangosh --server.endpoint tcp://localhost:8529 --server.password ghsimpass --javascript.execute-string 'db._version()' || exit 1"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    env:
+      GH_RATE_SCALE: '5'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the connector simulator
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_GITHUB_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          requirements/install.sh dev --project . --editable
+          cd "$GITHUB_WORKSPACE/connectors-simulator"
+          uv sync --locked
+
+      # Every scenario, not only the rate limits: the nightly run is the regression net for the whole connector.
+      - name: Run every GitHub scenario
+        run: .github/scripts/github_sim_harness.sh "neo4j arango"
+
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: github-sim-nightly
+          path: ${{ runner.temp }}/github-sim
+          retention-days: 14

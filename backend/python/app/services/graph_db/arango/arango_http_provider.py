@@ -115,6 +115,7 @@ from app.schema.arango.documents import (
     agent_skill_versions_schema,
     agent_skills_schema,
     agent_template_schema,
+    agent_versions_schema,
     app_role_schema,
     app_schema,
     artifact_record_schema,
@@ -218,6 +219,11 @@ from app.services.graph_db.common.team_grant_role import (
     aql_team_grant_role,
 )
 from app.services.graph_db.common.utils import (
+    AGENT_ENGINE_FIELDS,
+    AGENT_ENVIRONMENT_FIELD,
+    AGENT_GATES_FIELD,
+    AGENT_OWNER_TEAM_FIELD,
+    AGENT_ROLE_MODELS_FIELD,
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
@@ -236,9 +242,11 @@ from app.services.graph_db.common.utils import (
     ancestor_chain_rows,
     build_connector_stats_response,
     collapse_repeated_records,
+    decode_agent_json_fields,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
+    encode_agent_json_fields,
     is_full_address,
     jira_issue_browse_url_regex,
     person_query_ref,
@@ -283,6 +291,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
+    MAX_INDEXED_COPIES_PER_ITEM,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     UNSUPPORTED_PAGE_FIELDS,
@@ -379,6 +388,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.BLOCKS.value, block_schema),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
+    (CollectionNames.AGENT_VERSIONS.value, agent_versions_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
     (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
@@ -401,6 +411,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SQL_COLUMNS.value, sql_column_record_schema),
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
+    (CollectionNames.KNOWLEDGE_PUBLICATIONS.value, None),
     (CollectionNames.STAGE_STATES.value, stage_state_schema),
 ]
 
@@ -470,6 +481,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.MCP_SERVER_HAS_TOOL.value, mcp_server_has_tool_schema),
     (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
     (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
+    (CollectionNames.PUBLISHED_VIA.value, basic_edge_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -1965,6 +1977,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["connectorId"],
         )
 
+        # COMPOSITE: orgId + agentKey — AgentVersionStore lists an agent's versions.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_VERSIONS.value,
+            ["orgId", "agentKey"],
+        )
+
         # COMPOSITE: skillKey + version — GraphSkillStore.get_version lookup.
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_VERSIONS.value,
@@ -1975,6 +1993,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_CANDIDATES.value,
             ["orgId"],
+        )
+
+        # COMPOSITE: orgId + containerId — every retrieval lists the org's publications (P2.13).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.KNOWLEDGE_PUBLICATIONS.value,
+            ["orgId", "containerId"],
         )
 
         # ==================== PEOPLE INDEXES ====================
@@ -6275,6 +6299,40 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
             ) from e
+
+    async def get_records_by_external_ids(
+        self,
+        org_id: str,
+        external_record_ids: list[str],
+        connector_names: list[str],
+    ) -> list[dict[str, str]]:
+        external_ids = list(dict.fromkeys(external_record_ids))
+        if not external_ids or not connector_names:
+            return []
+        # externalRecordId leads the persistent (externalRecordId, connectorId) index.
+        query = f"""
+        FOR doc IN {CollectionNames.RECORDS.value}
+            FILTER doc.externalRecordId IN @external_ids
+            FILTER doc.orgId == @org_id
+            FILTER doc.connectorName IN @connector_names
+            FILTER doc.isDeleted != true
+            LIMIT @limit
+            RETURN {{ id: doc._key, externalRecordId: doc.externalRecordId, connectorName: doc.connectorName }}
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "external_ids": external_ids,
+                    "org_id": org_id,
+                    "connector_names": list(dict.fromkeys(connector_names)),
+                    "limit": len(external_ids) * MAX_INDEXED_COPIES_PER_ITEM,
+                },
+            )
+        except Exception as e:
+            # re-raised without a log line or the driver's text (main #6061): the caller logs it once
+            raise GraphQueryError("Could not look up records by external id") from e
+        return [dict(row) for row in results or []]
 
     async def find_slack_burst_record_by_ts(
         self,
@@ -11286,6 +11344,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_sync_point")
             return None
+
+    async def list_sync_points(
+        self,
+        org_id: str,
+        collection: str,
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """One org's sync points in syncPointKey order; see the interface."""
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.orgId == @org AND doc.syncPointKey != null AND (@after == null OR doc.syncPointKey > @after)
+            SORT doc.syncPointKey
+            LIMIT @limit
+            RETURN doc
+        """
+        bind_vars = {"@collection": collection, "org": org_id, "after": after_key, "limit": limit}
+        return list(await self.http_client.execute_aql(query, bind_vars) or [])
 
     async def upsert_sync_point(
         self,
@@ -22139,16 +22216,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER parent_doc != null
                             // Ensure parent is a record, not recordGroup
                             FILTER PARSE_IDENTIFIER(edge._from).collection == "records"
-                            RETURN PARSE_IDENTIFIER(edge._from).key
+                            SORT parent_doc._key
+                            RETURN parent_doc._key
                     )
-                    // Step 2: If no record parent, check belongsTo edge to recordGroup
+                    // Step 2: If no record parent, check belongsTo edge to recordGroup: its own group first,
+                    // then one listing it in the hierarchy, then the lowest key (as get_knowledge_hub_parent_node)
                     LET rg_parent = record_parent != null ? null : FIRST(
                         FOR edge IN belongsTo
                             FILTER edge._from == record._id
                             LET parent_rg = DOCUMENT(edge._to)
                             FILTER parent_rg != null
                             FILTER PARSE_IDENTIFIER(edge._to).collection == "recordGroups"
-                            RETURN PARSE_IDENTIFIER(edge._to).key
+                            LET listed = LENGTH(
+                                FOR h IN nodeRelations
+                                    FILTER h._from == edge._to AND h._to == record._id
+                                        AND h.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                            SORT parent_rg._key == record.recordGroupId DESC, listed DESC, parent_rg._key
+                            RETURN parent_rg._key
                     )
                     // Step 3: KB records/folders have a belongsTo edge straight to the
                     // App (not a recordGroup) — check that too, or the App/KB root
@@ -24327,7 +24414,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 LET parent_record = DOCUMENT(edge._from)
                                 // Ensure the parent is actually a record (folder), not a record group
                                 FILTER parent_record != null AND IS_SAME_COLLECTION("records", parent_record)
-                                RETURN PARSE_IDENTIFIER(edge._from).key
+                                SORT parent_record._key
+                                RETURN parent_record._key
                         )
                         LET parent_from_belongs = parent_from_rel == null ? FIRST(
                             FOR edge IN belongsTo
@@ -24336,7 +24424,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER parent_doc != null
                                 // Check if parent is a recordGroup OR a record (for projects/folders)
                                 FILTER IS_SAME_COLLECTION("recordGroups", parent_doc) OR IS_SAME_COLLECTION("records", parent_doc)
-                                RETURN PARSE_IDENTIFIER(edge._to).key
+                                // A record shared into other groups belongs to each of them: its own group comes
+                                // first, then one listing it in the hierarchy, then the lowest key.
+                                LET listed = LENGTH(
+                                    FOR h IN nodeRelations
+                                        FILTER h._from == edge._to AND h._to == record._id
+                                            AND h.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                                        LIMIT 1
+                                        RETURN 1
+                                ) > 0
+                                SORT parent_doc._key == record.recordGroupId DESC, listed DESC, parent_doc._key
+                                RETURN parent_doc._key
                         ) : null
                         LET parent_from_inherit = (parent_from_rel == null AND parent_from_belongs == null) ? FIRST(
                             FOR edge IN inheritPermissions
@@ -24344,7 +24442,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 LET parent_doc = DOCUMENT(edge._to)
                                 // Ensure it's pointing to a record group, not another record
                                 FILTER parent_doc != null AND IS_SAME_COLLECTION("recordGroups", parent_doc)
-                                RETURN PARSE_IDENTIFIER(edge._to).key
+                                SORT parent_doc._key
+                                RETURN parent_doc._key
                         ) : null
                         RETURN parent_from_rel || parent_from_belongs || parent_from_inherit
                     ))
@@ -26256,6 +26355,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if marked < batch_size:
                 return total
 
+    def _user_anchor_filter(self, var: str, bind_vars: dict[str, Any], org_id: str) -> str:
+        """The filter a virtual-record-id query finds the asking user by (``@userId``). Extension point: a
+        subclass that keeps one user node per org narrows it to ``org_id``, binding what it adds."""
+        return f"FILTER {var}.userId == @userId"
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -26385,7 +26489,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
-                FILTER user.userId == @userId
+                {self._user_anchor_filter("user", bind_vars, org_id)}
                 RETURN user
             )
             LET u = userDoc
@@ -26610,7 +26714,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
-                FILTER user.userId == @userId
+                {self._user_anchor_filter("user", bind_vars, org_id)}
                 RETURN user
             )
 
@@ -27604,6 +27708,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_team_with_users")
             return None
 
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict]:
+        query = """
+        FOR permission IN @@permission_collection
+        FILTER permission._from == @userId AND STARTS_WITH(permission._to, @teams_collection_prefix)
+        LET team = DOCUMENT(permission._to)
+        FILTER team != null AND team.orgId == @orgId
+        SORT team._key
+        RETURN {"teamId": team._key, "role": permission.role}
+        """
+        return list(await self.execute_query(query, bind_vars={
+            "userId": f"{CollectionNames.USERS.value}/{user_key}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+            "orgId": org_id,
+        }) or [])
+
     async def get_user_teams(
         self,
         user_key: str,
@@ -28541,7 +28661,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     else:
                         knowledge["filtersParsed"] = filters_str
 
-            return agent
+            return decode_agent_json_fields(agent)
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_agent")
@@ -29010,6 +29130,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for agent in payload.get("agents", []):
                 if not isinstance(agent, dict):
                     continue
+                decode_agent_json_fields(agent)
                 for knowledge in agent.get("knowledge", []) or []:
                     filters_str = knowledge.get("filters")
                     if filters_str is None:
@@ -29058,10 +29179,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools", *AGENT_ENGINE_FIELDS, AGENT_OWNER_TEAM_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
+            encode_agent_json_fields(update_data)
 
             # Handle models specially - convert model objects to model keys and deduplicate
             if "models" in agent_updates:
@@ -29170,6 +29292,100 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_agent")
             return False
+
+    async def _in_mcp_transaction(self, work: Callable[[str], Awaitable[_T]], transaction: str | None) -> _T:
+        """Run an MCP server cleanup all-or-nothing. In the caller's transaction it is the caller's; otherwise in a stream
+        transaction of its own that holds the agent-to-server links exclusively, so concurrent agent deletes clean up one at a
+        time and each sees the other's removals, and a failure leaves the links for a retry to find. Run again on a
+        write-write conflict or lock timeout with another writer."""
+        if transaction is not None:
+            return await work(transaction)
+        write = [CollectionNames.AGENT_HAS_MCP_SERVER.value, CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                 CollectionNames.AGENT_TOOLS.value, CollectionNames.AGENT_MCP_SERVERS.value]
+        attempt = 0
+        while True:
+            txn: str | None = None
+            committed = False
+            try:
+                # Taking the exclusive links is inside the retry: another delete holding them answers a lock timeout.
+                txn = await self.http_client.begin_transaction(read=write, write=write, exclusive=[CollectionNames.AGENT_HAS_MCP_SERVER.value])
+                result = await work(txn)
+                await self.http_client.commit_transaction(txn)
+                committed = True
+                return result
+            except Exception as exc:
+                attempt += 1
+                if attempt >= _WRITE_CONFLICT_ATTEMPTS or not (_is_write_conflict(exc) or _is_lock_timeout(exc)):
+                    raise
+            finally:
+                # On every way out but a commit, a cancellation included: the links stay held exclusively until it ends.
+                if txn is not None and not committed:
+                    await asyncio.shield(self._abort_quietly(txn))
+            await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+
+    async def _delete_agent_mcp_servers(self, agent_doc_id: str, transaction: str) -> tuple[int, int, int]:
+        """The agent's server links, then each of those servers no agent is attached to any more: its tool links, the tools no
+        other server holds, and itself. Returns (links removed, tools removed, servers removed)."""
+        edges = tools = servers = 0
+        attached_server_ids = await self.execute_query(
+            f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._from == @agent_doc_id
+                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                RETURN OLD._to
+            """,
+            bind_vars={"agent_doc_id": agent_doc_id}, transaction=transaction) or []
+        if not attached_server_ids:
+            return edges, tools, servers
+        edges += len(attached_server_ids)
+        mcp_server_ids = await self.execute_query(
+            f"""
+            FOR msid IN UNIQUE(@server_ids)
+                FILTER LENGTH(
+                    FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                        FILTER edge._to == msid
+                        LIMIT 1 RETURN 1
+                ) == 0
+                RETURN msid
+            """,
+            bind_vars={"server_ids": attached_server_ids}, transaction=transaction) or []
+        if not mcp_server_ids:
+            return edges, tools, servers
+        mcp_tool_ids = await self.execute_query(
+            f"""
+            FOR msid IN @mcp_server_ids
+                FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                    FILTER edge._from == msid
+                    REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                    RETURN OLD._to
+            """,
+            bind_vars={"mcp_server_ids": mcp_server_ids}, transaction=transaction) or []
+        if mcp_tool_ids:
+            edges += len(mcp_tool_ids)
+            deleted_mcp_tools = await self.execute_query(
+                f"""
+                FOR tid IN UNIQUE(@mcp_tool_ids)
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                            FILTER edge._to == tid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                    RETURN OLD
+                """,
+                bind_vars={"mcp_tool_ids": mcp_tool_ids}, transaction=transaction) or []
+            tools += len(deleted_mcp_tools)
+        deleted_mcp_servers = await self.execute_query(
+            f"""
+            FOR msid IN @mcp_server_ids
+                REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                RETURN OLD
+            """,
+            bind_vars={"mcp_server_ids": mcp_server_ids}, transaction=transaction) or []
+        servers += len(deleted_mcp_servers)
+        return edges, tools, servers
 
     async def hard_delete_agent(self, agent_id: str, transaction: str | None = None) -> dict[str, int]:
         """
@@ -29354,101 +29570,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
                     )
 
-            # Steps 7b-7f: MCP servers — mirrors steps 3-7 above exactly (tool nodes live in
-            # the same AGENT_TOOLS collection; orphan checks below only see MCP_SERVER_HAS_TOOL
-            # since a given tool node is created uniquely per attachment, same as toolset tools).
-            mcp_servers_deleted = 0
-
-            find_mcp_server_ids_query = f"""
-            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                FILTER edge._from == @agent_doc_id
-                RETURN edge._to
-            """
-
-            mcp_server_ids = await self.execute_query(
-                find_mcp_server_ids_query,
-                bind_vars={"agent_doc_id": agent_doc_id},
-                transaction=transaction
-            )
-
-            if mcp_server_ids:
-                delete_mcp_tool_edges_query = f"""
-                FOR msid IN @mcp_server_ids
-                    FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                        FILTER edge._from == msid
-                        REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                        RETURN OLD._to
-                """
-
-                mcp_tool_ids = await self.execute_query(
-                    delete_mcp_tool_edges_query,
-                    bind_vars={"mcp_server_ids": mcp_server_ids},
-                    transaction=transaction
-                )
-
-                if mcp_tool_ids:
-                    edges_deleted += len(mcp_tool_ids)
-
-                    delete_orphaned_mcp_tools_query = f"""
-                    FOR tid IN @mcp_tool_ids
-                        LET remaining = FIRST(
-                            FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                                FILTER edge._to == tid
-                                LIMIT 1
-                                RETURN 1
-                        )
-                        FILTER remaining == null
-                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
-                        RETURN OLD
-                    """
-
-                    deleted_mcp_tools = await self.execute_query(
-                        delete_orphaned_mcp_tools_query,
-                        bind_vars={"mcp_tool_ids": mcp_tool_ids},
-                        transaction=transaction
-                    )
-
-                    if deleted_mcp_tools:
-                        tools_deleted += len(deleted_mcp_tools)
-
-            delete_mcp_server_edges_query = f"""
-            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                FILTER edge._from == @agent_doc_id
-                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                RETURN OLD
-            """
-
-            deleted_mcp_server_edges = await self.execute_query(
-                delete_mcp_server_edges_query,
-                bind_vars={"agent_doc_id": agent_doc_id},
-                transaction=transaction
-            )
-
-            if deleted_mcp_server_edges:
-                edges_deleted += len(deleted_mcp_server_edges)
-
-            if mcp_server_ids:
-                delete_orphaned_mcp_servers_query = f"""
-                FOR msid IN @mcp_server_ids
-                    LET remaining = FIRST(
-                        FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                            FILTER edge._to == msid
-                            LIMIT 1
-                            RETURN 1
-                    )
-                    FILTER remaining == null
-                    REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value}
-                    RETURN OLD
-                """
-
-                deleted_mcp_servers = await self.execute_query(
-                    delete_orphaned_mcp_servers_query,
-                    bind_vars={"mcp_server_ids": mcp_server_ids},
-                    transaction=transaction
-                )
-
-                if deleted_mcp_servers:
-                    mcp_servers_deleted = len(deleted_mcp_servers)
+            # Steps 7b-7f: MCP servers (see _delete_agent_mcp_servers).
+            mcp_edges, mcp_tools, mcp_servers_deleted = await self._in_mcp_transaction(
+                lambda txn: self._delete_agent_mcp_servers(agent_doc_id, txn), transaction)
+            edges_deleted += mcp_edges
+            tools_deleted += mcp_tools
 
             # Step 8: Delete all permission edges pointing to this agent
             delete_permissions_query = f"""
@@ -29707,10 +29833,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                     mcp_tool_ids = list({edge['_to'] for edge in deleted_mcp_tool_edges})
                     if mcp_tool_ids:
+                        # A tool a server no agent uses still holds (its edge was not removed above) stays with that server.
                         delete_mcp_tools_query = f"""
                         FOR tool_id IN @mcp_tool_ids
                             LET tool = DOCUMENT(tool_id)
                             FILTER tool != null
+                            FILTER LENGTH(
+                                FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                                    FILTER edge._to == tool_id
+                                    LIMIT 1 RETURN 1
+                            ) == 0
                             REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
                             RETURN OLD
                         """

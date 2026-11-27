@@ -66,7 +66,12 @@ describe('OAuthProviderController failures', function () {
       introspectToken: sinon.stub(),
       audienceFor: sinon.stub().returns(undefined),
     },
-    device: { createAuthorization: sinon.stub(), poll: sinon.stub() },
+    // The refresh grant caps the app's scopes through allowedScopesOf before it reaches refreshTokens.
+    device: {
+      createAuthorization: sinon.stub(),
+      poll: sinon.stub(),
+      allowedScopesOf: sinon.stub().callsFake((a: { allowedScopes?: string[] }) => a.allowedScopes),
+    },
     dcr: { resolveAuthorizeClient: sinon.stub() },
   })
   let records: LogRecord[]

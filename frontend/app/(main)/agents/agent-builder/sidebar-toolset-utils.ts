@@ -145,3 +145,19 @@ export function getToolsetSidebarStatus(ts: BuilderSidebarToolset): ToolsetSideb
   if (ts.isConfigured && !ts.isAuthenticated) return 'needs_authentication';
   return undefined;
 }
+
+/**
+ * Whether a toolset may not join the canvas because its type is already there.
+ * With instance-scoped tool ids (P2.2, `instanceScoped`) another instance of
+ * the type is its own toolset; only a toolset without an instance keeps the
+ * one-per-type rule (the server keys those by type).
+ */
+export function isToolsetTypeConflict(
+  activeTypeKeys: Set<string>,
+  toolsetName: string,
+  instanceIdRaw: string | undefined,
+  instanceScoped: boolean
+): boolean {
+  if (!activeTypeKeys.has(normalizeToolsetTypeKey(toolsetName))) return false;
+  return !(instanceScoped && Boolean(instanceIdRaw?.trim()));
+}

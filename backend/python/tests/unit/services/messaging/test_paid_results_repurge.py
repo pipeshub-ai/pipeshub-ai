@@ -320,6 +320,7 @@ def _org_handler(producer: Any) -> Any:  # noqa: ANN401 - an EntityEventService 
     handler.logger = logging.getLogger("org-purge-test")
     handler.app_container = MagicMock()
     handler.app_container.messaging_producer = producer
+    handler._publications = AsyncMock()  # the org's knowledge publications, erased first (their own tests hold that)
     return handler
 
 

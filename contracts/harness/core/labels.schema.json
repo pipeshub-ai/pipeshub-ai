@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/labels.schema.json",
+  "title": "Labels",
+  "description": "Item labels (REPORT 6.5.1). The context label is the monotone join of every item label seen in a run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "integrity"
+  ],
+  "properties": {
+    "integrity": {
+      "$ref": "#/$defs/Integrity"
+    },
+    "confidentiality": {
+      "$ref": "#/$defs/Confidentiality"
+    }
+  },
+  "$defs": {
+    "Integrity": {
+      "description": "trusted = user prompt/admin config/reviewed workflow code; internal = org member; external = outside sender, web, MCP, webhook.",
+      "enum": [
+        "trusted",
+        "internal",
+        "external"
+      ]
+    },
+    "Confidentiality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "readers"
+      ],
+      "properties": {
+        "readers": {
+          "description": "Who may read: a principal set, the whole org, or public.",
+          "anyOf": [
+            {
+              "enum": [
+                "org",
+                "public"
+              ]
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "common.schema.json#/$defs/PrincipalRef"
+              }
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/Id"
+          }
+        }
+      },
+      "x-extensible": true
+    }
+  },
+  "examples": [
+    {
+      "integrity": "internal",
+      "confidentiality": {
+        "readers": "org",
+        "sources": [
+          "rec_1",
+          "rec_2"
+        ]
+      }
+    },
+    {
+      "integrity": "external"
+    },
+    {
+      "integrity": "trusted",
+      "confidentiality": {
+        "readers": [
+          "p_alice",
+          "p_bob"
+        ]
+      }
+    }
+  ]
+}

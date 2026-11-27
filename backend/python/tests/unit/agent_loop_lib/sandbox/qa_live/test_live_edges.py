@@ -476,31 +476,59 @@ class TestOvercommit:
 # -- the event loop -----------------------------------------------------------
 
 
-async def _max_lag(work: Callable[[], Any], seconds: float) -> float:
-    """The longest the loop went without running a 1 ms ticker while *work*
-    ran on it."""
-    lags: list[float] = []
-    stop = asyncio.Event()
+def loop_blocking_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every call made on the event loop's thread that may block it: a record-lock try with a budget, a slot count
+    with a budget, or a sleep. The loop's own lag would also hold every host stall a busy gate adds (WALLCLOCK-1);
+    these are the calls a regression would put on the loop, recorded wherever they are made."""
+    import threading
 
-    async def ticker() -> None:
-        last = time.perf_counter()
-        while not stop.is_set():
-            await asyncio.sleep(0.001)
-            now = time.perf_counter()
-            lags.append(now - last)
-            last = now
+    from app.agent_loop_lib.sandbox.live_record import LiveLedger
+    from app.services.resource_governor.shared_slots import (
+        LocalTaggedSlots,
+        SharedSlots,
+    )
 
-    task = asyncio.create_task(ticker())
-    await asyncio.sleep(0.01)
+    loop_thread = threading.get_ident()
+    found: list[str] = []
+    transaction = LiveLedger.transaction
+
+    def tried(self: LiveLedger, lock_budget: float = 0.020) -> object:
+        if threading.get_ident() == loop_thread and lock_budget > 0:
+            found.append(f"LiveLedger.transaction({lock_budget})")
+        return transaction(self, lock_budget)
+
+    monkeypatch.setattr(LiveLedger, "transaction", tried)
+    for cls in (SharedSlots, LocalTaggedSlots):
+        for name in ("held_count", "held_by_tag"):
+            real = getattr(cls, name, None)
+            if real is None:
+                continue
+
+            def counted(self: object, budget: float | None = None, *, _real: Callable[..., object] = real, _name: str = f"{cls.__name__}.{name}") -> object:
+                if threading.get_ident() == loop_thread and (budget is None or budget > 0):
+                    found.append(f"{_name}({budget})")
+                return _real(self) if budget is None else _real(self, budget)
+
+            monkeypatch.setattr(cls, name, counted)
+    sleep = time.sleep
+
+    def slept(seconds: float) -> None:
+        if threading.get_ident() == loop_thread and seconds > 0:
+            found.append(f"time.sleep({seconds})")
+        sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", slept)
+    return found
+
+
+async def _exercise(work: Callable[[], Any], seconds: float) -> None:
+    """Run *work* on the loop, again and again, for about *seconds*."""
     deadline = time.perf_counter() + seconds
     while time.perf_counter() < deadline:
         result = work()
         if asyncio.iscoroutine(result):
             await result
         await asyncio.sleep(0)
-    stop.set()
-    await task
-    return max(lags)
 
 
 class TestEventLoop:
@@ -518,7 +546,9 @@ class TestEventLoop:
         for fd in fds:
             os.close(fd)
 
-    async def test_view_wait_and_admit_never_block_on_a_held_lock(self, tmp_path: Path, held_lock: Callable[[], None]) -> None:
+    async def test_view_wait_and_admit_never_block_on_a_held_lock(
+        self, tmp_path: Path, held_lock: Callable[[], None], monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         clock = FakeClock()
         live = _live(tmp_path, clock, FakeReader(sample(4.0)))
         live.sample_once()
@@ -530,14 +560,19 @@ class TestEventLoop:
             live.waiting(HoldReason.SLOTS_FULL, 2.0)
             live.waiting(HoldReason.HOST_MEMORY_FLOOR, 2.0)
 
-        assert await _max_lag(on_loop, 0.3) < 0.02
+        blocking = loop_blocking_calls(monkeypatch)
+        await _exercise(on_loop, 0.3)
         # Admission waits up to its 50 ms lock budget, in a thread, then admits.
-        started = time.perf_counter()
-        lag = await _max_lag(lambda: live.admit_and_charge(held=0), 0.3)
-        assert lag < 0.03
-        assert time.perf_counter() - started < 2.0
+        admitted: list[object] = []
 
-    async def test_a_slow_reading_never_blocks_the_loop(self, tmp_path: Path) -> None:
+        async def admit() -> None:
+            admitted.append(await live.admit_and_charge(held=0))
+
+        await _exercise(admit, 0.3)
+        assert admitted and set(admitted) == {None}
+        assert blocking == []
+
+    async def test_a_slow_reading_never_blocks_the_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         class Slow(FakeReader):
             def memory(self) -> tuple[int | None, int | None]:
                 time.sleep(0.2)
@@ -555,9 +590,11 @@ class TestEventLoop:
             clock.now += 10
             await asyncio.gather(live.admit_and_charge(held=0), asyncio.to_thread(live.sample_once))
 
-        assert await _max_lag(admit_and_sample, 0.5) < 0.03
+        blocking = loop_blocking_calls(monkeypatch)
+        await _exercise(admit_and_sample, 0.5)
+        assert blocking == []
 
-    async def test_the_sampler_task_keeps_the_loop_free(self, tmp_path: Path) -> None:
+    async def test_the_sampler_task_keeps_the_loop_free(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         class Slow(FakeReader):
             def read(self) -> HostSample:
                 time.sleep(0.1)
@@ -566,8 +603,10 @@ class TestEventLoop:
         live = _live(tmp_path, FakeClock(), Slow(sample(4.0)), settings=LiveSettings(interval_s=5.0))
         # One pass of the sampler: ensure_sized, resolve, sample, view, sleep.
         live._settings = replace(live._settings, interval_s=0.0)  # type: ignore[call-arg]
+        blocking = loop_blocking_calls(monkeypatch)
         live.start()
         try:
-            assert await _max_lag(lambda: None, 0.4) < 0.03
+            await _exercise(lambda: None, 0.4)
+            assert blocking == []
         finally:
             await live.stop()

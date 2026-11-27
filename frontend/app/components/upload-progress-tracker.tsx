@@ -91,7 +91,7 @@ function UploadItemRow({ item }: UploadItemRowProps) {
             }}
             aria-hidden
           >
-            <MaterialIcon name="error" size={16} color="var(--red-9)" />
+            <MaterialIcon name="error" size={16} color="var(--red-11)" />
           </Box>
         );
       default:
@@ -153,7 +153,7 @@ function UploadItemRow({ item }: UploadItemRowProps) {
           }}
         >
           {item.type === 'folder' ? (
-            <MaterialIcon name="folder" size={16} color="var(--accent-9)" />
+            <MaterialIcon name="folder" size={16} color="var(--accent-11)" />
           ) : (
             <FileIcon filename={item.name} size={16} />
           )}
@@ -187,12 +187,12 @@ function UploadItemRow({ item }: UploadItemRowProps) {
                   {reason}
                 </Text>
               ))}
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {formatSize(item.size)}
               </Text>
             </Flex>
           ) : (
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {formatSize(item.size)}
             </Text>
           )}
@@ -275,7 +275,7 @@ function SessionCard({ group, filter }: { group: SessionGroup; filter: TrackerTa
           >
             {label}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {completed}/{total}
             {failed > 0 ? ` · ${t('uploadProgress.tab_failed', { defaultValue: 'Failed' })}: ${failed}` : ''}
             {inFlight > 0 ? ` · ${inFlight} ${t('uploadProgress.status.uploading', { defaultValue: 'uploading' })}` : ''}
@@ -419,7 +419,7 @@ export function UploadProgressTracker() {
                     total: totalCount,
                   })}
             </Text>
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {failedCount > 0
                 ? t('uploadProgress.uploadedAndFailedSize', {
                     uploaded: formatSize(completedBytes),
@@ -430,6 +430,7 @@ export function UploadProgressTracker() {
           </Flex>
           <Flex align="center" gap="4">
             <IconButton
+              aria-label={isCollapsed ? t('common.expand') : t('common.collapse')}
               variant="ghost"
               color="gray"
               size="1"
@@ -438,11 +439,11 @@ export function UploadProgressTracker() {
               <MaterialIcon
                 name={isCollapsed ? 'expand_less' : 'expand_more'}
                 size={16}
-                color="var(--slate-10)"
+                color="var(--slate-11)"
               />
             </IconButton>
-            <IconButton variant="ghost" color="gray" size="1" onClick={clearAll}>
-              <MaterialIcon name="close" size={16} color="var(--slate-10)" />
+            <IconButton aria-label={t('common.clearAll')} variant="ghost" color="gray" size="1" onClick={clearAll}>
+              <MaterialIcon name="close" size={16} color="var(--slate-11)" />
             </IconButton>
           </Flex>
         </Flex>
@@ -509,7 +510,7 @@ export function UploadProgressTracker() {
                 <Text
                   size="1"
                   style={{
-                    color: 'var(--slate-9)',
+                    color: 'var(--slate-11)',
                     textAlign: 'center',
                     padding: 'var(--space-4) 0',
                   }}

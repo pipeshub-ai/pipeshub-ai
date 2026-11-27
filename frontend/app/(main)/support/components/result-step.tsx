@@ -88,7 +88,7 @@ export function SavedView({ result }: { result: SupportRequestResult }) {
         }}
       >
         <Box>
-          <Text as="div" size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text as="div" size="1" style={{ color: 'var(--slate-11)' }}>
             {t('support.result.referenceLabel')}
           </Text>
           <Text as="div" size="4" weight="bold" style={{ fontFamily: 'var(--code-font-family)', letterSpacing: 1 }}>
@@ -103,7 +103,7 @@ export function SavedView({ result }: { result: SupportRequestResult }) {
           <MaterialIcon name={copied ? 'check' : 'content_copy'} size={16} />
         </IconButton>
       </Flex>
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {t('support.result.quote')}
       </Text>
     </Flex>
@@ -142,13 +142,13 @@ export function EmailAppView({
     <Flex direction="column" gap="3" px="5">
       <Box style={{ borderRadius: 'var(--radius-3)', border: '1px solid var(--olive-a4)', background: 'var(--olive-2)', overflow: 'hidden' }}>
         <Grid columns="72px 1fr" gapX="3" gapY="1" p="3" style={{ borderBottom: '1px solid var(--olive-a4)' }}>
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('support.email.to')}
           </Text>
           <Text size="1" weight="medium" style={{ overflowWrap: 'anywhere' }}>
             {mail.to}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('support.email.subject')}
           </Text>
           <Text size="1" weight="medium" style={{ overflowWrap: 'anywhere' }}>
@@ -174,7 +174,7 @@ export function EmailAppView({
         </pre>
       </Box>
       {mailto.shortened && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t('support.email.shortened')}
         </Text>
       )}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.citation.recorded.schema.json",
+  "title": "PipeshubCitationRecordedEvent",
+  "description": "Citations produced by a knowledge tool result.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.citation.recorded"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubCitationRecordedData"
+    }
+  },
+  "$defs": {
+    "PipeshubCitationRecordedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "citations"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "citationId",
+              "recordId"
+            ],
+            "properties": {
+              "citationId": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              },
+              "recordId": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              },
+              "blockIndex": {
+                "$ref": "../../../core/common.schema.json#/$defs/UInt"
+              },
+              "virtualRecordId": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "x.pipeshub.citation.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "citations": [
+          {
+            "citationId": "c1",
+            "recordId": "rec_1",
+            "blockIndex": 3
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

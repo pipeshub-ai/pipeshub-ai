@@ -95,7 +95,9 @@ class TestMaxTurnsDegradation:
         assert result.error is None
         assert substantive_text in result.output
 
-    async def test_still_fails_when_no_substantive_text_was_ever_produced(self) -> None:
+    async def test_answers_with_what_it_gathered_when_no_substantive_text_was_ever_produced(self) -> None:
+        """BUDGETEND: no text to degrade to is no longer a bare failure: the run answers, without a model, with
+        the tools it called and that it stopped at its step limit, flagged ``truncated_by``."""
         transport = ScriptedTransport(script=[
             ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
             ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
@@ -106,10 +108,12 @@ class TestMaxTurnsDegradation:
         agent = _build_agent(transport, max_turns=3)
         result = await agent.run(Goal(description="Write a report"))
 
-        assert result.success is False
-        assert "Exceeded max_turns" in result.error
+        assert result.success is True
+        assert result.truncated_by == "turns"
+        assert result.output.startswith("This reply stopped early because it reached its step limit")
+        assert "- Echo (3 calls)" in result.output
 
-    async def test_fragment_shorter_than_threshold_still_fails(self) -> None:
+    async def test_fragment_shorter_than_threshold_is_not_the_answer(self) -> None:
         transport = ScriptedTransport(script=[
             ScriptedStep(message=AssistantMessage(content="", tool_calls=[_CALL])),
             ScriptedStep(message=AssistantMessage(content="Sure!", tool_calls=[_CALL])),
@@ -119,4 +123,5 @@ class TestMaxTurnsDegradation:
         agent = _build_agent(transport, max_turns=2)
         result = await agent.run(Goal(description="Write a report"))
 
-        assert result.success is False
+        assert result.success is True and result.truncated_by == "turns"
+        assert "Sure!" not in result.output

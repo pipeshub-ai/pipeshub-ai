@@ -10,6 +10,7 @@ import pytest
 
 from app import edition, edition_services
 from app.agents.agent_loop import error_classification
+from tests.edition_overlay import edition_tree_present
 
 
 def test_model_decorators_return_their_input() -> None:
@@ -19,6 +20,7 @@ def test_model_decorators_return_their_input() -> None:
     assert edition_services.decorate_embeddings(embeddings, "openAI", "embed", {}) is embeddings
 
 
+@pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
 def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     app, registry = MagicMock(), MagicMock()
 
@@ -26,6 +28,12 @@ def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     edition_services.register_extra_toolsets(registry)
 
     assert app.mock_calls == [] and registry.mock_calls == []
+
+
+@pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
+@pytest.mark.parametrize("key", ["/services/aiModels", "a" * 24 + "/services/aiModels", ""])
+def test_the_key_value_store_binds_no_org_for_any_key(key: str) -> None:
+    assert edition.kv_key_binds_org(key) is False
 
 
 APP = Path(edition.__file__).parent

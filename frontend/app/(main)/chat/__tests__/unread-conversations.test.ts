@@ -8,7 +8,7 @@ import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 const backing = installMemoryStorage();
 
 const { useChatStore } = await import('../store');
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { allowChatUnreadWrites, chatUnreadKey, loadUnreadConversationIds } = await import('@/lib/storage/chat-unread');
 
 const initialState = useChatStore.getState();

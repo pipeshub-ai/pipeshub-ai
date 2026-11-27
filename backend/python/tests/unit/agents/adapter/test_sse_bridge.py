@@ -23,6 +23,7 @@ from app.agents.agent_loop.stream_bridge import (
     sse_queue_maxsize,
     _heartbeat
 )
+from tests.support.settle import settle
 
 _RUN_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
 
@@ -156,7 +157,7 @@ class TestQueueEventSinkCoalescing:
         # Flushed in arrival order, unmerged.
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}}
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}}
-        await asyncio.wait_for(flush_task, timeout=1)
+        await settle(flush_task)
 
     async def test_non_coalescable_event_flushes_pending_delta_first_then_blocks(self) -> None:
         """A tool/lifecycle event must never be silently dropped or
@@ -178,7 +179,7 @@ class TestQueueEventSinkCoalescing:
         # pending-then-put-new) can finish.
         await queue.get()  # drain filler -> pending delta flushes into the freed slot
         await queue.get()  # drain the flushed delta -> tool_call_start itself flushes
-        await asyncio.wait_for(write_task, timeout=1)
+        await settle(write_task)
         assert await queue.get() == {"event": "tool_call_start", "data": {"tool": "web_search"}}
 
     async def test_flush_is_a_noop_with_nothing_pending(self) -> None:
@@ -228,7 +229,7 @@ class TestQueueEventSinkCoalescing:
         # non-coalescable-event test above.
         await queue.get()  # drain filler -> pending answer-delta snapshot flushes
         flushed_snapshot = await queue.get()  # drain it -> artifact_add itself flushes
-        await asyncio.wait_for(write_task, timeout=1)
+        await settle(write_task)
 
         assert flushed_snapshot == answer_delta
         assert await queue.get() == artifact_add
@@ -253,7 +254,7 @@ class TestQueueEventSinkCoalescing:
         assert not cleared_write.done(), "a marked snapshot waits for a slot instead of pending"
 
         await queue.get()
-        await asyncio.wait_for(cleared_write, timeout=1)
+        await settle(cleared_write)
         await sink.write(error)
 
         assert await queue.get() == cleared
@@ -858,7 +859,7 @@ class TestRunAgentLoopStream:
 
     async def test_confidence_trailer_hidden_on_the_agent_api_path(self) -> None:
         """The agent API (`run_agent_loop_stream`) and the chat API
-        (`chat_modes/bridge.py::run_chat_stream`) drive the SAME
+        (`stream_bridge.run_chat_stream`) drive the SAME
         `TerminalAnswerStreamer`/`AnswerFinalizer` pair off the same
         `PipesHubAgentFactory`, so the `---\\nConfidence:` trailer that
         `prompt_builder.py`'s `_ANSWER_CONFIDENCE` asks for must be hidden from

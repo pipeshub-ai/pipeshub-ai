@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 
 import asyncpg
@@ -89,7 +90,17 @@ def test_write_prologue_references_the_fence_output_in_the_outer_select() -> Non
 
     outer = uow.PROLOGUE_WRITE.split("FROM pre")[0]
     assert "s.fence" in outer and "kernel.assert_profile_epoch($8) AS fence" in uow.PROLOGUE_WRITE
+    # the org is set in the materialized pre, which the fence's subquery reads, so it is set before the fence runs
+    pre = uow.PROLOGUE_WRITE.split("SELECT pre.r")[0]
+    assert "MATERIALIZED" in pre and "set_config('app.org_id', $2, true) AS org" in pre
+    assert uow.PROLOGUE_WRITE.count("app.org_id") == 1 and "pre.org IS NOT NULL) s" in uow.PROLOGUE_WRITE
     assert "fence" not in uow.PROLOGUE_READ
+
+
+def test_every_prologue_turns_jit_off_for_its_unit() -> None:
+    from app.core.db import uow
+
+    assert all("set_config('jit', 'off', true)" in p for p in (uow.PROLOGUE_READ, uow.PROLOGUE_WRITE))
 
 
 def test_request_id_is_sanitised() -> None:
@@ -112,10 +123,26 @@ def test_request_id_is_sanitised() -> None:
         (_pg(asyncpg.AdminShutdownError, "57P01"), ConnectionLost),
         (asyncpg.InterfaceError("connection is closed"), ConnectionLost),
         (ConnectionResetError("reset"), ConnectionLost),
+        # the driver's protocol state after the server or the pooler dropped the connection mid-operation
+        (asyncpg.InternalClientError('cannot switch to state 3; protocol is in the "failed" state'), ConnectionLost),
     ],
 )
 def test_driver_errors_are_typed(exc, kind) -> None:
     assert isinstance(_db().map_error(exc, _tx()), kind)
+
+
+def test_a_broken_protocol_in_the_prologue_is_a_lost_connection_not_a_misconfiguration() -> None:
+    broken = asyncpg.InternalClientError("cannot switch to state 3; another operation (2) is in progress")
+    mapped = _db().map_error(broken, _tx(), prologue=True)
+    assert isinstance(mapped, ConnectionLost) and mapped.retry_safe
+    assert isinstance(_db().map_error(asyncpg.InternalClientError("not connected"), _tx()), ConnectionLost)
+
+
+def test_a_missing_codec_is_not_a_lost_connection() -> None:
+    """The driver raises the same type for a codec it lacks: a bug, which must not be retried as an outage."""
+    codec = asyncpg.InternalClientError("missing codec information for OID 1234")
+    assert _db().map_error(codec, _tx()) is codec
+    assert isinstance(_db().map_error(codec, _tx(), prologue=True), PrologueFailed)
 
 
 def test_unclassified_errors_pass_through_and_timeouts_are_not_connection_loss() -> None:
@@ -832,15 +859,14 @@ def test_an_empty_pooler_setting_means_the_default(monkeypatch) -> None:
 
 
 def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
-    import time
-
     from app.core.db import sql_lint
+    from tests.support.cpu_budget import thread_cpu
 
     assert sql_lint._starts_sql("/* tag */ /* more */\n  select 1")
     assert not sql_lint._starts_sql("not sql at all")
-    started = time.monotonic()
-    sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
-    assert time.monotonic() - started < 5.0
+    with thread_cpu() as cpu:
+        sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
+    assert cpu.seconds < 5.0  # milliseconds when linear; the bound only has to catch a quadratic scan
 
 
 # ---- Opening a connection fails: no statement exists to record it, so _open stamps it text-hidden itself ------------
@@ -1094,3 +1120,38 @@ async def test_a_pool_timeout_is_unchanged() -> None:
     from app.core.db.errors import PoolTimeout
 
     assert isinstance(await _open_with(_refusing_pool(TimeoutError())), PoolTimeout)
+
+
+def _on(closed: bool) -> Tx:
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=lambda: closed)  # type: ignore[assignment]
+    return tx
+
+
+def test_a_driver_state_clash_is_a_lost_connection_by_its_message_alone_even_on_a_connection_not_yet_closed() -> None:
+    """The protocol-state prefix alone: the pooler cut the connection mid-operation and asyncpg has not closed it yet."""
+    for msg in ("cannot switch to state 11; another operation (2) is in progress", "not connected"):
+        assert isinstance(_db().map_error(asyncpg.InternalClientError(msg), _on(closed=False)), ConnectionLost), msg
+
+
+def test_any_driver_error_of_that_type_on_a_closed_connection_is_a_lost_connection() -> None:
+    """The closed connection alone: a backend the server ended as a statement started, whatever the driver's message."""
+    err = asyncpg.InternalClientError("unexpected message while the backend was ended")
+    assert isinstance(_db().map_error(err, _on(closed=True)), ConnectionLost)
+
+
+def test_a_codec_error_on_a_live_connection_still_passes_through() -> None:
+    codec = asyncpg.InternalClientError("missing codec information for OID 1234")
+    assert _db().map_error(codec, _on(closed=False)) is codec
+
+
+def test_a_driver_error_on_a_connection_the_pool_already_took_back_is_a_lost_connection() -> None:
+    """asyncpg's pool proxy of a dead connection it already released raises InterfaceError from is_closed(): that is a closed
+    connection too, and the check must not replace the original error."""
+    def released() -> bool:
+        raise asyncpg.InterfaceError("cannot call Connection.is_closed(): connection has been released back to the pool")
+
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=released)  # type: ignore[assignment]
+    err = asyncpg.InternalClientError("unexpected message while the backend was ended")
+    assert isinstance(_db().map_error(err, tx), ConnectionLost)
