@@ -19312,25 +19312,25 @@ class TestArangoPersonMigrationAndReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_counts_only_the_people_it_stranded(self, connected_provider):
-        self._script(
+        calls = self._script(
             connected_provider,
-            [                                        # stale flagged edges
-                {"edge": "e1", "principal": "person/p1"},
-                {"edge": "e2", "principal": "person/p2"},
-                {"edge": "e3", "principal": "users/u9"},   # a user, never swept
+            [                                        # the stale flagged edges, removed by the statement that finds them
+                {"principal": "person/p1"},
+                {"principal": "person/p2"},
+                {"principal": "users/u9"},           # a user, never swept
             ],
-            [],                                      # delete the membership edges
             [1, 1],                                  # two people removed
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 2
+        # one decision: the grant is checked by the statement that removes the edge
+        assert "FILTER NOT" in calls[0][0] and "REMOVE uar IN userAppRelation" in calls[0][0]
 
     @pytest.mark.asyncio
     async def test_reaper_sweeps_people_but_never_users(self, connected_provider):
         """A User node stripped of external membership is still a platform account."""
         calls = self._script(
             connected_provider,
-            [{"edge": "e3", "principal": "users/u9"}],
-            [],
+            [{"principal": "users/u9"}],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
         assert not any("REMOVE key IN person" in q for q, _ in calls)
@@ -19339,7 +19339,7 @@ class TestArangoPersonMigrationAndReaper:
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
         calls = self._script(connected_provider, [])
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert len(calls) == 1, "must not issue a delete when there is nothing to delete"
+        assert len(calls) == 1, "must not look for people when no edge was removed"
 
     @pytest.mark.asyncio
     async def test_reaper_swallows_failure(self, connected_provider):
