@@ -248,6 +248,7 @@ class AddressGuardAdapter(HTTPAdapter):
                 self._attempt.address = None
             if n < len(addresses) and proxied and proxy_gateway_failure(
                 request.method or "", urlsplit(url).scheme, response.status_code,
+                body_replayable=request.body is None or isinstance(request.body, (bytes, str)),
             ):
                 response.close()
                 continue

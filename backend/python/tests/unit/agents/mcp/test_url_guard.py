@@ -470,6 +470,33 @@ class TestTlsThroughAProxy:
         assert response.status_code == 502
         assert attempts == [_PUBLIC_IP]
 
+    @pytest.mark.parametrize(("streamed", "attempts_made", "status"), [(False, 2, 200), (True, 1, 502)])
+    async def test_a_plain_http_proxys_502_moves_on_only_when_the_body_can_be_sent_again(
+        self, streamed: bool, attempts_made: int, status: int,
+    ) -> None:
+        """A body read from a stream is gone after the first attempt; sending it again would
+        fail with StreamConsumed, so the proxy's 502 is returned instead."""
+        attempts: list[str] = []
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            await request.aread()
+            attempts.append(request.url.host)
+            return httpx.Response(502 if len(attempts) == 1 else 200)
+
+        async def _body():  # noqa: ANN202
+            yield b"x"
+
+        url = "http://mcp.example.com/mcp"
+        with patch.object(url_guard.urllib.request, "getproxies", return_value={"http": "http://proxy:3128"}), \
+             patch.object(url_guard.urllib.request, "proxy_bypass", return_value=False), \
+             patch("socket.getaddrinfo", _resolves_to(_PUBLIC_IP, "93.184.216.35")):
+            transport = GuardedTransport(url, allow_private=False, inner=httpx.MockTransport(_handler))
+            async with httpx.AsyncClient(transport=transport) as client:
+                response = await client.request("GET", url, content=_body() if streamed else b"x")
+
+        assert response.status_code == status
+        assert attempts == [_PUBLIC_IP, "93.184.216.35"][:attempts_made]
+
 
 _PUBLIC_IPV6 = "2606:2800:220:1:248:1893:25c8:1946"
 _DUAL_STACK = [

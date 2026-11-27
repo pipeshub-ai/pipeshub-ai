@@ -1,6 +1,7 @@
 """The address guard every HTTPClient sends through (`app.sources.client.http.address_guard`)."""
 from __future__ import annotations
 
+import io
 import socket
 import threading
 from typing import TYPE_CHECKING
@@ -485,6 +486,32 @@ class TestRequestsAdapterThroughAProxy:
             response = adapter.send(requests.Request("GET", "https://gitlab.example/a").prepare(), proxies=self.PROXIES)
         assert response.status_code == 502
         assert tried == [_PUBLIC_IP]
+
+    @pytest.mark.parametrize(("streamed", "tried_count", "status"), [(False, 2, 200), (True, 1, 502)])
+    def test_a_plain_http_proxys_502_moves_on_only_when_the_body_can_be_sent_again(
+        self, streamed: bool, tried_count: int, status: int,
+    ) -> None:
+        """A generator body is used up by the first attempt; the proxy's 502 is returned rather
+        than the request sent again without it."""
+        adapter = AddressGuardAdapter(allow_private=False)
+        tried: list[str] = []
+
+        def send(_self: HTTPAdapter, req: requests.PreparedRequest, *_a: object, **_k: object) -> requests.Response:
+            conn_host, _ = adapter.build_connection_pool_key_attributes(req, True)
+            tried.append(conn_host["host"])
+            response = requests.Response()
+            response.status_code = 502 if len(tried) == 1 else 200
+            response.raw = io.BytesIO()
+            return response
+
+        body = (chunk for chunk in [b"x"]) if streamed else b"x"
+        two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in (_PUBLIC_IP, "93.184.216.35")]
+        with patch("socket.getaddrinfo", return_value=two), patch.object(HTTPAdapter, "send", send):
+            response = adapter.send(
+                requests.Request("GET", "http://gitlab.example/a", data=body).prepare(), proxies=self.PROXIES,
+            )
+        assert response.status_code == status
+        assert tried == [_PUBLIC_IP, "93.184.216.35"][:tried_count]
 
     def test_a_failure_after_the_request_went_out_is_not_sent_again(self) -> None:
         adapter = AddressGuardAdapter(allow_private=False)

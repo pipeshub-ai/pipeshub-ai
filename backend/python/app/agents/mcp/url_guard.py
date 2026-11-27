@@ -108,16 +108,20 @@ _PROXY_GATEWAY_STATUSES = frozenset({502, 504})
 _REPEATABLE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
-def proxy_gateway_failure(method: str, scheme: str, status: int) -> bool:
+def proxy_gateway_failure(method: str, scheme: str, status: int, *, body_replayable: bool) -> bool:
     """Whether a response to a plain-http request through a proxy is worth trying the next
     checked address for: the proxy answering that it could not reach this one.
 
     A plain-http request is not tunnelled, so the proxy sends a 502 or 504 when it can't reach
     the address, where an https one gets a refused CONNECT. That answer looks the same as an
     origin's own 502 or 504 relayed by the proxy, so only a method that is safe to send twice
-    (GET, HEAD, OPTIONS) moves on. A body the proxy already forwarded is never sent again.
+    (GET, HEAD, OPTIONS) moves on. A body the proxy already forwarded is never sent again, and
+    one that can't be read twice (a stream, not bytes) keeps the first answer.
     """
-    return scheme == "http" and status in _PROXY_GATEWAY_STATUSES and method.upper() in _REPEATABLE_METHODS
+    return (
+        body_replayable and scheme == "http" and status in _PROXY_GATEWAY_STATUSES
+        and method.upper() in _REPEATABLE_METHODS
+    )
 
 
 def _proxy_name_refused(url: str, host: str) -> ProxyNameRefusedError:
@@ -424,7 +428,10 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
                 except (lib.ConnectError, lib.ConnectTimeout, lib.ProxyError) as e:
                     last_error = e
                     continue
-                if n < len(addresses) and self._proxied and proxy_gateway_failure(request.method, request.url.scheme, response.status_code):
+                if n < len(addresses) and self._proxied and proxy_gateway_failure(
+                    request.method, request.url.scheme, response.status_code,
+                    body_replayable=isinstance(request.stream, lib.ByteStream),
+                ):
                     await response.aclose()
                     continue
                 return response
