@@ -63,9 +63,11 @@ export function licenseTime(
   return new Date(Math.max(at, ...signed));
 }
 
+// Ties on issuedAt are broken by code units, not localeCompare: the process locale must not change which
+// license is in force.
 const byIssueDesc = (a: VerifiedLicense, b: VerifiedLicense): number =>
   b.issuedAt.getTime() - a.issuedAt.getTime() ||
-  b.licenseId.localeCompare(a.licenseId);
+  (a.licenseId < b.licenseId ? 1 : a.licenseId > b.licenseId ? -1 : 0);
 
 /**
  * The license in force at `now`: of those whose window (start to end of grace)

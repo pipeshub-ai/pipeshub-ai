@@ -70,10 +70,10 @@ async def test_a_group_has_its_app_as_parent_and_the_app_has_none(tree) -> None:
     assert await _parent(tree, "app1") is None
 
 
-def _allow_every_node(p: PostgresGraphProvider, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The breadcrumbs drop what the user cannot see; these tests are about the walk, not access."""
+def _allow_every_node(p: PostgresGraphProvider, monkeypatch: pytest.MonkeyPatch, *, hidden: frozenset[str] = frozenset()) -> None:
+    """The breadcrumbs drop what the user cannot see; these tests are about the walk, not access, so every node but ``hidden`` is visible."""
     async def check_access(user_key: str, org_id: str, *, node_ids=(), **_: object) -> AccessCheck:
-        return AccessCheck(node_ids=frozenset(node_ids))
+        return AccessCheck(node_ids=frozenset(node_ids) - hidden)
     monkeypatch.setattr(p, "check_access", check_access)
 
 
@@ -283,6 +283,22 @@ async def test_the_breadcrumbs_of_a_shared_top_level_record_go_through_its_own_g
 
     assert trail == ["app1", home_id, "report"]
     assert trail[-2] == (await _parent((p, org), "report"))["id"]
+
+
+@pytest.mark.parametrize("home_sorts_first", [True, False], ids=["home-id-first", "shared-id-first"])
+async def test_the_breadcrumbs_skip_a_shared_records_own_group_the_user_cannot_see(
+    pg_db, monkeypatch: pytest.MonkeyPatch, home_sorts_first: bool,
+) -> None:
+    """The hidden group is left out of the trail, not replaced by the other group the record is shared into."""
+    p, org = PostgresGraphProvider(logging.getLogger("kh-parent"), pg_db), new_org()
+    low, high = _ordered_ids()
+    home_id, shared_id = (low, high) if home_sorts_first else (high, low)
+    await _groups_and_report(p, org, groups={"home": home_id, "0S:someone": shared_id}, home="home")
+    for group_id in (home_id, shared_id):
+        await _member(p, org, group_id, hierarchy=True, inherit=group_id == home_id)
+    _allow_every_node(p, monkeypatch, hidden=frozenset({home_id}))
+
+    assert await _breadcrumb_ids((p, org), "report") == ["app1", "report"]
 
 
 async def test_the_breadcrumbs_of_a_record_under_a_folder_shared_into_a_group_go_through_the_folder(

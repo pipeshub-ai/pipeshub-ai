@@ -33,7 +33,7 @@ def _graph(records: dict, owned: set, users: dict, readers: frozenset = frozense
     uploaded; ``users``: auth userId -> user document; ``readers``: existing
     (user key, record id) READER edges."""
     graph = AsyncMock()
-    graph.get_document = AsyncMock(side_effect=lambda rid, _collection: records.get(rid))
+    graph.get_document = AsyncMock(side_effect=lambda rid, _collection, **_: records.get(rid))
 
     def edge(*, from_id, to_id, **_) -> dict[str, str] | None:
         if from_id == "k-me" and to_id in owned:
@@ -41,7 +41,7 @@ def _graph(records: dict, owned: set, users: dict, readers: frozenset = frozense
         return {"role": "READER"} if (from_id, to_id) in readers else None
 
     graph.get_edge = AsyncMock(side_effect=edge)
-    graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid: users.get(uid))
+    graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid, **_: users.get(uid))
     return graph
 
 

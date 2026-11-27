@@ -25,6 +25,7 @@ import {
   UPGRADE_GRACE_DAYS,
 } from '../../../../src/ee/modules/license/license-policy';
 import {
+  AFFECTED_REPORT_SKEW_MS,
   INSTALL_AFFECTED_KEY,
   installLicense,
   LICENSE_FILES_KEY,
@@ -422,8 +423,13 @@ describe('license check: features, install and the permission sync answer', () =
     const enforcedAt = (when: Date) =>
       publishPermissionSync(store, () => when, true);
     const upgrade = () => store.read(UPGRADE_KEY) as Promise<UpgradeRecord>;
-    const reportAffected = (affected: boolean) =>
-      store.write(INSTALL_AFFECTED_KEY, { affected, teamConnectors: 1 });
+    // Checked at NOW unless said otherwise: a report of this boot.
+    const reportAffected = (affected: boolean, checkedAt: Date | null = NOW) =>
+      store.write(INSTALL_AFFECTED_KEY, {
+        affected,
+        teamConnectors: 1,
+        ...(checkedAt ? { checkedAt: checkedAt.toISOString() } : {}),
+      });
 
     it('is off in this build: an install without a key writes nothing, not even the upgrade time', async () => {
       expect(LICENSE_ENFORCED).to.equal(false);
@@ -472,6 +478,27 @@ describe('license check: features, install and the permission sync answer', () =
         endsAt: null,
         affected: false,
       });
+    });
+
+    it('when on, takes "unaffected" only from a report of this boot, never one left from before', async () => {
+      // Left by an earlier boot: before connectors were added, or before a count that then failed.
+      for (const stale of [at(NOW, -DAY_MS), null]) {
+        await reportAffected(false, stale);
+        expect(await enforcedAt(NOW)).to.deep.include({ allowed: true });
+        expect((await upgrade()).affected).to.equal(null);
+      }
+      // Written just before this service's first check (the connectors finished first): this boot's.
+      await reportAffected(false, at(NOW, -AFFECTED_REPORT_SKEW_MS));
+      expect(await enforcedAt(at(NOW, 1000))).to.deep.include({
+        allowed: false,
+      });
+      expect((await upgrade()).affected).to.equal(false);
+    });
+
+    it('when on, takes "affected" from any report: it only keeps the grace', async () => {
+      await reportAffected(true, at(NOW, -DAY_MS));
+      await enforcedAt(NOW);
+      expect((await upgrade()).affected).to.equal(true);
     });
 
     it('when on, keeps the first report: paid features added after the upgrade earn no grace', async () => {

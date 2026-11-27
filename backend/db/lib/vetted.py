@@ -69,7 +69,7 @@ _RESERVED = frozenset("""all analyse analyze and any array as asc both case cast
     end except false for foreign from grant group having in initially intersect into leading limit not null offset on only or order placing primary
     references select some table then to trailing true union unique user using when where window with""".split())
 # Functions an extra migration location may extend (replace the body of). The signature, class and scope stay frozen.
-EXTENSION_POINTS = frozenset({"kernel.org_parent_ids"})
+EXTENSION_POINTS = frozenset({"kernel.org_parent_ids", "kernel.org_writes_held"})
 # RAISE in a vetted body: only a constant EXCEPTION with an SQLSTATE. A notice, a format argument or DETAIL could carry another org's value.
 _RAISE = re.compile(r"\braise\b[^;]*", re.I)
 _RAISE_OK = re.compile(r"^raise\s+exception\s+'[^'%]*'\s+using\s+errcode\s*=\s*'[0-9A-Z]{5}'\s*$", re.I)

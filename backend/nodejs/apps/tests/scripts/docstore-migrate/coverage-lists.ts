@@ -69,7 +69,13 @@ export function columnProblems(have: (table: string) => string[]): string[] {
 /** Tables of the document-store schemas that nothing reaches or lists. */
 export function unreachedTables(tables: string[]): string[] {
   const reached = reachedTables();
-  return tables.filter((t) => DOC_STORE_SCHEMAS.includes(t.split('.')[0] as string) && !reached.has(t) && !(t in UNMAPPED_TABLES));
+  return tables.filter(
+    (t) =>
+      DOC_STORE_SCHEMAS.includes(t.split('.')[0] as string) &&
+      !reached.has(t) &&
+      !(t in UNMAPPED_TABLES) &&
+      !(t in EDITION_DOCSTORE_COVERAGE.unmappedTables),
+  );
 }
 
 /**
