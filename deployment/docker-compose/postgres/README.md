@@ -14,6 +14,8 @@ Secrets: the passwords come from the container environment. They are not in the 
 
 ## Document store on PostgreSQL (`docker-compose.postgres-docstore.yml`)
 
+**Not with chats, in this version.** The Node API refuses to start with `DOC_STORE=postgres` or `DOC_STORE=shadow`, and says `Chats need MongoDB storage in this version. Set DOC_STORE=mongo.`: chats read and write MongoDB themselves, so on PostgreSQL the API would come up healthy while every chat waits on a MongoDB that is not there. `DOC_STORE_MONGO_REPOS` does not change that. This override, and `docker-compose.postgres-only.yml` below, set `DOC_STORE=postgres`, so they do not start the API until chats can run on PostgreSQL; keep `DOC_STORE=mongo` (the default) meanwhile. The steps below stay as they are for then.
+
 For a **new** install, the Node API can keep its documents (users, organisations, conversations and the rest) in PostgreSQL instead of MongoDB (`DOC_STORE=postgres`). Run from a repository checkout (the migration job's image is built from `backend/db/Dockerfile`). The simplest way is the installer, from `deployment/docker-compose`: `PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml ./install.sh`, which sets both profiles and generates the passwords. By hand, put the `PG_*_PASSWORD` values in `.env` and activate **both** profiles `postgres` and `postgres-migrate` (the override depends on services of both):
 
 ```bash
@@ -61,6 +63,8 @@ Two signals have no alert because neither exporter can see them: the age of the 
 The migration job accepts the login (`kernel_0019`, see `backend/db/README.md`); a database without it is unchanged. Statement statistics (`--collector.stat_statements`) are not available with this file: the server loads `pg_stat_statements`, but the extension is not installed in the database, and installing it changes the security surface the migration job compares, so the next `pipeshub-migrate` run would stop with exit 4. This file gives that job no way to accept the extra lines; on a server of your own, the migrate job reads them from the files named in `PG_MIGRATE_SURFACE_FILES` (`backend/db/README.md`). The application's own statement and search latencies (`pipeshub_pg_query_seconds`, `pipeshub_db_query_seconds`, `pipeshub_pgvector_leg_seconds` by search tier) are histograms of the services' telemetry registry, not of these exporters.
 
 ## PipesHub on PostgreSQL alone (`docker-compose.postgres-only.yml`)
+
+It sets `DOC_STORE=postgres`, so in this version the Node API refuses to start with it (see "Not with chats, in this version" above).
 
 For a **new** install that should run on one database: documents (`DOC_STORE=postgres`), the graph (`DATA_STORE=postgres`), vectors (`VECTOR_DB_TYPE=pgvector`), configuration (`KV_STORE_TYPE=postgres`), the message queue (`MESSAGE_BROKER=postgres`), the crawl scheduler (`CRAWL_SCHEDULER=postgres`) and what Redis would hold across processes (`REDIS_MODE=postgres`) all live in this PostgreSQL. The MongoDB, Qdrant, Redis, Neo4j, ArangoDB, etcd and Kafka services are removed from the project, so no profile selection (`--profile "*"` included) starts them. An install that already runs those stores keeps them: this override copies no data. Run from a repository checkout with Docker Compose v2.24.4 or later. The simplest way is the installer, which generates the passwords and keeps the override for later runs (`--stop`, `--upgrade`, `--uninstall`); its summary then lists `postgres` for the graph, key-value store and broker:
 

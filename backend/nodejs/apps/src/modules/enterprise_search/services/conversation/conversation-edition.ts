@@ -1,6 +1,8 @@
 import { Express } from 'express';
 import { Container } from 'inversify';
 import { Logger } from '../../../../libs/services/logger.service';
+import { shadowEnabled } from '../../../../libs/repositories/shadow';
+import { docStore } from '../../../../libs/repositories/store-select';
 import { AppConfig } from '../../../tokens_manager/config/config';
 
 /** The containers the conversation edition may bind into. */
@@ -29,9 +31,24 @@ export interface ConversationEdition {
   mountRoutes(app: Express, containers: ConversationEditionContainers): void;
 }
 
-/** Conversations as the containers bind them by default, with no extra routes. */
+/** What an operator is told when the document store is one chats cannot run on. */
+export const CHATS_NEED_MONGO =
+  'Chats need MongoDB storage in this version. Set DOC_STORE=mongo. ' +
+  'See "Document store on PostgreSQL" in deployment/docker-compose/postgres/README.md.';
+
+/**
+ * Chats in this version read and write MongoDB themselves, besides the repositories `DOC_STORE` selects. On
+ * `DOC_STORE=postgres` the application would start healthy while every chat waits on a MongoDB that is not there, even
+ * with `DOC_STORE_MONGO_REPOS` keeping repositories on MongoDB; on `shadow` their reads would go uncompared. So it
+ * refuses to start on either.
+ */
+export function assertChatsDocStore(): void {
+  if (shadowEnabled() || docStore() !== 'mongo') throw new Error(CHATS_NEED_MONGO);
+}
+
+/** Conversations as the containers bind them by default, with no extra routes. Refuses a document store chats can't use. */
 export const defaultConversationEdition: ConversationEdition = {
   exposedHeaders: [],
-  bind: () => undefined,
+  bind: () => assertChatsDocStore(),
   mountRoutes: () => undefined,
 };
