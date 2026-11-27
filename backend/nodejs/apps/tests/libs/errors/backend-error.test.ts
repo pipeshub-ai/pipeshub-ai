@@ -16,8 +16,11 @@ import {
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  GoneError,
   InternalServerError,
+  LargePayloadError,
   NotFoundError,
+  NotImplementedError,
   PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
@@ -155,7 +158,7 @@ describe('handleBackendError', () => {
         },
         'create team',
       )
-      expect(result).to.be.instanceOf(InternalServerError)
+      expect(result).to.be.instanceOf(BadGatewayError)
       expect(result.message).to.equal(
         'Something went wrong while PipesHub tried to create team. Please try again in a moment; if it keeps happening, ask your admin to check the services page.',
       )
@@ -310,6 +313,93 @@ describe('handleBackendError', () => {
     expect(result.message).to.equal('Name is required')
   })
 
+  // API1-P3: every status a service can send, against the rules (not the code): a 4xx keeps its status and words
+  // (405/406 and the hop's own 4xx are our wiring: 500; 408 is our call timing out: 504), a 5xx is a 502 in our words (501 kept, 503/504
+  // transient), anything else is our 500.
+  describe('relays the service\'s status', () => {
+    const WORDS = 'upstream words'
+    const NAMED: Record<number, string> = {
+      400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 402: 'PAYMENT_REQUIRED', 403: 'FORBIDDEN', 404: 'NOT_FOUND',
+      409: 'CONFLICT', 410: 'GONE', 412: 'PRECONDITION_FAILED', 413: 'PAYLOAD_TOO_LARGE', 415: 'UNSUPPORTED_MEDIA_TYPE',
+      422: 'UNPROCESSABLE_ENTITY', 423: 'LOCKED', 424: 'FAILED_DEPENDENCY', 429: 'TOO_MANY_REQUESTS',
+      451: 'UNAVAILABLE_FOR_LEGAL_REASONS', 499: 'CLIENT_ERROR',
+    }
+    const WIRING = new Set([405, 406, 407, 411, 414, 417, 421, 426, 431])
+    type Want = { status: number; code?: string; words: boolean; cause?: { status: number }; relaysCode: boolean }
+    const expected = (sent: number): Want => {
+      const ours = { status: 500, code: 'INTERNAL_SERVER_ERROR', words: false, cause: { status: sent }, relaysCode: false }
+      if (!Number.isInteger(sent) || sent < 400 || sent > 599 || WIRING.has(sent)) return ours
+      if (sent === 408) return { status: 504, code: 'GATEWAY_TIMEOUT', words: false, relaysCode: true }
+      if (sent === 503 || sent === 504) return { status: sent, words: false, relaysCode: true }
+      if (sent === 501) return { status: 501, code: 'NOT_IMPLEMENTED', words: false, cause: { status: 501 }, relaysCode: false }
+      if (sent >= 500) return { status: 502, code: 'BAD_GATEWAY', words: false, cause: { status: sent }, relaysCode: sent === 502 }
+      return { status: sent, code: NAMED[sent], words: true, relaysCode: true }
+    }
+    const statuses = [...Array.from({ length: 501 }, (_, i) => 100 + i), 450.5, 502.5]
+
+    for (const sent of statuses) {
+      const want = expected(sent)
+      it(`${String(sent)} → ${String(want.status)}`, () => {
+        const result = handleBackendError({ statusCode: sent, data: { detail: WORDS } }, 'do the thing') as BaseError
+        expect(result.statusCode).to.equal(want.status)
+        if (want.code) expect(result.code).to.equal(`HTTP_${want.code}`)
+        else expect(result.code).to.match(/^HTTP_[A-Z]+(_[A-Z]+)*$/)
+        if (want.words) expect(result.message).to.equal(WORDS)
+        else expect(result.message).to.not.include(WORDS)
+        expect((result as Error & { cause?: unknown }).cause).to.deep.equal(want.cause)
+
+        const coded = handleBackendError(
+          { statusCode: sent, data: { detail: { reasonCode: 'some_code', message: 'coded words' } } },
+          'do the thing',
+        ) as BaseError
+        expect(coded.metadata?.reasonCode).to.equal(want.relaysCode ? 'some_code' : undefined)
+      })
+    }
+
+    it('a status that is not a number is our 500', () => {
+      const result = handleBackendError({ statusCode: '502', data: { detail: WORDS } }, 'do the thing')
+      expect(result).to.be.instanceOf(InternalServerError)
+      expect(result.message).to.not.include(WORDS)
+    })
+
+    it('a coded 402 keeps its code and its sentence (A-12)', () => {
+      const result = handleBackendError(
+        { statusCode: 402, data: { detail: { code: 'credits_exhausted', message: 'Out of credits.' } } },
+        'chat',
+      ) as BaseError
+      expect(result).to.be.instanceOf(PaymentRequiredError)
+      expect(result.message).to.equal('Out of credits.')
+      expect(result.metadata?.reasonCode).to.equal('credits_exhausted')
+    })
+
+    it('a 408 keeps the Retry-After it came with', () => {
+      const result = handleBackendError(
+        { response: { status: 408, data: {}, headers: { 'retry-after': '7' } } },
+        'do the thing',
+      ) as BaseError
+      expect(result).to.be.instanceOf(GatewayTimeoutError)
+      expect(result.metadata).to.deep.equal({ retryAfter: '7' })
+      expect(result.message).to.include('7 seconds')
+    })
+
+    it('a 408 keeps words a person wrote for the reader', () => {
+      const words = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      const result = handleBackendError({ statusCode: 408, data: { detail: words } }, 'do the thing')
+      expect(result).to.be.instanceOf(GatewayTimeoutError)
+      expect(result.message).to.equal(words)
+    })
+
+    it('a 4xx with no words and an empty status text reads the standard reason phrase', () => {
+      const result = handleBackendError({ statusCode: 413, data: undefined, msg: '' }, 'upload')
+      expect(result).to.be.instanceOf(LargePayloadError)
+      expect(result.message).to.equal('Payload Too Large')
+      expect(handleBackendError({ statusCode: 424, msg: 'Failed Dependency' }, 'upload').message).to.equal(
+        'Failed Dependency',
+      )
+      expect(handleBackendError({ statusCode: 499, msg: '' }, 'upload').message).to.equal('Unknown error')
+    })
+  })
+
   // H3 RL-1..RL-7: a Python route's `{reasonCode, message}` arrives as a typed
   // error instead of JSON text inside a generic message.
   describe('a Python refusal with a machine code', () => {
@@ -376,17 +466,19 @@ describe('handleBackendError', () => {
       })
     }
 
-    it('RL-5: a 502 without a code, and a 500 with one, stay the generic 500', () => {
+    it('RL-5: a 502 without a code is a 502 with none; a 500 with a code is a 502 without it', () => {
       const bare = handleBackendError({ statusCode: 502, data: { detail: 'bad gateway' } }, 'list')
-      expect(bare).to.be.instanceOf(InternalServerError)
+      expect(bare).to.be.instanceOf(BadGatewayError)
       expect(reasonOf(bare)).to.equal(undefined)
-      const coded = handleBackendError(
-        { statusCode: 500, data: { detail: { reasonCode: 'store_failed', message: 'mongo at 10.0.0.9' } } },
-        'list',
-      )
-      expect(coded).to.be.instanceOf(InternalServerError)
-      expect(reasonOf(coded)).to.equal(undefined)
-      expect(coded.message).to.not.include('10.0.0.9')
+      for (const status of [500, 507]) {
+        const coded = handleBackendError(
+          { statusCode: status, data: { detail: { reasonCode: 'store_failed', message: 'mongo at 10.0.0.9' } } },
+          'list',
+        )
+        expect(coded).to.be.instanceOf(BadGatewayError)
+        expect(reasonOf(coded)).to.equal(undefined)
+        expect(coded.message).to.not.include('10.0.0.9')
+      }
     })
 
     it('RL-6: a 503 with a code keeps the transient sentence and adds the code', () => {
@@ -451,19 +543,21 @@ describe('handleBackendError', () => {
       expect(levels.map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0])
     })
 
-    for (const [status, errorClass] of [
-      [500, 'upstream_5xx'],
-      [502, 'upstream_5xx'],
-      [501, 'upstream_5xx'],
-      [408, 'timeout'],
-      [405, 'internal'],
-      [410, 'internal'],
+    for (const [status, type, answered, errorClass, cause] of [
+      [500, BadGatewayError, 502, 'upstream_5xx', { status: 500 }],
+      [502, BadGatewayError, 502, 'upstream_5xx', { status: 502 }],
+      [501, NotImplementedError, 501, 'upstream_5xx', { status: 501 }],
+      [408, GatewayTimeoutError, 504, 'timeout', undefined],
+      [405, InternalServerError, 500, 'internal', { status: 405 }],
+      [410, GoneError, 410, 'not_found', undefined],
+      [413, LargePayloadError, 413, 'bad_request', undefined],
     ] as const) {
-      it(`a ${String(status)} from the service is our 500 classed ${errorClass}`, () => {
+      it(`a ${String(status)} from the service is our ${String(answered)} classed ${errorClass}`, () => {
         const result = handleBackendError({ statusCode: status, data: { detail: 'broke' } }, 'create connector')
-        expect(result).to.be.instanceOf(InternalServerError)
-        expect(classifyRequestError(result, 500)).to.equal(errorClass)
-        expect((result as Error & { cause?: unknown }).cause).to.deep.equal({ status })
+        expect(result).to.be.instanceOf(type)
+        expect((result as BaseError).statusCode).to.equal(answered)
+        expect(classifyRequestError(result, answered)).to.equal(errorClass)
+        expect((result as Error & { cause?: unknown }).cause).to.deep.equal(cause)
       })
     }
 

@@ -241,7 +241,7 @@ function SupportDialog() {
       const status = isProcessedError(error) ? error.statusCode : undefined;
       if (status === 429) {
         setFinished({ kind: 'limit', mail: buildMail(null) });
-      } else if (status === 400 && isProcessedError(error)) {
+      } else if ((status === 400 || status === 413) && isProcessedError(error)) {
         setSendError(error.message);
       } else {
         // The server could not take it at all: the person can still reach support by email.

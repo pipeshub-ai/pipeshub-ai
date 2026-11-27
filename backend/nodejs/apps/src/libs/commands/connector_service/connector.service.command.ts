@@ -72,9 +72,8 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       (error) => !isTimeout(error),
     );
 
-    // A 204 has no body to parse; parsing it would throw and turn a success into a 500.
-    const data = response.status === 204 ? undefined : await response.json();
-    
+    const data = await this.readBody<T>(response);
+
     // Convert Headers object to plain object
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {

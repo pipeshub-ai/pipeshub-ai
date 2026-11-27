@@ -94,7 +94,8 @@ describe('Knowledge base routes: a request is logged once, with its knowledge ba
       const status = await send(route.method, route.path, { json: route.json, form: route.form?.() })
 
       expect(h.backend.callsTo(method, backendPath).length, 'the request must reach the connector service').to.be.at.least(1)
-      expect(status).to.equal(500)
+      // The record stream relays the connector's own status; every other route maps an upstream 5xx to a 502.
+      expect(status).to.equal(backendPath === STREAM_PATH ? 500 : 502)
       expect(visible().filter((r) => !REQUEST_LINES.has(r.message))).to.deep.equal([])
       expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
       // The record stream relays the connector's answer itself; every other route has one middleware line.

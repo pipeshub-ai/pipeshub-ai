@@ -4,7 +4,7 @@
  */
 import { ObjectId } from 'mongodb';
 import { decodeDoc } from './decode';
-import { MAPPINGS } from './mapping';
+import { MAPPINGS, isMapped } from './mapping';
 import type { CollectionMapping } from './mapping/types';
 import { readDecodedPage } from './pg-read';
 import type { MigrationRuntime } from './runtime';
@@ -245,6 +245,8 @@ export async function reverseSpecial(
   name: string,
   skips: Record<string, string> = {},
 ): Promise<Counts> {
+  // a collection an edition replaced is written back by its carrier, not here
+  if (!isMapped(name)) return { written: 0, removed: 0 };
   switch (name) {
     case 'counters':
       return counters(rt);

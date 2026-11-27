@@ -66,6 +66,34 @@ export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+/** Schemes that run script or read local files. Never honoured, even when already stored. */
+const SCRIPT_CAPABLE_REDIRECT_SCHEMES = new Set([
+  'javascript:',
+  'data:',
+  'file:',
+  'vbscript:',
+  'blob:',
+  'about:',
+  'filesystem:',
+]);
+
+/** Refused for new registrations: the script-capable schemes and network schemes that are never an app's callback. */
+const BLOCKED_REDIRECT_SCHEMES = new Set([
+  ...SCRIPT_CAPABLE_REDIRECT_SCHEMES,
+  'ftp:',
+  'ws:',
+  'wss:',
+]);
+
+/** True for a script-capable scheme, and for a URI that does not parse: its scheme cannot be checked. */
+function isScriptCapableRedirectUri(uri: string): boolean {
+  try {
+    return SCRIPT_CAPABLE_REDIRECT_SCHEMES.has(new URL(uri).protocol);
+  } catch {
+    return true;
+  }
+}
+
 /**
  * RFC 8252 §7.3: a native app listens on a port it picks at run time, so a loopback redirect URI
  * registered without a port matches the same URI on any port.
@@ -561,7 +589,7 @@ export class OAuthAppService {
 
     // Validate redirect URIs if provided
     if (data.redirectUris) {
-      this.validateRedirectUris(data.redirectUris);
+      this.validateRedirectUris(data.redirectUris, app.redirectUris);
     }
 
     // Validate grant types if provided
@@ -939,6 +967,12 @@ export class OAuthAppService {
    * Validate redirect URI for an app
    */
   validateRedirectUriForApp(app: OAuthAppDto, redirectUri: string): void {
+    // An app may keep what it already has registered, so only refuse what must never run.
+    if (isScriptCapableRedirectUri(redirectUri)) {
+      throw new InvalidRedirectUriError('redirect_uri scheme is not allowed', {
+        providedUri: redirectUri,
+      });
+    }
     if (
       !app.redirectUris.includes(redirectUri) &&
       !app.redirectUris.some((r) => loopbackMatchesAnyPort(r, redirectUri))
@@ -966,20 +1000,29 @@ export class OAuthAppService {
     return crypto.randomBytes(CLIENT_SECRET_LENGTH).toString('hex');
   }
 
-  private validateRedirectUris(uris: string[]): void {
+  private validateRedirectUris(
+    uris: string[],
+    storedUris: string[] = [],
+  ): void {
     for (const uri of uris) {
       if (ALLOWED_CUSTOM_REDIRECT_URIS.includes(uri)) {
+        continue;
+      }
+      // Tightened rules apply to new values; an update must not lose a URI the app already has.
+      if (storedUris.includes(uri) && !isScriptCapableRedirectUri(uri)) {
         continue;
       }
       try {
         const parsed = new URL(uri);
         if (
           parsed.protocol !== 'https:' &&
-          parsed.hostname !== 'localhost' &&
-          parsed.hostname !== '127.0.0.1'
+          !(
+            LOOPBACK_HOSTS.has(parsed.hostname) &&
+            !BLOCKED_REDIRECT_SCHEMES.has(parsed.protocol)
+          )
         ) {
           throw new InvalidRedirectUriError(
-            `Redirect URI must use HTTPS (except localhost): ${uri}`,
+            `Redirect URI must use HTTPS (HTTP or an app scheme only on loopback): ${uri}`,
           );
         }
         // Disallow fragments
@@ -1002,19 +1045,6 @@ export class OAuthAppService {
    * and the like, where the code would be handed to something that is not the client.
    */
   validateDcrRedirectUris(uris: string[]): void {
-    // Browser and network schemes that are never an app's callback, though they can look like one.
-    const blocked = new Set([
-      'javascript:',
-      'data:',
-      'file:',
-      'vbscript:',
-      'blob:',
-      'about:',
-      'filesystem:',
-      'ftp:',
-      'ws:',
-      'wss:',
-    ]);
     for (const uri of uris) {
       let parsed: URL;
       try {
@@ -1030,7 +1060,7 @@ export class OAuthAppService {
       const appScheme =
         parsed.protocol !== 'https:' && parsed.protocol !== 'http:';
       if (
-        blocked.has(parsed.protocol) ||
+        BLOCKED_REDIRECT_SCHEMES.has(parsed.protocol) ||
         (appScheme &&
           !parsed.protocol.includes('.') &&
           !uri.startsWith(`${parsed.protocol}//`))

@@ -110,7 +110,7 @@ export class SharedCitationService {
           choice: 'hide_record_citations',
         }),
       );
-      return CitationAccess.denyRecords();
+      return CitationAccess.denyRecords(true);
     }
     const decisions = new Map<string, CitationDecision>();
     const total: Tally = { allowed: 0, denied: 0, unverifiable: 0 };
