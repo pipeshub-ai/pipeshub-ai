@@ -859,6 +859,9 @@ def test_every_service_installs_redaction_at_startup() -> None:
         ("account_id", False),
         ("accountIdentifier", False),
         ("AccountKind", False),
+        ("serviceAccountJson", True),
+        ("awsAccessSecretKey", True),
+        ("identityForwardingServiceApiKey", True),
     ],
 )
 def test_account_key_is_a_credential_name(name: str, expected: bool) -> None:
