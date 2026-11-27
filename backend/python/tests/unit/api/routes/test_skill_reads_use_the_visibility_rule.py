@@ -3,8 +3,8 @@
 Checked from the source, closed-world (a new route or store method fails until it is
 classified here):
 
-1. The rule. `GraphSkillStore._sees` starts from `SkillVisibility.allows`, and the agent
-   builder's link check calls the same method.
+1. The rule. `GraphSkillStore._sees` starts from `SkillVisibility.allows`, and the agent builder's
+   link check and its view of an agent's skills read through the store, never the graph itself.
 2. The store. Every public read of a skill by name reads it through `_get_org_doc` (the
    visible-only read) before anything else; a listing filters with `_sees`; usage names
    only agents the caller may open (`_may_see_agent`) and skills it can see.
@@ -53,8 +53,10 @@ PROVIDER_METHODS = {
 
 # GraphSkillStore public methods, by how they decide visibility.
 STORE_NAME_READS = {
-    "get_skill", "get_resource", "get_resources", "exists", "get_provenance",
+    "get_skill", "get_resource", "get_resources", "exists", "get_status", "get_provenance",
     "list_versions", "get_version", "get_referential_usage", "sharing", "label",
+    # Only names why `get_status` found nothing, for a log line: it reads the visible doc first and shows no field of any doc.
+    "hidden_reason",
 }
 STORE_LIST_READS = {"list_skills", "sharings", "labels"}
 # Reads of a run's pinned content, whatever the skill's visibility is now: never a person's read of a skill.
@@ -97,9 +99,10 @@ def _get_endpoints() -> dict[str, object]:
 
 def test_the_store_and_the_agent_builder_use_the_one_rule() -> None:
     assert "allows" in {_callee(c) for c in _calls(_tree(graph_store.GraphSkillStore._sees))}
-    assert agent_routes.SkillVisibility is graph_store.SkillVisibility
-    for use in (agent_routes._create_skill_edges, agent_routes._skills_as_the_caller_may_see_them):
-        assert "allows" in {_callee(c) for c in _calls(_tree(use))}
+    for builder in (agent_routes._create_skill_edges, agent_routes._skills_as_the_caller_may_see_them):
+        calls = _calls(_tree(builder))
+        assert "GraphSkillStore" in {_callee(c) for c in calls}
+        assert not {_callee(c) for c in calls} & set(PROVIDER_METHODS), f"{builder.__name__} reads the graph itself"
     assert "_sees" in {_callee(c) for c in _calls(_tree(graph_store.GraphSkillStore._get_org_doc))}
 
 

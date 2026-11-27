@@ -30,6 +30,7 @@ from app.api.routes.agent import _create_skill_edges
 from app.config.constants.arangodb import CollectionNames
 from app.harness.assembly.tool_sources import SkillsSource
 from harness_core.tools.registry import ToolRegistry
+from tests.support.bound_org import another_request
 from tests.support.config_service import FakeConfigurationService
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
@@ -185,9 +186,10 @@ class TestAssignment:
         await _seed(graph)
         logger = logging.getLogger(__name__)
 
-        linked = await _create_skill_edges(
-            "agent-1", ["bob-notes", "alice-report"], ORG, BOB.key, graph, logger  # type: ignore[arg-type]
-        )
+        with another_request(ORG, BOB.user_id):
+            linked = await _create_skill_edges(
+                "agent-1", ["bob-notes", "alice-report"], BOB.key, graph, logger  # type: ignore[arg-type]
+            )
 
         assert linked == ["bob-notes"]
         edges = graph._edges.get(CollectionNames.AGENT_HAS_SKILL.value, [])

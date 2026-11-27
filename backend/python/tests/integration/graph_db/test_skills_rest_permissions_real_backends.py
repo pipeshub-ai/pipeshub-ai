@@ -30,12 +30,12 @@ from fastapi import FastAPI, Request
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.api.routes import skills as skills_routes
 from app.config.constants.service import config_node_constants
+from app.core.org_context import OrgContext, bind
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
     connect_neo4j,
 )
-from tests.support.bound_org import bound_like_auth
 from tests.support.skill_stores import skill_store
 
 if TYPE_CHECKING:
@@ -103,7 +103,8 @@ def _app(provider, orgs: dict[str, str], node_up: bool = True) -> FastAPI:
         tok = request.headers.get("authorization", "").removeprefix("Bearer ")
         uid, org = TOKENS[tok]
         request.state.user = {"userId": uid, "orgId": orgs[org], "email": f"{uid}@example.com"}
-        with bound_like_auth(request.state.user):
+        # As the real auth middleware does: the verified token's org is bound for the request.
+        with bind(OrgContext(org_id=orgs[org], user_id=uid, kind="user", source="jwt", request_id="-")):
             return await call_next(request)
 
     app.include_router(skills_routes.router, prefix="/api/v1/skills")

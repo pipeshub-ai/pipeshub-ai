@@ -717,14 +717,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     def _write_provenance(self) -> SkillProvenance | None:
         return self._provenance() if self._provenance is not None else None
 
-    async def _get_org_doc(self, name: str) -> dict | None:
-        doc = await self._get_unscoped_org_doc(name)
+    async def _get_org_doc(self, name: str, *, transaction: str | None = None) -> dict | None:
+        doc = await self._get_unscoped_org_doc(name, transaction=transaction)
         return doc if doc is not None and self._sees(doc) else None
 
-    async def _get_unscoped_org_doc(self, name: str) -> dict | None:
+    async def _get_unscoped_org_doc(self, name: str, *, transaction: str | None = None) -> dict | None:
         """The org's doc for `name` whoever created it. Creates and deletes decide on this, never on
         the visibility-scoped view: a skill the caller cannot see still holds the key."""
-        doc = await self._graph.get_document(self._key(name), _SKILLS)
+        doc = await self._graph.get_document(self._key(name), _SKILLS, transaction=transaction)
         if doc is None or org_of(doc) != self._org_id:
             return None
         return doc
@@ -811,6 +811,20 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     async def exists(self, name: str) -> bool:
         return await self._get_org_doc(name) is not None
+
+    async def get_status(self, name: str, *, transaction: str | None = None) -> str | None:
+        """The stored status of a skill the caller may see (a doc without one is active), or None.
+        Read inside `transaction` when the caller writes in one: the agent builder links skills
+        inside the agent's write."""
+        doc = await self._get_org_doc(name, transaction=transaction)
+        return (doc.get("status") or SkillStatus.ACTIVE.value) if doc is not None else None
+
+    async def hidden_reason(self, name: str, *, transaction: str | None = None) -> str:
+        """Why `get_status` answered None, for the log line only: "unknown" (no skill of this name in the
+        bound org) or "not_owned" (the org has one the caller may not see); "visible" when there is nothing to explain."""
+        if await self._get_org_doc(name, transaction=transaction) is not None:
+            return "visible"
+        return "unknown" if await self._get_unscoped_org_doc(name, transaction=transaction) is None else "not_owned"
 
     async def get_provenance(self, name: str) -> dict[str, Any] | None:
         """`{created_by, updated_by, pack_name, pack_version}` off the raw

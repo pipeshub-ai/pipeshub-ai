@@ -11,6 +11,7 @@ Needs a migrated database: PG_CORE_URL, PG_POOLER=none.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -20,10 +21,14 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from app.agent_loop_lib.modules.providers.skills.base import SkillInUseError
+from app.agent_loop_lib.modules.providers.skills.base import (
+    SkillInUseError,
+    SkillStatus,
+)
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.api.routes import agent as agent_routes
+from app.core.org_context import OrgContext, bind
 from tests.support.skill_stores import skill_store
 
 if TYPE_CHECKING:
@@ -166,7 +171,9 @@ def _agent_app(p, org: str, user: str) -> FastAPI:
     @app.middleware("http")
     async def _auth(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         request.state.user = {"userId": user, "orgId": org, "email": f"{user}@example.com"}
-        return await call_next(request)
+        # As the real auth middleware does: the verified token's org is bound for the request.
+        with bind(OrgContext(org_id=org, user_id=user, kind="user", source="jwt", request_id="-")):
+            return await call_next(request)
 
     app.include_router(agent_routes.router, prefix="/api/v1/agent")
     return app
@@ -192,3 +199,36 @@ async def test_an_agent_shows_a_skill_the_caller_cannot_see_by_name_description_
     for leaked in ("Body of a-private", "resource text of a", "notes.md", "usageTotalActivations", "user-a"):
         assert leaked not in agent.text, leaked
     assert {"version", "category"} <= set({s["name"]: s for s in owner.json()["agent"]["skills"]}["a-private"])
+
+
+async def test_the_agent_builder_links_only_skills_the_caller_may_see_inside_the_agents_write(pg_provider, org, org_ctx) -> None:
+    """`_create_skill_edges` inside a real transaction, in the bound org: a's own skill and the
+    org's builtin are linked; b's skill, a's disabled skill and a missing name are not."""
+    with org_ctx(org):
+        await _world(pg_provider, org)
+        a = _store(pg_provider, org, "user-a")
+        await a.create_skill("a-off", _md("a-off"))
+        assert await a.set_skill_status("a-off", SkillStatus.DISABLED)
+        assert await pg_provider.batch_upsert_nodes([{
+            "_key": "agBuild", "name": "builder", "description": "d", "startMessage": "s", "systemPrompt": "p",
+            "models": [], "createdBy": "user-a", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "isDeleted": False,
+        }], "agentInstances")
+        await _edge(pg_provider, "permission", ("users", "user-a"), ("agentInstances", "agBuild"), type="USER", role="OWNER")
+        names = ["a-private", "it-pack", "b-wrapper", "a-off", "no-such-skill"]
+        # The route begins the agent's write and links inside it under the request's binding.
+        with bind(OrgContext(org_id=org, user_id="user-a", kind="user", source="jwt", request_id="-")):
+            t = await pg_provider.begin_transaction(read=["agentSkills"], write=["agentHasSkill"])
+            try:
+                linked = await agent_routes._create_skill_edges(
+                    "agBuild", names, "user-a", pg_provider, logging.getLogger("pg-skill-links"), transaction=t,
+                )
+                await pg_provider.commit_transaction(t)
+            except BaseException:
+                await pg_provider.rollback_transaction(t)
+                raise
+        edges = await pg_provider.get_edges_from_node("agentInstances/agBuild", "agentHasSkill")
+        usage = {s: await a.get_referential_usage(s) for s in ("a-private", "it-pack")}
+    assert linked == ["a-private", "it-pack"]
+    assert sorted(e.get("skillName") for e in edges) == ["a-private", "it-pack"]
+    for skill, found in usage.items():
+        assert "agBuild" in {u["id"] for u in found.used_by_agents}, skill
