@@ -247,6 +247,11 @@ def harness_edition() -> "HarnessEdition":
     return NO_HARNESS_EDITION
 
 
+def durable_agent_query_extras(agent: "Mapping[str, Any]") -> dict[str, Any]:
+    """Keys an edition adds to a durable agent run's query, beside the ones the agent route sends. OSS: none."""
+    return {}
+
+
 # Multi-worker sync needs exclusion across processes, which this build does not
 # have. It therefore pins the service to one worker: raising
 # CONNECTOR_UVICORN_WORKERS here has never been safe, because exclusion would be

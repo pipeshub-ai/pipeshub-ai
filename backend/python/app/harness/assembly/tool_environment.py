@@ -525,6 +525,7 @@ async def _agent_environment(
 ) -> ToolEnvironment:
     from fastapi import HTTPException
 
+    from app import edition_services
     from app.agents.agent_loop.context import AgentContext
     from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
     from app.agents.chat_modes.policy import AGENT_POLICY
@@ -677,6 +678,7 @@ async def _agent_environment(
         "mcpServerConfigs": mcp_server_configs,
         "knowledge": agent_knowledge,
         "skills": list(run.skills) or None,
+        **edition_services.durable_agent_query_extras(agent or {}),
         "connector_configs": await fetch_connector_configs(config_service, connector_ids),
         "toolsetConfigs": toolset_configs,
         "conversationId": run.session_id,

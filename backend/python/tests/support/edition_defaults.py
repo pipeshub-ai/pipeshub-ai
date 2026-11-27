@@ -54,3 +54,9 @@ def agents_run_as_the_caller() -> bool:
     from app import edition
 
     return edition.AGENTS_RUN_AS_THE_CALLER
+
+
+def agent_context_extras(*, owner_key: str) -> dict[str, object]:
+    """Fields this build's ``AgentContext`` takes beside the shared ones, for a test that builds one for an agent
+    whose owner is ``owner_key``. Here none."""
+    return {}
