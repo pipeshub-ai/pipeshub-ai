@@ -57,7 +57,7 @@ CLASSES = """/* pipeshub:kg.read_classes */ SELECT c.id, c.clauses FROM unnest($
 # kg.model.LINK_HIERARCHY): its ``leaf`` flag alone is not trusted, because a stale flag is the only thing between a grant on a childless record and the records the class says it opens.
 # Both children are found by a seek as well (the first child at or after the node in records_parent, and in links_pkey). The literals kg vouches for come back as two arrays (their
 # keys and ids) in one row: a listing asks about every literal of a connector, and as a row each they took longer to decode than to read.
-LITERALS = """/* pipeshub:kg.read_literals */ SELECT coalesce(array_agg(r.sk), '{}') AS sks, coalesce(array_agg(r.id), '{}') AS ids FROM unnest($2::bigint[]) AS q(sk)
+LITERALS = """/* pipeshub:kg.read_literals */ SELECT coalesce(array_agg(r.sk), '{}') AS sks, coalesce(array_agg(r.id), '{}') AS ids, coalesce(array_agg(r.deleted), '{}') AS deleted FROM unnest($2::bigint[]) AS q(sk)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r
     WHERE r.leaf IS FALSE AND (r.kind <> 3 OR coalesce((SELECT true FROM (SELECT c.parent_sk FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk >= r.sk ORDER BY c.parent_sk LIMIT 1) x WHERE x.parent_sk = r.sk),
         (SELECT true FROM (SELECT l.parent_sk, l.kind FROM kg.links l WHERE l.org_id = r.org_id AND (l.parent_sk, l.kind) >= (r.sk, 1) ORDER BY l.parent_sk, l.kind LIMIT 1) x
@@ -90,10 +90,12 @@ class Decision:
     apps: dict[str, str] = field(default_factory=dict)         # connector of each node kg decided
 
 
-async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], granted: set[str]) -> dict[int, tuple[bool, bool] | None]:
+async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], granted: set[Any], *, by_sk: bool = False) -> dict[int, tuple[bool, bool] | None]:
     """Per class, ``(plain, own)`` for a viewer whose grants are ``granted`` (node ids): ``plain`` when some clause with no ``@self`` has every literal granted, ``own`` when a clause with
     ``@self`` has every other literal granted (the row is then readable if its own id is granted too). ``None`` when a literal of the class is a node kg cannot vouch for: not held, not
-    stamped (``leaf`` NULL), flagged a leaf, or a record without a child. A consistent projection has no such literal, so it is a stale or half-written one: the walk decides."""
+    stamped (``leaf`` NULL), flagged a leaf, or a record without a child. A consistent projection has no such literal, so it is a stale or half-written one: the walk decides.
+    ``by_sk``: ``granted`` holds kg keys (grants read from kg's members, which keep the grants of a deleted node): a deleted literal is then met by no grant, as the read by id
+    leaves deleted nodes out."""
     lits = sorted({x for cl in classes.values() for clause in cl for x in clause if x != SELF})
     # @self counts as seen and met, so a clause is one set test: a connector has tens of thousands of clauses, and this runs on the event loop.
     live: set[Any] = {SELF}
@@ -104,7 +106,10 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
         if isinstance(granted, access_sql.Grants):
             await granted.see(tx, org, r["ids"])
         seen.update(r["sks"])
-        live.update(sk for sk, i in zip(r["sks"], r["ids"], strict=True) if i in granted)
+        if by_sk:
+            live.update(sk for sk, gone in zip(r["sks"], r["deleted"], strict=True) if sk in granted and not gone)
+        else:
+            live.update(sk for sk, i in zip(r["sks"], r["ids"], strict=True) if i in granted)
     if was is not None:
         await tx.fetchval(SORTS_BACK, was)
     out: dict[int, tuple[bool, bool] | None] = {}

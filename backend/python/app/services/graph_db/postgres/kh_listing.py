@@ -27,10 +27,11 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
+from app.models.permission import ORG_SHARE_PERMISSION_TYPES
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import counts as kg_counts
-from app.services.graph_db.postgres.kg import grant_marks
+from app.services.graph_db.postgres.kg import drainer, grant_marks, net
 from app.services.graph_db.postgres.kg import hierarchy as kg_hierarchy
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -86,12 +87,45 @@ FILES = """/* pipeshub:kg.listing_files */ SELECT e.from_id, f.doc->>'extension'
     JOIN graph.nodes f ON f.org_id = e.org_id AND f.coll = 'files' AND f.id = e.to_id WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_coll = 'records' AND e.from_id = ANY($2::text[])"""
 
 
+# Every grant of a viewer as kg holds it (kg.model.derive mirrors the walk's read, ``permissions._GRANTS_SQL``): the principals of the user's closure, each a range of
+# kg.scope_members by its key. Of their grants: none on an App (a connector's own grant is the gate's), no ``@uar`` row (the gate's too), an organisation's only of a sharing type
+# ($4), a source account's and its groups' (closure rows of a connector, ``app_sk`` <> 0) only inside that connector, and only on the gated connectors (their keys, $3: tested on
+# the member row, never a key read per grant). A deleted node keeps its members: every reader of these keys tests the row's own ``deleted`` (``read.class_verdicts``, the listing's
+# live rows).
+VIEWER_GRANTS = """/* pipeshub:kg.viewer_grants */ SELECT m.app_sk, array_agg(DISTINCT m.node_sk) AS sks
+    FROM (SELECT k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 4 AND k.id = $2) u
+    JOIN kg.principal_closure c ON c.org_id = $1 AND c.user_sk = u.sk
+    CROSS JOIN LATERAL (SELECT m.node_sk, m.app_sk FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.node_sk <> m.app_sk AND m.gtype <> '@uar'
+      AND m.app_sk = ANY($3::bigint[]) AND (c.via <> 'org' OR m.gtype = ANY($4::text[])) AND (c.app_sk = 0 OR m.app_sk = c.app_sk) OFFSET 0) m
+    GROUP BY m.app_sk"""
+APP_KEYS = "/* pipeshub:kg.app_keys */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = ANY($2::text[])"
+PRINCIPALS_DONE = "/* pipeshub:kg.principals_done */ SELECT backfill_cursor = 'done' FROM kg.projection_state WHERE org_id = $1 AND app_sk = 0"
+
+
+@dataclass(frozen=True)
+class KhGrants:
+    """The viewer's grants as a page reads them: ``own`` the App's, ``held`` every gated connector's (a clause's literals are nodes of any connector a walk passes through).
+    Node ids (the read of ``get_knowledge_hub_access_v3``, or the caller's), or kg keys (``by_sk``: :data:`VIEWER_GRANTS`, for a page whose every gated connector kg holds
+    current). ``access`` is what the access check is given: the grants by connector, or (``by_sk``) the gate alone, whose grants the check reads per node (``access.grants_of``)."""
+    own: frozenset = frozenset()
+    held: frozenset = frozenset()
+    access: dict[str, Any] = field(default_factory=dict)
+    by_sk: bool = False
+
+    def has(self, r: Any) -> bool:  # noqa: ANN401
+        """Whether a kg row (with ``sk`` and ``id``) is one of the App's own grants."""
+        return (r["sk"] if self.by_sk else r["id"]) in self.own
+
+    def __bool__(self) -> bool:
+        return bool(self.own)
+
+
 class TopGrants:
     """The viewer's grants of one connector that can be chain-tops (``kg.grant_marks``: no parent the same principal holds covers them), by the record group of their node
     (None: none, several, a group), as the chain-top walk takes them: ids of granted nodes. Without kg's answer (``by_group`` None: a connector kg does not serve, no user, the
     walk) every grant, of no known group: the walk's own input. Every grant that is a chain-top is among them, so the walk over them places exactly what it places over all."""
 
-    def __init__(self, granted: set[str], by_group: dict[int | None, list[int]] | None, loose: dict[int, str], keys: Callable[[list[int]], Awaitable[dict[int, str]]],
+    def __init__(self, granted: KhGrants, by_group: dict[int | None, list[int]] | None, loose: dict[int, str], keys: Callable[[list[int]], Awaitable[dict[int, str]]],
                  parents: dict[int, int] | None = None) -> None:
         self.granted, self.by_group, self._ids, self._keys = granted, by_group, dict(loose), keys
         self.parents = parents or {}      # node sk -> its one hierarchy parent, where kg's mark has it (``grant_marks`` node_parent)
@@ -100,15 +134,25 @@ class TopGrants:
     async def ids(self, groups: Collection[int] | None = None) -> list[str]:
         """Those of the record groups ``groups`` (sks) and of no known group; every one when ``groups`` is None. Not inside a read unit of the caller (it may read the ids)."""
         if self.by_group is None:
-            return sorted(self.granted)
+            return sorted(await self._every()) if self.granted.by_sk else sorted(self.granted.own)
         sks = [sk for g, gs in self.by_group.items() if groups is None or g is None or g in groups for sk in gs]
         if need := [sk for sk in sks if sk not in self._ids]:
             self._ids |= await self._keys(need)
-        return sorted({i for sk in sks if (i := self._ids.get(sk)) in self.granted})
+        return sorted({i for sk in sks if (i := self._ids.get(sk)) is not None and self.has(sk, i)})
+
+    async def _every(self, tx: Tx | None = None, org: str = "") -> set[str]:
+        """The ids of every grant of the App when they are kg keys (the walk's input, when kg has no answer for the chain-tops): read once, in ``tx`` when given."""
+        if need := [sk for sk in self.granted.own if sk not in self._ids]:
+            self._ids |= {r["sk"]: r["id"] for r in await tx.fetch(KEYS, org, sorted(need))} if tx is not None else await self._keys(sorted(need))
+        return {self._ids[sk] for sk in self.granted.own if sk in self._ids}
+
+    def has(self, sk: int, node_id: str) -> bool:
+        """Whether the node (its key and id) is one of the App's own grants."""
+        return self.granted.has({"sk": sk, "id": node_id})
 
     async def held(self, tx: Tx, org: str, groups: list[int]) -> set[int]:
         """Of the groups ``groups`` (sks), the ones that hold one of them: never fewer than the groups a chain-top is placed under. In the caller's unit."""
-        loose = sorted(self.granted) if self.by_group is None else sorted({i for sk in self.by_group.get(None, []) if (i := self._ids.get(sk)) in self.granted})
+        loose = sorted(await self._every(tx, org) if self.granted.by_sk else self.granted.own) if self.by_group is None else sorted({i for sk in self.by_group.get(None, []) if (i := self._ids.get(sk)) is not None and self.has(sk, i)})
         found = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, loose)} if loose and groups else set()
         return found | (set(groups) & self.groups)
 
@@ -121,7 +165,7 @@ def _node_type(coll: str, doc: dict) -> str:
     return "folder" if doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER" else "record"
 
 
-async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str], only: list[int] | None = None) -> dict[str, Any] | None:
+async def class_sets(tx: Tx, org: str, app_sk: int, held: KhGrants, only: list[int] | None = None) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
     for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate. With ``only``, just those of the connector's classes
     are decided (``known``; one that is not the connector's opens nothing, as when every class is read): a row of any other class is the access check's (``_kh_class_split``), a
@@ -130,7 +174,7 @@ async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str], only: list[i
     if got["n"] > CLASS_MAX:
         return None
     found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
-    verdicts = await kg_read.class_verdicts(tx, org, found, held)
+    verdicts = await kg_read.class_verdicts(tx, org, found, held.held, by_sk=held.by_sk)
     return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None},
             "known": None if only is None else set(only), "held": held}
 
@@ -151,7 +195,7 @@ async def cover_children(tx: Tx, org: str, sets: dict[str, Any], parents: list[i
     return sets
 
 
-async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
+async def head(tx: Tx, org: str, app_id: str, held: KhGrants, *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
     """A connector's listing state: its node key (None when kg holds no finished copy of it and it holds a node; :data:`NOTHING` when it holds none), its document, the rows groups
     that hide their children hide, whether kg serves it, and what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it
     admits by are the ones the currency check saw). ``held``: every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector;
@@ -267,13 +311,11 @@ class KhListingMixin(PgBase):
                 org=org, org_id=org_id, app_id=app_id, start_id=start_id, grantee_ids=grantee_ids, gated_app_ids=gated_app_ids, granted_ids=granted_ids, grants_by_connector=grants_by_connector,
                 user_key=user_key, grants_out=grants_out, limit=limit, sort_field=sort_field, order=order, after=after, direction=direction, filters=filters, include_total=include_total,
                 include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents, by_class=snapshot)
-        # Every gated connector's grants (`_kh_v3_page_grants`); a row's own grant is this App's.
-        every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
-        granted = every.get(app_id) or []
-        held = {g for ids in every.values() for g in ids}
+        # Every gated connector's grants (`_kh_grants`); a row's own grant is this App's.
+        gset = await self._kh_grants(app_id, org_id, grantee_ids, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction, by_class=snapshot, ids_out=grants_out is not None)
         if grants_out is not None:
-            grants_out[app_id] = granted
-        access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every}
+            grants_out[app_id] = sorted(gset.own)
+        access, held = gset.access, gset
 
         app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, held, by_class=snapshot), transaction)
         if app_sk is None:
@@ -299,9 +341,8 @@ class KhListingMixin(PgBase):
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
         if scope is not None:
             where += f" AND r.sk = ANY({base.add(scope)}::bigint[])"
-        gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
-        viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
+        viewer = await self._kh_flat_viewer(sets, where, base, admit, gset, transaction)
         admit_sql, pbase, page_where = None, kgl.Params(list(base.values)), where
         if viewer is not None and scope is not None:
             # The rows of a scope are read by their keys whatever the window, so each window read them all again: the classes admit inside the read, and one window is the page.
@@ -457,6 +498,40 @@ class KhListingMixin(PgBase):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
         raise KnowledgeHubListingNotReady
 
+    async def _kh_grants(self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None,
+                         grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None, *, by_class: bool, ids_out: bool) -> KhGrants:
+        """The viewer's grants for a page of ``app_id``. A page that reads them itself (``user_key``, no grants given, none asked back by id) in its own snapshot (``by_class``)
+        reads them from kg when kg holds every gated connector current (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
+        if by_class and user_key and granted_ids is None and grants_by_connector is None and not ids_out and kg_read.enabled() and current_or_system().kind != "system":
+            org = current_org_id()
+            got = await self._kq(lambda tx: self._kh_kg_grants(tx, org, app_id, user_key, gated_app_ids), transaction) if org_id == org else None
+            if got is not None:
+                return got
+        every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
+        return KhGrants(frozenset(every.get(app_id) or ()), frozenset(g for ids in every.values() for g in ids),
+                        {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": every})
+
+    async def _kh_kg_grants(self, tx: Tx, org: str, app_id: str, user_key: str, gated_app_ids: list[str]) -> KhGrants | None:
+        """The viewer's grants as kg keys (:data:`VIEWER_GRANTS`), in the page's snapshot, and the gate the access check reads the rest by (``_check_gate``). None, for the read
+        by id, unless kg holds every connector the viewer is gated into current (``drainer.current_apps``: nothing waiting that can change it, its own or the organisation's), the
+        principals' copy is finished (the closure is part of every grant) and this process distrusts none of them."""
+        gate = await self._check_gate(tx, org, user_key)
+        if "linked" not in gate:      # the user is no node of the graph: no grants, as the read by id says
+            return KhGrants(access={**gate, "gated_app_ids": list(gated_app_ids)})
+        # the gate of this snapshot, within the caller's: a connector the caller was gated into and this snapshot is not has no grant, as the read by id buckets them
+        apps = [a for a in gated_app_ids if a in set(gate["gated_app_ids"])]
+        if apps and set(apps) - await drainer.current_apps(tx, org, apps):
+            return None
+        if apps and not await tx.fetchval(PRINCIPALS_DONE, org):
+            return None
+        for a in apps if net.DISTRUSTED else ():
+            if await net.distrusted(tx, org, a):
+                return None
+        keys = {r["sk"]: r["id"] for r in await tx.fetch(APP_KEYS, org, apps)} if apps else {}
+        by = {keys[r["app_sk"]]: r["sks"] for r in await tx.fetch(VIEWER_GRANTS, org, user_key, sorted(keys), list(ORG_SHARE_PERMISSION_TYPES))} if keys else {}
+        access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in set(apps)}}
+        return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
+
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:
         """The access check for a list of ids: kg first for a connector it serves, the live walk otherwise."""
         async def admit(ids: list[str]) -> set[str]:
@@ -471,7 +546,7 @@ class KhListingMixin(PgBase):
             return out
         return admit
 
-    def _kh_admitted_of(self, sets: dict[str, Any] | None, gset: set[str], admit: Callable[[list[str]], Awaitable[set[str]]]) -> Callable[[list[Any]], Awaitable[set[str]]]:
+    def _kh_admitted_of(self, sets: dict[str, Any] | None, gset: KhGrants, admit: Callable[[list[str]], Awaitable[set[str]]]) -> Callable[[list[Any]], Awaitable[set[str]]]:
         """Of rows of the listing's window, the ids the viewer may open: the classes decide what they can, the access check the rest."""
         async def admitted_of(rows: list[Any]) -> set[str]:
             ok, left = self._kh_class_split(rows, sets, gset)
@@ -479,7 +554,7 @@ class KhListingMixin(PgBase):
         return admitted_of
 
     @staticmethod
-    def _kh_class_split(rows: list[Any], sets: dict[str, Any] | None, granted: set[str]) -> tuple[set[str], list[Any]]:
+    def _kh_class_split(rows: list[Any], sets: dict[str, Any] | None, granted: KhGrants) -> tuple[set[str], list[Any]]:
         """Of rows, the ids the stamped classes admit, and the rows the classes do not decide (no stamp, a placeholder, a pending restamp, a class kg cannot vouch for): those go to the access check."""
         if sets is None:
             return set(), list(rows)
@@ -489,13 +564,13 @@ class KhListingMixin(PgBase):
             # a row of another connector has its connector's classes, not these: the check decides it, as it does a deleted or a foreign one
             if (r["r13"] is False and r["has_path"] and r["class_id"] is not None and not r["fenced"] and not r["placeholder"] and r["class_id"] not in sets["unvouched"]
                     and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"] and (sets["known"] is None or r["class_id"] in sets["known"])):
-                if r["class_id"] in sets["plain"] or (r["class_id"] in sets["own"] and r["id"] in granted):
+                if r["class_id"] in sets["plain"] or (r["class_id"] in sets["own"] and granted.has(r)):
                     ok.add(r["id"])
             else:
                 left.append(r)
         return ok, left
 
-    async def _kh_top_grants(self, org: str, app_id: str, user_key: str | None, granted: set[str], transaction: str | None) -> TopGrants:
+    async def _kh_top_grants(self, org: str, app_id: str, user_key: str | None, granted: KhGrants, transaction: str | None) -> TopGrants:
         """The viewer's grants of the connector that can be chain-tops (:class:`TopGrants`), read from kg by the principals the user holds in it (``kg.grant_marks``) for a
         connector kg serves; every grant otherwise (``kg.hierarchy.answer``: the switch off, a caller's own transaction, the system role, a connector not served, an error)."""
         async def keys(sks: list[int]) -> dict[int, str]:
@@ -644,7 +719,7 @@ class KhListingMixin(PgBase):
                 break
         return False, used
 
-    async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: set[str], access: dict[str, Any], *,
+    async def _kh_arrows_read(self, tx: Tx, org: str, page: list[Any], hidden: list[int], sets: dict[str, Any] | None, gset: KhGrants, access: dict[str, Any], *,
                               tops: TopGrants | None, bound: int | None = None, cut: set[int] | None = None) -> tuple[set[int], list[Any], set[str], set[int]]:
         """The read behind the arrows of a page's rows, in the caller's unit: the rows a statement over the classes finds a child for (a connector kg serves: exact), and for the
         others a sample of their children with the ones the viewer may open (the classes, then the live check for what they do not decide). Last, with ``tops``, the groups that
@@ -661,7 +736,8 @@ class KhListingMixin(PgBase):
             sets = await cover_children(tx, org, sets, asked, hidden)
         if sets is not None:
             q = kgl.Params([org, asked, hidden])
-            admit_c = kgl.class_admit("c", q, {"plain": sorted(sets["plain"]), "own": sorted(sets["own"]), "unvouched": sorted(sets["unvouched"]), "granted": sorted(gset), "walked": set()})
+            admit_c = kgl.class_admit("c", q, {"plain": sorted(sets["plain"]), "own": sorted(sets["own"]), "unvouched": sorted(sets["unvouched"]), "granted": sorted(gset.own),
+                                                "by_sk": gset.by_sk, "walked": set()})
             # a child the classes do not decide (no stamp, a placeholder, a class kg cannot vouch for, another connector's): only the rows that have one are sampled
             found = await tx.fetch(kgl.arrows_sql(admit_c, kgl.undecided_child(q, sorted(sets["unvouched"]), sets["app_sk"]), ARROW_CHILDREN), *q.values)
             lists = {r["sk"] for r in found if r["lists"]}
@@ -704,7 +780,7 @@ class KhListingMixin(PgBase):
                 undecided |= {p for sk in unsure for p in by_stub[sk]} - lists
         return lists
 
-    async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: list[str], transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
+    async def _kh_flat_viewer(self, sets: dict[str, set[int]] | None, where: str, base: kgl.Params, admit: Any, granted: KhGrants, transaction: str | None) -> dict[str, Any] | None:  # noqa: ANN401
         """What the viewer's grants open of a connector kg serves, by class: the classes met with no grant of the row's own (``plain``), the classes that need the row's own grant (``own``), the classes
         kg cannot vouch for (``unvouched``) and the few rows no class decides, with the ones among them the access check admits (``walked``). None when the connector is not served or too many rows are
         left to the check: the rows are then asked of the access check one window at a time."""
@@ -717,7 +793,8 @@ class KhListingMixin(PgBase):
         left = [r["id"] for r in await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)]
         if len(left) > UNDECIDED_MAX:
             return None
-        return {"plain": plain, "own": own, "unvouched": unvouched, "left": left, "walked": await admit(left) if left else set(), "granted": sorted(set(granted))}
+        return {"plain": plain, "own": own, "unvouched": unvouched, "left": left, "walked": await admit(left) if left else set(), "granted": sorted(granted.own),
+                "by_sk": granted.by_sk}
 
     async def _kh_flat_exact(self, org: str, app_sk: int, where: str, base: kgl.Params, viewer: dict[str, Any], transaction: str | None) -> tuple[int, dict[str, int], bool]:
         """The total of a connector kg serves, from the stamped classes: what the viewer's grants open by class are counted where the rows are, up to COUNT_CAP, and the few rows kg does not decide
@@ -732,7 +809,8 @@ class KhListingMixin(PgBase):
             folded = await self._kq(lambda tx: kg_counts.class_rows(tx, org, app_sk, plain), transaction)
         q = kgl.Params(list(base.values))
         q.values[2] = COUNT_CAP + 1
-        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
+        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]),
+                            by_sk=viewer["by_sk"])
         counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
         for (kind, folder), n in (folded or {}).items():
             counts["recordGroup" if kind == 2 else "folder" if folder else "record"] += n

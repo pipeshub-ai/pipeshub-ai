@@ -27,7 +27,11 @@ from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _do
 from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
-from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
+from app.services.graph_db.postgres.kh_listing import (
+    UNDECIDED_MAX,
+    KhGrants,
+    class_sets,
+)
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -40,12 +44,15 @@ if TYPE_CHECKING:
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
 # Every grant of a viewer in one statement, so a writable transaction (read committed, a snapshot per statement) never joins two states of them: the live
 # records and groups that the grantees ($2) hold a permission edge to (an organisation's only of a sharing type, $4), and, inside its own connector only,
-# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). Edges by the key,
+# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). A group, role or team counts only while
+# it is a node, as the user's own do (``_gate``): every writer of a membership reads the group's node first and a delete takes the node's edges with it, so a membership
+# of a group that is gone is one written beside the group's delete, never one ahead of the group's sync. Edges by the key,
 # nodes by primary key (LATERAL ... OFFSET 0: a lookup per row whatever the statistics say).
 _GRANTS_SQL = """/* pipeshub:graph.access_grants_all */ WITH acct AS (SELECT * FROM unnest($5::text[], $6::text[]) AS a(id, cid)),
   holder AS (SELECT a.id, a.cid FROM acct a
     UNION SELECT b.to_id, a.cid FROM acct a CROSS JOIN LATERAL (SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'permission' AND b.from_coll = 'users'
-      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER' OFFSET 0) b),
+      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'
+      AND EXISTS (SELECT 1 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = b.to_coll AND g.id = b.to_id) OFFSET 0) b),
   hit AS (SELECT e.to_coll, e.to_id, NULL::text AS only_cid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = ANY($2::text[])
       AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups') AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))
     UNION ALL SELECT e.to_coll, e.to_id, h.cid FROM holder h CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
@@ -203,7 +210,8 @@ class PermissionsMixin(PgBase):
             if not lk["cid"] or lk["cid"] not in gated:
                 continue
             badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'
+                AND EXISTS (SELECT 1 FROM graph.nodes g WHERE g.org_id = $1 AND g.coll = b.to_coll AND g.id = b.to_id)""", org, lk["to_id"])]
             out.setdefault(lk["cid"], []).extend([lk["to_id"], *badges])
         return out
 
@@ -916,7 +924,7 @@ async def _kg_admitted(tx: Tx, org: str, apps: list[str], access: dict[str, Any]
     connector, and one with more undecided rows or classes than a listing evaluates, is left to the walk (the second value)."""
     if not kg_read.enabled() or current_or_system().kind == "system":
         return {}, apps
-    held = {g for ids in access["by_connector"].values() for g in ids}
+    held = KhGrants(held=frozenset(g for ids in access["by_connector"].values() for g in ids))
     out: dict[str, tuple[set[str], set[str]]] = {}
     rest: list[str] = []
     for a in apps:
