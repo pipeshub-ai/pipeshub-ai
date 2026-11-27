@@ -123,12 +123,21 @@ const OWNER_ARTIFACTS: ArtifactView = {
   completion: (completion) => completion,
 };
 
+/** A shared viewer's access to a run's answer: shown only when every record behind it is readable to them. */
+export type AnswerAccess = 'undecided' | 'shown' | 'withheld';
+
+/** What a viewer reads in place of an answer they may not see. */
+export const WITHHELD_ANSWER =
+  "This answer uses sources you don't have access to.";
+
 /** What the projector knows that a frame alone does not say. */
 export interface AudienceContext {
   /** A shared viewer's citation access (C-6). */
   checkedCitations(): CitationView;
   /** A shared viewer's artifact access (SS0). */
   checkedArtifacts(): ArtifactView;
+  /** Whether a shared viewer may read the run's answer; `undecided` until the run ends. */
+  answer(): AnswerAccess;
   /** The call asks the user: its arguments are the question legacy showed. */
   asksUser(toolCallId: unknown): boolean;
 }
@@ -244,7 +253,10 @@ function shape(
       if (!all.every((op) => ANSWER_DELTA_PATHS.has(op.path ?? ''))) {
         return null;
       }
-      const ops = all.filter((op) => !provisionalCard(op));
+      const ops = answerOps(
+        all.filter((op) => !provisionalCard(op)),
+        view.citations === 'owner' ? 'shown' : context.answer(),
+      );
       if (ops.length < all.length && ops.length === 0) return null;
       if (!ops.some((op) => CHECKED_DELTA_PATHS.has(op.path ?? ''))) {
         return ops.length < sent.length ? { ...frame, delta: ops } : frame;
@@ -259,7 +271,13 @@ function shape(
       if (snapshot['final'] === true) {
         return {
           ...frame,
-          snapshot: sharedCompletion(snapshot, citations(), artifacts()),
+          snapshot: sharedCompletion(
+            view.citations === 'owner' || context.answer() === 'shown'
+              ? snapshot
+              : withheldCompletion(snapshot),
+            citations(),
+            artifacts(),
+          ),
         };
       }
       return view.stepSnapshot.length === 0
@@ -269,6 +287,40 @@ function shape(
     default:
       return frame;
   }
+}
+
+/** The answer's ops for a viewer: none before its access is decided, the notice in place of an answer withheld from them. */
+function answerOps(ops: DeltaOp[], answer: AnswerAccess): DeltaOp[] {
+  if (answer === 'shown') return ops;
+  const cards = ops.filter((op) => op.path === '/artifacts/-');
+  if (answer === 'undecided') return cards;
+  return ops.flatMap((op): DeltaOp[] => {
+    switch (op.path) {
+      case '/normalizedAnswer':
+        return [{ ...op, value: op.value === '' ? '' : WITHHELD_ANSWER }];
+      case '/rawLength':
+        return [{ ...op, value: 0 }];
+      case '/citations':
+        return [{ ...op, value: [] }];
+      case '/artifacts/-':
+        return [op];
+      case undefined:
+      default:
+        return [];
+    }
+  });
+}
+
+/** A finished answer withheld from a viewer: how it ended, and the notice. */
+function withheldCompletion(
+  completion: Record<string, unknown>,
+): Record<string, unknown> {
+  const { answer } = completion;
+  return {
+    ...pick(completion, ['final', 'status', 'errorCode', 'truncatedBy']),
+    answer: answer === undefined || answer === '' ? answer : WITHHELD_ANSWER,
+    citations: [],
+  };
 }
 
 /** What a shared-conversation viewer may see of a finished answer (S-F17, C-6). */
@@ -313,7 +365,7 @@ export function sharedCompletion(
  * The not-found fact without the closest records' names (FU-2): they come from the owner's own search, which another
  * viewer may not be able to read.
  */
-function sharedNotFound(value: unknown): unknown {
+export function sharedNotFound(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
   const { near: _owners, ...kept } = value as Record<string, unknown>;
   return kept;

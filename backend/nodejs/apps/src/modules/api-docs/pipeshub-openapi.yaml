@@ -14643,7 +14643,9 @@ components:
         a citation, reference, filter node or search hit with no id, name, link or
         text. Only the owner of a conversation or search sees every source. An
         assistant answer that used a record its reader cannot read is withheld as
-        a whole (`HiddenAnswer`), the owner's included.
+        a whole (`HiddenAnswer`), the owner's included. A viewer never receives
+        the reasoning, tool steps or tool results of another user's message, nor
+        the text the model wrote between its steps.
       required:
         - redacted
         - reason
