@@ -16,6 +16,7 @@ from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -1018,6 +1019,68 @@ def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
     return _Unbounded
 
 
+# langchain-aws forces the tool for every Bedrock model id with "claude" in it, and newer Claude models refuse that:
+# 'tool_choice: type "tool" and "any" are not supported for this model'.
+_FORCED_TOOL_REFUSED = re.compile(r"tool_choice\b.*\bnot supported", re.IGNORECASE | re.DOTALL)
+# Bedrock model ids that refused, so later calls skip the request that cannot work.
+_models_refusing_forced_tool: set[str] = set()
+
+
+def _refuses_forced_tool(error: BaseException) -> bool:
+    response = getattr(error, "response", None)
+    code = (response.get("Error") or {}).get("Code") if isinstance(response, dict) else None
+    return code == "ValidationException" and bool(_FORCED_TOOL_REFUSED.search(str(error)))
+
+
+class _UnforcedToolFallback(Runnable[Any, Any]):
+    """A Bedrock structured-output call that is sent again without forcing the tool when the model refuses forced
+    tool use. The model may then answer without the tool, which callers already handle as a reply with no answer."""
+
+    def __init__(self, forced: Runnable[Any, Any], unforced: Runnable[Any, Any], model_id: str) -> None:
+        self._forced = forced
+        self._unforced = unforced
+        self._model_id = model_id
+
+    def _refused(self, error: BaseException) -> bool:
+        if not _refuses_forced_tool(error):
+            return False
+        if self._model_id not in _models_refusing_forced_tool:
+            _models_refusing_forced_tool.add(self._model_id)
+            logger.warning(
+                "Bedrock model %s refuses forced tool use; structured answers are asked for without forcing it",
+                self._model_id,
+            )
+        return True
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._model_id not in _models_refusing_forced_tool:
+            try:
+                return self._forced.invoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return self._unforced.invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._model_id not in _models_refusing_forced_tool:
+            try:
+                return await self._forced.ainvoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return await self._unforced.ainvoke(input, config, **kwargs)
+
+
+def _bedrock_structured_output(llm: ChatBedrockConverse, schema: type[BaseModel], **kwargs: Any) -> Runnable[Any, Any]:  # noqa: ANN401
+    if not ({"tool", "any"} & set(getattr(llm, "supports_tool_choice_values", None) or ())):
+        return llm.with_structured_output(schema, **kwargs)
+    unforced = llm.model_copy(update={"supports_tool_choice_values": ("auto",)}).with_structured_output(schema, **kwargs)
+    model_id = str(getattr(llm, "model_id", "") or "")
+    if model_id in _models_refusing_forced_tool:
+        return unforced
+    return _UnforcedToolFallback(llm.with_structured_output(schema, **kwargs), unforced, model_id)
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
     if getattr(llm, "native_structured_output", False) is True:
         # A harness run's model: its own transport chooses how the provider is asked.
@@ -1045,10 +1108,13 @@ def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, inc
             additional_kwargs["include_raw"] = True
 
         try:
-            model_with_structure = llm.with_structured_output(
-                schema,
-                **additional_kwargs
-            )
+            if isinstance(llm, ChatBedrockConverse):
+                model_with_structure = _bedrock_structured_output(llm, schema, **additional_kwargs)
+            else:
+                model_with_structure = llm.with_structured_output(
+                    schema,
+                    **additional_kwargs
+                )
             logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:
@@ -1080,8 +1146,17 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+class _NoStructuredAnswerError(ValueError):
+    """The model replied without the structured answer: a tool-calling parser yields None for a reply with no tool call."""
+
+
 # An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
-_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException, _NoStructuredAnswerError)
+
+
+def _require_answer(reply: Any) -> None:  # noqa: ANN401 - whatever the structured model returns
+    if reply is None:
+        raise _NoStructuredAnswerError("the reply did not contain the requested JSON answer")
 
 
 def _is_oversized_number(exc: BaseException) -> bool:
@@ -1445,7 +1520,10 @@ async def invoke_with_structured_output_and_reflection(
 
     # Try to parse the response
     parsed_response = None
+    # Unset when there is no reply text to show the model in the reflection turn.
+    response_content = None
     try:
+        _require_answer(response)
 
         if isinstance(response, dict):
             if 'content' in response:
@@ -1501,7 +1579,8 @@ async def invoke_with_structured_output_and_reflection(
         reflection_messages = list(messages)  # Copy the original messages
 
         # Add the failed response to context
-        reflection_messages.append(AIMessage(content=response_content))
+        if response_content is not None:
+            reflection_messages.append(AIMessage(content=response_content))
 
         reflection_prompt = f"""Your previous response could not be parsed correctly.
 Error: {str(parse_error)}
@@ -1517,6 +1596,7 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _call(reflection_messages)
+                _require_answer(reflection_response)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)

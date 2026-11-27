@@ -1232,6 +1232,46 @@ class TestInvokeWithStructuredOutputAndReflection:
         assert result is not None
         assert result.answer == "pydantic"
 
+    async def test_reply_without_structured_answer_is_asked_again(self) -> None:
+        """A tool-calling parser yields None when the model answers without the tool; that reply is asked for again."""
+        from langchain_aws import ChatBedrockConverse
+
+        mock_llm = MagicMock(spec=ChatBedrockConverse)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(
+            side_effect=[None, self.SimpleSchema(answer="second", confidence="High")],
+        )
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema, raise_call_errors=True,
+        )
+
+        assert result is not None
+        assert result.answer == "second"
+        reflection_request = mock_structured_llm.ainvoke.await_args_list[1].args[0]
+        # No empty assistant turn stands in for the missing reply.
+        assert [type(m) for m in reflection_request] == [HumanMessage, HumanMessage]
+        assert "did not contain the requested JSON answer" in reflection_request[-1].content
+
+    async def test_replies_never_holding_the_answer_return_none(self) -> None:
+        """Every reply without the structured answer ends in None, which callers read as a reply that did not fit."""
+        from langchain_aws import ChatBedrockConverse
+
+        mock_llm = MagicMock(spec=ChatBedrockConverse)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(return_value=None)
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema, raise_call_errors=True,
+        )
+
+        assert result is None
+        assert mock_structured_llm.ainvoke.await_count == 3
+        last_request = mock_structured_llm.ainvoke.await_args_list[-1].args[0]
+        assert not any(isinstance(m, AIMessage) for m in last_request)
+
     async def test_llm_invocation_failure_returns_none(self):
         """If the LLM invocation itself fails, return None."""
         from langchain_openai import ChatOpenAI

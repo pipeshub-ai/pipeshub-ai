@@ -1,8 +1,9 @@
 """Who a SQL connector's database is granted to."""
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.sql.permissions import database_permissions
 
 
@@ -11,10 +12,13 @@ def _connector(scope: str, lookup: AsyncMock, created_by: str | None = "user-1")
     transaction = MagicMock()
     transaction.__aenter__ = AsyncMock(return_value=tx_store)
     transaction.__aexit__ = AsyncMock(return_value=False)
-    return SimpleNamespace(
+    connector = SimpleNamespace(
         scope=scope, created_by=created_by, creator_email=None, connector_id="c1", logger=MagicMock(),
         data_store_provider=SimpleNamespace(transaction=MagicMock(return_value=transaction)),
     )
+    # The real lookup the SQL connectors inherit.
+    connector._load_creator_email = MethodType(BaseConnector._load_creator_email, connector)
+    return connector
 
 
 def _finds(email: str | None) -> AsyncMock:

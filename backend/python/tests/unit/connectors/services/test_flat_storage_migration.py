@@ -134,13 +134,59 @@ async def test_a_transient_failure_is_retried_in_another_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failures_are_given_up_on_after_the_last_pass() -> None:
-    m, kv = _migration([_docs("v1")] * MAX_PASSES, {"v1": [_holder("r1")]})
-    with patch(MOVE, new_callable=AsyncMock, side_effect=RuntimeError("503")) as move:
+async def test_failures_left_after_others_moved_are_given_up_on_after_the_last_pass() -> None:
+    m, kv = _migration(
+        [_docs("v1", "v2"), *[_docs("v2")] * (MAX_PASSES - 1)], {"v1": [_holder("r1")], "v2": [_holder("r2")]},
+    )
+    with patch(MOVE, new_callable=AsyncMock, side_effect=[{"moved": 2}, *[RuntimeError("503")] * MAX_PASSES]) as move:
         await m.run_org("org-1")
-    assert move.await_count == MAX_PASSES
+    assert move.await_count == MAX_PASSES + 1
     assert kv.data[KEY]["done"] is True and kv.data[KEY]["failed"] == 1
+    [call] = m.logger.error.call_args_list
+    assert "finished: 1 moved, 0 with no record to own them, 1 failed" in call.args[0] % call.args[1:]
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_moved_nothing_is_tried_again_at_the_next_start() -> None:
+    """Every copy failing is one shared cause, such as a missing bucket permission: once it is fixed the
+    copies must move without anyone clearing a key by hand."""
+    m, kv = _migration([_docs("v1")] * MAX_PASSES, {"v1": [_holder("r1")]})
+    with patch(MOVE, new_callable=AsyncMock, side_effect=RuntimeError("AccessDenied")) as move:
+        assert await m.run_org("org-1") is True, "the run ends; it does not spin"
+    assert move.await_count == MAX_PASSES
+    assert not kv.data[KEY].get("done") and not kv.data[KEY].get("after")
     m.logger.error.assert_called_once()
+
+    m._flat_documents = AsyncMock(side_effect=[_docs("v1"), []])
+    with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
+        await m.run_org("org-1")
+    assert kv.data[KEY]["done"] is True and kv.data[KEY]["moved"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "result", "reason"), [
+    (None, None, "no storage path for the owning record"),
+    ("records/conn/r1", {"moved": 0}, "the storage service moved nothing"),
+    ("records/conn/r1", {"moved": 1, "failed": ["d1"]}, "the storage service could not move every document"),
+    ("records/conn/r1", RuntimeError("move-tree failed: 500"), "RuntimeError: move-tree failed: 500"),
+])
+async def test_the_reason_copies_failed_is_logged(path: str | None, result: object, reason: str) -> None:
+    m, _ = _migration([_docs("v1")] * MAX_PASSES, {"v1": [_holder("r1")]})
+    m.storage._owner_storage_path = AsyncMock(return_value=path)
+    with patch(MOVE, new_callable=AsyncMock, side_effect=result if isinstance(result, Exception) else [result] * MAX_PASSES):
+        await m.run_org("org-1")
+    [call] = m.logger.error.call_args_list
+    assert f"{reason} (1)" in call.args[0] % call.args[1:]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_names_only_a_few_copies() -> None:
+    vrids = [f"v{i}" for i in range(50)]
+    m, _ = _migration([_docs(*vrids)] * MAX_PASSES, {v: [_holder(v)] for v in vrids})
+    with patch(MOVE, new_callable=AsyncMock, side_effect=RuntimeError("AccessDenied")):
+        await m.run_org("org-1")
+    named = [c for c in m.logger.warning.call_args_list if "left in place" in c.args[0]]
+    assert len(named) == 5 * MAX_PASSES
 
 
 @pytest.mark.asyncio
@@ -150,7 +196,8 @@ async def test_an_unreadable_page_counts_as_failed() -> None:
     with patch(MOVE, new_callable=AsyncMock) as move:
         await m.run_org("org-1")
     move.assert_not_awaited()
-    assert kv.data[KEY]["failed"] == 1
+    [call] = m.logger.error.call_args_list
+    assert "1 failed: could not read the records holding them: RuntimeError (1)" in call.args[0] % call.args[1:]
 
 
 @pytest.mark.asyncio
@@ -191,3 +238,44 @@ async def test_orgs_are_listed_cross_org_and_each_runs_inside_its_own_org() -> N
     with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
         assert await m.run_all_orgs() is True
     assert seen == [("orgs", "system"), ("storage", "org-1")]
+
+
+@pytest.mark.asyncio
+async def test_a_copy_moved_in_part_is_progress_and_still_a_failure() -> None:
+    m, kv = _migration([_docs("v1")] * MAX_PASSES, {"v1": [_holder("r1")]})
+    partly = {"moved": 1, "failed": ["d1"]}
+    # Its record moved in the first pass; nothing has moved since.
+    with patch(MOVE, new_callable=AsyncMock, side_effect=[partly, *[RuntimeError("503")] * (MAX_PASSES - 1)]):
+        await m.run_org("org-1")
+    assert kv.data[KEY]["done"] is True and "movedNothingAt" not in kv.data[KEY]
+    call = m.logger.error.call_args
+    assert "finished: 0 moved, 0 with no record to own them, 1 failed" in call.args[0] % call.args[1:]
+
+
+@pytest.mark.asyncio
+async def test_a_run_an_older_version_gave_up_on_is_run_again() -> None:
+    m, kv = _migration([_docs("v1")], {"v1": [_holder("r1")]})
+    kv.data[KEY] = {"done": True, "passes": 3, "moved": 0, "unowned": 16, "failed": 6210, "after": None}
+    with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
+        await m.run_org("org-1")
+    assert kv.data[KEY]["done"] is True and kv.data[KEY]["moved"] == 1 and not kv.data[KEY].get("failed")
+
+
+@pytest.mark.asyncio
+async def test_copies_this_version_gave_up_on_are_not_tried_at_every_start() -> None:
+    m, kv = _migration([], {})
+    kv.data[KEY] = {"done": True, "passes": 3, "moved": 0, "movedBefore": 4, "failed": 1}
+    await m.run_org("org-1")
+    m._flat_documents.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_error_texts_that_differ_for_every_copy_do_not_pile_up() -> None:
+    vrids = [f"v{i}" for i in range(200)]
+    m, _ = _migration([_docs(*vrids)] * MAX_PASSES, {v: [_holder(v)] for v in vrids})
+    errors = [RuntimeError(f"no such key {i}") for i in range(200 * MAX_PASSES)]
+    with patch(MOVE, new_callable=AsyncMock, side_effect=errors):
+        await m.run_org("org-1")
+    assert len(m._reasons) <= 51 and sum(m._reasons.values()) == 200
+    [call] = m.logger.error.call_args_list
+    assert "other reasons (150)" in call.args[0] % call.args[1:]
