@@ -46,6 +46,10 @@ class GraphSkillSource:
     async def versions(self, tenant_id: str, name: str) -> Sequence[str]:
         return await self._store(tenant_id).content_versions(name)
 
+    async def exists(self, tenant_id: str, name: str) -> bool:
+        """Whether the skill is in the store now; the versions a deleted skill left in its log do not count."""
+        return await self._store(tenant_id).content_files(name) is not None
+
     async def content_digest(self, tenant_id: str, skill: SkillRef) -> str | None:
         """The digest admission pins for `skill`; None when it has no valid content to pin."""
         files = await self.files(tenant_id, skill)

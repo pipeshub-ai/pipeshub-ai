@@ -82,6 +82,7 @@ from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), 
 )
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
+from harness_core.models.transports.prompt_cache import check_prompt_cache_settings  # noqa: E402 - with check_runtime_settings
 
 # The legacy chat path binds its kernel seams here, not as a side effect of
 # whichever module happens to import app.agent_loop_lib first. Durable runs
@@ -89,6 +90,7 @@ from app.utils.worker_scaling import set_process_worker_count
 agent_loop_composition.install()
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
+check_prompt_cache_settings()
 
 container = QueryAppContainer.init("query_service")
 

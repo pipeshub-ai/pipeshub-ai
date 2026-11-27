@@ -102,10 +102,14 @@ async def test_an_unknown_ai_model_provider_is_not_named(monkeypatch: pytest.Mon
     assert (refused.status_code, refused.detail) == (404, "Provider not found")
 
 
-def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> None:
+def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> SimpleNamespace:
     manager = SimpleNamespace(**{name: AsyncMock(**spec) for name, spec in methods.items()})
     monkeypatch.setattr(skills, "_build_manager", AsyncMock(return_value=(manager, {})))
-    monkeypatch.setattr(skills, "_reject_if_builtin_skill", AsyncMock())
+    # A route whose test stubs get_skill runs its real pre-write lookup (_reject_if_builtin_skill), so the stub's miss
+    # is what answers; the others skip it.
+    if "get_skill" not in methods:
+        monkeypatch.setattr(skills, "_reject_if_builtin_skill", AsyncMock())
+    return manager
 
 
 @pytest.mark.parametrize("route, args, methods, detail", [
@@ -122,12 +126,15 @@ def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> None:
      "Resource not found for this skill."),
 ])
 async def test_an_unknown_skill_is_not_named(monkeypatch: pytest.MonkeyPatch, route, args, methods, detail) -> None:
-    _skills_manager(monkeypatch, **methods)
+    manager = _skills_manager(monkeypatch, **methods)
     kwargs = {"detach": False} if route == "delete_skill" else {}
 
     refused = await _refusal(getattr(skills, route)(MagicMock(), *args, **kwargs))
 
     assert (refused.status_code, refused.detail) == (404, detail)
+    if "get_skill" in methods:
+        manager.get_skill.assert_awaited_once_with(EMAIL)
+        manager.delete.assert_not_awaited()  # the lookup's miss answers before anything is deleted
 
 
 @pytest.mark.parametrize("store_text, detail", [

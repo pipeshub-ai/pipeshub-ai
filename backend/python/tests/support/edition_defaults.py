@@ -50,9 +50,10 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
 
 def agents_run_as_the_caller() -> bool:
     """Whether every agent run, a service-account agent's included, is the identified person asking: no service
-    token starts one, and its tools list and run with that person's own credentials. Here a service-account agent
-    runs on its own identity and credentials."""
-    return False
+    token starts one, and its tools list and run with that person's own credentials (``app.edition``)."""
+    from app import edition
+
+    return edition.AGENTS_RUN_AS_THE_CALLER
 
 
 async def verify_loop_caller(user: dict[str, object]) -> None:

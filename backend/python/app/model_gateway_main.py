@@ -63,11 +63,13 @@ from harness_core.gateway.model_server import MODEL_GATEWAY_PORT, ModelGatewaySe
 from harness_core.gateway.refusal_reports import RefusalReporter
 from harness_core.ids import RandomIds
 from harness_core.logs import HarnessLog
+from harness_core.models.transports.prompt_cache import check_prompt_cache_settings
 from harness_engines.release import release_model_apis
 from harness_engines.vendor_rules import release_vendor_rules
 
 # Stop at load on a setting this edition does not run.
 check_runtime_settings()
+check_prompt_cache_settings()
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

@@ -95,7 +95,9 @@ class PromptCacheSettings:
     @classmethod
     def from_env(cls) -> PromptCacheSettings:
         ttl = (os.getenv("PIPESHUB_PROMPT_CACHE_TTL", "").strip() or "5m").lower()
-        retention = (os.getenv("PIPESHUB_PROMPT_CACHE_RETENTION") or PROMPT_CACHE_RETENTION_DEFAULT or "").strip()
+        # Blank is unset, as every setting read from the environment here (app.utils.env_flags.env_flag_set): the
+        # build's default. "off" or "none" sends none.
+        retention = (os.getenv("PIPESHUB_PROMPT_CACHE_RETENTION") or "").strip() or PROMPT_CACHE_RETENTION_DEFAULT or ""
         if retention.lower() not in {"", "off", "none", *RETENTION_VALUES}:
             raise ValueError(
                 f"PIPESHUB_PROMPT_CACHE_RETENTION={retention!r} is not supported. Leave it unset, set it to off, "
@@ -111,6 +113,13 @@ class PromptCacheSettings:
     @property
     def breakpoint(self) -> dict[str, str]:
         return anthropic_breakpoint(self.anthropic_ttl)
+
+
+def check_prompt_cache_settings() -> None:
+    """Refuse to start on a PIPESHUB_PROMPT_CACHE_RETENTION this build does not send (raises ``ValueError`` naming the
+    allowed values). Every service main that makes model calls runs it at load, so a bad value stops the process
+    instead of failing each chat; ``from_env`` keeps the same check for any other reader."""
+    PromptCacheSettings.from_env()
 
 
 @dataclass(frozen=True)

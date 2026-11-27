@@ -202,6 +202,15 @@ class TestTheOffer:
         assert "col-secret" not in names, "an engine mounts every granted skill, so a disabled one is not granted"
         assert names[0] == "never-written"
 
+    async def test_an_assigned_skill_deleted_since_stays_to_be_reported_missing(self) -> None:
+        graph = await _world()
+        assert await GraphSkillStore(graph, ORG, COLLEAGUE.key).delete_skill("col-secret")  # type: ignore[arg-type]
+        agent = AgentRunDefinition(agentKey="a", definitionVersion=1, skills=(RunDefinitionSkill(name="col-secret"),))
+
+        definition = await with_offered_skills(agent, graph, ORG, VIEWERS, enabled=True)
+
+        assert definition.skills[0].name == "col-secret", "its archived versions do not make a deleted skill exist"
+
 
 class TestTheEngineMountsThePins:
     async def test_a_default_chat_engine_run_mounts_the_pdf_pack_and_is_told_of_it(self) -> None:

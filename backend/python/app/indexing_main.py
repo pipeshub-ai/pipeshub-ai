@@ -168,6 +168,7 @@ from app.utils.user_errors import (
     RECOVERY_REQUEUED,
     RECOVERY_RETRY,
 )
+from harness_core.models.transports.prompt_cache import check_prompt_cache_settings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -191,6 +192,7 @@ class CoordinationRunner(Protocol):
 
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
+check_prompt_cache_settings()
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()

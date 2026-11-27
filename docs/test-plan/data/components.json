@@ -3215,6 +3215,7 @@
         "backend/python/harness_core/pyproject.toml",
         "backend/python/harness_core/refusals.py",
         "backend/python/harness_core/edition.py",
+        "backend/python/harness_core/edition_constants.py",
         "backend/nodejs/apps/src/modules/agent-harness/edition.ts",
         "backend/nodejs/apps/src/modules/agent-harness/ports/claim-features.ts",
         "backend/python/harness_core/security/token_patterns.py",

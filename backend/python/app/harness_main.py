@@ -80,10 +80,12 @@ from harness_core.driver import RunDriver
 from harness_core.engines.durable.kernel import ENGINE
 from harness_core.interactions import NoWakeup
 from harness_core.logs import HarnessLog
+from harness_core.models.transports.prompt_cache import check_prompt_cache_settings
 from harness_core.priority import PreemptRequests
 
 # Stop at load on a setting this edition does not run.
 check_runtime_settings()
+check_prompt_cache_settings()
 
 if TYPE_CHECKING:
     from harness_core.contracts.generated.worker_capabilities import WorkerCapabilities
