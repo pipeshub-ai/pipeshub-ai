@@ -1166,6 +1166,8 @@ class BookStackConnector(BookStackPermissionsMixin, BaseConnector):
             connector_id=self.connector_id,
             record_type=RecordType.FILE.value,
             external_record_group_id=parent,
+            # The processor needs the type to create the group when the page is written before it.
+            record_group_type=_GROUP_TYPES[parent.partition("/")[0]],
             origin=OriginTypes.CONNECTOR.value,
             org_id=self.data_entities_processor.org_id,
             source_updated_at=updated_ms,

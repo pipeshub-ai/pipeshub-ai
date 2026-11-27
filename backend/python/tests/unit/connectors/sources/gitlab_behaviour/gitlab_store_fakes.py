@@ -55,7 +55,7 @@ class FakeRecordsDb:
 
     # ------------------------------------------------------------------ reads
 
-    async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace | None:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> SimpleNamespace | None:
         email = self.creators.get(user_id)
         return SimpleNamespace(id=user_id, email=email) if email else None
 

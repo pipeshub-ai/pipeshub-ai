@@ -510,6 +510,84 @@ async def test_bedrock_credential_errors_are_auth_errors():
     assert "UnrecognizedClientException" in (denied.message or "")
 
 
+_BEDROCK_PAGES = "app.services.ai_models.discovery.strategies.list_bedrock_pages"
+_KEYS = {"awsAccessKeyId": "AKIA", "awsAccessSecretKey": "secret"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("region", ["us", "us-east", "useast1", "US-EAST-1", "us east 1"])
+async def test_a_region_that_is_not_an_aws_region_is_refused_before_aws_is_called(region: str) -> None:
+    with patch(_BEDROCK_PAGES) as pages:
+        result = await ModelDiscoveryService().discover(DiscoveryRequest(
+            provider="bedrock", configuration={**_KEYS, "region": region},
+        ))
+    pages.assert_not_called()
+    assert result.error_code is not None
+    assert result.error_code.value == "invalid_response"
+    assert f'"{region}"' in (result.message or "")
+    assert "us-east-1" in (result.message or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("region", ["us-east-1", "eu-central-2", "ap-southeast-5", "us-gov-west-1", "us-isob-east-1", "eusc-de-east-1"])
+async def test_every_shape_of_aws_region_is_accepted(region: str) -> None:
+    with patch(_BEDROCK_PAGES, return_value=([], [])) as pages:
+        result = await ModelDiscoveryService().discover(DiscoveryRequest(
+            provider="bedrock", configuration={**_KEYS, "region": region},
+        ))
+    pages.assert_called_once()
+    assert result.error_code is None
+
+
+@pytest.mark.asyncio
+async def test_bedrock_that_cannot_be_reached_is_unreachable_and_names_the_region() -> None:
+    from botocore.exceptions import EndpointConnectionError
+
+    error = EndpointConnectionError(endpoint_url="https://bedrock.xx-east-9.amazonaws.com/foundation-models")
+    with patch(_BEDROCK_PAGES, side_effect=error):
+        result = await ModelDiscoveryService().discover(DiscoveryRequest(
+            provider="bedrock", configuration={**_KEYS, "region": "xx-east-9"},
+        ))
+    assert result.error_code is not None
+    assert result.error_code.value == "unreachable"
+    assert '"xx-east-9"' in (result.message or "")
+
+
+@pytest.mark.asyncio
+async def test_bedrock_that_does_not_answer_in_time_is_a_timeout() -> None:
+    from botocore.exceptions import ReadTimeoutError
+
+    with patch(_BEDROCK_PAGES, side_effect=ReadTimeoutError(endpoint_url="https://bedrock.us-east-1.amazonaws.com")):
+        result = await ModelDiscoveryService().discover(DiscoveryRequest(
+            provider="bedrock", configuration={**_KEYS, "region": "us-east-1"},
+        ))
+    assert result.error_code is not None
+    assert result.error_code.value == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_the_route_answers_a_bedrock_it_cannot_reach_instead_of_failing() -> None:
+    from botocore.exceptions import EndpointConnectionError
+
+    from app.api.middlewares.admin_gate import require_admin_caller
+    from app.api.middlewares.auth import deny_service_tokens
+    from app.api.routes.ai_models_registry import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[deny_service_tokens] = lambda: None
+    app.dependency_overrides[require_admin_caller] = lambda: None
+    error = EndpointConnectionError(endpoint_url="https://bedrock.xx-east-9.amazonaws.com/foundation-models")
+    with patch(_BEDROCK_PAGES, side_effect=error):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/ai-models/discover", json={
+                "provider": "bedrock", "configuration": {**_KEYS, "region": "xx-east-9"},
+            })
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert response.json()["errorCode"] == "unreachable"
+
+
 @pytest.mark.asyncio
 async def test_bedrock_regions_do_not_share_a_cache_entry():
     calls: list[str] = []

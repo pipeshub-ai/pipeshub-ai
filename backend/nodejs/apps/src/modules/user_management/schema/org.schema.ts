@@ -15,6 +15,8 @@ export interface IOrg extends Document {
   phoneNumber?: string;
   permanentAddress?: Address;
   isDeleted: boolean;
+  /** Set while createWithAdmin writes the organisation (it is also `isDeleted`); a row that keeps it is a create that failed. */
+  pendingCreate?: boolean;
   deletedByUser?: string;
   onBoardingStatus : string;
   /** Where the signup came from: a `ref` tag, or `direct`. */
@@ -80,6 +82,7 @@ const orgSchema = new Schema<IOrg>(
     signupChannel: { type: String },
     signupReferrerDomain: { type: String },
     isDeleted: { type: Boolean, default: false },
+    pendingCreate: { type: Boolean },
     deletedByUser: { type: String },
     adminRoleGuardAt: { type: Date },
     adminRoleLease: {
