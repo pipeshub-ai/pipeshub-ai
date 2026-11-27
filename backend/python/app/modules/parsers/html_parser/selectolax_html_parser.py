@@ -44,6 +44,11 @@ class SelectolaxHtmlParser:
       using ``<base>``, canonical link, or other heuristics in the document.
     """
 
+    # ``clean_html`` and ``replace_relative_image_urls`` are pure functions of their text
+    # argument, so a caller may run them on a worker thread. A backend without this flag
+    # (Docling) keeps its callers' passes on the event loop, as before.
+    PASSES_MAY_RUN_OFF_LOOP = True
+
     def __init__(self, *, allow_remote_fetch: bool = True, **kwargs: object) -> None:
         self._converter = HtmlToBlocksConverter()
         self._logger = kwargs.get("logger") or logging.getLogger(__name__)

@@ -65,6 +65,7 @@ from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResu
 from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm, table_row_batch_size
+from app.utils.cooperative_yield import CooperativeYield
 from app.utils.env_config import env_int, env_positive_int
 from app.utils.error_class import log_failure
 from app.utils.indexing_helpers import generate_simple_row_text
@@ -92,6 +93,8 @@ MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
 EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", 500))
+# Cells per slice when a row's dict is built between yields (see ``get_rows_text``).
+_ROW_SLICE_CELLS = 1024
 EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
 # The load runs in a worker process that may grow by this much (see
@@ -520,6 +523,8 @@ class ExcelParser:
         self.workbook = None
         self.file_binary = None
         self._output = _OutputBudget(OUTPUT_BUDGET_FACTOR * EXCEL_MAX_TEXT_CHARS)
+        # Lets the event loop run during the loops below that have no await of their own.
+        self._pacer = CooperativeYield()
 
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
@@ -885,7 +890,9 @@ class ExcelParser:
             # attribute no longer exists.
             if isinstance(sheet, SheetModel):
                 # Compact model: the extent is known without building a set of positions.
-                non_empty_positions = sheet.value_positions()
+                # One synchronous pass over every cell key, so it cannot take a yield: it
+                # runs on a thread.
+                non_empty_positions = await asyncio.to_thread(sheet.value_positions)
                 effective_max_row: int = non_empty_positions.max_row
                 effective_max_col: int = non_empty_positions.max_col
             else:
@@ -915,6 +922,8 @@ class ExcelParser:
                     f"(openpyxl reported {sheet.max_row}\u00d7{sheet.max_column})"
                 )
 
+            pacer = self._pacer
+
             def get_visited_range(row: int, col: int) -> tuple[int, int, int, int] | None:
                 for start_row, end_row, start_col, end_col in visited_ranges:
                     if start_row <= row <= end_row and start_col <= col <= end_col:
@@ -927,6 +936,8 @@ class ExcelParser:
                 # Step 1: Find table boundaries (max_row, max_col)
                 max_col = start_col
                 for col in range(start_col, effective_max_col + 1):
+                    if pacer.due():
+                        await pacer.pause()
                     has_data = False
                     for r in range(start_row, effective_max_row + 1):
                         cell = sheet.cell(row=r, column=col)
@@ -934,11 +945,15 @@ class ExcelParser:
                             has_data = True
                             max_col = col
                             break
+                        if pacer.due():
+                            await pacer.pause()
                     if not has_data:
                         break
 
                 max_row = start_row
                 for row in range(start_row+1, effective_max_row + 1):
+                    if pacer.due():
+                        await pacer.pause()
                     has_data = False
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row, column=col)
@@ -946,11 +961,15 @@ class ExcelParser:
                             has_data = True
                             max_row = row
                             break
+                        if pacer.due():
+                            await pacer.pause()
                     if not has_data and row != start_row+1:
                         break
 
                 # Step 1.5: Expand left to include additional columns
                 for col in range(start_col - 1, 0, -1):  # Go left from start_col to column 1
+                    if pacer.due():
+                        await pacer.pause()
                     has_data = False
                     for row in range(start_row, max_row + 1):  # Check within rectangular region
                         cell = sheet.cell(row=row, column=col)
@@ -958,6 +977,8 @@ class ExcelParser:
                             has_data = True
                             start_col = col  # Update start_col to include this column
                             break
+                        if pacer.due():
+                            await pacer.pause()
                     if not has_data:
                         break  # Found empty column, stop expanding left
 
@@ -972,6 +993,8 @@ class ExcelParser:
                         cell = sheet.cell(row=row_idx, column=col)
                         cell_data = self._process_cell(cell, None, row_idx, col)
                         row_values.append(cell_data["value"])
+                        if pacer.due():
+                            await pacer.pause()
                     first_rows.append(row_values)
                 # only the values are kept; the cell dicts are garbage
                 self._output.release_cells(len(first_rows) * column_count)
@@ -1013,6 +1036,8 @@ class ExcelParser:
                             cell = sheet.cell(row=row_idx, column=col)
                             cell_data = self._process_cell(cell, None, row_idx, col)
                             row_values.append(cell_data["value"])
+                            if pacer.due():
+                                await pacer.pause()
                         all_rows.append(row_values)
                     self._output.release_cells(len(all_rows) * column_count)
 
@@ -1075,6 +1100,8 @@ class ExcelParser:
                         header = headers[col_idx]
                         cell_data = self._process_cell(cell, header, row_idx, col)
                         row_data.append(cell_data)
+                        if pacer.due():
+                            await pacer.pause()
                     table_data.append(row_data)
 
                 return {
@@ -1092,11 +1119,15 @@ class ExcelParser:
             row = 1
             populated_rows: set[int] | None = getattr(non_empty_positions, "rows", None)
             while row <= effective_max_row:
+                if pacer.due():
+                    await pacer.pause()
                 if populated_rows is not None and row not in populated_rows:
                     row += 1  # no position of an empty row can start a table
                     continue
                 col = 1
                 while col <= effective_max_col:
+                    if pacer.due():
+                        await pacer.pause()
                     visited_range = get_visited_range(row, col)
                     if visited_range is not None:
                         _start_row, end_row, start_col, end_col = visited_range
@@ -1648,6 +1679,22 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         finally:
             self._output.release(prompt_charge)
 
+    async def _simple_row_text(self, row_data: dict[Any, Any]) -> str:
+        """``generate_simple_row_text`` for one row, in slices with a yield between them.
+
+        The text of a 16,000-column row is one long join; the same pieces joined by ``", "`` per slice
+        give the same string, so the event loop is not held for the whole row.
+        """
+        if len(row_data) <= _ROW_SLICE_CELLS:
+            return generate_simple_row_text(row_data)
+        items = list(row_data.items())
+        pieces: list[str] = []
+        for start in range(0, len(items), _ROW_SLICE_CELLS):
+            pieces.append(generate_simple_row_text(dict(items[start : start + _ROW_SLICE_CELLS])))
+            if self._pacer.due(_ROW_SLICE_CELLS):
+                await self._pacer.pause()
+        return ", ".join(pieces)
+
     async def get_rows_text(
         self,
         rows: list[list[dict[str, Any]]],
@@ -1663,17 +1710,21 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         """
         self.logger.info(f"Converting {len(rows)} rows to natural language text")
         try:
-            rows_data = [
-                {
-                    cell["header"]: (
-                        cell["value"].isoformat()
-                        if isinstance(cell["value"], (datetime, time))
-                        else cell["value"]
-                    )
-                    for cell in row
-                }
-                for row in rows
-            ]
+            # A batch of wide rows is a lot of cells: build the dicts row by row and hand the event
+            # loop back between rows. (The prompt guard that follows is a synchronous context manager
+            # and cannot yield; neither can the model call's own prompt building.)
+            pacer = self._pacer
+            rows_data = []
+            for row in rows:
+                row_dict: dict[Any, Any] = {}
+                # in slices, so a 16,000-column row is not one 15 ms stretch
+                for start in range(0, len(row), _ROW_SLICE_CELLS):
+                    for cell in row[start : start + _ROW_SLICE_CELLS]:
+                        value = cell["value"]
+                        row_dict[cell["header"]] = value.isoformat() if isinstance(value, (datetime, time)) else value
+                    if pacer.due(_ROW_SLICE_CELLS):
+                        await pacer.pause()
+                rows_data.append(row_dict)
             descriptions = await describe_row_dicts(
                 self.llm,
                 rows_data,
@@ -1719,13 +1770,18 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name, llm)
         # the tables' cell dicts live until this sheet is processed; only the row dicts and texts go on
-        table_cells = sum(len(row) for table in tables for row in table["data"])
-        table_structures = sum(
-            _TABLE_BYTES
-            + _TABLE_LIST_SLOT_BYTES * len(table["headers"])
-            + sum(self._output.table_row_bytes(len(row)) for row in table["data"])
-            for table in tables
-        )
+        # Two sums over every row of every table, written as loops so a large sheet lets the
+        # event loop run between rows (a row is counted by its cells, not as one unit).
+        pacer = self._pacer
+        table_cells = 0
+        table_structures = 0
+        for table in tables:
+            table_structures += _TABLE_BYTES + _TABLE_LIST_SLOT_BYTES * len(table["headers"])
+            for row in table["data"]:
+                table_cells += len(row)
+                table_structures += self._output.table_row_bytes(len(row))
+                if pacer.due(len(row) or 1):
+                    await pacer.pause()
 
         # Process each table
         processed_tables = []
@@ -1797,6 +1853,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                     # Add processed rows to results
                     for row, row_text in zip(batch, row_texts):
+                        if pacer.due(len(row) or 1):
+                            await pacer.pause()
                         if row:
                             self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                             processed_rows.append(
@@ -1811,9 +1869,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 note_rows_over_budget(len(table["data"]))
                 # Use simple format for rows (skip LLM)
                 for row in table["data"]:
+                    if pacer.due(len(row) or 1):
+                        await pacer.pause()
                     if row:
                         row_data = {cell["header"]: cell["value"] for cell in row}
-                        row_text = generate_simple_row_text(row_data)
+                        row_text = await self._simple_row_text(row_data)
                         self._output.charge_text(row_text)
                         self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                         processed_rows.append(
@@ -1928,6 +1988,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
+                    if self._pacer.due():
+                        await self._pacer.pause()
                     block_index = len(blocks)
                     self._output.charge_text(sheet_name)
                     self._output.charge(_BLOCK_BYTES)

@@ -71,6 +71,10 @@ def _loads_allowing_comments(text: str) -> object:
         return json.loads(stripped)
 
 
+def _decode_and_load(content: bytes) -> Any:  # noqa: ANN401
+    return _loads_allowing_comments(decode_text(content))
+
+
 class JSONParser:
     """Parser for JSON bytes -> BlocksContainer."""
 
@@ -88,13 +92,19 @@ class JSONParser:
         record_name: str,
         config: Optional[Dict[str, Any]] = None,
     ) -> ParseResult:
-        if not content or not content.strip():
+        # ``isspace`` stops at the first non-blank byte; ``strip`` would copy a large payload.
+        if not content or content.isspace():
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "JSON content is empty")
 
         try:
-            # json.loads + the tree walk below are synchronous CPU work; keep
-            # large payloads off the event loop.
-            data = await asyncio.to_thread(_loads_allowing_comments, decode_text(content))
+            # Decoding, json.loads and the tree walk below are synchronous CPU work; keep
+            # large payloads off the event loop (the decode runs in the same hop as the load).
+            data = await asyncio.to_thread(_decode_and_load, content)
+        except ParseError:
+            # Already the user-facing error, and for a parse worker's death it carries the
+            # facts the retry and verdict logic read (``worker_deaths``, ``worker_verdict``
+            # walk ``__cause__`` and the error itself); wrapping it would drop them.
+            raise
         except Exception as e:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
