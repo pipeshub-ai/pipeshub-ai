@@ -112,6 +112,8 @@ class SweepState:
     lap_end: int | None = None
     lap: str | None = None
     lap_start: int | None = None
+    target_gen: int | None = None       # the union (generation and set hash) the lap in progress started against
+    target_hash: str | None = None
     cursor_ts: int | float | None = None     # the stored write time as the store returned it: never converted
     cursor_id: str | None = None
     attempts: int = 0
@@ -509,6 +511,10 @@ class PropertyProjectionSweep:
             if epoch is None:
                 record_property_sweep_lap("any", "stopped")
                 return "epoch_lost"
+            if state.lap is not None and not self._resumable(state, union, index_online=index_online):
+                # Its cursor says what was checked against another union, or it is a seek the index cannot serve: start over.
+                state.lap = state.lap_start = state.cursor_ts = state.cursor_id = None
+                state.failures = 0
             kind = self._lap_kind(state, union, now, index_online=index_online)
             if kind is None:
                 record_property_sweep_lap("any", "not_due")
@@ -534,6 +540,17 @@ class PropertyProjectionSweep:
         record_property_sweep_lap(kind, "done")
         return "done"
 
+    @staticmethod
+    def _resumable(state: SweepState, union: ScopeUnion, *, index_online: bool) -> bool:
+        """Whether the saved lap may go on from its cursor.
+
+        Only against the union it started with: records before its cursor were checked against that one, and a walk that
+        finished is taken to have covered the union it ran under. A state saved without its target is not resumed. A saved
+        seek is not resumed while the change index cannot be queried (the walk without the index takes its place)."""
+        if (state.target_gen, state.target_hash) != (union.gen, union.set_hash):
+            return False
+        return state.lap != SEEK or index_online
+
     def _lap_kind(self, state: SweepState, union: ScopeUnion, now: int, *, index_online: bool) -> str | None:
         """What to do now; None when nothing is due. A lap left part done resumes as the kind it was."""
         if state.lap is not None:
@@ -556,6 +573,7 @@ class PropertyProjectionSweep:
         walking = kind != SEEK
         if state.lap is None:
             state.lap, state.lap_start, state.failures = kind, now, 0
+            state.target_gen, state.target_hash = union.gen, union.set_hash
             state.cursor_ts, state.cursor_id = (None, None) if walking else (state.watermark, "")
             await self._save(scope, epoch, state)
         counts = LapCounts()
@@ -614,7 +632,7 @@ class PropertyProjectionSweep:
             state.attempts = state.attempts + 1 if state.failures else 0
             if not state.failures or state.attempts >= MAX_WALK_ATTEMPTS:
                 state.covered_gen, state.covered_hash, state.repair_at, state.attempts = union.gen, union.set_hash, start, 0
-        state.lap = state.lap_start = state.cursor_ts = state.cursor_id = None
+        state.lap = state.lap_start = state.cursor_ts = state.cursor_id = state.target_gen = state.target_hash = None
         state.failures = 0
 
     # -- one page --

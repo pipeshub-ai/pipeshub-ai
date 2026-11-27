@@ -30,8 +30,8 @@ HASH, GEN = "0123456789abcdef", 2
 
 
 @pytest.fixture(params=["arango", "neo4j"])
-def provider(request, arango_provider, neo4j_provider):  # noqa: ANN201 - the provider under test
-    return arango_provider if request.param == "arango" else neo4j_provider
+def provider(request):  # noqa: ANN201 - the provider under test; only the requested store's fixture is built (and skips alone if absent)
+    return request.getfixturevalue(f"{request.param}_provider")
 
 
 def _doc(connector: str, key: str, *, updated: int = 5_000, **fields) -> dict:

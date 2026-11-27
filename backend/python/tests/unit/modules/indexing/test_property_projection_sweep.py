@@ -654,6 +654,76 @@ async def test_a_scope_works_a_bounded_number_of_pages_per_pass_and_resumes() ->
     assert sorted(w["key"] for w in world.graph.writes) == sorted(world.graph.records), "each record once"
 
 
+@pytest.mark.parametrize("style", ["arango", "neo4j"])
+async def test_a_paused_walk_restarts_when_the_union_grows_and_covers_it_only_when_it_finishes(style: str) -> None:
+    """50 stale records, page 10, two pages a pass: the walk pauses at r19; a name then enters the union. The walk starts over under
+    the new union, so the records before the old cursor are projected under it, and the scope is not counted as covered until
+    that walk finishes. Kills: resuming a saved walk whatever its target (r00-r19 stay on the old set, yet the scope is covered)."""
+    world = World(style)
+    await world.register("team")
+    for i in range(50):
+        world.add(f"r{i:02d}")
+    assert await world.sweep(page_size=10, max_pages=2).run_pass() == {"paused": 1}
+    old_hash = world.graph.records["r00"]["propsSet"]
+    assert world.state()["lap"] == "walk" and world.state()["cursor_id"] == "r19"
+    await world.register("team", "region")
+    world.values.default = meta(team="a", region="x")
+    world.clock.now += INTERVAL
+    sweeper = world.sweep(page_size=10, max_pages=2)           # a pod that has learned the new union
+    assert await sweeper.run_pass() == {"paused": 1}
+    assert world.state()["covered_hash"] is None, "a walk still under way has covered nothing"
+    assert world.graph.walks[-2]["after_key"] is None, "the resumed pass started from the beginning"
+    await _settle(world, sweeper)
+    assert world.state()["covered_hash"] not in (None, old_hash)
+    assert {d["propsSet"] for d in world.graph.records.values()} == {world.state()["covered_hash"]}
+    assert all(world.graph.props(k) == {"team": "a", "region": "x"} for k in world.graph.records)
+
+
+async def test_a_paused_walk_keeps_its_cursor_while_its_union_is_unchanged() -> None:
+    """Counterpart: the same union resumes from the cursor (no restart). Kills: a restart on every pass (a scope that needs more than one pass would never finish)."""
+    world = World()
+    await world.register("team")
+    for i in range(50):
+        world.add(f"r{i:02d}")
+    sweeper = world.sweep(page_size=10, max_pages=2)
+    await sweeper.run_pass()
+    world.clock.now += INTERVAL
+    await sweeper.run_pass()
+    assert world.graph.walks[2]["after_key"] == "r19"
+    assert world.state()["cursor_id"] == "r39"
+
+
+@pytest.mark.parametrize("style", ["arango", "neo4j"])
+async def test_a_saved_seek_is_not_resumed_while_the_change_index_is_offline(style: str) -> None:
+    """A seek paused part way, then the index goes offline: the next pass walks without the index and never queries it.
+    Kills: returning the saved lap before looking at the index (the seek is queried while offline, and fails every pass)."""
+    world = World(style)
+    await world.register("team")
+    await world.sweep().run_pass()                      # a first walk: walked, with a watermark
+    world.clock.now += INTERVAL
+    for i in range(30):
+        world.add(f"s{i:02d}", updated=world.clock.now)
+    assert await world.sweep(page_size=10, max_pages=1).run_pass() == {"paused": 1}
+    assert world.state()["lap"] == "seek"
+    world.graph.index = "failed"
+    seeks, walks = len(world.graph.seeks), len(world.graph.walks)
+    world.clock.now += INTERVAL
+    await _settle(world, world.sweep())
+    assert len(world.graph.seeks) == seeks, "no seek while the index is offline"
+    assert len(world.graph.walks) > walks
+    assert all(d["propsSet"] is not None for d in world.graph.records.values())
+
+
+def test_state_saved_without_a_target_is_not_resumed() -> None:
+    """Kills: resuming a lap whose union is unknown."""
+    union = type("U", (), {"gen": 2, "set_hash": "h"})()
+    assert not sweep_module.PropertyProjectionSweep._resumable(SweepState(lap="walk"), union, index_online=True)
+    saved = SweepState(lap="walk", target_gen=2, target_hash="h")
+    assert sweep_module.PropertyProjectionSweep._resumable(saved, union, index_online=True)
+    assert not sweep_module.PropertyProjectionSweep._resumable(SweepState(lap="walk", target_gen=1, target_hash="h"), union, index_online=True)
+    assert not sweep_module.PropertyProjectionSweep._resumable(SweepState(lap="seek", target_gen=2, target_hash="h"), union, index_online=False)
+
+
 async def test_resume_after_a_kill_leaves_no_gap_without_the_skew_overlap() -> None:
     """With no skew and no repair the only protection of a record stamped before the lap started is the cursor: it is saved after the page's
     writes, so a kill in the middle of a page's writes replays the page. Kills: a cursor saved before the page's writes."""
