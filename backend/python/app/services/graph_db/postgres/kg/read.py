@@ -56,12 +56,16 @@ CLASSES = """/* pipeshub:kg.read_classes */ SELECT c.id, c.clauses FROM unnest($
 # A literal is a node a grant can open the records below. A record that is a literal must have a child kg holds (a hierarchy child by ``parent_sk`` or a non-primary parent link, kinds as
 # kg.model.LINK_HIERARCHY): its ``leaf`` flag alone is not trusted, because a stale flag is the only thing between a grant on a childless record and the records the class says it opens.
 # Both children are found by a seek as well (the first child at or after the node in records_parent, and in links_pkey). The literals kg vouches for come back as two arrays (their
-# keys and ids) in one row: a listing asks about every literal of a connector, and as a row each they took longer to decode than to read.
+# keys and ids) in one row: a listing asks about every literal of a connector, and as a row each they took longer to decode than to read. A literal whose id kg holds in another
+# of apps, groups and records is not vouched for either (a seek of records_id per other collection): a grant is named by its id, and the walk's answer to an id held in two
+# is by id (``decide``'s "ambiguous"), so the walk decides its class whether the grants are read by id or by key.
 LITERALS = """/* pipeshub:kg.read_literals */ SELECT coalesce(array_agg(r.sk), '{}') AS sks, coalesce(array_agg(r.id), '{}') AS ids, coalesce(array_agg(r.deleted), '{}') AS deleted FROM unnest($2::bigint[]) AS q(sk)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r
     WHERE r.leaf IS FALSE AND (r.kind <> 3 OR coalesce((SELECT true FROM (SELECT c.parent_sk FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk >= r.sk ORDER BY c.parent_sk LIMIT 1) x WHERE x.parent_sk = r.sk),
         (SELECT true FROM (SELECT l.parent_sk, l.kind FROM kg.links l WHERE l.org_id = r.org_id AND (l.parent_sk, l.kind) >= (r.sk, 1) ORDER BY l.parent_sk, l.kind LIMIT 1) x
-            WHERE x.parent_sk = r.sk AND x.kind = 1), false))"""
+            WHERE x.parent_sk = r.sk AND x.kind = 1), false))
+      AND NOT EXISTS (SELECT 1 FROM unnest('{1,2,3}'::smallint[]) AS o(coll) CROSS JOIN LATERAL (SELECT k.id FROM kg.records k WHERE k.org_id = r.org_id AND k.coll = o.coll
+        AND k.id >= r.id ORDER BY k.id LIMIT 1) t WHERE o.coll <> r.coll AND t.id = r.id)"""
 # With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (custom plans, plan_cache_mode, are the other half of the
 # profile: set here, as the walk that shares the check's snapshot plans better without them).
 # With sorts off nothing but the key's index can answer a seek above; the read's other statements ask for no order (a join, GROUP BY or DISTINCT is hashed instead).
@@ -93,7 +97,7 @@ class Decision:
 async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], granted: set[Any], *, by_sk: bool = False) -> dict[int, tuple[bool, bool] | None]:
     """Per class, ``(plain, own)`` for a viewer whose grants are ``granted`` (node ids): ``plain`` when some clause with no ``@self`` has every literal granted, ``own`` when a clause with
     ``@self`` has every other literal granted (the row is then readable if its own id is granted too). ``None`` when a literal of the class is a node kg cannot vouch for: not held, not
-    stamped (``leaf`` NULL), flagged a leaf, or a record without a child. A consistent projection has no such literal, so it is a stale or half-written one: the walk decides.
+    stamped (``leaf`` NULL), flagged a leaf, a record without a child, or one whose id another collection holds too (:data:`LITERALS`). A consistent projection has no such literal, so it is a stale or half-written one: the walk decides.
     ``by_sk``: ``granted`` holds kg keys (grants read from kg's members, which keep the grants of a deleted node): a deleted literal is then met by no grant, as the read by id
     leaves deleted nodes out."""
     lits = sorted({x for cl in classes.values() for clause in cl for x in clause if x != SELF})

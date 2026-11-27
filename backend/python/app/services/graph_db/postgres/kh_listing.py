@@ -16,6 +16,7 @@ The arrow of a group or a folder is on exactly when the browse of it (``kh_brows
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from app.services.graph_db.postgres.kg import hierarchy as kg_hierarchy
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH, COLL_CODE
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection
@@ -99,7 +101,6 @@ VIEWER_GRANTS = """/* pipeshub:kg.viewer_grants */ SELECT m.app_sk, array_agg(DI
       AND m.app_sk = ANY($3::bigint[]) AND (c.via <> 'org' OR m.gtype = ANY($4::text[])) AND (c.app_sk = 0 OR m.app_sk = c.app_sk) OFFSET 0) m
     GROUP BY m.app_sk"""
 APP_KEYS = "/* pipeshub:kg.app_keys */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = ANY($2::text[])"
-PRINCIPALS_DONE = "/* pipeshub:kg.principals_done */ SELECT backfill_cursor = 'done' FROM kg.projection_state WHERE org_id = $1 AND app_sk = 0"
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ class KhGrants:
 
     def has(self, r: Any) -> bool:  # noqa: ANN401
         """Whether a kg row (with ``sk`` and ``id``) is one of the App's own grants."""
+        # shortcut: by id a row's own grant is matched by its id alone, as the walk matches it; upgrade when the grants read by id carry their collection
         return (r["sk"] if self.by_sk else r["id"]) in self.own
 
     def __bool__(self) -> bool:
@@ -504,7 +506,12 @@ class KhListingMixin(PgBase):
         reads them from kg when kg holds every gated connector current (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
         if by_class and user_key and granted_ids is None and grants_by_connector is None and not ids_out and kg_read.enabled() and current_or_system().kind != "system":
             org = current_org_id()
-            got = await self._kq(lambda tx: self._kh_kg_grants(tx, org, app_id, user_key, gated_app_ids), transaction) if org_id == org else None
+            got = None
+            if org_id == org:
+                try:      # in a savepoint of the page's snapshot: a failed statement of it leaves the snapshot usable for the read by id
+                    got = await self._kq(lambda tx: kg_read.in_savepoint(tx, lambda t: self._kh_kg_grants(t, org, app_id, user_key, gated_app_ids)), transaction)
+                except Exception as e:      # kg's read is optional: a failed one is the read by id's, as the check's own kg read is the walk's
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING, op="_kh_grants", step="kg_grants")
             if got is not None:
                 return got
         every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
@@ -513,23 +520,24 @@ class KhListingMixin(PgBase):
 
     async def _kh_kg_grants(self, tx: Tx, org: str, app_id: str, user_key: str, gated_app_ids: list[str]) -> KhGrants | None:
         """The viewer's grants as kg keys (:data:`VIEWER_GRANTS`), in the page's snapshot, and the gate the access check reads the rest by (``_check_gate``). None, for the read
-        by id, unless kg holds every connector the viewer is gated into current (``drainer.current_apps``: nothing waiting that can change it, its own or the organisation's), the
-        principals' copy is finished (the closure is part of every grant) and this process distrusts none of them."""
+        by id, unless kg serves every connector the viewer is gated into (``drainer.serving_apps``, ``serves`` for each: current, enforced, verified by this code, the principals'
+        copy finished) and this process distrusts none of them once their grants are read."""
         gate = await self._check_gate(tx, org, user_key)
         if "linked" not in gate:      # the user is no node of the graph: no grants, as the read by id says
             return KhGrants(access={**gate, "gated_app_ids": list(gated_app_ids)})
         # the gate of this snapshot, within the caller's: a connector the caller was gated into and this snapshot is not has no grant, as the read by id buckets them
-        apps = [a for a in gated_app_ids if a in set(gate["gated_app_ids"])]
-        if apps and set(apps) - await drainer.current_apps(tx, org, apps):
+        gated = set(gate["gated_app_ids"])
+        apps = [a for a in gated_app_ids if a in gated]
+        if apps and set(apps) - await drainer.serving_apps(tx, org, apps):
             return None
-        if apps and not await tx.fetchval(PRINCIPALS_DONE, org):
-            return None
+        keys = {r["sk"]: r["id"] for r in await tx.fetch(APP_KEYS, org, apps)} if apps else {}
+        by = {keys[r["app_sk"]]: r["sks"] for r in await tx.fetch(VIEWER_GRANTS, org, user_key, sorted(keys), list(ORG_SHARE_PERMISSION_TYPES))} if keys else {}
+        # after the grants are read: a connector distrusted while they were read is the read by id's
         for a in apps if net.DISTRUSTED else ():
             if await net.distrusted(tx, org, a):
                 return None
-        keys = {r["sk"]: r["id"] for r in await tx.fetch(APP_KEYS, org, apps)} if apps else {}
-        by = {keys[r["app_sk"]]: r["sks"] for r in await tx.fetch(VIEWER_GRANTS, org, user_key, sorted(keys), list(ORG_SHARE_PERMISSION_TYPES))} if keys else {}
-        access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in set(apps)}}
+        wanted = set(apps)
+        access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in wanted}}
         return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
 
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:

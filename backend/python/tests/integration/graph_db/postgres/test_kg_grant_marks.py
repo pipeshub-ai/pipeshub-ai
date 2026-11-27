@@ -444,6 +444,8 @@ async def _folders_world(p, db, org: str, n: int, *, shared: str | None = None) 
 
 
 ROOT_SITES = ("kg.keys_of", "kg.read_rows", "kg.root_judges", "kg.root_judge_shared_ids", "kg.root_judge_apps", "kg.root_chain", "kg.chain_by_sk")
+# The planner settings the browse sets around these statements (kg.reader.seeks, kg.read.PROFILE), as each ran under them.
+PLANNER = ("enable_sort", "enable_incremental_sort", "enable_bitmapscan", "enable_seqscan", "jit", "plan_cache_mode")
 
 
 async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
@@ -452,11 +454,12 @@ async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int
     import asyncpg
 
     import app.core.db.uow as uow
-    ran: list[tuple[str, tuple]] = []
+    ran: list[tuple[str, tuple, tuple]] = []
     real = uow.Tx._run
 
     async def spy(self, op, sql, *args, internal=False) -> object:
-        ran.append((sql, args))
+        if any(f"pipeshub:{s} " in sql[:80] or f"pipeshub:{s}*" in sql[:80] for s in ROOT_SITES):
+            ran.append((sql, args, tuple(await self._con.fetchrow("SELECT " + ", ".join(f"current_setting('{s}')" for s in PLANNER)))))
         return await real(self, op, sql, *args, internal=internal)
     monkeypatch.setattr(uow.Tx, "_run", spy)
     page = (await _roots(p, org, "u1"))[False]
@@ -464,11 +467,12 @@ async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     loops = 0
     try:
-        for sql, args in ran:
-            if not any(f"pipeshub:{s} " in sql[:80] or f"pipeshub:{s}*" in sql[:80] for s in ROOT_SITES):
-                continue
+        assert ran
+        for sql, args, settings in ran:
             async with con.transaction():
                 await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                for name, value in zip(PLANNER, settings, strict=True):      # planned as the browse planned it
+                    await con.execute("SELECT set_config($1, $2, true)", name, value)
                 plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
             scans = [x for x in plan_gate.nodes(plan) if x.get("Relation Name") in ("records", "node_keys")]
             # a scan that is no index search reads the table whatever the judges: never counted as a seek, it fails the test

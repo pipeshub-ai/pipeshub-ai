@@ -185,6 +185,16 @@ async def serves(tx: Tx, org: str, app_id: str) -> bool:
     return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
 
 
+async def serving_apps(tx: Tx, org: str, app_ids: list[str]) -> set[str]:
+    """Of ``app_ids``, the connectors :func:`serves` holds served, read once for all of them."""
+    current = await current_apps(tx, org, app_ids)
+    if not current:
+        return set()
+    return {r["id"] for r in await tx.fetch("""/* pipeshub:kg.apps_served */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+        WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[]) AND s.mode = 'enforce' AND s.code_epoch = $3 AND s.verified_at IS NOT NULL
+          AND (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) = 'done'""", org, sorted(current), CODE_EPOCH)}
+
+
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> int:
     """One pass over an org that never raises: the rows taken, or 0 after a failure. A projection that gave up (``RuntimeError``) wrote nothing and leaves its rows in the log:
     it is counted and logged, and the next pass tries again. Any other error is counted as a failed pass and retried the same way."""
