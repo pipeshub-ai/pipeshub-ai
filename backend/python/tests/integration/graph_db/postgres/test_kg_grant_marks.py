@@ -401,11 +401,15 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
                 keyed = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kgl.KEYS_OF, org, sks)
             await tx.fetchval(kg_read.PROFILE)
             judges = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGES, org, sks)
+            ids = [r["id"] for r in await tx.fetch("SELECT id FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sks)]
+            shared = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_SHARED_IDS, org, ids)
             apps = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_APPS, org, [app])
             cands = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.CANDIDATES, org, "u2", app)
-            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands, judges, apps))
+            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands, judges, apps, shared))
         with ctx(org):
-            n, chain, keyed, cands, judges, apps = await pg_db.run(go, custom_plan=True)
+            n, chain, keyed, cands, judges, apps, shared = await pg_db.run(go, custom_plan=True)
+        got = [(n.get("Index Name"), n.get("Index Cond", "")) for n in plan_gate.scans(shared, ("records",))]
+        assert got and all(i == "records_id" and "org_id = " in c and "id = " in c for i, c in got), f"{state} judge ids: {got}"      # by the id's key, its collections the array
         # the judges by their keys (kg.root_judges) and their connectors (kg.root_judge_apps), under kg.read's profile: a seek of each table's key per key, one row each
         for name, plan, table, index in (("judges", judges, "records", "records_pkey"), ("judge apps", apps, "node_keys", "node_keys_org_id_sk_key")):
             got = [(n.get("Index Name"), n.get("Index Cond", ""), n.get("Actual Rows", 0)) for n in plan_gate.scans(plan, (table,))]
@@ -419,12 +423,14 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
         assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk >= " in c and "app_sk = " in c for i, c in members), f"{state} candidates: {members}"
 
 
-async def _folders_world(p, db, org: str, n: int) -> None:
-    """In g2 (closed), ``n`` folders each with one file that u1 holds alone: ``n`` chain-tops under the App, each with its own folder (and g2) to judge."""
+async def _folders_world(p, db, org: str, n: int, *, shared: str | None = None) -> None:
+    """In g2 (closed), ``n`` folders each with one file that u1 holds alone: ``n`` chain-tops under the App, each with its own folder (and g2) to judge. ``shared``: a record
+    group of that id too, so the id is in two collections."""
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
         await p.batch_upsert_nodes([{"_key": org, "name": "Org"}], "organizations")
-        await p.batch_upsert_nodes([{"_key": "g2", "groupName": "g2", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": "g2", "groupName": "g2", "connectorId": "app1", "orgId": org},
+                                    *([{"_key": shared, "groupName": shared, "connectorId": "app1", "orgId": org}] if shared else [])], "recordGroups")
         await p.batch_upsert_nodes([*(_rec(org, f"f{i}", folder=True) for i in range(n)), *(_rec(org, f"k{i}") for i in range(n))], "records")
         await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u1@example.com"}], "users")
         await p.batch_create_edges([edge("app1", "apps", "g2", "recordGroups", relationshipType="PARENT_CHILD"),
@@ -437,7 +443,7 @@ async def _folders_world(p, db, org: str, n: int) -> None:
     assert (await flip(db, org))[0] == 1
 
 
-ROOT_SITES = ("kg.keys_of", "kg.read_rows", "kg.root_judges", "kg.root_judge_apps", "kg.root_chain", "kg.chain_by_sk")
+ROOT_SITES = ("kg.keys_of", "kg.read_rows", "kg.root_judges", "kg.root_judge_shared_ids", "kg.root_judge_apps", "kg.root_chain", "kg.chain_by_sk")
 
 
 async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
@@ -475,8 +481,8 @@ async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int
 
 async def test_the_roots_chain_tops_read_about_one_seek_per_judge_whatever_their_number(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reads per candidate: a root of 200 and of 2,000 chain-tops, each judged by its own folder. Its judges are read by their keys once each (kg.root_judges) and the connector of
-    them once, not mapped to ids and then sought once per collection (kg.keys_of, then kg.read_rows): at either size, about two seeks of kg's rows and keys per chain-top and
-    browse (its judge's row, and its own key, which the grants it is checked against are named by)."""
+    them once, not mapped to ids and then sought once per collection (kg.keys_of, then kg.read_rows): at either size, about three index scans of kg's rows and keys per
+    chain-top and browse (its judge's row, the check that its id is in one collection only, and its own key, which the grants it is checked against are named by), not five."""
     per = {}
     for n in (200, 2000):
         p, org = pg_provider, new_org()
@@ -484,15 +490,18 @@ async def test_the_roots_chain_tops_read_about_one_seek_per_judge_whatever_their
         tops, loops = await _root_seeks(p, org, monkeypatch)
         assert tops == min(n, 50)
         per[n] = loops / (2 * n)      # two browses
-    assert all(v <= 2.5 for v in per.values()), per
+    assert all(v <= 3.5 for v in per.values()), per
 
 
-async def test_a_judge_kg_cannot_decide_is_asked_of_the_check_and_the_root_is_the_walks(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Among the root's judges one kg cannot decide (a folder a restamp has hidden: ``fence_job``): it alone is asked of the access check, by its id, as every judge was, and the
-    root lists what it lists when the check decides every judge."""
+@pytest.mark.parametrize("why", ["hidden", "two collections"])
+async def test_a_judge_kg_cannot_decide_is_asked_of_the_check_and_the_root_is_the_walks(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    """Among the root's judges one kg cannot decide: a folder a restamp has hidden (``fence_job``), or one whose id is a record group's too (kg.read.decide leaves an id
+    in two collections to the walk, whose answer is by id). It alone is asked of the access check, by its id, as every judge was, and the root lists what it lists when the
+    check decides every judge."""
     p, org = pg_provider, new_org()
-    await _folders_world(p, pg_db, org, 40)
-    await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND coll = 3 AND id = 'f7'", org)
+    await _folders_world(p, pg_db, org, 40, shared="f7" if why == "two collections" else None)
+    if why == "hidden":
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND coll = 3 AND id = 'f7'", org)
     asked: list[set[str]] = []
     real = type(p).check_access
 
