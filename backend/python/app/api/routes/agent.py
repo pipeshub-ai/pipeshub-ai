@@ -123,6 +123,7 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    hide_limited_names,
     hide_names_the_viewer_cannot_open,
     keep_hidden_titles,
     project_files_knowledge,
@@ -189,7 +190,12 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.logging_fields import log_event
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    get_caller_user,
+    get_org_or_503,
+    get_user_or_503,
+    is_live_identity,
+)
 from app.utils.user_messages import action_failed
 from app.web.config import resolve_web_search
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -636,24 +642,7 @@ async def _owner_user_id(agent: dict[str, Any], graph_provider: IGraphDBProvider
     return user_id if isinstance(user_id, str) and user_id else None
 
 
-def _is_live_identity(node: dict[str, Any]) -> bool:
-    """False once an account has been removed or switched off.
-
-    Two separate signals, because they are written by different things.
-    Soft-delete leaves the user node and clears `isActive`
-    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
-    from user management on the update event, and deliberately not stored in
-    `isActive` — a rename sets that one back to true, so a disable kept there
-    would not survive one.
-
-    Absence is read as live for both. Nodes written before these fields
-    existed carry neither, and treating those as dead would cut off agents
-    that work today.
-    """
-    return (
-        node.get("isActive", True) is not False
-        and node.get("isDisabled", False) is not True
-    )
+_is_live_identity = is_live_identity
 
 
 async def _resolve_service_account_binding(
@@ -5979,8 +5968,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 agent_knowledge = agent.get("knowledge", [])
                 # The names reach the prompt and the answer: a limited connector a member cannot open is named by its id.
-                hidden_connector_ids = await hide_names_the_viewer_cannot_open(
-                    graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key,
+                # Weighed by its limit as it is now: with the org harness on, agent_for_chat served a published version.
+                hidden_connector_ids = await hide_limited_names(
+                    graph_provider, agent_knowledge, user_context.get("userId", ""), org_key, logger,
                     is_admin=is_request_admin(request),
                 )
                 # An unbound service agent would read a collection as its creator, so it reads none,

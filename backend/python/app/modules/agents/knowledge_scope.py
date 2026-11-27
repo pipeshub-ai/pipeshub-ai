@@ -404,14 +404,37 @@ async def hide_names_the_viewer_cannot_open(
 
 async def with_current_limits(graph_provider: IGraphDBProvider, knowledge: Sequence[object]) -> None:
     """Set, in place, each source's ``accessLimit`` to its connector's as it is now. A published version (and so an export
-    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A failed read
-    raises, rather than reading as no limit."""
+    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A connector that
+    is gone is weighed as limited to its creator. A failed read raises, rather than reading as no limit."""
     for k in knowledge or []:
         if isinstance(k, dict) and k.get("connectorId"):
             app = await graph_provider.get_document(
                 str(k["connectorId"]), CollectionNames.APPS.value, raise_on_error=True,
-            ) or {}
-            k["accessLimit"] = app.get("accessLimit")
+            )
+            # A connector that is gone is weighed as limited, so its name becomes its id, as live get_agent names it.
+            k["accessLimit"] = app.get("accessLimit") if app else AccessLimit.CREATOR.value
+
+
+async def hide_limited_names(
+    graph_provider: IGraphDBProvider,
+    knowledge: list[dict[str, Any]],
+    user_id: str,
+    org_id: str,
+    logger: Logger,
+    *,
+    is_admin: bool,
+) -> set[str]:
+    """For a turn's knowledge: each source's limit as it is now (``with_current_limits``; a published version froze
+    an older one, or none), then ``hide_names_the_viewer_cannot_open``. A limit that cannot be read is weighed as
+    limited to the creator, so the viewer's own connector list decides. Returns the hidden connector ids."""
+    try:
+        await with_current_limits(graph_provider, knowledge)
+    except Exception:
+        logger.warning("Connector limits could not be read; every source is weighed as limited", exc_info=True)
+        for k in knowledge:
+            if isinstance(k, dict) and k.get("connectorId"):
+                k["accessLimit"] = AccessLimit.CREATOR.value
+    return await hide_names_the_viewer_cannot_open(graph_provider, [knowledge], user_id, org_id, is_admin=is_admin)
 
 
 async def _refused_sources(

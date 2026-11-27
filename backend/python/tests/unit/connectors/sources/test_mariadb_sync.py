@@ -242,7 +242,7 @@ class World:
             async def get_record_by_external_id(self, connector_id, external_id, raise_on_error=False) -> object:
                 return store.records.get(external_id)
 
-            async def get_user_by_user_id(self, user_id, raise_on_error=False) -> dict:
+            async def get_user_by_user_id(self, user_id, raise_on_error=False, **_: object) -> dict:
                 return {"email": f"{user_id}@example.com"}
 
             async def batch_update_nodes(self, updates, collection) -> None:

@@ -14,6 +14,7 @@ import pytest
 
 from app.modules.agents.knowledge_scope import (
     _without_titles,
+    hide_limited_names,
     hide_names_the_viewer_cannot_open,
     keep_hidden_titles,
 )
@@ -101,6 +102,75 @@ def test_the_agent_list_names_only_the_sources_the_viewer_may_open(graph: InMemo
     assert response.status_code == 200
     (agent,) = response.json()["agents"]
     assert _names(agent["knowledge"]) == _expected(admitted)
+
+
+def _chat_turn_knowledge(graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def loop(query_info: dict, *_a: object, **_k: object) -> Any:  # noqa: ANN401 - an async iterator
+        calls.append(query_info)
+
+        async def gen() -> Any:  # noqa: ANN401
+            if False:
+                yield ""
+        return gen()
+
+    async def llm(*_a: object, **_k: object) -> tuple[object, dict, dict]:
+        return object(), {"isMultimodal": False, "provider": "openai"}, {}
+
+    async def turn_filters(*, agent_knowledge: list[dict[str, Any]], **_k: object) -> dict[str, Any]:
+        return {"apps": [k["connectorId"] for k in agent_knowledge]}
+    monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop)
+    monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
+    monkeypatch.setattr("app.api.routes.agent._resolve_turn_filters", turn_filters)
+    client, viewer = _client(graph, viewer)
+    client.post("/api/v1/agent/shared/chat/stream", headers=as_user(viewer), json={"query": "hi"})
+    (query_info,) = calls
+    return query_info["knowledge"]
+
+
+@pytest.mark.parametrize(("viewer", "admitted"), VIEWERS)
+def test_a_chat_turn_weighs_each_source_by_its_limit_now_not_the_one_it_carries(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str, admitted: set[str],
+) -> None:
+    """With the org harness on, the turn is served a published version, whose sources carry the limit frozen at
+    publish (none, for a version older than the limit). The limit each connector has now decides."""
+    frozen = {**graph.nodes[AGENTS]["shared"], "knowledge": [{**_entry(k), "accessLimit": None} for k in SOURCES]}
+
+    async def published(*_a: object, **_k: object) -> dict[str, Any]:
+        return copy.deepcopy(frozen)
+    monkeypatch.setattr(graph, "get_agent", published)
+    assert _names(_chat_turn_knowledge(graph, monkeypatch, viewer)) == _expected(admitted)
+
+
+@pytest.mark.parametrize("viewer", ["bob", "alice"])
+def test_a_connector_deleted_since_publish_is_named_by_its_id(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str,
+) -> None:
+    """The published version still names the source; the connector is gone, so the turn shows its id, as live
+    get_agent names a source it cannot resolve."""
+    frozen = {**graph.nodes[AGENTS]["shared"], "knowledge": [{**_entry(k), "accessLimit": None} for k in SOURCES]}
+
+    async def published(*_a: object, **_k: object) -> dict[str, Any]:
+        return copy.deepcopy(frozen)
+    monkeypatch.setattr(graph, "get_agent", published)
+    del graph.nodes["apps"]["open"]
+    assert _names(_chat_turn_knowledge(graph, monkeypatch, viewer))["open"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_a_limit_that_cannot_be_read_is_weighed_as_limited_to_the_creator() -> None:
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(side_effect=ConnectionError("store down"))
+    knowledge = [{"connectorId": "c1", "name": "Secret", "accessLimit": None}, {"name": "no connector"}]
+    hide = AsyncMock(return_value={"c1"})
+    import logging
+    from unittest.mock import patch
+    with patch("app.modules.agents.knowledge_scope.hide_names_the_viewer_cannot_open", hide):
+        hidden = await hide_limited_names(graph, knowledge, "u-bob", "org-1", logging.getLogger("t"), is_admin=False)
+    assert hidden == {"c1"}
+    assert knowledge[0]["accessLimit"] == "CREATOR" and "accessLimit" not in knowledge[1]
+    hide.assert_awaited_once()
 
 
 @pytest.mark.parametrize(("viewer", "admitted"), VIEWERS)

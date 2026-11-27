@@ -452,6 +452,7 @@ async def _turn_scope(
         requested_filters,
         selection_refused,
     )
+    from app.modules.agents.knowledge_scope import service_account_knowledge
     from app.modules.retrieval.selection_scope import (
         SelectionNotReadyError,
         SelectionTooLargeError,
@@ -463,6 +464,17 @@ async def _turn_scope(
     knowledge = list((agent or {}).get("knowledge") or [])
     if not universal:
         knowledge = await bounded_agent_knowledge(knowledge, run.knowledge.source_limits, graph, run.org_id)
+    # As main's agent route (chat_stream): anyone runs a service-account agent on one identity, so it keeps only
+    # what the whole org shares, and a collection only when it is bound to a service account. An unbound one reads
+    # as its creator, so no collection is put back either, the caller's own project collections included.
+    collections_allowed = agent is None or not agent.get("isServiceAccount", False) or bool(
+        agent.get("serviceAccountUserId")
+    )
+    if agent is not None and agent.get("isServiceAccount", False):
+        knowledge = await service_account_knowledge(
+            graph, knowledge, user_info.get("userId", ""), run.org_id, logger,
+            bound=collections_allowed,
+        )
     requested = requested_filters(run.knowledge)
     try:
         filters = await _resolve_turn_filters(
@@ -475,6 +487,7 @@ async def _turn_scope(
             logger=logger,
             project_sources=None,
             retrieval_user_id=user_info.get("userId"),
+            admit_project_collections=collections_allowed,
         )
     except (SelectionTooLargeError, SelectionNotReadyError) as exc:
         raise selection_refused(exc, agent_limit=not universal and not has_selection(requested)) from exc
@@ -621,7 +634,13 @@ async def _agent_environment(
         previous_conversations=[dict(turn) for turn in run.previous_conversations],
         logger=logger,
     )
-    connector_ids = [k["connectorId"] for k in agent_knowledge if k.get("connectorId")]
+    # As chat_stream: a limited connector the caller cannot open is named by its id on the prompt, and gets no config
+    # (its sync filters' labels would name it). shortcut: a durable run carries no request role, so an org admin is
+    # weighed as a member here and sees the id; read the role into RunContext if admins need the names.
+    from app.modules.agents.knowledge_scope import hide_limited_names
+
+    hidden = await hide_limited_names(graph, agent_knowledge, run.actor_id, run.org_id, logger, is_admin=False)
+    connector_ids = [k["connectorId"] for k in agent_knowledge if k.get("connectorId") and k["connectorId"] not in hidden]
     web_search_config = (
         await resolve_web_search(config_service, logger, provider=web_provider)
         if web_provider

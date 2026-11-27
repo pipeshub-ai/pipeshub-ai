@@ -140,6 +140,26 @@ async def test_a_second_record_parent_or_group_takes_the_walk(pg_provider, pg_db
     assert tally.c[("breadcrumbs", "ambiguous")] == 3 and not tally.c[("breadcrumbs", "kg")], dict(tally.c)
 
 
+async def test_a_record_in_two_groups_takes_the_walk_which_goes_through_its_own_group(pg_provider, pg_db, tally) -> None:
+    """m belongs to g1 and g2, each with a hierarchy edge to it, and its own group is g2: kg hands the read to the walk, which takes m's own group though g1
+    sorts first, as its parent node does."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org, extra=[{"_key": "m", "recordName": "m", "connectorId": "app1", "orgId": org, "recordType": "FILE", "recordGroupId": "g2"}])
+    with ctx(org):
+        await pg_provider.batch_create_edges([edge("m", "records", "g1", "recordGroups"), edge("m", "records", "g2", "recordGroups")], "belongsTo")
+        await pg_provider.batch_create_edges([edge(g, "recordGroups", "m", "records", relationshipType="PARENT_CHILD") for g in ("g1", "g2")], "nodeRelations")
+    await _types_all(org)
+    await flip(pg_db, org)
+    tally.c.clear()
+
+    walk, got = await _both(org, lambda: _trail(pg_provider, org, "m"))
+
+    assert got == walk and _names(got) == ["m", "g2", "g1", "Drive"], (walk, got)
+    assert tally.c[("breadcrumbs", "ambiguous")] == 1 and not tally.c[("breadcrumbs", "kg")], dict(tally.c)
+    with ctx(org):
+        assert (await pg_provider.get_knowledge_hub_parent_node("m", []))["id"] == "g2"
+
+
 async def test_a_parent_kg_does_not_hold_takes_the_walk(pg_provider, pg_db, tally) -> None:
     """a is removed and its edges stay: the walk goes from b up to a's id, finds no node there and ends; kg holds no a, sees the relation into b from a node it does not hold and
     hands the read to the walk."""
@@ -217,6 +237,7 @@ async def test_a_sampled_trail_that_differs_from_the_walk_takes_the_connector_ba
     assert _names(await _trail(pg_provider, org, "b")) == ["b", "a", "f", "g1", "Drive"]     # the walk's, from now on
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_trail_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: a group of 12,000 members and 12,000 other records, never analysed and then analysed: no trail statement scans a kg or graph table whole (the trail reads
     only the edges up from a node, never a group's members, and each step's document by its own key, never the organisation's nodes)."""

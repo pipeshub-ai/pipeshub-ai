@@ -9,6 +9,8 @@ listing actually finished: a partial run must not treat "not seen" as "deleted".
 
 from __future__ import annotations
 
+import sys
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from app.connectors.core.base.connector.connector_service import IncompleteSyncError
@@ -29,6 +31,7 @@ _DELETE_BATCH = 100
 # More than this fraction of existing records missing from the listing means the
 # listing is the thing that failed, not the files.
 _MAX_DELETE_FRACTION = 0.5
+_NAMED_CAUSES = 5
 
 
 class FullSyncLedger:
@@ -46,6 +49,8 @@ class FullSyncLedger:
         # Ancestors a sweep kept unread. Seen only once every sweep of the run is done (see_kept_ancestors): seen
         # earlier, they would stop a later user who can read one from writing it again.
         self.kept_ancestors: set[str] = set()
+        # Type names only: an error's text can name people and files.
+        self.causes: Counter[str] = Counter()
 
     def see(self, external_id: str | None) -> None:
         if external_id:
@@ -59,14 +64,26 @@ class FullSyncLedger:
         """Count the ancestors no sweep of the run could read as seen, so the stale-record cleanup keeps them."""
         self.seen |= self.kept_ancestors
 
+    def _note_cause(self) -> None:
+        """Count the error the caller is handling, if it is in an ``except`` block."""
+        error = sys.exception()
+        if error is not None:
+            self.causes[type(error).__name__] += 1
+
     def fail_item(self, external_id: str | None = None) -> None:
+        self._note_cause()
         self.item_failures += 1
         if external_id:
             self.failed_ids.add(str(external_id))
         else:
             self.incomplete = True
 
-    def note_incomplete(self) -> None:
+    def note_incomplete(self, cause: str | None = None) -> None:
+        """``cause`` names a gap that no error is behind; it must not name people or files."""
+        if cause:
+            self.causes[cause] += 1
+        else:
+            self._note_cause()
         self.incomplete = True
 
     def note_incremental(self) -> None:
@@ -76,6 +93,7 @@ class FullSyncLedger:
         self.full_listings += 1
 
     def note_skipped_drive(self) -> None:
+        self._note_cause()
         self.skipped_drives += 1
         self.incomplete = True
 
@@ -109,7 +127,11 @@ class DriveItemsUnread(DriveSyncIncomplete, IncompleteSyncError):
 
 def incomplete_run_error(ledger: FullSyncLedger) -> DriveSyncIncomplete:
     error = DriveItemsUnread if ledger.unlink_safe else DriveSyncIncomplete
-    return error("Part of Google Drive could not be read in this run; it is read again on the next run")
+    causes = ", ".join(f"{name} ({count})" for name, count in ledger.causes.most_common(_NAMED_CAUSES))
+    return error(
+        f"Part of Google Drive could not be read or saved in this run{f': {causes}' if causes else ''}; "
+        "it is read again on the next run"
+    )
 
 
 async def keep_failed_items_linked(

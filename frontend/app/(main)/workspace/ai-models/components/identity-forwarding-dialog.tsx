@@ -5,6 +5,7 @@ import { Button, Code, Dialog, Flex, Select, Switch, Text, TextArea } from '@rad
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
 import { AIModelsApi } from '../api';
+import { resolveConnectionSecretError } from '../resolve-model-config-save-error';
 import type {
   ConfiguredModel,
   IdentityForwardingMode,
@@ -137,7 +138,7 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
       onSaved?.();
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t('workspace.aiModels.identity.saveFailed'));
+      setError(resolveConnectionSecretError(err, t, 'workspace.aiModels.identity.saveFailed'));
     } finally {
       setSaving(false);
     }

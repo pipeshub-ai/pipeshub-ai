@@ -234,12 +234,16 @@ async def test_one_listen_connection_serves_every_subscriber(runtime, uid) -> No
         and f"t{uid}" in seen["c"]
         and f"t{uid}" not in seen["a"]
     )
+    hub = ListenHub.for_dsn(dsn)
+    assert hub.connections == 1  # three listeners, two channels, one connection
+    # pg_stat_activity is server-wide: other processes on the same database (parallel test workers, services) hold listen
+    # connections of their own, so the server-side check is that this process's one connection is a listen connection
     async with db.runtime_uow() as tx:
         n = await tx.fetchval(
-            "/* pipeshub:test.conns */ SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pipeshub-listen'"
+            "/* pipeshub:test.conns */ SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pipeshub-listen' AND pid = $1",
+            hub._con.get_server_pid(),
         )
-    assert n == 1  # three listeners, two channels, one connection
-    assert ListenHub.for_dsn(dsn).connections == 1
+    assert n == 1
     for lst in ls:
         await lst.stop()
 
