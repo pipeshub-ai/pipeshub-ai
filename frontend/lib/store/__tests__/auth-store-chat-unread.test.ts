@@ -9,6 +9,7 @@ vi.mock('@/lib/electron', () => ({ isElectron: () => true }));
 vi.mock('@/lib/electron/api-base-url-storage', () => ({
   clearElectronLogoutServerState: vi.fn(),
   persistElectronServerUrlOnLogin: vi.fn(),
+  whenApiBaseUrlReady: () => Promise.resolve(),
 }));
 
 const backing = installMemoryStorage();

@@ -240,10 +240,11 @@ export function logoutAndRedirect(): void {
   window.location.href = '/login';
 }
 
+/** The user asked to use a different server (a plain sign-out dispatches the event without `change`). */
 export function requestElectronServerUrlChange(): void {
   if (typeof window === 'undefined' || !isElectron()) return;
   clearElectronLogoutServerState();
-  window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
+  window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT, { detail: { change: true } }));
 }
 /**
  * Workspace menu logout: web → same as session-expiry logout; Electron → clear
@@ -277,7 +278,6 @@ export function logoutFromWorkspaceMenu(): void {
   discardAllChatDrafts();
   if (typeof window !== 'undefined' && isElectron()) {
     useAuthStore.getState().logout();
-    requestElectronServerUrlChange();
     clearElectronLogoutServerState();
     window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
     return;

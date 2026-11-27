@@ -1,17 +1,28 @@
 'use client';
 
-import React, { useState, useLayoutEffect, useEffect } from 'react';
+import React, { useState, useLayoutEffect, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
 import { requestElectronServerUrlChange } from '@/lib/store/auth-store';
-import { ELECTRON_SERVER_URL_NAVIGATION_EVENT } from '@/config';
+import { useAuthStore, ELECTRON_SERVER_URL_NAVIGATION_EVENT } from '@/config';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   isElectron,
+  markServerMode,
+  setLocalModeApiBaseUrl,
   setSessionApiBaseUrl,
   shouldSkipElectronServerUrlSetup,
 } from '@/lib/electron';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
+import {
+  decideDesktopGate,
+  getDesktopApi,
+  switchDesktopMode,
+  useDesktopState,
+  type DesktopState,
+} from '@/lib/electron/desktop-mode';
+import { getElectronApiBaseUrl } from '@/lib/electron/api-base-url-storage';
+import { LocalStartScreen, ModeChoiceScreen } from './desktop-mode-screens';
 
 /**
  * ServerUrlGuard — wraps the app in Electron until the user connects a server URL.
@@ -36,6 +47,10 @@ export function ServerUrlGuard({
   allowChangeServer?: boolean;
 }) {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  // Desktop mode: the first-run choice, and the local server's lifecycle.
+  const desktop = useDesktopState();
+  const localModeRef = useRef(false);
+  localModeRef.current = desktop.state?.mode === 'local';
 
   // useLayoutEffect (not useEffect) so we commit the real route before the
   // first browser paint. A plain effect runs after paint — on full navigations
@@ -60,17 +75,52 @@ export function ServerUrlGuard({
   // without remounting the layout (useLayoutEffect above only runs once).
   useEffect(() => {
     if (!isElectron()) return;
-    const onWorkspaceLogout = () => setNeedsSetup(true);
+    const onWorkspaceLogout = (event: Event) => {
+      if (localModeRef.current) {
+        // Signing out of the local server stays on it; "Change server" leaves it.
+        if ((event as CustomEvent).detail?.change) {
+          void switchDesktopMode('remote', () => useAuthStore.getState().logout());
+        }
+        return;
+      }
+      setNeedsSetup(true);
+    };
     window.addEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, onWorkspaceLogout);
     return () => {
       window.removeEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, onWorkspaceLogout);
     };
   }, []);
 
-  if (needsSetup === null) return <LoadingScreen />;
+  if (needsSetup === null || !desktop.loaded) return <LoadingScreen />;
 
-  if (needsSetup) {
-    return <ServerUrlSetupScreen onComplete={() => setNeedsSetup(false)} />;
+  const gate = isElectron()
+    ? decideDesktopGate(desktop.state, !needsSetup)
+    : 'ready';
+  if (isElectron() && gate !== 'local') markServerMode();
+
+  // Local mode: nothing of the signed-in app renders until the server answers,
+  // and it is replaced by the error screen if the server later goes away.
+  if (gate === 'local' && desktop.state) {
+    return <LocalModeGate state={desktop.state}>{children}</LocalModeGate>;
+  }
+
+  if (gate === 'choose' && desktop.state) {
+    return (
+      <ModeChoiceScreen
+        localAvailable={desktop.state.localAvailable}
+        onChoose={(mode) => void getDesktopApi()?.setMode(mode)}
+      />
+    );
+  }
+
+  if (gate === 'setup' || needsSetup) {
+    return (
+      <ServerUrlSetupScreen
+        onComplete={() => setNeedsSetup(false)}
+        localAvailable={desktop.state?.localAvailable === true}
+        onUseLocal={() => void switchDesktopMode('local', () => useAuthStore.getState().logout())}
+      />
+    );
   }
 
   return (
@@ -79,6 +129,24 @@ export function ServerUrlGuard({
       {allowChangeServer && isElectron() && <ChangeServerLink />}
     </>
   );
+}
+
+/**
+ * Local mode: waits for the launcher to report a running server, points the
+ * app at its loopback URL, and falls back to the progress/error screen if the
+ * server stops. The port is chosen by the launcher at each start, so the URL
+ * is taken from the status every time rather than saved.
+ */
+function LocalModeGate({ state, children }: { state: DesktopState; children: React.ReactNode }) {
+  const { local } = state;
+  if (local.state !== 'running' || !local.url) {
+    // No server of this launch yet: requests (a token refresh too) wait instead of going to an earlier launch's port.
+    setLocalModeApiBaseUrl(null);
+    return <LocalStartScreen status={local} state={state} />;
+  }
+  // In memory only, and before the children's first request.
+  if (getElectronApiBaseUrl() !== local.url) setLocalModeApiBaseUrl(local.url);
+  return <>{children}</>;
 }
 
 /** Persistent escape hatch for pre-auth Electron screens — see ServerUrlGuard. */
@@ -104,7 +172,15 @@ function ChangeServerLink() {
   );
 }
 
-function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
+function ServerUrlSetupScreen({
+  onComplete,
+  localAvailable = false,
+  onUseLocal,
+}: {
+  onComplete: () => void;
+  localAvailable?: boolean;
+  onUseLocal?: () => void;
+}) {
   const { t } = useTranslation();
   const existing = typeof window !== 'undefined' ? getApiBaseUrl() : '';
   const [url, setUrl] = useState(existing);
@@ -222,6 +298,17 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
             >
               {t('electron.serverUrlSetup.submit')}
             </Button>
+            {localAvailable && onUseLocal && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="2"
+                onClick={onUseLocal}
+                style={{ cursor: 'pointer' }}
+              >
+                {t('electron.desktopMode.useLocalInstead')}
+              </Button>
+            )}
           </Flex>
         </form>
       </Box>

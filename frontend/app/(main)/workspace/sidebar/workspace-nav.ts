@@ -11,6 +11,8 @@ export interface NavItem {
   requiresFlag?: FeatureFlagGate;
   /** Renders a Beta badge as the item's rightSlot. */
   beta?: boolean;
+  /** Only in the desktop app while it runs PipesHub on this computer. */
+  desktopLocalOnly?: boolean;
 }
 
 /** The workspace sidebar's lists an edition can add entries to. */

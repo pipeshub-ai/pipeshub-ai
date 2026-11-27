@@ -36,9 +36,22 @@ Used by `npm run build:electron`, `electron:prepare`, and `electron:build:*` in 
 - **Social sign-in (Google / Microsoft / GitHub):** runs in the **system default browser**, because no provider accepts the packaged app's `app://` origin as a redirect URI. The provider redirects to `<your server URL>/auth/<provider>/callback` — the same URI the web app already uses, so **no Google Cloud or Azure app registration has to change** — and that page hands the result back over a `pipeshub://` deep link. The browser will ask once for permission to open PipesHub; if the automatic hand-off does not fire, the page shows an **Open PipesHub** button that always works. Two caveats: the scheme is registered on **first launch after install**, so deep links do not work from a never-run build; and **GitHub** additionally requires the server URL typed into the app to match the backend's `FRONTEND_PUBLIC_URL` exactly, because the backend derives GitHub's `redirect_uri` from that value. Deep links on **AppImage** need desktop integration (`appimaged` or a manually installed `.desktop` file); the `.deb` and the mac/Windows installers register the scheme themselves.
 - **Voice input:** Prefer **server-side STT** (configure under AI models / `GET /api/v1/chat/speech/capabilities`). Web Speech API is unreliable under the packaged `app://` origin; the desktop build requests **microphone** permission on macOS when chat uses `getUserMedia` / `MediaRecorder`.
 
+## Run PipesHub on this computer (local mode)
+
+First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub server" (existing installs with a saved server are not asked). Local mode starts the native launcher bundled under the app's resources (`pipeshub-native/`, read-only: its own Node runs `launcher/src/main.ts`, see `deployment/native/README.md`), keeps its data in `<userData>/local-server`, waits for health and points the UI at the loopback URL the launcher reports. Quit stops it; **Workspace > This computer** has "keep running in the tray" and the repository list ("Add repository" pushes a folder to `/api/v1/local-repos`).
+
+| Piece | Where |
+|------|-------|
+| Launcher contract and client (spawn, health, stop, crash, port conflict) | `electron/local-server/launcher-client.ts` |
+| Stub launcher for tests | `electron/__tests__/stub-launcher.ts` |
+| Stage the real bundle into the package | `npm run electron:stage-launcher` with `PIPESHUB_NATIVE_BUNDLE=<dir>` or `PIPESHUB_NATIVE_BUNDLE_URL=<.tar.gz>`; with neither, the app is built without local mode |
+| e2e (Linux needs `xvfb-run`) | `npm run test:electron:e2e` after `build:electron` + `electron:prepare` |
+| e2e against the real bundle (first run, adopt, service death + Retry) | `PIPESHUB_E2E_BUNDLE=<bundle> npm run test:electron:e2e` (add `PIPESHUB_E2E_PACKAGED=<built app executable>` to run the packaged app) |
+| One architecture / another output folder | `ELECTRON_ARCH=arm64 ELECTRON_OUT_DIR=/path npm run electron:build:mac` |
+
 ## Signing
 
-For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
+Builds are unsigned by default; the pull-request workflow reads no secrets. The manual `electron-desktop-signed.yml` run signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Node, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
 
 ## Host notes
 

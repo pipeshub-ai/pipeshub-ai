@@ -10,6 +10,7 @@ vi.mock('@/lib/electron', () => ({
 vi.mock('@/lib/electron/api-base-url-storage', () => ({
   clearElectronLogoutServerState: () => clearElectronLogoutServerStateMock(),
   persistElectronServerUrlOnLogin: vi.fn(),
+  whenApiBaseUrlReady: () => Promise.resolve(),
 }));
 
 describe('requestElectronServerUrlChange', () => {

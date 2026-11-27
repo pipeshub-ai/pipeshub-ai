@@ -8,6 +8,8 @@ import {
   ipcMain,
   dialog,
   shell,
+  Tray,
+  Menu,
   systemPreferences,
   safeStorage,
   type IpcMainInvokeEvent,
@@ -37,6 +39,7 @@ import {
 } from './deep-link';
 import { classifyWindowOpen, isAppUrl, isExternalWebUrl } from './navigation';
 import { resolveStaticExportPath } from './static-export';
+import { LocalMode } from './local-mode';
 import { SessionVault } from './session-vault';
 
 // Directory where `next build` (static export) output lands after electron:copy
@@ -54,6 +57,7 @@ let desktopCredentials: DesktopCredentialsStore | null = null;
 let desktopSocket: DesktopSocketClient | null = null;
 let deviceIdentityReady: Promise<void> = Promise.resolve();
 let deviceIdentityError: string | null = null;
+let localMode: LocalMode | null = null;
 let isQuitting = false;
 /** Last OAuth deep link, held until a renderer subscriber takes it (see handleDeepLinkUrl). */
 let pendingDeepLink: (OAuthDeepLink & { receivedAt: number }) | null = null;
@@ -196,6 +200,15 @@ function createWindow(): void {
 
   mainWindow.loadURL(`${SCHEME}://./chat/`);
 
+  // Local mode with "keep running in the tray": the close button hides the
+  // window; PipesHub stays up until Quit (tray menu, Cmd+Q, ...).
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && localMode?.hideInsteadOfClose()) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -270,6 +283,29 @@ app.whenReady().then(() => {
       mainWindow.webContents.send('local-sync-status', status);
     },
   });
+
+  localMode = new LocalMode({
+    app,
+    ipcMain,
+    shell,
+    Tray,
+    Menu,
+    getWindow: () => mainWindow,
+    getIcon: getAppIcon,
+    getCredentials: () => desktopCredentials,
+    forgetCredentials: () => {
+      desktopSocket?.disconnect();
+      desktopCredentials?.clear();
+    },
+    showWindow: () => {
+      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+      else mainWindow.show();
+      focusMainWindow();
+    },
+  });
+  localMode.register();
+  // Second instances exit right away and must not start (or later stop) a server.
+  if (gotLock) localMode.autoStart();
 
   const contentStreamer = new ContentStreamer({
     getRootPath: (connectorId: string) => localSyncManager?.getRootPath(connectorId) ?? null,
@@ -649,14 +685,23 @@ app.on('window-all-closed', () => {
 
 // Drain local-sync watchers (flush pending dispatches, persist state) before exit.
 app.on('before-quit', async (event) => {
-  if (isQuitting || !localSyncManager) return;
+  if (isQuitting || (!localSyncManager && !localMode)) return;
   event.preventDefault();
   isQuitting = true;
   try {
     desktopSocket?.disconnect();
-    await localSyncManager.shutdown();
+    await localSyncManager?.shutdown();
   } catch (error) {
     console.warn('[local-sync] shutdown error:', error);
   }
+  // After local-sync is drained: sync talks to the server that is stopped here.
+  try {
+    await localMode?.shutdown();
+  } catch (error) {
+    console.warn('[local-mode] shutdown error:', error);
+  }
   app.exit(0);
 });
+
+// A terminal Ctrl+C or a service manager's TERM must still stop PipesHub.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => app.quit());

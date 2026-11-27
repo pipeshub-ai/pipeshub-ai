@@ -1,0 +1,146 @@
+name: Desktop local mode
+
+# "Run PipesHub on this computer" in the desktop app: unit tests and an Electron
+# e2e against a stub launcher, then the Linux AppImage and the macOS arm64 dmg.
+# Packages are unsigned: this workflow runs for pull requests and reads no secrets. A signed, notarised macOS dmg is
+# electron-desktop-signed.yml, which only runs by hand.
+on:
+  pull_request:
+    paths:
+      - 'frontend/electron/**'
+      - 'frontend/lib/electron/**'
+      - 'frontend/app/components/electron/**'
+      - 'frontend/tests/electron/**'
+      - 'frontend/electron-builder.yml'
+      - 'frontend/playwright.electron.config.ts'
+      - 'frontend/scripts/electron/**'
+      - '.github/workflows/electron-desktop-local.yml'
+  workflow_dispatch:
+    inputs:
+      native_bundle_url:
+        description: 'Optional .tar.gz of the native bundle to ship in the packages (launcher/ and node/ at its root).'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: electron-desktop-local-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit + e2e (stub launcher)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache Electron binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/electron
+          key: ${{ runner.os }}-electron-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --include=dev
+
+      - name: Electron unit tests (launcher client, local repos, local sync)
+        run: npm run test:electron
+
+      - name: Renderer unit tests and locale checks
+        run: |
+          npx vitest run lib/electron
+          npm run i18n:check
+          npm run i18n:keys
+
+      - name: Static export and Electron prepare
+        run: |
+          npm run build:electron
+          npm run electron:prepare
+
+      - name: Electron e2e (first run, local mode, quit stops the server)
+        run: xvfb-run -a npm run test:electron:e2e
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux AppImage (x64)
+            os: ubuntu-latest
+            target: linux
+            arch: x64
+            cache_path: ~/.cache/electron
+          # GitHub's macOS arm64 runner (owner-approved): hdiutil is needed for the dmg.
+          - name: macOS dmg (arm64)
+            os: macos-15
+            target: mac
+            arch: arm64
+            cache_path: ~/Library/Caches/electron
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache Electron binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --include=dev
+
+      - name: Build package
+        shell: bash
+        env:
+          ELECTRON_ARCH: ${{ matrix.arch }}
+          # Empty -> stage-launcher builds without the local server (server mode only).
+          PIPESHUB_NATIVE_BUNDLE_URL: ${{ inputs.native_bundle_url || vars.PIPESHUB_NATIVE_BUNDLE_URL }}
+          # Unsigned: this job runs for pull requests, so it reads no secrets (signed builds: electron-desktop-signed.yml).
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          # Retry to ride out transient GitHub release CDN failures while the Electron binary downloads.
+          for attempt in 1 2 3; do
+            if npm run electron:build:${{ matrix.target }}; then exit 0; fi
+            echo "::warning::Build attempt $attempt failed; retrying in 45s..."
+            sleep 45
+          done
+          echo "::error::Build failed after 3 attempts"
+          exit 1
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipeshub-desktop-${{ matrix.target }}-${{ matrix.arch }}
+          path: |
+            frontend/dist-electron/${{ matrix.target }}/*.dmg
+            frontend/dist-electron/${{ matrix.target }}/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+

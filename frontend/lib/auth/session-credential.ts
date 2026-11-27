@@ -15,6 +15,7 @@
  */
 import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { whenApiBaseUrlReady } from '@/lib/electron/api-base-url-storage';
 
 export const SESSION_HINT_KEY = 'pipeshub_signed_in';
 /** Where builds before ADR-WEB-02 kept the tokens; read once to move them, then deleted. */
@@ -121,6 +122,9 @@ export type AccessTokenAnswer =
   | { outcome: 'unreachable' };
 
 async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
+  // In the desktop app's local mode the server's port is new at each launch: wait for this launch's, so the refresh token
+  // never goes to a port an earlier launch used.
+  await whenApiBaseUrlReady();
   let response: Response;
   try {
     response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
