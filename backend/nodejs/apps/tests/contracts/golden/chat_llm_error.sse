@@ -25,9 +25,6 @@ data: {"type":"STATE_DELTA","runId":"uuid-1","delta":[{"op":"replace","path":"/c
 event: STATE_SNAPSHOT
 data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"run_id":"uuid-1","parent_run_id":null,"role_name":"pipeshub-agent","status":"failed","current_turn":0,"current_tool":null}}
 
-event: STATE_DELTA
-data: {"type":"STATE_DELTA","runId":"uuid-1","delta":[{"op":"replace","path":"/citations","value":[]},{"op":"replace","path":"/normalizedAnswer","value":"The AI model's provider is limiting requests right now. Wait a minute, then try again."},{"op":"replace","path":"/rawLength","value":86}]}
-
 event: STATE_SNAPSHOT
 data: {"type":"STATE_SNAPSHOT","runId":"uuid-1","snapshot":{"final":true}}
 

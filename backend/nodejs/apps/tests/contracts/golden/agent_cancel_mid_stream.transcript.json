@@ -83,8 +83,7 @@
         {
           "type": "text",
           "content": "",
-          "runId": "uuid-1",
-          "isFinal": true
+          "runId": "uuid-1"
         },
         {
           "type": "tool_call",
@@ -96,6 +95,11 @@
           "argsSummary": "Export Report: \"q3\"",
           "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
           "resultSummary": "Completed successfully"
+        },
+        {
+          "type": "text",
+          "content": "",
+          "isFinal": true
         }
       ],
       "labelVer": "oid-5",
