@@ -108,6 +108,9 @@ npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'Connector setting
 | Guide | Covers |
 | --- | --- |
 | [user_management/AGENTS.md](./user_management/AGENTS.md) | Users, groups, teams, org settings: the admin invariants and the user audit lines |
+| [configuration_manager/AGENTS.md](./configuration_manager/AGENTS.md) | Org settings in the key-value store: `adminStore` vs `serviceStore`, the `config.<section>.<action>` audit line, secrets and stored values |
+| [storage/AGENTS.md](./storage/AGENTS.md) | File storage and its providers (local, S3, Azure Blob): vendor failures, 503 vs 500, adding a provider |
+| [oauth_provider/AGENTS.md](./oauth_provider/AGENTS.md) | The OAuth 2.0 server, apps and personal access tokens: RFC 6749 answers, refusal vs our failure, success lines |
 
 ## Keeping this file true
 
