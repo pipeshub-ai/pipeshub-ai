@@ -17,8 +17,8 @@ rollback to an older version needs no rewrite of stored values.
 
 Known bound: a record counts as current while ``propsSrc >= stamp``, so a source stamp that goes
 *backwards* (a corrected clock, a fallback stamp later replaced by an older real source time) is not
-re-projected here, and the write fence would refuse it anyway. The sweep (9b) compares a content signal,
-not only the stamp, and converges such a record.
+re-projected here, and the write fence would refuse it anyway. The sweep selects on the same stamp, so it
+does not converge such a record either.
 
 One write (``project_properties``) is one conditional statement, so concurrent
 writers (two index runs, a re-index and a sweep, two pods with different cached

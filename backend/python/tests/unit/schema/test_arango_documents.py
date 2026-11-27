@@ -338,6 +338,18 @@ class TestAppSchemaPermissionModel:
         validator.validate(_valid_app_doc(permissionModel="RECORD_LEVEL"))
 
 
+class TestAppSchemaPropertySweep:
+    def test_accepts_the_sweep_state_and_epoch(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(_valid_app_doc(propSweepEpoch=3, propSweep='{"watermark":1}'))
+        validator.validate(_valid_app_doc(propSweepEpoch=None, propSweep=None))
+
+    def test_refuses_an_epoch_that_is_not_a_number(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(_valid_app_doc(propSweepEpoch="3"))
+
+
 class TestAppSchemaVectorMembership:
     def test_accepts_backfill_fields(self):
         validator = Draft4Validator(adapt_schema(documents.app_schema))

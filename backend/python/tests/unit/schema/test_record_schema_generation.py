@@ -35,6 +35,7 @@ PINNED = {
 # Change app_schema's rule -> bump APP_SCHEMA_GENERATION, then pin the new hash here.
 APPS_PINNED = {
     1: "98a503a14a4e9c5c6c9d7268889bc88f8e0422abf815da390f0252ad88c51fe8",
+    2: "5ada5a182912561d763410903b20d84634896861312c1bf4bd7f5a68e5f66b39",  # + propSweepEpoch, propSweep
 }
 
 

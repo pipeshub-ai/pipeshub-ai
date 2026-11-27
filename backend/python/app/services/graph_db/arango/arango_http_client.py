@@ -1366,6 +1366,7 @@ class ArangoHTTPClient:
         *,
         sparse: bool = False,
         name: str | None = None,
+        in_background: bool = False,
     ) -> bool:
         """
         Create a persistent index on a collection (idempotent).
@@ -1379,6 +1380,8 @@ class ArangoHTTPClient:
                 already holds duplicates, so callers must tolerate a False return.
             name: Index name, for queries that hint it. An index that already
                 exists on the same fields keeps the name it has.
+            in_background: Build without holding writes to the collection. The
+                index is usable only once built (``get_indexes`` says ``isBuilding``).
 
         Returns:
             bool: True if index exists or was created
@@ -1393,6 +1396,8 @@ class ArangoHTTPClient:
             payload["sparse"] = True
         if name:
             payload["name"] = name
+        if in_background:
+            payload["inBackground"] = True
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:

@@ -7,6 +7,8 @@ taken for a failed read. Every statement is a literal with bound parameters; the
 """
 from __future__ import annotations
 
+import math
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import (
@@ -413,6 +415,53 @@ class RecordsMixin(PgBase):
                   AND ($4::text = '' OR n.id COLLATE ucs_basic > $4::text COLLATE ucs_basic) AND coalesce(n.doc->>'isDeleted', '') <> 'true'
                 ORDER BY n.id COLLATE ucs_basic LIMIT $5""", org, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, connector_id, after, n), None)
         return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in UNSUPPORTED_PAGE_FIELDS}} for r in rows]
+
+    # ---- the property projection sweep (graph_0021) --------------------------------------------------------------------------------
+    # Both selections are vetted reads (the planner may use their indexes: row-level security keeps a plain statement from them). The org is the
+    # ambient one, never the argument; an argument the read refuses (a page over its bound) raises, so no page is silently cut short.
+    _CHANGE_INDEX = "graph.nodes_record_change"
+    _PROJECTION_PAGE_MAX = 1000
+
+    def _projection_page(self, limit: int) -> int:
+        n = max(1, int(limit))
+        if n > self._PROJECTION_PAGE_MAX:
+            raise ValueError(f"a page of records to project is at most {self._PROJECTION_PAGE_MAX}")
+        return n
+
+    async def get_records_updated_since(self, connector_id: str, org_id: str, *, since: int | float, after_id: str, props_hash: str, props_gen: int,
+                                        limit: int, transaction: str | None = None) -> list[dict]:
+        """``graph.records_updated_since`` (index nodes_record_change): the stale live records after the cursor ``(since, after_id)``, in
+        ``(updatedAtTimestamp, id)`` order, the id by bytes."""
+        current_org_id()
+        n = self._projection_page(limit)
+        # numeric, from the text of the number: a bigint would cut a fractional write time and a float would widen it, and either re-reads a page
+        if isinstance(since, bool) or not isinstance(since, (int, float)) or not math.isfinite(since):
+            raise ValueError("since is a finite number")
+        cursor = Decimal(repr(since))
+        rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_updated_since */ SELECT node_id, doc FROM graph.records_updated_since($1, $2, $3, $4, $5, $6)",
+                                                 connector_id, cursor, props_hash, int(props_gen), after_id or "", n), transaction)
+        return [self._shape(_doc(r["doc"]), _RECORDS, None) for r in rows]
+
+    async def get_records_needing_projection(self, connector_id: str, org_id: str, *, after_key: str | None, props_hash: str, props_gen: int,
+                                             limit: int, transaction: str | None = None) -> list[dict]:
+        """``graph.records_needing_projection``: the stale live records of the connector after ``after_key``, by id (bytes)."""
+        current_org_id()
+        n = self._projection_page(limit)
+        rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_needing_projection */ SELECT node_id, doc FROM graph.records_needing_projection($1, $2, $3, $4, $5)",
+                                                 connector_id, props_hash, int(props_gen), after_key or "", n), transaction)
+        return [self._shape(_doc(r["doc"]), _RECORDS, None) for r in rows]
+
+    async def ensure_record_change_index(self) -> None:
+        """The index is a revision's (graph_0021 builds ``nodes_record_change`` online, before the upgrade's transaction), never DDL at run time: this
+        only refuses to go on where the migration has not run."""
+        if not await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.record_change_index_exists */ SELECT to_regclass($1) IS NOT NULL", self._CHANGE_INDEX), None):
+            raise RuntimeError("The record change index is missing: run the database migrations (graph_0021)")
+
+    async def record_change_index_online(self) -> bool:
+        """The index exists and is valid (an invalid one, left by a stopped build, is not used)."""
+        return bool(await self._q(lambda tx: tx.fetchval(
+            "/* pipeshub:graph.record_change_index_online */ SELECT coalesce((SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass($1)), false)",
+            self._CHANGE_INDEX), None))
 
     async def transition_unsupported(self, record_ids: list[str], to_status: str) -> list[str]:
         """One statement per batch: the update re-reads the status of a row it waited for, so a record another writer moved on is left alone."""
