@@ -598,6 +598,10 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                probe, _, probe_links = params(201)
+                kinds, _, kinds_links = params(10_001)
+                statements += [(f"undecided probe {at}", kgl.browse_undecided_probe_sql(where, probe.add(app_sk), probe_links, probe.add([]) if probe_links else None), probe.values),
+                               (f"count classes {at}", kgl.browse_classes_sql(where, kinds_links), kinds.values)]
                 for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
                     one, _, one_links = params(204)
                     branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
@@ -1056,6 +1060,54 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
     assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
     assert not set(walked) & set(KIDS), walked
+
+
+async def _children_rows_read(org: str, statements: list[tuple[str, tuple]]) -> dict[str, int]:
+    """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE), by its site."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    read: dict[str, int] = {}
+    try:
+        for sql, args in statements:
+            if "kg.records" not in sql or not sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper().startswith(("SELECT", "WITH")):
+                continue
+            async with con.transaction():
+                await con.execute("SELECT set_config('app.org_id', $1, true)", org)
+                plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+            n = sum(int(x.get("Actual Rows", 0) * x.get("Actual Loops", 1)) for x in _nodes(plan) if x.get("Relation Name") == "records")
+            site = re.search(r"pipeshub:(\S+)", sql)
+            read[site.group(1) if site else sql[:40]] = read.get(site.group(1) if site else sql[:40], 0) + n
+    finally:
+        await con.close()
+    return read
+
+
+async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_whatever_its_width(pg_db, monkeypatch) -> None:
+    """A wide folder whose children kg decides, every one readable, of 300 and of 3,000 children. Its first page, its total (capped) and its undecided children (none) are read
+    by the children indexes: about a page and the count's cap of rows, the same at either width, not every child of the folder (the one read of every child is for classes no
+    index can find undecided: kgl.browse_once_sql)."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 40)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 40)
+    real = uow.Tx._run
+    read: dict[int, dict[str, int]] = {}
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        ran: list[tuple[str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        read[width] = await _children_rows_read(org, ran)
+    small, large = sum(read[300].values()), sum(read[3000].values())
+    assert large < small + 50, read      # ten times the children, about the same reads
 
 
 async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypatch) -> None:

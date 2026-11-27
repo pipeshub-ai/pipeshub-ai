@@ -288,8 +288,10 @@ class KhBrowseMixin(PgBase):
             raise KnowledgeHubListingTooLarge
         else:
             # the first window, the undecided children and the count in one read of the children, where the classes count them (``_kh_browse_total``)
+            # the one read of every child is for classes that can leave a child undecided in ways no index finds; otherwise the undecided are probed by index
+            # (``_kh_browse_total``) and the window read from the children index of the sort, and neither reads every child
             first, pre = (await self._kh_browse_once(p, where, links, limit, sort_field, order, after, direction, sets, gset, walk)
-                          if include_total and sets is not None and not side else (None, None))
+                          if include_total and sets is not None and not side and not _probed(sets) else (None, None))
             page, resume = await self._kh_browse_wide(p, where, links, limit, sort_field, order, after, direction, walk, first=first)
             total, counts, capped = (await self._kh_browse_total(p, where, links, sets, gset, walk, pre=pre)) if include_total else (0, dict(NO_COUNTS), False)
         capped = capped or bool(shown)      # a record listed with its arrow undecided: the total is no more exact than the arrow
@@ -454,8 +456,9 @@ class KhBrowseMixin(PgBase):
             if pre is None:
                 u = kgl.Params(list(p.values))
                 u.values[2] = UNDECIDED_MAX + 1
-                sql = kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links,
-                                               None if sets["known"] is None else u.add(sorted(sets["known"])))
+                sql = (kgl.browse_undecided_probe_sql(where, u.add(sets["app_sk"]), links, u.add(sorted(sets["unvouched"])) if links else None) if _probed(sets) else
+                       kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links,
+                                                None if sets["known"] is None else u.add(sorted(sets["known"]))))
                 left = list(await self._kq(lambda tx, s=sql, v=tuple(u.values): tx.fetch(s, *v), transaction))
             else:
                 left = pre[0]
@@ -631,6 +634,11 @@ async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str,
         out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys and s not in unlisted],
                         "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
     return out
+
+
+def _probed(sets: dict[str, Any]) -> bool:
+    """Whether a wide node's undecided children can be found by index (``kgl.browse_undecided_probe_sql``): no class is unvouched and every class of the connector was read."""
+    return not sets["unvouched"] and sets["known"] is None
 
 
 def _first_window(limit: int) -> int:
