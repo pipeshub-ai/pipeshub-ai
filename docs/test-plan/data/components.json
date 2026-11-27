@@ -2750,7 +2750,10 @@
         "backend/nodejs/apps/src/libs/repositories/agent-harness/schedules/index.ts",
         "backend/nodejs/apps/src/libs/repositories/agent-harness/schedules/pg.ts",
         "backend/nodejs/apps/src/modules/agent-harness/application/admin-list-names.ts",
-        "backend/nodejs/apps/src/modules/agent-harness/transport/held-names.ts"
+        "backend/nodejs/apps/src/modules/agent-harness/transport/held-names.ts",
+        "backend/python/app/harness/schedules.py",
+        "backend/nodejs/apps/src/modules/agent-harness/application/chat-schedules.ts",
+        "backend/nodejs/apps/src/modules/agent-harness/transport/chat-schedule-controller.ts"
       ],
       "tests": [
         "backend/nodejs/apps/tests/modules/agent-harness/schedule*.ts",
@@ -2772,7 +2775,9 @@
         "backend/nodejs/apps/tests/modules/agent-harness/uib5fu1-run-moves.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/uib5-routes.http.test.ts",
         "backend/nodejs/apps/tests/modules/agent-harness/schedule-notifier-channels.test.ts",
-        "backend/nodejs/apps/tests/modules/agent-harness/adr-ui-03-admin-list-names.test.ts"
+        "backend/nodejs/apps/tests/modules/agent-harness/adr-ui-03-admin-list-names.test.ts",
+        "backend/nodejs/apps/tests/modules/agent-harness/sch01-schedule-from-chat.test.ts",
+        "backend/python/tests/unit/harness/test_sch01_schedule_from_chat.py"
       ]
     },
     {

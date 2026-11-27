@@ -10,6 +10,7 @@
  * landed while the worker held the call would otherwise strand the run
  * suspended with nobody to resume it.
  */
+import { canonicalDigest } from '../contracts/canonical-json';
 import { RULE_LAYERS, RuleLayer } from '../contracts/generated/core/enums';
 import type { ErrorCodeOf } from '../contracts/generated/ext/pipeshub/errors';
 import { HarnessConflictError } from './errors';
@@ -33,6 +34,40 @@ import {
   APPROVAL_EDITS_WORKER_FEATURE,
   type WorkerFeature,
 } from './worker-compat';
+
+const APPROVE_PREFIX = 'ix.approve.';
+
+/**
+ * The `bindingDigest` an approval request (`interaction.requested`) of this call carries, in either of the worker's
+ * two forms: the loop's, named by its invocation (`ix.approve.<invocationId>`, `kernel/durable/driver.py`), and an
+ * engine's, named by its effect key (`ix.approve.k<hash>`, `harness_core.interactions.journal.binding_digest`). A
+ * journaled request whose digest is one of these asked about exactly this tool with exactly these arguments.
+ */
+export function approvalBindingDigests(
+  interactionId: string,
+  toolId: string,
+  argsDigest: string,
+): string[] {
+  const digests: string[] = [
+    canonicalDigest({
+      interactionId,
+      kind: 'approval',
+      subject: toolId,
+      argsDigest,
+    }),
+  ];
+  if (interactionId.startsWith(APPROVE_PREFIX)) {
+    digests.push(
+      canonicalDigest({
+        invocationId: interactionId.slice(APPROVE_PREFIX.length),
+        toolId,
+        argsDigest,
+        purpose: 'approve',
+      }),
+    );
+  }
+  return digests;
+}
 
 /** The layer a journaled reason names (`interaction.explained`, QA6-F6), or undefined for none this build knows. */
 export const ruleLayer = (value: unknown): RuleLayer | undefined =>

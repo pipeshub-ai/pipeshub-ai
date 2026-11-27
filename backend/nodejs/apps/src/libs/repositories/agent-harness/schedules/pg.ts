@@ -6,6 +6,8 @@ import {
   type FiringOutcome,
   type RunTriggerContext,
   type ScheduleFiring,
+  scheduleApprovalUsed,
+  SCHEDULE_TOMBSTONE_STATUS,
   type ScheduleStatus,
   WATCH_GRACE_MS,
 } from '../../../../modules/agent-harness/domain/schedules';
@@ -81,7 +83,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       const { rows } = await k.query<{ org: number; actor: number }>(
         `/* pipeshub:harness.schedules_count */ SELECT count(*)::int AS org,
            count(*) FILTER (WHERE actor_id = $2)::int AS actor
-           FROM harness.schedules WHERE org_id = $1`,
+           FROM harness.schedules WHERE org_id = $1 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
         [orgId, actorId],
       );
       const org = rows[0]?.org ?? 0;
@@ -105,11 +107,22 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
           schedule.createdAt,
         ],
       );
-      await k.query(
+      const { rowCount } = await k.query(
         `/* pipeshub:harness.schedules_insert */ INSERT INTO harness.schedules (org_id, id, doc, region)
-         VALUES ($1, $2, $3::jsonb, $4)`,
+         VALUES ($1, $2, $3::jsonb, $4) ON CONFLICT (org_id, id) DO NOTHING`,
         [orgId, schedule.id, docParam(sealed), rowRegion()],
       );
+      if (rowCount === 1) return;
+      // The id is taken: by a tombstone the approval that would make it again is spent; either way the unit's
+      // counts roll back.
+      const { rows: taken } = await k.query<{ status: string }>(
+        `/* pipeshub:harness.schedules_taken */ SELECT status FROM harness.schedules WHERE org_id = $1 AND id = $2`,
+        [orgId, schedule.id],
+      );
+      if (taken[0]?.status === SCHEDULE_TOMBSTONE_STATUS) {
+        throw scheduleApprovalUsed();
+      }
+      throw new Error('A schedule with this id exists');
     });
     return structuredClone(schedule);
   }
@@ -119,7 +132,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       this.scheduleDocs(
         k,
         `/* pipeshub:harness.schedules_get */ SELECT doc FROM harness.schedules
-          WHERE id = $1 AND ($2::text IS NULL OR org_id = $2)`,
+          WHERE id = $1 AND ($2::text IS NULL OR org_id = $2) AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
         [id, orgId],
       );
     const found =
@@ -138,7 +151,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
       this.scheduleDocs(
         k,
         `/* pipeshub:harness.schedules_list */ SELECT doc FROM harness.schedules
-          WHERE org_id = $1 AND ($2::text IS NULL OR actor_id = $2)
+          WHERE org_id = $1 AND ($2::text IS NULL OR actor_id = $2) AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
           ORDER BY created_at DESC, id LIMIT $3`,
         [orgId, filter.actorId ?? null, limit],
       ),
@@ -195,13 +208,27 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     return found[0] === undefined ? null : toSchedule(this.inputs, found[0]);
   }
 
+  /** A chat-made schedule leaves its tombstone in the same unit (ADR-SCH-01 D3); any other goes. */
   delete(orgId: string, id: string): Promise<boolean> {
     return this.org(orgId, true, async (k) => {
-      const { rowCount } = await k.query(
-        `/* pipeshub:harness.schedules_delete */ DELETE FROM harness.schedules WHERE org_id = $1 AND id = $2`,
-        [orgId, id],
+      const now = await this.time.now(k);
+      const { rows } = await k.query<{ id: string }>(
+        `/* pipeshub:harness.schedules_tombstone */ UPDATE harness.schedules
+            SET doc = jsonb_build_object('_id', id, 'orgId', org_id, 'actorId', doc->'actorId',
+                                         'status', '${SCHEDULE_TOMBSTONE_STATUS}', 'origin', doc->'origin',
+                                         'input', NULL, 'deletedAt', $3::bigint)
+          WHERE org_id = $1 AND id = $2 AND doc ? 'origin' AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'
+          RETURNING id`,
+        [orgId, id, now],
       );
-      if (rowCount !== 1) return false;
+      if (rows.length !== 1) {
+        const { rowCount } = await k.query(
+          `/* pipeshub:harness.schedules_delete */ DELETE FROM harness.schedules
+            WHERE org_id = $1 AND id = $2 AND status <> '${SCHEDULE_TOMBSTONE_STATUS}'`,
+          [orgId, id],
+        );
+        if (rowCount !== 1) return false;
+      }
       await k.query(
         `/* pipeshub:harness.schedule_firings_delete */ DELETE FROM harness.schedule_firings
           WHERE org_id = $1 AND schedule_id = $2`,
@@ -227,6 +254,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
+    disable?: string,
   ): Promise<ScheduleFiring | null> {
     try {
       return await this.org(firing.orgId, true, async (k) => {
@@ -237,7 +265,13 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
             firing.orgId,
             firing.scheduleId,
             expectedNextFireAt,
-            docParam({ nextFireAt, updatedAt: firing.createdAt }),
+            docParam({
+              nextFireAt,
+              ...(disable !== undefined
+                ? { status: 'disabled', statusReason: disable }
+                : {}),
+              updatedAt: firing.createdAt,
+            }),
           ],
         );
         if (rowCount !== 1) return null;

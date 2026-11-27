@@ -229,6 +229,29 @@ class TestCaseC04CanFail:
         assert "final_answer_once" in _failures(case, trace)
 
 
+class TestCaseC05CanFail:
+    """Answering a request for later at once, or proposing it twice, must be caught."""
+
+    def test_proposing_one_schedule_first_passes(self) -> None:
+        case = _case("C-05-later-is-a-schedule")
+        trace = TraceResult(first_tool="schedule_create", tool_calls=["schedule_create"], final_answer="Set for 3:47 PM.")
+        assert _failures(case, trace) == []
+
+    def test_answering_now_fails(self) -> None:
+        case = _case("C-05-later-is-a-schedule")
+        trace = TraceResult(first_tool=None, tool_calls=[], final_answer="Why did the chicken cross the road?")
+        assert "first_tool_is_schedule_create" in _failures(case, trace)
+
+    def test_two_schedules_fail(self) -> None:
+        case = _case("C-05-later-is-a-schedule")
+        trace = TraceResult(first_tool="schedule_create", tool_calls=["schedule_create", "schedule_create"])
+        assert "one_schedule" in _failures(case, trace)
+
+    def test_the_card_is_the_real_tools_and_reads_as_a_write(self) -> None:
+        card = card_for_tool("schedule_create")
+        assert card.mutating and "never invent a time" in card.description
+
+
 class TestEveryCaseIsFailable:
     """No case may be one whose assertions accept everything."""
 
@@ -677,6 +700,15 @@ def _compliant_traces() -> list[tuple[str, TraceResult]]:
                 tool_calls=["knowledgegraph__search", "final_answer"],
                 final_answer="Nothing matching a Q2 performance report is indexed.",
                 confidence="Low",
+            ),
+        ),
+        # The schedule proposed once, said back in plain words; the joke comes with its run.
+        (
+            "C-05-later-is-a-schedule",
+            TraceResult(
+                first_tool="schedule_create",
+                tool_calls=["schedule_create"],
+                final_answer="I've set it up: a joke once, at 3:47 PM. Its run starts its own chat.",
             ),
         ),
     ]

@@ -76,6 +76,7 @@ from app.harness.engines.inputs import run_input_source
 from app.harness.engines.instructions import (
     engine_answer_language,
     engine_task_instructions,
+    engine_time_line,
 )
 from app.harness.engines.org_references import attempt_references
 from app.harness.engines.presenter import PipesHubEngineRunPresenter, SessionRevisions
@@ -122,6 +123,7 @@ from app.harness.repositories import (
 )
 from app.harness.run_gates import RunCitationSources
 from app.harness.run_policy.resolved import bind_run_tuning
+from app.harness.schedules import SCHEDULE_CREATE_TOOL, schedule_asks
 from app.harness.site_uploads import SiteUploads
 from app.harness.skills.pinned_labels import (
     MountedSkills,
@@ -766,7 +768,9 @@ class PipesHubEngineAssembler:
                 if isinstance(runtime.child_result, EngineChildResult)
                 else runtime.child_result
             ),
-            task_facts=named_repositories_line(named),
+            task_facts="\n\n".join(
+                line for line in (named_repositories_line(named), engine_time_line(run.prompt_time, run.timezone)) if line
+            ),
         )
         log.info(
             "engine.assembly",
@@ -928,6 +932,8 @@ class PipesHubEngineAssembler:
                 cap_bytes=repositories.fetcher.config.repo_max_bytes, push=checkout if pushes is not None else None,
                 log=log, references=shelf, hosts=repositories.hosts,
             )
+        # ADR-SCH-01 D2: a schedule the engine proposes asks the person every time, whatever the grants under it say.
+        guarded = schedule_asks(guarded, offered=registry.has(SCHEDULE_CREATE_TOOL))
         # Whether the run's knowledge reads and exports may go ahead (an edition's gate; this build's lets all through).
         knowledge = knowledge_access_gate().gate(guarded, route=route, claim=claim, log=log)
         guarded = knowledge.policy
