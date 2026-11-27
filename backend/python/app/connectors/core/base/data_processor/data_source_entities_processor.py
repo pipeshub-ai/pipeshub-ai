@@ -2695,8 +2695,15 @@ class DataSourceEntitiesProcessor:
             return (user.id, CollectionNames.USERS.value)
 
         person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
-        if person:
+        if person and not create_if_missing:
             return (person.id, CollectionNames.PEOPLE.value)
+        if person:
+            # A grant writer takes the person's lock (the upsert's, held to its commit): the external-collaborator reaper deletes a person left with
+            # no edge only under that lock, so it sees this grant, or this upsert finds the person gone and creates it again.
+            kept = await tx_store.upsert_person_by_email(
+                Person(email=person.email or email.lower(), org_id=self.org_id), raise_on_error=True
+            )
+            return ((kept or person.id), CollectionNames.PEOPLE.value)
 
         if not create_if_missing:
             return None

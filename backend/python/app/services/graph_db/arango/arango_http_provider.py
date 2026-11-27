@@ -9469,6 +9469,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         Never updates on match. A Person written by Salesforce carries real names and
         a phone number; a connector that knows only an email would otherwise blank them.
+        A match is still written (its own timestamp, unchanged): the external-collaborator
+        reaper removing the person in an older snapshot then conflicts with this writer
+        instead of removing the person a grant is being written from.
         """
         try:
             doc = person.to_arango_person()
@@ -9482,7 +9485,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             UPSERT { email: @email, orgId: @org_id }
             INSERT @doc
-            UPDATE {}
+            UPDATE { updatedAtTimestamp: OLD.updatedAtTimestamp }
             IN @@collection
             RETURN NEW._key
             """
@@ -9899,6 +9902,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
+            if self.is_write_conflict(e):
+                # Nothing is removed and the caller's transaction is aborted: raised, so the caller runs it again (and never commits a dead one).
+                raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0
