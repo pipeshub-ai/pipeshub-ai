@@ -5766,7 +5766,7 @@ components:
         `Tool approval: allow` or `Tool approval: deny`, and the request carries on the turn that
         stopped on the card: the saved call runs (when allowed) and its result answers the call
         the model made, in the same reply. The call is the one saved server-side when the card was
-        shown (answerable for 15 minutes, settled once, bound to the asking user and
+        shown (answerable for 60 minutes, settled once, bound to the asking user and
         conversation); only its id and the answer travel here. A reply that answered a card
         can't be regenerated.
       required: [approvalId, decision]
@@ -14516,6 +14516,11 @@ components:
         userCanConnect:
           type: boolean
           description: The requester can connect it themselves.
+        needed:
+          type: boolean
+          description: |
+            On a saved answer: its run called the tool's stub, so it needed
+            the tool. An answer saved before stubs has none.
 
     Message:
       type: object
@@ -14707,8 +14712,8 @@ components:
           type: array
           description: |
             Tools the agent has that the requester could not use on this turn
-            (not set up, not signed in, or removed). The answer ran without them.
-            Absent when there were none.
+            (not set up, not signed in, or removed) and the answer needed: its
+            run called their stubs. Absent when there were none.
           maxItems: 50
           items:
             $ref: '#/components/schemas/UnavailableTool'
@@ -14740,11 +14745,25 @@ components:
           enum: [true]
         reason:
           type: string
-          enum: [no_longer_accessible, access_check_unavailable]
+          enum:
+            - no_longer_accessible
+            - no_access
+            - access_check_unavailable
+            - personal
+            - agent
+            - deleted
+            - stopped
           description: |
             `no_longer_accessible`: a record the answer used can no longer be read
             by the reader. `access_check_unavailable`: access could not be
-            confirmed; try again.
+            confirmed; try again. In a shared chat, someone else's answer, judged
+            by its label, gives one class of reason and never which source, tool,
+            agent or earlier answer it was: `no_access`, it used something the
+            reader can't open (also an earlier answer hidden from them, or a label
+            that can't be relied on); `personal`, it was made with its asker's own
+            access (a tool, server or skill on their sign-in); `agent`, it used an
+            agent the reader can't use; `deleted`, a source it used was deleted;
+            `stopped`, its asker stopped it before anything recorded what it used.
     RedactedSource:
       type: object
       additionalProperties: false
@@ -20544,8 +20563,8 @@ components:
           type: array
           description: |
             Tools the agent has that the requester could not use on this turn
-            (not set up, not signed in, or removed). The answer ran without them.
-            Absent when there were none.
+            (not set up, not signed in, or removed) and the answer needed: its
+            run called their stubs. Absent when there were none.
           maxItems: 50
           items:
             $ref: '#/components/schemas/UnavailableTool'
@@ -20863,10 +20882,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -20926,10 +20944,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -20999,10 +21016,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -21071,10 +21087,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -21132,10 +21147,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -21201,10 +21215,9 @@ components:
 
         An agent run that can't use some of its tools for this requester
         (an action or MCP server they have not connected) still answers with
-        the rest, and says so in a forwarded `CUSTOM` event named
-        `tools_unavailable` whose `value` is
-        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
-        answer carries the same `items` as `unavailableTools`. A
+        the rest. The model sees each one as a stub that runs nothing; the
+        saved answer carries, as `unavailableTools` (each marked `needed`),
+        only those whose stub it called. A
         service-account agent missing its own tools is refused instead:
         `RUN_ERROR` with `code` `toolset_config_missing` or
         `mcp_server_config_missing` and
@@ -53877,8 +53890,8 @@ paths:
                               type: array
                               description: |
                                 Tools the agent has that the requester could not use on this turn
-                                (not set up, not signed in, or removed). The answer ran without them.
-                                Absent when there were none.
+                                (not set up, not signed in, or removed) and the answer needed: its
+                                run called their stubs. Absent when there were none.
                               maxItems: 50
                               items:
                                 $ref: '#/components/schemas/UnavailableTool'
