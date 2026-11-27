@@ -292,6 +292,15 @@ includes `DEALLOCATE ALL` (with `max_prepared_statements` on, PgBouncer keeps pr
 On a managed platform that cannot revoke the large-object functions, set `{"managed": true}` in `platform.deployment_profile.profile`: check 43's
 function rows become warnings (`kernel.rls_warnings`) and that one snapshot line is not compared.
 
+**An administrator that is not a superuser** (a managed service's master user: `LOGIN CREATEROLE CREATEDB`, no SUPERUSER, no
+BYPASSRLS) can run `db.bootstrap_roles` when it owns the database and the platform installs the extensions (`vector`, `pg_trgm`)
+into schema `ext` owned by `pipeshub_owner`. `kernel.bootstrap_admin()` names it (the database owner when it is such a role and not
+one of ours), and the checks treat it as they treat the bootstrap superuser: it is not an application actor, the ADMIN-only
+memberships PostgreSQL 16+ gives it on every role it created are accepted (checks 18 and 37), its surface lines are compared under
+the superuser's token, and check 43 is a warning, as on a declared managed platform. Everything else is unchanged: a role that
+reaches the administrator is still an actor holding what it reaches, and the administrator holding one of our roles with INHERIT or
+SET is a violation (`37 bootstrap administrator holds an application role`). Tests: `tests/test_managed_admin.py`.
+
 ## Person-level tables and jobs functions
 Some identity tables are keyed by a person, not by an org (a credential, a sign-in code). They are `global` tables with no `org_id`
 (`kernel.apply_rls(rel, 'global', p_vetted_write => true)`), marked with `kernel.mark_person(rel)` (check 76: no `org_id` column).

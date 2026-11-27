@@ -232,7 +232,16 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
                 out.append(f"{kind}@{version} {line}" if kind == "sysfuncs" else f"{kind} {line}")
     if _managed(conn):                           # a known exception on managed platforms: reported in kernel.rls_warnings, not compared
         out = [x for x in out if not x.startswith("lofunctions ")]
-    return sorted(normalise(out, conn.execute("SELECT rolname FROM pg_roles WHERE oid = 10").fetchone()[0]))
+    superuser = conn.execute("SELECT rolname FROM pg_roles WHERE oid = 10").fetchone()[0]
+    admin = bootstrap_admin(conn)
+    if admin is None:
+        return sorted(normalise(out, superuser))
+    # A managed platform's administrator stands where the bootstrap superuser does: its own role line and the ADMIN-only
+    # memberships PostgreSQL 16+ gives it on every role it created are left to the semantic checks (check 37 accepts exactly
+    # those); any other line naming it is compared under the superuser's token.
+    implicit = re.compile(r"^member " + re.escape(admin) + r" -> \S+ inherit=false set=false admin=true$")
+    out = [x for x in out if not x.startswith(f"role {admin} ") and not implicit.match(x)]
+    return sorted(normalise(normalise(out, superuser), admin))
 
 
 def normalise(lines: Iterable[str], superuser: str) -> set[str]:
@@ -241,9 +250,18 @@ def normalise(lines: Iterable[str], superuser: str) -> set[str]:
     return {token.sub(BOOTSTRAP_SUPERUSER, x) for x in lines}
 
 
+def bootstrap_admin(conn: psycopg.Connection) -> str | None:
+    """The database owner when it is a managed platform's administrator rather than a superuser (``kernel.bootstrap_admin()``)."""
+    if not conn.execute("SELECT to_regprocedure('kernel.bootstrap_admin()') IS NOT NULL").fetchone()[0]:
+        return None
+    return conn.execute("SELECT kernel.bootstrap_admin()::regrole::text").fetchone()[0]
+
+
 def _managed(conn: psycopg.Connection) -> bool:
-    return bool(conn.execute("SELECT to_regclass('platform.deployment_profile') IS NOT NULL AND COALESCE("
-                             "(SELECT (profile->>'managed')::boolean FROM platform.deployment_profile), false)").fetchone()[0])
+    """A declared managed platform, or one whose administrator is not a superuser (it cannot revoke the superuser's functions)."""
+    return bootstrap_admin(conn) is not None or bool(conn.execute(
+        "SELECT to_regclass('platform.deployment_profile') IS NOT NULL AND COALESCE("
+        "(SELECT (profile->>'managed')::boolean FROM platform.deployment_profile), false)").fetchone()[0])
 
 
 def expected_files(extra: Iterable[str] = ()) -> list[Path]:

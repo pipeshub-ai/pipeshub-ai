@@ -40,7 +40,7 @@ jobs:
         shard: [rls, integration, graph, vetted, pins, placement, upkeep, upgrade, kg]
         include:
           - shard: rls
-            files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
+            files: tests/test_rls.py tests/test_roles.py tests/test_managed_admin.py tests/test_unit.py tests/test_wait_schema.py
           - shard: integration
             files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py tests/test_kv_access_map.py
           - shard: graph
