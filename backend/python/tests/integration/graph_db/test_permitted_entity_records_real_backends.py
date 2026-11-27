@@ -855,3 +855,199 @@ async def test_a_record_that_needs_its_own_grant_shows_the_role_of_its_own_grant
     details = await provider.check_record_access_with_details(keys["user"], org_id, inherited)
     assert details is not None
     assert details["permissions"][0]["relationship"] == ("OWNER" if rule == "OPEN" else "READER")
+
+
+
+# ---------------------------------------------------------------------------
+# Sparse permissions: permitted rows scattered through the window so the
+# walk's *selection* (not just its order) is verified.
+# ---------------------------------------------------------------------------
+
+SPARSE_COUNT = 20
+# Positions 2, 7, 15 are readable (via direct user grant); the rest are not.
+SPARSE_READABLE_POSITIONS = (2, 7, 15)
+
+
+async def _seed_sparse(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    """Create a topic with ``SPARSE_COUNT`` records where only three (at known
+    positions after newest-first sorting) carry a direct user permission.
+    All records belong to a record-level connector the user has a
+    ``USER_APP_RELATION`` on but *no* app-level grant, so the role walk is
+    the only path to admission."""
+    keys = _keys(org_id)
+    sparse_connector = f"sparse-it-{_RUN}"
+    sparse_topic = f"{org_id}-sparse-topic"
+    sparse_rg = f"{org_id}-sparse-rg"
+    # Timestamps: descending so position 0 is newest.  The walk sorts by
+    # sourceLastModifiedTimestamp DESC, id ASC.
+    records = [
+        {"id": f"{org_id}-sp{i}", "ts": 50_000 - i * 100, "connector": sparse_connector}
+        for i in range(SPARSE_COUNT)
+    ]
+    readable_ids = [records[p]["id"] for p in SPARSE_READABLE_POSITIONS]
+
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            """
+            CREATE (t:Topics {id: $topic, name: 'Sparse', orgId: $org})
+            CREATE (rg:RecordGroup {id: $rg, orgId: $org, connectorId: $connector})
+            CREATE (app:App {id: $connector, orgId: $org, name: 'Sparse', type: 'CONFLUENCE'})
+            MERGE (u:User {id: $user})
+            CREATE (u)-[:USER_APP_RELATION]->(app)
+            CREATE (app)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(rg)
+            CREATE (rg)-[:BELONGS_TO]->(app)
+            WITH t, rg, app, u
+            UNWIND $records AS row
+            CREATE (rec:Record {id: row.id, orgId: $org, connectorId: row.connector,
+                                recordName: row.id, recordType: 'FILE', isDeleted: false,
+                                indexingStatus: 'COMPLETED', sourceLastModifiedTimestamp: row.ts})
+            CREATE (rec)-[:BELONGS_TO_TOPIC]->(t)
+            CREATE (rg)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(rec)
+            CREATE (rec)-[:BELONGS_TO]->(rg)
+            CREATE (rec)-[:INHERIT_PERMISSIONS]->(rg)
+            WITH rec, u
+            WHERE rec.id IN $readable
+            CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(rec)
+            """,
+            parameters={"topic": sparse_topic, "rg": sparse_rg, "connector": sparse_connector,
+                        "user": keys["user"], "org": org_id, "records": records,
+                        "readable": readable_ids},
+        )
+    else:
+        await provider.create_taxonomy_node_if_absent(CollectionNames.TOPICS.value, {
+            "id": sparse_topic, "name": "Sparse", "normalizedName": "sparse", "orgId": org_id,
+        })
+        await _insert(provider, CollectionNames.APPS.value, [
+            {"_key": sparse_connector, "orgId": org_id, "name": "Sparse", "type": Connectors.CONFLUENCE.value,
+             "appGroup": "Sparse", "scope": "team", "isActive": True, "createdAtTimestamp": 1},
+        ])
+        await _insert(provider, CollectionNames.RECORD_GROUPS.value, [
+            {"_key": sparse_rg, "orgId": org_id, "groupName": "SparseRG", "groupType": RecordGroupType.KB.value,
+             "connectorName": Connectors.KNOWLEDGE_BASE.value, "connectorId": sparse_connector, "createdAtTimestamp": 1},
+        ])
+        user_ref = f"{CollectionNames.USERS.value}/{keys['user']}"
+        app_ref = f"{CollectionNames.APPS.value}/{sparse_connector}"
+        rg_ref = f"{CollectionNames.RECORD_GROUPS.value}/{sparse_rg}"
+        await _insert(provider, CollectionNames.USER_APP_RELATION.value, [
+            {"_from": user_ref, "_to": app_ref, "syncState": "COMPLETED", "lastSyncUpdate": 1, "createdAtTimestamp": 1},
+        ])
+        await _insert(provider, CollectionNames.NODE_RELATIONS.value, [
+            {"_from": app_ref, "_to": rg_ref, "relationshipType": "PARENT_CHILD", "createdAtTimestamp": 1},
+        ])
+        await _insert(provider, CollectionNames.BELONGS_TO.value, [
+            {"_from": rg_ref, "_to": app_ref, "createdAtTimestamp": 1},
+        ])
+        await _insert(provider, CollectionNames.RECORDS.value, [
+            Record(
+                id=row["id"], org_id=org_id, record_name=row["id"], record_type=RecordType.FILE,
+                external_record_id=f"ext-{row['id']}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id=sparse_connector,
+                indexing_status=ProgressStatus.COMPLETED.value, source_updated_at=row["ts"],
+            ).to_arango_base_record()
+            for row in records
+        ])
+        await _insert(provider, CollectionNames.BELONGS_TO_TOPIC.value, [
+            {"_from": f"records/{row['id']}", "_to": f"topics/{sparse_topic}", "createdAtTimestamp": 1,
+             "extractedName": "Sparse"}
+            for row in records
+        ])
+        placed = [(f"records/{row['id']}", rg_ref) for row in records]
+        await _insert(provider, CollectionNames.NODE_RELATIONS.value, [
+            {"_from": parent, "_to": child, "relationshipType": "PARENT_CHILD", "createdAtTimestamp": 1}
+            for child, parent in placed
+        ])
+        await _insert(provider, CollectionNames.BELONGS_TO.value, [
+            {"_from": child, "_to": parent, "createdAtTimestamp": 1}
+            for child, parent in placed
+        ])
+        await _insert(provider, CollectionNames.INHERIT_PERMISSIONS.value, [
+            {"_from": child, "_to": parent, "createdAtTimestamp": 1}
+            for child, parent in placed
+        ])
+        await _insert(provider, CollectionNames.PERMISSION.value, [
+            {"_from": user_ref, "_to": f"records/{rid}", "type": "USER", "role": "READER"}
+            for rid in readable_ids
+        ])
+
+    return sparse_topic, sparse_connector
+
+
+async def _remove_sparse(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    sparse_connector = f"sparse-it-{_RUN}"
+    ids = [f"{org_id}-sp{i}" for i in range(SPARSE_COUNT)]
+    sparse_topic = f"{org_id}-sparse-topic"
+    sparse_rg = f"{org_id}-sparse-rg"
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (n) WHERE n.id IN $ids DETACH DELETE n",
+            parameters={"ids": [*ids, sparse_topic, sparse_rg, sparse_connector]},
+        )
+    else:
+        for coll in (CollectionNames.BELONGS_TO_TOPIC.value, CollectionNames.PERMISSION.value,
+                     CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.NODE_RELATIONS.value,
+                     CollectionNames.BELONGS_TO.value, CollectionNames.USER_APP_RELATION.value):
+            await provider.http_client.execute_aql(
+                f"FOR e IN {coll} FILTER CONTAINS(e._from, @org) OR CONTAINS(e._to, @org) "
+                f"OR CONTAINS(e._from, @conn) OR CONTAINS(e._to, @conn) "
+                f"REMOVE e IN {coll} OPTIONS {{ignoreErrors: true}}",
+                {"org": org_id, "conn": sparse_connector},
+            )
+        for coll, keys in (
+            (CollectionNames.RECORDS.value, ids),
+            (CollectionNames.TOPICS.value, [sparse_topic]),
+            (CollectionNames.RECORD_GROUPS.value, [sparse_rg]),
+            (CollectionNames.APPS.value, [sparse_connector]),
+        ):
+            await provider.http_client.execute_aql(
+                f"FOR d IN {coll} FILTER d._key IN @keys REMOVE d IN {coll} OPTIONS {{ignoreErrors: true}}",
+                {"keys": keys},
+            )
+
+
+@pytest.fixture
+async def sparse_fixture(backend) -> AsyncIterator[tuple[str, str]]:
+    provider, org_id = backend
+    result = await _seed_sparse(provider, org_id)
+    try:
+        yield result
+    finally:
+        await _remove_sparse(provider, org_id)
+
+
+class TestSparsePermissions:
+    """Permitted rows are scattered through the window (not every row admitted)
+    so the walk's *selection*, not just its order, is verified."""
+
+    async def test_selects_earliest_permitted_rows(self, backend, sparse_fixture) -> None:
+        """With limit=2, the walk must return exactly the first two permitted
+        rows (positions 2 and 7), not an arbitrary pair of the three."""
+        provider, org_id = backend
+        sparse_topic, sparse_connector = sparse_fixture
+        keys = _keys(org_id)
+        out = await provider.get_permitted_entity_records(
+            [{"id": sparse_topic, "type": "topic", "connectorIds": [sparse_connector]}],
+            org_id, keys["user"], app_level_connector_ids=[],
+            limit_per_entity=2, window=200, timeout_seconds=30,
+        )
+        rows = out[("topic", sparse_topic)]
+        expected_ids = [f"{org_id}-sp{p}" for p in SPARSE_READABLE_POSITIONS[:2]]
+        assert [row["_key"] for row in rows] == expected_ids
+        # examined should be position 7 + 1 = 8 (walked through pos 7 to find 2 hits)
+        assert rows.examined == SPARSE_READABLE_POSITIONS[1] + 1
+
+    async def test_all_sparse_readable_returned_with_higher_limit(self, backend, sparse_fixture) -> None:
+        """With limit >= 3, all three permitted rows come back in position order."""
+        provider, org_id = backend
+        sparse_topic, sparse_connector = sparse_fixture
+        keys = _keys(org_id)
+        out = await provider.get_permitted_entity_records(
+            [{"id": sparse_topic, "type": "topic", "connectorIds": [sparse_connector]}],
+            org_id, keys["user"], app_level_connector_ids=[],
+            limit_per_entity=10, window=200, timeout_seconds=30,
+        )
+        rows = out[("topic", sparse_topic)]
+        expected_ids = [f"{org_id}-sp{p}" for p in SPARSE_READABLE_POSITIONS]
+        assert [row["_key"] for row in rows] == expected_ids
+        assert rows.window_size == SPARSE_COUNT
+        # All rows examined since limit was not reached.
+        assert rows.examined == SPARSE_COUNT
