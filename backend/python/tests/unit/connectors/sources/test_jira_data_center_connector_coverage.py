@@ -4,6 +4,7 @@ issue extraction, filter option error paths, and smaller public/async paths that
 were previously uncovered without standing up Jira DC.
 """
 
+import inspect
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -1586,6 +1587,7 @@ async def test_fetch_issue_attachments_builds_file_records():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
     conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
     fields = {
         "attachment": [
             {"id": "77", "filename": "a.png", "mimeType": "image/png", "size": 10, "created": "2024-01-01T00:00:00.000+0000"},
@@ -1608,6 +1610,7 @@ async def test_fetch_issue_attachments_builds_file_records():
 async def test_fetch_issue_attachments_swallows_inner_failure():
     conn = _make_connector()
     conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
     fields = {"attachment": [{"id": "1", "filename": "f"}]}
     out = await conn._fetch_issue_attachments("10", "K-1", fields, [], "pid", RecordGroupType.PROJECT)
     assert out == []
@@ -4090,6 +4093,7 @@ async def test_fetch_issue_attachments_no_attachments_and_version_bump():
     ex.source_updated_at = 1
     ex.version = 2
     conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
     assert await conn._fetch_issue_attachments("i", "K", {}, [], "p", RecordGroupType.PROJECT) == []
     fields = {
         "attachment": [
@@ -5124,3 +5128,128 @@ def test_extract_issue_data_keeps_resolution_and_due_dates() -> None:
     )
     assert open_row["resolved_at"] is None
     assert open_row["due_date"] is None
+
+
+def _stored_file(record_id: str, external_id: str) -> MagicMock:
+    record = MagicMock()
+    record.id, record.external_record_id = record_id, external_id
+    return record
+
+
+def _build_connector(attachment_field: object) -> tuple[JiraDataCenterConnector, dict]:
+    """A connector and one issue (read as new, a full sync) whose ``attachment`` field is ``attachment_field``
+    (``"absent"`` leaves the field out), for a build of its records."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    ex = _ticket_record()
+    ex.source_updated_at = 1700000000000
+    ex.version = 2
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=ex)
+    fields: dict = {"summary": "S", "updated": "2024-11-15T01:23:45.000+0000", "created": "2024-11-15T01:23:45.000+0000",
+                    "issuetype": {"name": "Task"}}
+    if attachment_field != "absent":
+        fields["attachment"] = attachment_field
+    conn._parse_jira_timestamp = MagicMock(return_value=1700000000000)  # type: ignore[method-assign]
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(
+        return_value=[_stored_file("keep", "attachment_1"), _stored_file("gone", "attachment_2"),
+                      _stored_file("not-an-attachment", "comment_file_9")])
+    return conn, {"id": ex.external_record_id, "key": "K-9", "fields": fields}
+
+
+@pytest.mark.asyncio
+async def test_an_attachment_the_issue_no_longer_lists_is_queued_for_deletion_and_deleted() -> None:
+    conn, issue = _build_connector([{"id": "1", "filename": "kept.png", "size": 1, "created": "2024-01-01T00:00:00.000+0000"}])
+    conn.site_url = "https://jira.example"
+    conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    rows = await conn._build_issue_records([issue], "pid", [], is_new_project=True)
+    assert sorted(r.external_record_id for r, _ in rows if isinstance(r, FileRecord)) == ["attachment_1"]
+    conn.data_entities_processor.get_records_by_parent.assert_awaited_once_with(
+        conn.connector_id, issue["id"], "FILE")
+    assert conn._stale_attachment_ids == ["gone"]
+    await conn._delete_removed_attachments()
+    conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+        ["gone"], conn.connector_id, cascade_children=False)
+    assert conn._stale_attachment_ids == []
+
+
+@pytest.mark.asyncio
+async def test_an_issue_whose_last_attachment_was_removed_loses_every_stored_file() -> None:
+    conn, issue = _build_connector([])
+    await conn._build_issue_records([issue], "pid", [], is_new_project=True)
+    assert conn._stale_attachment_ids == ["keep", "gone"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["absent", None, "hidden", {"unexpected": "shape"}])
+async def test_an_issue_read_without_a_usable_attachment_field_removes_nothing(field) -> None:
+    """The field is absent when a read did not request it or Jira hides it for the issue, and then holds no list."""
+    conn, issue = _build_connector(field)
+    await conn._build_issue_records([issue], "pid", [], is_new_project=True)
+    assert conn._stale_attachment_ids == []
+    conn.data_entities_processor.get_records_by_parent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_store_failure_in_the_removal_check_holds_the_issue_instead_of_dropping_it_silently() -> None:
+    conn, issue = _build_connector([{"id": "1", "filename": "kept.png", "size": 1, "created": "2024-01-01T00:00:00.000+0000"}])
+    conn.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("store down"))
+    rows = await conn._build_issue_records([issue], "pid", [], is_new_project=True)
+    assert conn._issue_build_failures == 1 and issue["id"] in conn._held_issues
+    # Not written at all: with its new ``updated`` stored, the next sync would skip it as unchanged.
+    assert rows == [] and conn._stale_attachment_ids == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_deletion_of_removed_attachments_fails_the_run_so_it_is_retried() -> None:
+    conn = _make_connector()
+    conn._stale_attachment_ids = ["a", "a", "b"]
+    conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "db"})
+    with pytest.raises(RuntimeError, match="could not be deleted"):
+        await conn._delete_removed_attachments()
+    conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+        ["a", "b"], conn.connector_id, cascade_children=False)
+
+
+@pytest.mark.asyncio
+async def test_the_attachments_queued_by_one_project_are_not_deleted_with_the_next_projects_batch() -> None:
+    conn = _make_connector()
+    conn._stale_attachment_ids = ["left-over"]
+    conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    # the start of a project's walk clears what an earlier project queued and never wrote
+    source = inspect.getsource(JiraDataCenterConnector._sync_project_issues)
+    assert "self._stale_attachment_ids = []" in source.split("self._issue_build_failures = 0", 1)[1][:200]
+
+
+@pytest.mark.asyncio
+async def test_removed_attachments_are_deleted_before_the_issues_that_dropped_them_are_written() -> None:
+    """An issue written with its new ``updated`` is skipped as unchanged next sync, so a deletion that fails (or a stop)
+    after the write would never be retried: when the deletion fails, nothing of the batch is written."""
+    conn = _make_connector()
+    conn._stale_attachment_ids = ["gone"]
+    conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False})
+    conn.data_entities_processor.on_new_records = AsyncMock()
+    with pytest.raises(RuntimeError, match="could not be deleted"):
+        await conn._process_new_records([(_ticket_record(), [])], "P", {"new_count": 0, "updated_count": 0})
+    conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listed", [[{}], [None], [{"filename": "x"}], [{"id": "1"}, None]])
+async def test_a_list_with_an_entry_that_names_no_attachment_removes_nothing(listed) -> None:
+    conn, issue = _build_connector([])
+    await conn._note_removed_attachments(issue["id"], listed)
+    assert conn._stale_attachment_ids == []
+    conn.data_entities_processor.get_records_by_parent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_new_issue_is_not_checked_for_removed_attachments() -> None:
+    conn, issue = _build_connector([])
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    await conn._build_issue_records([issue], "pid", [], is_new_project=True)
+    conn.data_entities_processor.get_records_by_parent.assert_not_awaited()

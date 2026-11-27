@@ -32,6 +32,7 @@ from test_jira_dc_sync_behaviour import (
 )
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
 )
@@ -758,7 +759,8 @@ class TestHierarchy:
         jql_search.refuse_children = True
         jql_search.fail_plain_from = 1  # and so does the read of every stored issue that replaces it
 
-        await sync(connector, jql_search, recent=[parent_secured])
+        with pytest.raises(IncompleteSyncError):
+            await sync(connector, jql_search, recent=[parent_secured])
 
         assert not hidden_from_project(db.records["3"]), "the child could not be read yet"
         assert "2" in json.loads(store.values_for("project_ENG")["child_parents"]), "and is not forgotten"
@@ -782,7 +784,8 @@ class TestHierarchy:
         serve_scheme(jira, {SECRET: [ALICE, CAROL_BY_NAME]})  # no issue's `updated` moves
         jql_search.refuse_children = True
         jql_search.fail_plain_from = 2  # the levels pass is the first read of every stored issue; the fallback the second
-        await sync(connector, jql_search, recent=[])
+        with pytest.raises(IncompleteSyncError):
+            await sync(connector, jql_search, recent=[])
 
         assert store.values_for("project_ENG")["security_levels"] == before, "not saved before the fallback has read"
         assert "5" in json.loads(store.values_for("project_ENG")["child_parents"])
@@ -1231,7 +1234,8 @@ class TestWithdrawnAccounts:
         db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
                                            org_id="org-1", email="", full_name="Frank", is_active=True))
         jql_search.fail_plain_from = 1
-        await sync(connector, jql_search, recent=[])
+        with pytest.raises(IncompleteSyncError):
+            await sync(connector, jql_search, recent=[])
         assert ("USER", "frank-key") not in readers(db, "2"), "a failed re-read grants nothing"
         assert json.loads(store.values_for("people_reread")["accounts"]) == ["frank-key"]
 

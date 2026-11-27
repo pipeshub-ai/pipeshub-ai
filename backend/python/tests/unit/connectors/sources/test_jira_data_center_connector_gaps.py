@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
@@ -727,6 +728,20 @@ class TestBuildIssueRecordsAndCommentsGaps:
             )
 
         assert len(comments) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403, 429, 500])
+    async def test_fetch_all_issue_comments_for_a_stream_raises_on_http_error(self, status: int) -> None:
+        """A stream is indexed as the whole issue, so a page of comments that cannot be read fails it."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        ds = MagicMock()
+        ds.get_issue_comments_v2 = AsyncMock(return_value=MagicMock(status=status))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)), pytest.raises(HTTPException):
+            await conn._fetch_all_issue_comments(
+                "P-1", already_fetched=[{"id": "c1"}], expected_total=5, raise_on_error=True,
+            )
 
     @pytest.mark.asyncio
     async def test_process_issue_blockgroups_paginates_embedded_comments(self):

@@ -33,6 +33,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
+    IncompleteSyncError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,6 +45,7 @@ from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
@@ -550,6 +552,9 @@ class JiraDataCenterConnector(BaseConnector):
         self.indexing_filters = None
         self.value_mapper = ValueMapper()
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
+        # Stored attachment records of issues read this run that the issue no longer lists, deleted before the batch that
+        # read them is written.
+        self._stale_attachment_ids: list[str] = []
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
         # True when /applicationrole could not be read for a reason that may pass (401, 429,
@@ -1253,6 +1258,20 @@ class JiraDataCenterConnector(BaseConnector):
                     ),
                 )
 
+            # A refusal (403) or a missing project (400, 404) is the account's lasting answer, already notified: failing
+            # every run for it would hide the others. A read that may pass next time leaves the graph without that
+            # project's newest issues, so this run must not look like a success.
+            transient = [k for k in failed_keys
+                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
+                                                               and is_inconclusive_status(failed_statuses[k]))]
+            if transient:
+                incomplete = IncompleteSyncError(
+                    f"Jira sync incomplete: {len(transient)} project(s) failed to sync issues: "
+                    f"{', '.join(transient[:10])}{f', and {len(transient) - 10} more' if len(transient) > 10 else ''}"
+                )
+                incomplete._notification_sent = True  # the notification above already said it
+                raise incomplete
+
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']}); "
@@ -1261,7 +1280,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
-            if not isinstance(e, ConnectorInitError):
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -3706,6 +3725,7 @@ class JiraDataCenterConnector(BaseConnector):
         security = await self._attach_browse_holders(await self._load_issue_security(project_key), project_key)
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
+        self._stale_attachment_ids = []
         self._holders_unresolved = False
         self._reread_whole_project = False
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
@@ -4339,6 +4359,9 @@ class JiraDataCenterConnector(BaseConnector):
         Process records (new and updated) in batches.
         on_new_records internally handles both new and updated.
         """
+        # Before the issues: one written with its new ``updated`` is not read again, so a deletion that failed or never
+        # ran after it would leave the file readable until a full sync.
+        await self._delete_removed_attachments()
         # Sort records: records without parent_external_record_id (Epics) come first
         sorted_records = sorted(
             records_with_permissions,
@@ -5719,6 +5742,11 @@ class JiraDataCenterConnector(BaseConnector):
                             f"Issue {issue_key} and the others in its security level: "
                             f"holders of type {skipped_holders} were not granted"
                         )
+                # An issue that lists its attachments has dropped the stored files it no longer lists. Checked before the
+                # issue is queued to be written: once written with its new ``updated`` it is skipped as unchanged, so a
+                # failed check (the issue is held, read again next sync) must leave it as stored.
+                if existing_record is not None and isinstance(fields.get("attachment"), list):
+                    await self._note_removed_attachments(issue_id, fields["attachment"])
                 all_records.append((issue_record, permissions))
                 if (
                     (self._collect_parents or (not stored_only and not is_new_project)) and not issue_data["is_subtask"]
@@ -5862,6 +5890,40 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(f"Failed to fetch attachments for issue {issue_key}: {e}", exc_info=True)
             self._issues_not_written.add(str(issue_id))
             return []
+
+    async def _note_removed_attachments(self, issue_id: str, listed: list[dict[str, Any]]) -> None:
+        """Queue the stored attachment records of ``issue_id`` that ``listed`` no longer holds for deletion.
+
+        An attachment Jira removed leaves the issue's list and moves its ``updated``; nothing else tells the
+        connector, and the file would stay readable by everyone who reads the issue.
+        """
+        if not all(isinstance(a, dict) and a.get("id") for a in listed):
+            # An entry that names no attachment could be any of the stored ones: none of them is known to be gone.
+            self.logger.warning("Issue %s lists an attachment without an id; its stored attachments are kept", issue_id)
+            return
+        listed_ids = {f"attachment_{a['id']}" for a in listed}
+        stored = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, issue_id, RecordType.FILE.value,
+        )
+        gone = [
+            r.id for r in stored
+            if str(r.external_record_id).startswith("attachment_") and r.external_record_id not in listed_ids
+        ]
+        if gone:
+            self.logger.info("Issue %s no longer holds %d attachment(s) its records still have", issue_id, len(gone))
+            self._stale_attachment_ids.extend(gone)
+
+    async def _delete_removed_attachments(self) -> None:
+        """Delete the queued attachment records. Raised on failure, so the project fails and its issues are read
+        (and these records deleted) again: a file left behind would still be read by the issue's readers."""
+        ids, self._stale_attachment_ids = list(dict.fromkeys(self._stale_attachment_ids)), []
+        if not ids:
+            return
+        result = await self.data_entities_processor.on_records_deleted_cascade(
+            ids, self.connector_id, cascade_children=False,
+        )
+        if not isinstance(result, dict) or not result.get("success", True) or result.get("failed_count"):
+            raise RuntimeError(f"{len(ids)} attachment record(s) their issues no longer hold could not be deleted: {result}")
 
     # ============================================================================
     # BlockGroups & Blocks Parsing
@@ -6453,6 +6515,8 @@ class JiraDataCenterConnector(BaseConnector):
                     issue_id_or_key=issue_id,
                     already_fetched=comments_data,
                     expected_total=embedded_total,
+                    # Streamed content is indexed as the whole issue: part of its comments would stand for all of them.
+                    raise_on_error=True,
                 )
         elif isinstance(comments_field, list):
             comments_data = list(comments_field)
@@ -6856,8 +6920,12 @@ class JiraDataCenterConnector(BaseConnector):
         issue_id_or_key: str,
         already_fetched: list[dict[str, Any]],
         expected_total: int,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """Page out the remaining comments for an issue using DC v2.
+
+        ``raise_on_error`` raises on a page that cannot be read instead of returning what was read.
 
         ``fields.comment`` embedded in ``get_issue_v2`` returns only the server's
         default first page; this paginates ``/rest/api/2/issue/{idOrKey}/comment``
@@ -6887,6 +6955,11 @@ class JiraDataCenterConnector(BaseConnector):
                 expand="renderedBody",
             )
             if response.status != HttpStatusCode.OK.value:
+                if raise_on_error:
+                    raise_for_stream_fetch(
+                        success=False, has_payload=False, connector=self.display_name, status=response.status,
+                        message=f"comment listing of issue {issue_id_or_key} returned HTTP {response.status}",
+                    )
                 self.logger.warning(
                     "⚠️ Comment pagination stopped for issue %s at startAt=%s: HTTP %s",
                     issue_id_or_key,

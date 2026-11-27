@@ -26,6 +26,7 @@ from atlassian_behaviour_fakes import (
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import AccessRule, CollectionNames
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.sync import sync_runner
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
@@ -443,7 +444,8 @@ class TestIncrementalSync:
         search.add("ENG", 2, json_response({"errorMessages": ["boom"]}, status=500))
         connector, notes = await make_connector(db, store)
 
-        await connector.run_sync()
+        with pytest.raises(IncompleteSyncError):
+            await connector.run_sync()
 
         assert set(tickets(db)) == {"1001", "1002"}
         assert store.values_for("project_ENG")["last_issue_updated"] == connector._parse_jira_timestamp(ts(2))
@@ -2559,7 +2561,12 @@ class TestFullSyncCoverage:
         connector = await self._synced(jira, db, store, search)
 
         search.add("ENG", 0, json_response({"errorMessages": ["no"]}, status=status))
-        await run_full_sync(connector, db)
+        if complete:
+            await run_full_sync(connector, db)
+        else:
+            # A read that may pass next time: the run fails, and nothing it did not see is unlinked.
+            with pytest.raises(IncompleteSyncError):
+                await run_full_sync(connector, db)
 
         assert connector.full_sync_coverage().complete is complete
         assert db.kept_records == [], "only a refusal keeps the records"
@@ -3001,7 +3008,8 @@ class TestBrowseHolders:
 
         scheme_unread(jira)
         search.add("ENG", 0, json_response({"errorMessages": ["down"]}, status=500))
-        await connector.run_sync()  # the walk fails: the marker was saved before it
+        with pytest.raises(IncompleteSyncError):
+            await connector.run_sync()  # the walk fails: the marker was saved before it
         assert store.values_for("project_ENG")["browse_holders"] == "?"
 
         search.add("ENG", 0, [story("1001", "ENG-1", ts(2))])
@@ -3252,7 +3260,8 @@ class TestBrowseHolders:
         scheme_with(jira, ASSIGNEE)
         search.add("ENG", 0, [json_response({"issues": [mine], "total": 1}),
                               json_response({"errorMessages": ["down"]}, status=500)])
-        await connector.run_sync()
+        with pytest.raises(IncompleteSyncError):
+            await connector.run_sync()
         assert store.values_for("project_ENG")["browse_holders"] == "?"
 
         scheme_with(jira, REPORTER)
@@ -3425,7 +3434,8 @@ class TestBrowseHolders:
         search.add("ENG", 0, [story("1001", "ENG-1")], total=2)
         search.add("ENG", 1, json_response({"errorMessages": ["down"]}, status=500))
         connector, _ = await make_connector(db, store)
-        await connector.run_sync()
+        with pytest.raises(IncompleteSyncError):
+            await connector.run_sync()
         assert grants(db, "1001") == [CAROL] and store.values_for("project_ENG")["browse_holders"] == "?"
 
         scheme_with(jira)
@@ -3439,7 +3449,8 @@ class TestBrowseHolders:
         connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
         scheme_with(jira)
         search.add("ENG", 0, json_response({"total": 1}))
-        await connector.run_sync()
+        with pytest.raises(IncompleteSyncError):
+            await connector.run_sync()
         assert store.values_for("project_ENG")["browse_holders"] == "?" and grants(db, "1001") == [CAROL]
 
         search.add("ENG", 0, json_response({"total": 0}))

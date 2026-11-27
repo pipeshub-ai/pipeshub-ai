@@ -1286,6 +1286,21 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return [str(x) for x in result if x] if result else []
 
+    async def get_record_link_targets(self, connector_id: str, external_record_id: str) -> List[str]:
+        """External ids of the records this record links to, whatever the kind of link: every outbound recordLinks
+        edge, once per target."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR v IN OUTBOUND r {CollectionNames.RECORD_LINKS.value}
+                    RETURN DISTINCT v.externalRecordId
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id, "eid": external_record_id})
+        return [str(x) for x in result if x] if result else []
+
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:
