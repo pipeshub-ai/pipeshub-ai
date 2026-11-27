@@ -5406,12 +5406,13 @@ export function withoutSteps<T extends object>(
   // carries the steps of a run.
   if (r.messageType !== 'bot_response' && r.messageType !== 'error') return row;
   const view: Plain = { ...r };
-  const withheld =
-    (Array.isArray(r.reasoning) && r.reasoning.length > 0) ||
-    (Array.isArray(r.tools) && r.tools.length > 0) ||
-    (Array.isArray(r.parts) &&
-      (r.parts as unknown[]).some((p) => isPlain(p) && p.type !== 'text'));
-  if (withheld) view.activityWithheld = true;
+  const hadSteps = (x: Plain): boolean =>
+    (Array.isArray(x.reasoning) && x.reasoning.length > 0) ||
+    (Array.isArray(x.tools) && x.tools.length > 0) ||
+    (Array.isArray(x.parts) &&
+      (x.parts as unknown[]).some((p) => isPlain(p) && p.type !== 'text'));
+  // The per-record view cuts another person's steps first: the row as stored says whether there were any.
+  if (hadSteps(r) || hadSteps(stored as Plain)) view.activityWithheld = true;
   if ('reasoning' in view) view.reasoning = [];
   if ('tools' in view) view.tools = [];
   const kept = stored as Plain;

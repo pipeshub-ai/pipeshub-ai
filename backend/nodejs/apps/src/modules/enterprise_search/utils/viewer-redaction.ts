@@ -24,7 +24,8 @@
  * model wrote between its steps. In a shared conversation a message belongs to
  * who sent it (`messageActor`): a collaborator keeps the steps of their own turns.
  * What else of another user's row a viewer is kept from is the conversation
- * views' `viewOthersRow`, given the row as this view leaves it; by default nothing more.
+ * views' `viewOthersRow`, given the row as this view leaves it (by default nothing
+ * more); any steps it gives back are cut again.
  */
 import { withheldCitation } from '../../agent-harness/projection/citation-access';
 import { sharedNotFound } from '../../agent-harness/projection/audiences';
@@ -877,28 +878,46 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
           ]),
         ),
       };
-    if (m.messageType !== 'user_query') {
-      if ('reasoning' in view) view.reasoning = [];
-      if ('tools' in view) view.tools = [];
-      if (m.messageType === 'tool_call') view.content = '';
-      if (m.parts)
-        view.parts = m.parts
-          .filter(
-            (part) =>
-              (part?.type === 'text' && part.isFinal === true) ||
-              isJobCard(part),
-          )
-          .map((part) =>
-            isJobCard(part)
-              ? { ...part, parts: [] }
-              : part && 'notFound' in part
-                ? { ...part, notFound: sharedNotFound(part.notFound) }
-                : part,
-          );
-      if (m.notFound !== undefined) view.notFound = sharedNotFound(m.notFound);
-    }
-    return conversationExtensions().views.viewOthersRow(view, m) as M;
+    // The views extension gets the row with its steps cut, and what it gives back is cut again: no extension shows
+    // another person's steps.
+    const viewed = conversationExtensions().views.viewOthersRow(
+      withoutOthersSteps(view, m.messageType),
+      m,
+    );
+    return withoutOthersSteps({ ...viewed }, m.messageType) as M;
   });
+};
+
+/**
+ * Another person's answer or tool row without their reasoning, tool steps or tool results, even where the answer is
+ * shown: of an activity transcript only the final answer text and a background job's card (its steps emptied) stay,
+ * and a note on records not found keeps none of their names. A question keeps all of it. It cuts from the row's own
+ * fields, so it holds again for whatever a views extension gives back.
+ */
+const withoutOthersSteps = (
+  view: Record<string, unknown>,
+  messageType: string | undefined,
+): Record<string, unknown> => {
+  if (messageType === 'user_query') return view;
+  if ('reasoning' in view) view.reasoning = [];
+  if ('tools' in view) view.tools = [];
+  if (messageType === 'tool_call') view.content = '';
+  if (Array.isArray(view.parts))
+    view.parts = (view.parts as Array<PartEntry | null>)
+      .filter(
+        (part) =>
+          (part?.type === 'text' && part.isFinal === true) || isJobCard(part),
+      )
+      .map((part) =>
+        isJobCard(part)
+          ? { ...part, parts: [] }
+          : part && 'notFound' in part
+            ? { ...part, notFound: sharedNotFound(part.notFound) }
+            : part,
+      );
+  if (view.notFound !== undefined)
+    view.notFound = sharedNotFound(view.notFound);
+  return view;
 };
 
 /** Rows read per step, and steps allowed, when a turn's start is read back (as a page's are, `redactPageFor`). */

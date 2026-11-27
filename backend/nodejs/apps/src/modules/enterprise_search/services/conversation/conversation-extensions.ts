@@ -66,8 +66,10 @@ export interface ConversationViewExtension {
    */
   rowShownTo(req: AuthenticatedUserRequest, row: object): Promise<boolean>;
   /**
-   * Another user's row (`row`, as stored) as a viewer may see it once its record references are checked (`view`):
-   * what else of it stays, such as its reasoning, tool steps and results. Left out, all of it.
+   * Another user's row (`row`, as stored) as a viewer may see it once its record references are checked and its
+   * reasoning, tool steps and results are left out (`view`): what else of it the viewer is kept from. It gives back
+   * nothing `view` left out; any reasoning, tool steps or results it does give back are cut again. Left out, `view` as
+   * it is.
    */
   viewOthersRow<T extends object>(view: T, row: object): T;
 }

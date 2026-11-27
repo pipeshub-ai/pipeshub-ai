@@ -1079,6 +1079,9 @@ describe('the reader check: who may see an answer', () => {
       expect(withoutSteps(plain)).to.not.have.property('activityWithheld')
       // Cut already by the per-record view, which said so: it still says so.
       expect(withoutSteps({ ...plain, activityWithheld: true })).to.include({ activityWithheld: true })
+      // Cut already by the per-record view, which did not say so (OSS #6619's cut): the row as stored still does.
+      expect(withoutSteps(plain, steps)).to.include({ activityWithheld: true })
+      expect(withoutSteps(plain, plain)).to.not.have.property('activityWithheld')
       expect(withoutSteps(question('What does R say?'))).to.not.have.property('activityWithheld')
     })
 

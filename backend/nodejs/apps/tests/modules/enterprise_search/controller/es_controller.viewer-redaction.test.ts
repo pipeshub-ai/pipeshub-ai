@@ -1422,19 +1422,19 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 })
 
 /**
- * Stands in for a views extension that keeps another user's activity from a viewer: no reasoning, tool steps or tool
- * results, and only the answer text of an activity transcript. A question keeps all of it.
+ * Stands in for a views extension that keeps another user's activity from a viewer: of what the per-record view left
+ * of an activity transcript (its answer text and a background job's card), only the answer text. A question keeps
+ * all of it.
  */
 const withoutActivity = <T extends object>(view: T, row: object): T => {
-  const m = row as { messageType?: string; parts?: Array<{ type?: string } | null> }
+  const m = row as { messageType?: string }
   if (m.messageType === 'user_query') return view
   const shown = view as Record<string, unknown>
-  if ('reasoning' in shown) shown.reasoning = []
-  if ('tools' in shown) shown.tools = []
-  if (m.messageType === 'tool_call') shown.content = ''
-  if (m.parts) shown.parts = m.parts.filter((part) => part?.type === 'text')
+  if (Array.isArray(shown.parts)) shown.parts = (shown.parts as Array<{ type?: string } | null>).filter((part) => part?.type === 'text')
   return view
 }
+/** A job that ran for the answer: the per-record view keeps its card, without its steps. */
+const jobCard = () => ({ type: 'sub_agent', runId: 'job-1', parentRunId: 'turn-1', goal: 'Summarise the pages', status: 'completed', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] })
 const useViewsWithoutActivity = () => {
   useConversationExtensions(undefined)
   useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: withoutActivity } })
@@ -1448,25 +1448,26 @@ describe('what a viewer sees of another user\'s reasoning and tool steps', () =>
   const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
   const readableAll = ['rec-ok', 'rec-no', 'att-ok', 'att-no', R_OK, R_NO, 'app-ok-not-checked', 'https://x/ok', SECRET_URL]
 
-  it('by default, all of it: an answer whose every source is readable keeps its reasoning and tool steps', async () => {
+  it('by default, what OSS #6619 leaves: an answer whose every source and artifact is readable keeps its text, never its steps', async () => {
     stubAccess(readableAll)
     stubConversation([richAnswer()])
-    // Its artifact too: another reader is shown an artifact only once the artifact check admits it.
+    // Its artifact too is readable: the artifact check admits it, and the step that made it still stays out.
     const artifacts = new SharedArtifactService(new InMemoryArtifactReadAccess().grant('Bearer t', R_NO))
     const readingArtifacts = () =>
       behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { artifacts }) as Handler, 'chat') as any
     const message = await fetchConversation(VIEWER, readingArtifacts)
 
     expect(message.answerHidden).to.equal(undefined)
-    expect(message.reasoning).to.deep.equal([{ content: 'I looked at the pages' }])
-    expect(message.tools).to.deep.equal(richAnswer().tools)
-    expect(message.parts).to.deep.equal(richAnswer().parts)
+    expect(message.content).to.equal('The answer [1][2]')
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
   })
 
   it('what the views extension leaves of an answer whose every source is readable', async () => {
     useViewsWithoutActivity()
     stubAccess(readableAll)
-    stubConversation([richAnswer()])
+    stubConversation([{ ...richAnswer(), parts: [...richAnswer().parts, jobCard()] }])
     const message = await fetchConversation(VIEWER)
 
     expect(message.answerHidden).to.equal(undefined)
@@ -1474,9 +1475,30 @@ describe('what a viewer sees of another user\'s reasoning and tool steps', () =>
     expect(message.followUpQuestions).to.have.length(1)
     expect(message.reasoning).to.deep.equal([])
     expect(message.tools).to.deep.equal([])
-    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text' }])
+    // The job's card, which the per-record view keeps, is the extension's to take away.
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
     const wire = JSON.stringify(message)
-    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages']) expect(wire, leaked).to.not.contain(leaked)
+    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps', 'Summarise the pages']) {
+      expect(wire, leaked).to.not.contain(leaked)
+    }
+  })
+
+  it('a views extension that gives back what the per-record view cut is cut again', async () => {
+    // As stored: every step, the text between them, and the not-found names.
+    const givesBack = <T extends object>(view: T, row: object): T => ({ ...view, ...(row as object) }) as T
+    useConversationExtensions(undefined)
+    useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: givesBack } })
+    stubAccess(readableAll)
+    stubConversation([{ ...richAnswer(), notFound: { subject: 'x', hits: 0, near: [TOOL_TEXT] } }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text', isFinal: true }])
+    expect(message.notFound).to.deep.equal({ subject: 'x', hits: 0 })
+    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps']) {
+      expect(JSON.stringify(message), leaked).to.not.contain(leaked)
+    }
   })
 
   it('the owner\'s own answer is not the views extension\'s: it keeps reasoning and tool steps', async () => {
