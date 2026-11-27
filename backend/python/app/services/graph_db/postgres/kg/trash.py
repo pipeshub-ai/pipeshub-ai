@@ -53,28 +53,27 @@ _UP_STEPS = 64
 
 # The connector's batches newest first after the cursor ($4, $5), one seek each, with each batch's roots (by id), how many of its records are the connector's, and ``odd``:
 # a record of it kg cannot place as the walk does (module docstring). A single-file listing skips a batch of more than one record by reading two. A batch with no root is no item. A batch
-# deleted at several times is met once per time: only the visit at its latest time is read (one seek of ``records_trash_app_batch`` finds a later one).
+# deleted at several times is met once per time and is an item only at its latest time (read with its records); it is odd at every visit when that time
+# is not its latest root's, so a page that starts past its latest time (a cursor between its times) still hands the read to the walk instead of leaving the batch out.
 # Each record's root test runs once (``rt``): as the FILTER of the ordered aggregate it ran twice per record.
 _BATCHES = f"""RECURSIVE b(ms, batch, n) AS (
     (SELECT x.deleted_ms, x.delete_batch, 1 FROM ({_NEXT.format(after="($4::bigint IS NULL OR (k.deleted_ms, k.delete_batch) < ($4::bigint, $5::text))")}) x)
     UNION ALL SELECT x.deleted_ms, x.delete_batch, b.n + 1 FROM b CROSS JOIN LATERAL ({_NEXT.format(after="(k.deleted_ms, k.delete_batch) < (b.ms, b.batch)")}) x),
-  s AS (SELECT b.ms, b.batch, b.n, a.odd OR (NOT ($3 AND a.cnt > 1) AND coalesce(a.root_ms <> b.ms, false)) AS odd, a.batch_size,
+  s AS (SELECT b.ms, b.batch, b.n, b.ms = a.latest AS latest, a.odd OR (NOT ($3 AND a.cnt > 1) AND coalesce(a.root_ms <> a.latest, false)) AS odd, a.batch_size,
       CASE WHEN $3 AND a.cnt > 1 THEN '{{}}'::text[] ELSE coalesce(a.roots, '{{}}'::text[]) END AS roots
     FROM b CROSS JOIN LATERAL (
       SELECT count(*) AS cnt, count(*) FILTER (WHERE m.app_sk = $2) AS batch_size, array_agg(m.id ORDER BY m.id) FILTER (WHERE rt.root) AS roots,
-        max(m.deleted_ms) FILTER (WHERE rt.root) AS root_ms,
+        max(m.deleted_ms) FILTER (WHERE rt.root) AS root_ms, max(m.deleted_ms) FILTER (WHERE m.app_sk = $2) AS latest,
         coalesce(bool_or(m.app_sk IS DISTINCT FROM $2 OR m.deleted_ms IS NULL OR ($3 AND m.kb_odd)), false) AS odd
       FROM {_BATCH_ROWS.format(x="b.batch")} m
         CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt) a
-    WHERE (SELECT k.deleted_ms FROM kg.records k WHERE {_TRASHED_BY_BATCH} AND (k.delete_batch, k.deleted_ms) > (b.batch, b.ms) AND k.delete_batch <= b.batch
-        ORDER BY k.app_sk, k.delete_batch, k.deleted_ms LIMIT 1) IS NULL
-      AND NOT ($3 AND (SELECT count(*) FROM {_BATCH_TWO.format(x="b.batch")} m) > 1))"""
+    WHERE NOT ($3 AND (SELECT count(*) FROM {_BATCH_TWO.format(x="b.batch")} m) > 1))"""
 # shortcut: a single-file page reads every batch until it has a page of single-file ones (a few pages each, once per delete time of a batch deleted at several times): a
 # trash of large mixed-time batches can pass LIMITS and take the walk; index single-record batches if that shows up beyond the gate world.
 PAGE = f"""/* pipeshub:kg.trash_page */ WITH {_BATCHES}
 SELECT s.n, s.odd, s.batch, s.ms AS deleted_at, s.roots[1] AS first_id, cardinality(s.roots)::bigint AS root_count, s.batch_size,
     ARRAY(SELECT x.doc->>'recordName' FROM unnest(s.roots[2:1 + $7]) WITH ORDINALITY u(id, o) CROSS JOIN LATERAL {_node("'records'", "u.id")} x ORDER BY u.o) AS other_names
-  FROM s WHERE cardinality(s.roots) > 0 OR s.odd LIMIT $6"""
+  FROM s WHERE (s.latest AND cardinality(s.roots) > 0) OR s.odd LIMIT $6"""
 # The connector's batches, each once and in batch order (``records_trash_app_batch``), up to the cap ($4): one seek each, and whether a batch has a root. A batch's top, climbed
 # to from the record its seek met through parents in the batch, is a root in a batch the product wrote; only a batch whose top is none (of another connector or organisation, or a
 # hierarchy deeper than _UP_STEPS or cyclic) is read whole. A single-file listing reads at most two records of a batch. Times play no part: a count is of batches.

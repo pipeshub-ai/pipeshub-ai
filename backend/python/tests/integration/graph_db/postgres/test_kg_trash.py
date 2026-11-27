@@ -161,6 +161,23 @@ async def test_a_batch_deleted_at_two_times_takes_the_walk(pg_provider, pg_db, t
     assert tally.c[("trash", "odd")], dict(tally.c)          # every read that reaches b; one that stops before it (a count capped at 0, a page of one) is kg's
 
 
+async def test_a_page_whose_cursor_falls_between_a_batchs_delete_times_still_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """b's batch (b, and c below it deleted 7 ms later) and e deleted between the two times: the walk places b's batch at b's time, after e. A
+    page that starts after e meets b's batch only at b's own, earlier time: it must still hand the read to the walk, not leave the batch out."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["b"])
+    await _trash(pg_provider, org, ["e"])
+    base = "(SELECT (doc->>'deletedAtTimestamp')::bigint FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND id = 'b')"
+    await _admin(f"""UPDATE graph.nodes SET doc = jsonb_set(doc, '{{deletedAtTimestamp}}', to_jsonb({base} + CASE id WHEN 'c' THEN 7 ELSE 3 END))
+        WHERE org_id = $1 AND coll = 'records' AND id IN ('c', 'e')""", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org)
+    assert [[i["record"]["id"] for i in p["items"]] for p in walk["cursor False 1"]] == [["e"], ["b"], []]
+    assert got == walk and tally.c[("trash", "odd")], dict(tally.c)
+
+
 async def test_a_batch_whose_roots_were_deleted_at_different_times_is_kgs_in_the_walks_order(pg_provider, pg_db, tally) -> None:
     """Two roots of one batch deleted at different times (a retried delete, data written before one statement marked a batch): the batch is placed by its latest root's time,
     as the walk places it, read once, and counted once; kg answers it."""
@@ -532,7 +549,7 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
                 bad, plan = await pg_db.run(go, custom_plan=True)
             assert not bad, f"{state} {name}: {bad}"
             used = set(re.findall(r'"Index Name": "[^"]*?(records_trash(?:_app_batch|_batch)?)"', plan))
-            want = {"records_trash", "records_trash_batch", "records_trash_app_batch"} if name.startswith("page") else {"records_trash_batch", "records_trash_app_batch"}
+            want = {"records_trash", "records_trash_batch"} if name.startswith("page") else {"records_trash_batch", "records_trash_app_batch"}
             assert used == want, f"{state} {name}: {used}"
 
         # a page's rows, as page() runs them under the profile: a record's first parent is a seek on to_id, not the primary key read in from_id order (the plan that
