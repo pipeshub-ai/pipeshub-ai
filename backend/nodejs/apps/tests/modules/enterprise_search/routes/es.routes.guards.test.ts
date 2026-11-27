@@ -139,15 +139,39 @@ const AGENT_OTHER: Record<string, Mark | null> = {
   'GET /': null,
   'GET /web-search-usage/:provider': null,
   'GET /model-usage/:model_key': null,
+  // An agent's published versions (the agent itself is the draft): no conversation involved.
+  'GET /:agentKey/versions': null,
+  'GET /:agentKey/versions/:version': null,
+  'POST /:agentKey/versions': null,
+  'POST /:agentKey/versions/:version/rollback': null,
 }
 
 const guardsOf = (row: RouteRow): Mark[] => row.marks.filter((m): m is Mark => m !== undefined)
 
-/** Middleware a route runs between its guards and the handler: delete and archive clear the chat's Compare branches first. */
+/**
+ * Middleware a route runs between its guards and the handler: delete and archive clear the chat's Compare branches
+ * first; a conversation's read adds the harness's active run, and a list its run states; a new conversation's stream
+ * (the Slack bot's included) runs the harness's turn admission and its legacy-turn metrics after the caller guard, so
+ * a turn the harness takes never reaches the handler.
+ */
 const AFTER_GUARDS: Record<string, number> = {
   'DELETE /:conversationId': 1,
   'PATCH /:conversationId/archive': 1,
+  'GET /:conversationId': 1,
+  [`GET ${AGENT}/:conversationId`]: 1,
+  'GET /': 1,
+  [`GET ${AGENT}`]: 1,
+  'POST /stream': 2,
+  'POST /internal/stream': 2,
+  [`POST ${AGENT}/stream`]: 2,
+  [`POST ${AGENT}/internal/stream`]: 2,
 }
+
+/**
+ * The harness's own conversation routes, which carry no conversation guard: its service decides who may use them (the
+ * session's participants), and they answer 503 where the harness is off. Continuing a conversation privately (SS3).
+ */
+const HARNESS_RULED: ReadonlySet<string> = new Set(['POST /:conversationId/fork', `POST ${AGENT}/:conversationId/fork`])
 
 function assertConversationRoute(row: RouteRow, expected: Mark[]): void {
   expect(guardsOf(row), `${row.key}: its guards, authorize first`).to.deep.equal(expected)
@@ -164,6 +188,10 @@ function assertRouter(rows: RouteRow[], conversationRoutes: Record<string, Mark[
   const seen = new Set<string>()
   for (const row of rows) {
     seen.add(row.key)
+    if (HARNESS_RULED.has(row.key)) {
+      expect(guardsOf(row), `${row.key}: the harness decides, with no conversation guard`).to.deep.equal([])
+      continue
+    }
     if (row.path.includes(':conversationId')) {
       expect(conversationRoutes, `${row.key} is in the conversation route table`).to.have.property(row.key)
       assertConversationRoute(row, conversationRoutes[row.key]!)
@@ -172,7 +200,11 @@ function assertRouter(rows: RouteRow[], conversationRoutes: Record<string, Mark[
     expect(others, `${row.key} must be either guarded or on the explicit allowlist`).to.have.property(row.key)
     const expected = others[row.key]
     expect(guardsOf(row), row.key).to.deep.equal(expected === null ? [] : [expected])
-    if (expected !== null) expect(row.marks[row.length - 2], `${row.key}: guard directly before the handler`).to.deep.equal(expected)
+    if (expected !== null) {
+      const after = AFTER_GUARDS[row.key] ?? 0
+      expect(row.marks[row.length - 2 - after], `${row.key}: guard directly before the handler`).to.deep.equal(expected)
+      expect(row.marks.slice(row.length - 1 - after, -1), `${row.key}: no guard after it`).to.deep.equal(Array(after).fill(undefined))
+    }
   }
   for (const key of [...Object.keys(conversationRoutes), ...Object.keys(others)]) {
     expect(seen.has(key), `${key} is registered`).to.equal(true)
@@ -189,13 +221,13 @@ describe('conversation routers: guard mounting', () => {
 
   it('chat router: every chat route carries their authorize guard (and runLease on sends), the rest are caller/list or allowlisted', () => {
     const rows = rowsOf(createConversationalRouter(container()))
-    expect(rows.filter((r) => r.path.includes(':conversationId'))).to.have.length(22)
+    expect(rows.filter((r) => r.path.includes(':conversationId'))).to.have.length(23)
     assertRouter(rows, CHAT_ROUTES, CHAT_OTHER)
   })
 
   it('agent router: every agent route carries their authorize guard (and runLease on sends), the rest are caller/list or allowlisted', () => {
     const rows = rowsOf(createAgentConversationalRouter(container()))
-    expect(rows.filter((r) => r.path.includes(':conversationId'))).to.have.length(16)
+    expect(rows.filter((r) => r.path.includes(':conversationId'))).to.have.length(17)
     assertRouter(rows, AGENT_ROUTES, AGENT_OTHER)
   })
 

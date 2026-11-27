@@ -7,6 +7,7 @@ import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware
 import { turnDeps } from '../helpers/turn-deps'
 import { markingGuards } from '../helpers/guarded-chat'
 import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
+import { guardMarkOf } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-guards'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import {
   AGENT_HARNESS_RUN_ADMISSION_SERVICE,
@@ -1224,7 +1225,9 @@ describe('Enterprise Search Routes - handler coverage', () => {
     for (const [router, kind, path, surface] of cases) {
       it(`${kind} ${path}: the ${surface} surface is admitted before the legacy handler`, async () => {
         const built = router === 'chat' ? createConversationalRouter(container) : createAgentConversationalRouter(container)
-        const handlers = routeHandlers(built, path)
+        // The conversation guards a classic turn runs (`authorize`, `runLease`) sit right before the legacy handler; the
+        // layout below is the rest of the chain.
+        const handlers = routeHandlers(built, path).filter((handler) => guardMarkOf(handler as never) === undefined)
         // [..., surface run, (the owner-only turn guard today's loop needs, R38AUTHZ-FU-2), legacy turn metrics (DUR3),
         // legacy handler]
         const ownerOnly = handlers[handlers.length - 3]?.name === 'refuseNonOwnerTurn'

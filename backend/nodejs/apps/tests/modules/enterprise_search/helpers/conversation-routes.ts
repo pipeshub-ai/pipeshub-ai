@@ -39,7 +39,8 @@ export const CONVERSATION_ROUTES: readonly ConversationRoute[] = [
   chat('C8', 'post', '/:conversationId/unshare', 'manageSharing', { body: { userIds: ['6abf35278cf29be1a243f001'] } }),
   chat('C9', 'put', '/:conversationId/project', 'linkProject', { body: { projectId: null } }),
   chat('C10', 'patch', '/:conversationId/project-visibility', 'linkProject', { body: { visibility: 'private' } }),
-  chat('C11', 'post', '/:conversationId/message/:messageId/regenerate', 'regenerate', { body: { chatMode: 'quick' } }),
+  // An assistant mode: the assistant's routes take only its own (`assistantChatModeSchema`).
+  chat('C11', 'post', '/:conversationId/message/:messageId/regenerate', 'regenerate', { body: { chatMode: 'internal_search' } }),
   chat('C12', 'post', '/:conversationId/cancel', 'cancel', { body: { runId: RUN_ID } }),
   chat('C13', 'patch', '/:conversationId/title', 'rename', { body: { title: 'Renamed' } }),
   chat('C14', 'post', '/:conversationId/message/:messageId/feedback', 'feedback', { body: { isHelpful: true } }),
