@@ -223,7 +223,7 @@ export function SelectedToolChips({
                 onClick={() => onRemove(group.instanceId)}
                 style={{ margin: 0, flexShrink: 0, cursor: 'pointer' }}
               >
-                <MaterialIcon name="close" size={14} color="var(--slate-9)" />
+                <MaterialIcon name="close" size={14} color="var(--slate-11)" />
               </IconButton>
             )}
           </Flex>

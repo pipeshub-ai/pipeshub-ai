@@ -3,7 +3,7 @@
 import React, { useMemo, type ComponentType } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box } from '@radix-ui/themes';
-import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+import { EnterpriseFeatureNotice } from '@/config';
 import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 
