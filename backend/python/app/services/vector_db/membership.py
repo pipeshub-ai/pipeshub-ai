@@ -192,6 +192,9 @@ _vrid_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 # Cap on simultaneous graph calls when resolving one VRID's membership.
 MEMBERSHIP_RESOLVE_CONCURRENCY = 32
 
+# Records whose org is read in one query.
+OWNER_READ_BATCH = 500
+
 MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 120
 
 # Ceiling on VRIDs rewritten by a single batched membership write. Bounds how
@@ -268,8 +271,16 @@ async def own_record_keys(graph_provider, virtual_record_id: str, org_id: str) -
     keys = remaining_record_keys(
         await graph_provider.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True)
     )
-    docs = await asyncio.gather(*(graph_provider.get_document(k, CollectionNames.RECORDS.value) for k in keys))
-    return [k for k, d in zip(keys, docs) if not _of_other_org(d, org_id)]
+    # Content shared by a thousand records is deleted a record at a time, each delete asking about all of them:
+    # one read per record fills the graph's connection pool and fails every other query.
+    owners: dict[str, dict] = {}
+    for start in range(0, len(keys), OWNER_READ_BATCH):
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "id", keys[start:start + OWNER_READ_BATCH],
+            return_fields=["id", "orgId"], raise_on_error=True,
+        )
+        owners.update({row["id"]: row for row in rows})
+    return [k for k in keys if not _of_other_org(owners.get(k), org_id)]
 
 
 def _add_unique(values: list[str], seen: set[str], candidate: Any) -> None:

@@ -100,3 +100,30 @@ async def test_an_unlicensed_bound_agent_keeps_its_team_connectors() -> None:
     searched, filters = await _turn(agent, UNLICENSED, strict=False)
     assert searched == ["team-c", "s3-c"]
     assert "strictScope" not in filters
+
+
+async def _resolve_kwargs(agent: dict[str, Any], licence: object = LICENSED) -> dict[str, Any]:
+    from app.connectors.core.base.data_processor import permission_sync_gate
+
+    permission_sync_gate._licence_answers.clear()
+    run = RunContext.from_claim(claim(pinned_spec(tool_ids=[])))
+    resolve = AsyncMock(return_value={"apps": [], "kb": ["kb-c"]})
+    with patch("app.harness.assembly.scope.bounded_agent_knowledge", AsyncMock(side_effect=lambda k, *_: k)), \
+            patch("app.api.routes.agent._resolve_turn_filters", resolve), \
+            patch("app.modules.agents.knowledge_scope.fetch_user_connector_instances",
+                  AsyncMock(return_value=INSTANCES)):
+        await _turn_scope(run, agent, {"userId": "creator-user"}, MagicMock(), logging.getLogger("t"), _config(licence))
+    return resolve.await_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("fields", "admitted"), [
+    ({"isServiceAccount": True}, False),
+    ({"isServiceAccount": True, "serviceAccountUserId": "sa-user"}, True),
+    ({}, True),
+])
+async def test_an_unbound_service_account_agent_gets_no_project_collection_back(fields: dict, admitted: bool) -> None:
+    """A dropped collection the caller has a role on would be put back (``admit_caller_project_collections``) and read
+    as the creator; chat_stream passes the same flag."""
+    kwargs = await _resolve_kwargs(agent_doc(knowledge=[TEAM, COLLECTION], **fields))
+    assert kwargs["admit_project_collections"] is admitted

@@ -267,11 +267,11 @@ async def _create_api_token_instance(cs: Any) -> dict:  # noqa: ANN401
         return await create_toolset_instance(req, config_service=cs)
 
 
-async def test_create_instance_with_an_unreadable_list_is_500_and_overwrites_nothing() -> None:
+async def test_create_instance_with_an_unreadable_list_is_503_and_overwrites_nothing() -> None:
     cs, store, _stored = _service(reads=False)
     with pytest.raises(HTTPException) as exc:
         await _create_api_token_instance(cs)
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 503
     store.create_key.assert_not_awaited()
 
 
@@ -282,25 +282,25 @@ async def test_create_instance_with_a_readable_list_keeps_the_others() -> None:
     assert [i["_id"] for i in stored[DEFAULT_TOOLSET_INSTANCES_PATH]] == ["i0", result["instance"]["_id"]]
 
 
-async def test_update_instance_with_an_unreadable_list_is_500_not_404() -> None:
+async def test_update_instance_with_an_unreadable_list_is_503_not_404() -> None:
     cs, store, _stored = _service(reads=False)
     req = _make_request(body_dict={"instanceName": "Renamed"})
     req.app.state.toolset_registry = _make_registry("jira")
     with patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True):
         with pytest.raises(HTTPException) as exc:
             await update_toolset_instance("i1", req, cs)
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 503
     store.create_key.assert_not_awaited()
 
 
-async def test_delete_instance_with_an_unreadable_list_is_500_and_keeps_credentials() -> None:
+async def test_delete_instance_with_an_unreadable_list_is_503_and_keeps_credentials() -> None:
     cs, store, _stored = _service(reads=False)
     req = _make_request()
     req.app.state.toolset_registry = _make_registry("jira")
     with patch(f"{T}._check_user_is_admin", new_callable=AsyncMock, return_value=True):
         with pytest.raises(HTTPException) as exc:
             await delete_toolset_instance("i1", req, cs)
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 503
     store.create_key.assert_not_awaited()
     store.delete_key.assert_not_awaited()
 

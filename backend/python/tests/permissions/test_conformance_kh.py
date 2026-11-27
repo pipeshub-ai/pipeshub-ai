@@ -271,6 +271,57 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             await layer.release([WIDE])
 
 
+@pytest.fixture(params=["every_child", "children_order"])
+async def wide_starts(request: pytest.FixtureRequest, graph_layers, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neo4j's split browse reads every start with a child as one wider than it holds whole (`Neo4jProvider._KH_SPLIT_START_MAX`): its children
+    with the page, in the page's order, sixteen a read, each read asked of the check. ``children_order``: the name order's windows read
+    from the children order index, its stamps written after each load (the loader writes the graph directly, as an older install holds it,
+    and the migration stamps it)."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 0)
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 16)
+    if request.param == "children_order":
+        async def ready(_self: Neo4jProvider) -> bool:
+            return True
+
+        monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+        for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+            async def load_and_stamp(nodes: list, edges: list, _load=layer._load, _layer=layer) -> None:
+                await _load(nodes, edges)
+                await _layer._provider.stamp_kh_children_order()
+
+            monkeypatch.setattr(layer, "_load", load_and_stamp)
+            await layer._provider.stamp_kh_children_order()      # the worlds an earlier test left loaded
+
+
+async def test_a_start_read_in_windows_lists_what_the_viewer_may_read(graph_layers, wide_starts) -> None:
+    """Every golden world and shape with each start read in windows: the rows, totals, counts and arrows hold to the oracle as they do with the
+    start held whole."""
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    layers = [layer for layer in graph_layers if layer.name == "neo4j"]
+    results = await on_every_store(layers, partial(check_worlds, worlds=worlds, tag="wide-start"))
+    _assert_each_store(results, "{store} golden, starts read in windows", "{store}, starts read in windows")
+
+
+async def test_a_start_read_in_windows_ends_its_page_where_the_check_was_last_asked(graph_layers, wide_starts, monkeypatch) -> None:
+    """WIDE with each start read in windows and no time to ask past the first: every page ends at the last child asked and the next resumes
+    there, the pages list all forty readable children in order, and no cursor names a child the viewer may not open."""
+    monkeypatch.setattr(IGraphDBProvider, "_KH_UNDECIDED_BUDGET_S", -1.0)
+    readable = [f"k{i:03d}" for i in (*range(10), *range(200, 230))]
+    denied = [f"k{i:03d}" for i in range(10, 200)]
+    for layer in (layer for layer in graph_layers if layer.name == "neo4j"):
+        await layer.preload([WIDE])
+        try:
+            ns, cursors = await layer._ns(WIDE), []
+            items, totals, counted = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
+            assert [ns.local(i.id) for i in items] == readable
+            # Each read ends at its window, so the pages resume (the service reads on from a short one).
+            assert len(cursors) > 1 and set(totals) == set(counted) == {len(readable)}, (len(cursors), totals, counted)
+            assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)]
+        finally:
+            await layer.release([WIDE])
+
+
 async def test_a_chain_top_whose_group_is_a_placeholder_is_reached_from_the_app(graph_layers) -> None:
     """STUBTOP: r is granted, belongs to the placeholder group s and hangs from nothing. Opening s lists r, so the folder f lists s with an arrow
     (Neo4j left s out and f showed no arrow, so no browse reached r). A store that keeps no placeholder group places r under the App instead. On

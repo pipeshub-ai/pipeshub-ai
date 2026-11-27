@@ -107,6 +107,154 @@ class Imports(unittest.TestCase):
         self.assertEqual(edition_guard.check([], changed).errors, [])
 
 
+class OpenEditionRoots(unittest.TestCase):
+    """The ee/ directories this repository ships pass rules 1 and 2; nothing beside them does."""
+
+    def test_files_under_an_open_root_pass(self) -> None:
+        for path in (
+            "backend/python/app/ee/permission_sync/box.py",
+            "backend/python/tests/unit/ee/__init__.py",
+            "backend/python/tests/unit/ee/permission_sync/test_box_gate.py",
+            "backend/nodejs/apps/src/ee/modules/license/license-codec.ts",
+            "backend/nodejs/apps/tests/ee/modules/license/license-core.test.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(edition_guard.check([path], "").errors, [])
+
+    def test_ee_paths_beside_an_open_root_still_fail(self) -> None:
+        for path in (
+            "backend/python/app/ee/harness/thing.py",
+            "backend/python/app/ee/permission_sync_extra/x.py",
+            "backend/python/app/ee/__init__.py",
+            "backend/python/tests/unit/ee/other/test_x.py",
+            "backend/nodejs/apps/src/ee/modules/billing/x.ts",
+            "backend/nodejs/apps/src/ee/modules/license.ts",
+            "frontend/ee/modules/license/x.ts",
+            "x/backend/python/app/ee/permission_sync/box.py",
+            "backend/python/tests/unit/ee/__init__.pyi",
+            "backend/python/tests/unit/ee/__init__.py.bak",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(len(edition_guard.check([path], "").errors), 1)
+
+    def test_imports_of_an_open_root_pass(self) -> None:
+        for path, line in (
+            ("backend/python/app/connectors/sources/box/connector.py",
+             "from app.ee.permission_sync.box import BoxPermissionsMixin"),
+            ("backend/python/app/x.py", "import app.ee.permission_sync"),
+            ("backend/python/app/x.py", "from app.ee import permission_sync"),
+            ("backend/python/app/x.py", "from app import models"),
+            ("backend/python/app/x.py", "module = importlib.import_module(" + '"app.ee.permission_sync")'),
+            ("backend/python/app/x.py", "import app.ee.permission_sync.box, app.ee.permission_sync.zoom"),
+            ("backend/nodejs/apps/src/modules/x/y.ts", "import { X } from '../../ee/modules/license/license-state';"),
+            # Relative imports inside an open root, and out of it to shared code, pass.
+            ("backend/python/app/ee/permission_sync/box.py", "from .box_access import read_grants"),
+            ("backend/python/app/ee/permission_sync/box.py", "from . import zoom"),
+            ("backend/python/app/ee/permission_sync/box.py", "from ...models.entities import Record"),
+            ("backend/python/app/ee/permission_sync/box.py", "from . import (box_access, zoom)"),
+            ("backend/python/app/connectors/x/y.py", "from .. import base as connector_base"),
+            ("backend/nodejs/apps/src/ee/modules/license/license-boot.ts", "import { x } from './license-state';"),
+            ("backend/nodejs/apps/src/ee/modules/license/license-boot.ts", "import { y } from '../../../libs/edition/z';"),
+            ("backend/nodejs/apps/tests/ee/modules/license/license-core.test.ts",
+             "import { checkLicense } from '../../../../src/ee/modules/license/license-codec';"),
+            ("backend/nodejs/apps/src/config.ts",
+             "export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(edition_guard.check([], diff(path, line)).errors, [])
+
+    def test_imports_beside_an_open_root_still_fail(self) -> None:
+        for path, line in (
+            ("backend/python/app/x.py", "from app.ee.harness import edition"),
+            ("backend/python/app/x.py", "from app.ee import permission_sync, harness"),
+            ("backend/python/app/x.py", "from app.ee import *"),
+            ("backend/python/app/x.py", "from app.ee.permission_syncer import x"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/billing/x';"),
+            ("frontend/config.ts", "import { Y } from '@/ee/lib/license';"),
+            # Each target on a line is judged on its own; an open one, or one in a comment, does not clear another.
+            ("backend/python/app/x.py", "from app.ee.harness import edition  # app.ee.permission_sync"),
+            ("backend/python/app/x.py", "from app.ee.permission_sync.box import X; from app.ee.harness import edition"),
+            ("backend/python/app/x.py", "import app.ee.permission_sync, app.ee.harness"),
+            ("backend/nodejs/apps/src/config.ts",
+             "import { X } from './ee/modules/billing/x'; import { Y } from './ee/modules/license/y';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from \"@/ee/lib/secret\"; // \"./ee/modules/license/\""),
+            # Resolved against the importing file: the frontend has no open root, and `..` cannot climb out of one.
+            ("frontend/config.ts", "import { X } from './ee/modules/license/x';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/license/../billing/x';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from '@/ee/modules/license/x';"),
+            # A relative import from inside an open root that climbs to another ee directory.
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ..harness import edition"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from .. import harness"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import ee"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import models, ee as edition"),
+            ("backend/python/app/x.py", "from . import ee"),
+            ("backend/python/tests/unit/ee/permission_sync/test_x.py", "from ..other import helper"),
+            ("backend/nodejs/apps/src/ee/modules/license/bridge.ts", "export { x } from '../billing/secret';"),
+            ("backend/nodejs/apps/src/ee/modules/license/bridge.ts", "const m = require('../billing/m');"),
+            # A relative import into an ee directory from shared code, without naming ee in a way rule 2 reads.
+            ("backend/python/app/x.py", "from .ee.harness import edition"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(len(edition_guard.check([], diff(path, line)).errors), 1)
+
+
+class PythonImportsAreParsed(unittest.TestCase):
+    """Python files are parsed, so every statement is read whatever its layout, and each is reported once."""
+
+    BRIDGE = "backend/python/app/ee/permission_sync/bridge.py"
+
+    def _errors(self, path: str, *lines: str) -> list[str]:
+        return edition_guard.check([], diff(path, *lines)).errors
+
+    def test_a_closed_import_fails_however_it_is_written(self) -> None:
+        for path, lines in (
+            (self.BRIDGE, ("from ... import (", "    models,", "    ee,", ")")),
+            (self.BRIDGE, ("from ..harness \\", "    import edition")),
+            (self.BRIDGE, ("from .box_access import read_grants; from ..harness import edition",)),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", \"app.ee.permission_sync\")")),
+            ("backend/python/app/x.py", ("from .ee.permission_sync.box import X; from .ee.harness import edition",)),
+            ("backend/python/app/x.py", ("from app.ee.permission_sync.box import (", "    X,", ")", "import app.ee.harness")),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", __package__)")),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", package=\"app.ee.permission_sync\")")),
+            # A relative name against a package the guard cannot read is read as closed.
+            ("backend/python/app/x.py", ("import importlib", "m = importlib.import_module(\".models\", pkg)")),
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(len(self._errors(path, *lines)), 1, lines)
+
+    def test_a_relative_import_module_against_this_package_passes_in_shared_code(self) -> None:
+        lines = ("import importlib", "m = importlib.import_module(\".models\", __package__)")
+        self.assertEqual(self._errors("backend/python/app/x.py", *lines), [])
+
+    def test_a_parenthesised_import_of_shared_modules_passes(self) -> None:
+        for path in ("backend/python/app/x.py", "backend/python/app/connectors/sources/box/connector.py",
+                     "backend/python/tests/unit/foo.py", self.BRIDGE):
+            with self.subTest(path=path):
+                self.assertEqual(self._errors(path, "from . import (", "    models,", ")"), [])
+
+    def test_open_imports_pass_however_they_are_written(self) -> None:
+        for lines in (
+            ("from .box_access import (", "    read_grants,", ")"),
+            ("from ...models.entities \\", "    import Record"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", \"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", package=\"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(name=\".zoom\", package=\"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", __package__)"),
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(self._errors(self.BRIDGE, *lines), [])
+
+    def test_the_error_is_at_the_statements_first_added_line(self) -> None:
+        changed = "+++ b/backend/python/app/x.py\n@@ -3,0 +4,2 @@\n+    models,\n+    ee,\n"
+        source = "import os\n\nfrom . import (\n    models,\n    ee,\n)\n"
+        (error,) = edition_guard.check([], changed, read=lambda _p: source).errors
+        self.assertTrue(error.startswith("backend/python/app/x.py:4:"), error)
+
+    def test_an_unparsable_file_is_read_line_by_line(self) -> None:
+        (error,) = self._errors("backend/python/app/x.py", "from app.ee.harness import edition", "def broken(:")
+        self.assertTrue(error.startswith("backend/python/app/x.py:1:"), error)
+
+
 class Licence(unittest.TestCase):
     def test_a_proprietary_licence_marker_fails_in_any_file(self) -> None:
         for path in ("backend/python/app/x.py", "frontend/x.ts", "README.md"):
