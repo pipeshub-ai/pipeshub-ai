@@ -210,7 +210,9 @@ async def test_a_gateways_metrics_route_counts_a_refused_scraper(sink: Recording
 def test_the_gateways_count_a_refused_token_and_nothing_else(
     sink: RecordingSink, reason: str | None, counted: list[tuple[str, str]]
 ) -> None:
-    from app.plugins.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
+    from app.plugins.telemetry.modules.harness_gateway_metrics import (
+        BackendGatewayMetrics,
+    )
 
     BackendGatewayMetrics().request(GatewayRequest("model", "chat_completions", "refused", 0.01, reason=reason))
     assert sink.tokens == counted

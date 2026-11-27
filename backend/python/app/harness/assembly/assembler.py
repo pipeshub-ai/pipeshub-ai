@@ -26,7 +26,6 @@ from app.agents.actions.util.sign_in_rejected import SIGN_IN_REJECTED_STATE
 from app.agents.agent_loop.artifact_provenance import SANDBOX_TOOL_NAMES
 from app.agents.agent_loop.connected_sources import ConnectedSources
 from app.core.org_context import OrgContext, set_request_context
-from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.activity import journals_commands
 from app.harness.adapters.content_store import LOGGER as CONTENT_LOGGER
 from app.harness.adapters.content_store import PipesHubContentStore
@@ -140,6 +139,7 @@ from app.harness.labels import (
     inherited_label,
 )
 from app.harness.mcp_hub.settings import hub_enabled as mcp_hub_enabled
+from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.presentation import PipesHubPresenter
 from app.harness.quarantine import bind_summarizer
 from app.harness.reconcile import build_reconcile_hooks

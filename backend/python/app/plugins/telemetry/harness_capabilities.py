@@ -29,7 +29,9 @@ def _metrics_text() -> Callable[[], str]:
 
 
 def _gateway_metrics() -> object:
-    from app.plugins.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
+    from app.plugins.telemetry.modules.harness_gateway_metrics import (
+        BackendGatewayMetrics,
+    )
 
     return BackendGatewayMetrics()
 
@@ -41,7 +43,9 @@ def _read_cache_metrics() -> object:
 
 
 def _broker_metrics() -> object:
-    from app.plugins.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
+    from app.plugins.telemetry.modules.sandbox_broker_metrics import (
+        BackendBrokerMetrics,
+    )
 
     return BackendBrokerMetrics()
 

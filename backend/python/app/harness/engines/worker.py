@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.core.org_context import spawn_detached
-from app.harness.plugin_metrics import gateway_metrics
 from app.harness.engines.durable import DurableEngineServices, PipesHubEngineAssembler
 from app.harness.engines.org_references import BackgroundJob, org_references
 from app.harness.engines.presenter import PipesHubEngineRunPresenter
@@ -30,6 +29,7 @@ from app.harness.gateway.keys import ConfiguredGatewayKeys
 from app.harness.gateway.mcp import ToolGatewayApp
 from app.harness.gateway.org_binding import OrgBoundGatewayTokenVerifier
 from app.harness.metrics_exposition import worker_metrics_exposition
+from app.harness.plugin_metrics import gateway_metrics
 from app.harness.repositories import fetch_config_from_env
 from app.harness.sandbox.client import open_sandbox_provider
 from app.harness.sandbox.egress_config import connect_tunnels_enabled

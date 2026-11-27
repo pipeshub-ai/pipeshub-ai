@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -53,7 +54,7 @@ class Registry:
     def reset(self) -> None:
         self.counts.clear()
 
-    def snapshot(self):
+    def snapshot(self) -> list[tuple[str, str, dict[str, str], float]]:
         samples = [
             ("pipeshub_activity_total", "counter", {
                 "service": "indexing_service", "activity": "document_indexed", "connector": "slack",
@@ -79,7 +80,7 @@ def search_event(i: int = 0) -> dict:
 
 
 class Rig:
-    def __init__(self, mode=Mode.AUTO, collector=None, process_id="worker-1", registry=None, clock=None, events=None):
+    def __init__(self, mode=Mode.AUTO, collector=None, process_id="worker-1", registry=None, clock=None, events=None) -> None:
         self.collector = collector if collector is not None else FakeCollector({INSTALL: SECRET})
         self.registry = registry if registry is not None else Registry()
         self.clock = clock if clock is not None else Clock()
@@ -98,28 +99,28 @@ class Rig:
 
 
 class TestMode:
-    def test_contract_mode(self, monkeypatch):
+    def test_contract_mode(self, monkeypatch) -> None:
         monkeypatch.delenv("USAGE_TELEMETRY_CONTRACT", raising=False)
         assert contract_mode() is Mode.LEGACY
         for raw, mode in (("v3", Mode.V3), (" LEGACY ", Mode.LEGACY), (" Auto ", Mode.AUTO), ("v2", Mode.LEGACY), ("", Mode.LEGACY)):
             monkeypatch.setenv("USAGE_TELEMETRY_CONTRACT", raw)
             assert contract_mode() is mode
 
-    def test_edition(self, monkeypatch):
+    def test_edition(self, monkeypatch) -> None:
         monkeypatch.delenv("USAGE_TELEMETRY_EDITION", raising=False)
         assert edition() == "oss"
         for raw, expected in ((" EE ", "ee"), ("ee", "ee"), ("enterprise", "oss"), ("", "oss")):
             monkeypatch.setenv("USAGE_TELEMETRY_EDITION", raw)
             assert edition() == expected
 
-    def test_process_id_fits_the_contract(self):
+    def test_process_id_fits_the_contract(self) -> None:
         assert PROCESS_ID_RE.match(_PROCESS_ID)
         with pytest.raises(ValueError):
             Rig(process_id="not valid!")
 
 
 class TestSendAndAck:
-    async def test_sends_deltas_gauges_and_events_and_drops_the_batch_on_ack(self):
+    async def test_sends_deltas_gauges_and_events_and_drops_the_batch_on_ack(self) -> None:
         rig = Rig()
         rig.registry.inc(3)
         rig.registry.inc(4, org="org-2")
@@ -160,7 +161,7 @@ class TestSendAndAck:
         assert len(rig.collector.bodies(EVENTS_URL)) == 1
         assert rig.collector.totals == {ACTIVITY: 7}
 
-    async def test_no_request_when_there_is_nothing_to_send(self):
+    async def test_no_request_when_there_is_nothing_to_send(self) -> None:
         rig = Rig()
         assert await rig.tick() is Route.V3  # one empty batch finds out what the collector speaks
         assert rig.collector.bodies() == [
@@ -170,12 +171,12 @@ class TestSendAndAck:
         assert await rig.tick() is Route.V3
         assert len(rig.collector.requests) == 1
 
-    async def test_version_that_does_not_fit_is_left_out(self):
+    async def test_version_that_does_not_fit_is_left_out(self) -> None:
         rig = Rig()
         await rig.tick(version="1.4.0 (local build)")
         assert "version" not in rig.collector.bodies()[0]
 
-    async def test_nothing_personal_is_sent(self):
+    async def test_nothing_personal_is_sent(self) -> None:
         rig = Rig()
         rig.registry.inc(3)
         rig.registry.records = 5
@@ -186,7 +187,7 @@ class TestSendAndAck:
         for value in (*PERSONAL, "orgId", "userId", "email", "domain", '"org"', '"kb"', "mimetype", INSTALL, SECRET):
             assert value not in sent
 
-    async def test_at_most_2000_events_per_batch(self):
+    async def test_at_most_2000_events_per_batch(self) -> None:
         rig = Rig()
         for i in range(2500):
             rig.events.enqueue(search_event(i))
@@ -200,7 +201,7 @@ class TestSendAndAck:
 
 class TestRetry:
     @pytest.mark.parametrize("failure", [HttpAnswer(status=502, **V3), HttpAnswer(status=500, **V3), TIMEOUT, ANSWER_LOST])
-    async def test_same_body_again_and_counted_once(self, failure):
+    async def test_same_body_again_and_counted_once(self, failure) -> None:
         rig = Rig()
         rig.registry.inc(5)
         rig.collector.script.append(failure)
@@ -219,7 +220,7 @@ class TestRetry:
         assert rig.collector.bodies(METRICS_URL)[-1]["sequence"] == 2
         assert rig.collector.totals == {ACTIVITY: 7}
 
-    async def test_events_batch_is_retried_whole(self):
+    async def test_events_batch_is_retried_whole(self) -> None:
         rig = Rig()
         rig.events.enqueue(search_event(1))
         rig.collector.script.extend([None, HttpAnswer(status=502, **V3)])  # metrics fine, events fail
@@ -235,7 +236,7 @@ class TestRetry:
         await rig.tick()
         assert [e["attributes"]["num_queries"] for e in rig.collector.events] == [1, 2]
 
-    async def test_backoff_doubles_and_is_capped(self):
+    async def test_backoff_doubles_and_is_capped(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.collector.script.extend([HttpAnswer(status=503, **V3)] * 9)
@@ -253,7 +254,7 @@ class TestRetry:
             waits.append(wait)
         assert waits == [30, 60, 120, 240, 480, 960, 1800, 1800, 1800]
 
-    async def test_nothing_is_sent_before_the_backoff_ends(self):
+    async def test_nothing_is_sent_before_the_backoff_ends(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.collector.script.append(HttpAnswer(status=503, **V3))
@@ -262,7 +263,7 @@ class TestRetry:
         assert await rig.tick() is Route.HOLD
         assert len(rig.collector.requests) == 1
 
-    async def test_retry_after_is_honoured_when_larger(self):
+    async def test_retry_after_is_honoured_when_larger(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.collector.script.append(HttpAnswer(status=429, retry_after_s=120, **V3))
@@ -274,7 +275,7 @@ class TestRetry:
         assert await rig.tick() is Route.V3
         assert rig.collector.totals == {ACTIVITY: 1}
 
-    async def test_smaller_retry_after_does_not_shorten_the_backoff(self):
+    async def test_smaller_retry_after_does_not_shorten_the_backoff(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.collector.script.append(HttpAnswer(status=429, retry_after_s=1, **V3))
@@ -284,7 +285,7 @@ class TestRetry:
         assert len(rig.collector.requests) == 1
 
     @pytest.mark.parametrize("status", [400, 413])
-    async def test_a_batch_that_can_never_be_accepted_is_dropped(self, status):
+    async def test_a_batch_that_can_never_be_accepted_is_dropped(self, status) -> None:
         rig = Rig()
         rig.registry.inc(5)
         rig.collector.script.append(HttpAnswer(status=status, detail="Invalid payload", **V3))
@@ -297,7 +298,7 @@ class TestRetry:
         assert [b["sequence"] for b in rig.collector.bodies(METRICS_URL)] == [1, 2]
         assert rig.collector.totals == {ACTIVITY: 1}
 
-    async def test_a_port_that_raises_is_no_answer(self):
+    async def test_a_port_that_raises_is_no_answer(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.collector.post = AsyncMock(side_effect=RuntimeError(f"Bearer {INSTALL}.{SECRET}"))
@@ -306,7 +307,7 @@ class TestRetry:
 
 
 class TestFallback:
-    async def test_header_less_404_falls_back_caches_and_probes_again_after_24h(self):
+    async def test_header_less_404_falls_back_caches_and_probes_again_after_24h(self) -> None:
         rig = Rig(collector=FakeCollector({INSTALL: SECRET}, v3=False))
         rig.registry.inc(5)
         rig.events.enqueue(search_event(1))
@@ -327,12 +328,12 @@ class TestFallback:
         # Only what was counted since the last legacy push, which carried the first 5.
         assert rig.collector.totals == {ACTIVITY: 2}
 
-    async def test_a_login_page_is_not_a_v3_collector(self):
+    async def test_a_login_page_is_not_a_v3_collector(self) -> None:
         rig = Rig()
         rig.collector.script.append(HttpAnswer(status=200, detail="<html>Sign in</html>"))
         assert await rig.tick() is Route.LEGACY
 
-    async def test_pending_events_go_back_for_legacy_with_their_original_props(self):
+    async def test_pending_events_go_back_for_legacy_with_their_original_props(self) -> None:
         rig = Rig()
         originals = [search_event(1), {"event": "answer_generated", "timestamp": "t", "props": {"orgId": "o"}}]
         for event in originals:
@@ -347,7 +348,7 @@ class TestFallback:
         assert await rig.tick() is Route.LEGACY
         assert rig.events.drain() == [*originals, search_event(3)]
 
-    async def test_legacy_delivery_rebases_so_v3_does_not_resend_history(self):
+    async def test_legacy_delivery_rebases_so_v3_does_not_resend_history(self) -> None:
         rig = Rig()
         rig.registry.inc(10)
         assert await rig.tick(secret=None) is Route.LEGACY  # Node has not registered yet
@@ -359,7 +360,7 @@ class TestFallback:
         assert await rig.tick() is Route.V3
         assert rig.collector.totals == {ACTIVITY: 1}
 
-    async def test_pending_metrics_batch_is_dropped_on_fallback(self):
+    async def test_pending_metrics_batch_is_dropped_on_fallback(self) -> None:
         rig = Rig()
         rig.registry.inc(5)
         rig.collector.script.append(TIMEOUT)
@@ -376,7 +377,7 @@ class TestFallback:
         assert rig.collector.totals == {ACTIVITY: 2}
         assert rig.collector.bodies(METRICS_URL)[-1]["sequence"] == 2
 
-    async def test_registry_reset_counts_from_zero(self):
+    async def test_registry_reset_counts_from_zero(self) -> None:
         rig = Rig()
         rig.registry.inc(10)
         await rig.tick()
@@ -387,7 +388,7 @@ class TestFallback:
 
 
 class TestModes:
-    async def test_legacy_mode_never_calls_v3(self):
+    async def test_legacy_mode_never_calls_v3(self) -> None:
         rig = Rig(mode=Mode.LEGACY)
         rig.registry.inc(5)
         rig.events.enqueue(search_event())
@@ -397,7 +398,7 @@ class TestModes:
         assert rig.collector.requests == []
         assert rig.events.size() == 1
 
-    async def test_v3_mode_never_asks_for_legacy(self):
+    async def test_v3_mode_never_asks_for_legacy(self) -> None:
         rig = Rig(mode=Mode.V3, collector=FakeCollector({INSTALL: SECRET}, v3=False))
         rig.registry.inc(5)
         rig.events.enqueue(search_event())
@@ -421,7 +422,7 @@ class TestModes:
         assert rig.collector.totals == {ACTIVITY: 5}
         assert len(rig.collector.events) == 1
 
-    async def test_no_secret_in_auto_is_legacy(self):
+    async def test_no_secret_in_auto_is_legacy(self) -> None:
         rig = Rig()
         assert await rig.tick(secret=None) is Route.LEGACY
         assert await rig.tick(secret="") is Route.LEGACY
@@ -429,7 +430,7 @@ class TestModes:
 
 
 class TestUnauthorised:
-    async def test_a_rotated_secret_is_picked_up_on_the_next_tick(self):
+    async def test_a_rotated_secret_is_picked_up_on_the_next_tick(self) -> None:
         rig = Rig()
         rig.registry.inc(5)
         rig.collector.installs[INSTALL] = "rotated-secret-000000000000000000000000000"
@@ -444,7 +445,7 @@ class TestUnauthorised:
         assert rig.collector.totals == {ACTIVITY: 6}
         rig.logger.warning.assert_not_called()
 
-    async def test_three_in_a_row_is_not_v3_for_24_hours(self):
+    async def test_three_in_a_row_is_not_v3_for_24_hours(self) -> None:
         rig = Rig()
         rig.registry.inc(5)
         rig.collector.installs[INSTALL] = "another"
@@ -465,7 +466,7 @@ class TestUnauthorised:
         assert await rig.tick() is Route.V3
         assert rig.collector.totals == {ACTIVITY: 2}
 
-    async def test_an_accepted_push_between_two_401s_starts_the_count_again(self):
+    async def test_an_accepted_push_between_two_401s_starts_the_count_again(self) -> None:
         rig = Rig()
         refused = HttpAnswer(status=401, **V3)
         rig.collector.script.extend([refused, refused, None, refused, refused])
@@ -477,7 +478,7 @@ class TestUnauthorised:
 
 
 class TestProcesses:
-    async def test_a_restarted_process_starts_at_one_and_totals_stay_right(self):
+    async def test_a_restarted_process_starts_at_one_and_totals_stay_right(self) -> None:
         collector, registry = FakeCollector({INSTALL: SECRET}), Registry()
         first = Rig(collector=collector, registry=registry, process_id="pid1-aaaa")
         registry.inc(5)
@@ -494,7 +495,7 @@ class TestProcesses:
         assert sent == [("pid1-aaaa", 1), ("pid1-aaaa", 2), ("pid2-bbbb", 1)]
         assert collector.totals == {ACTIVITY: 11}
 
-    async def test_workers_add_up(self):
+    async def test_workers_add_up(self) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         rigs = [Rig(collector=collector, process_id=f"worker-{i}") for i in range(3)]
         for n, rig in enumerate(rigs, start=1):
@@ -513,7 +514,7 @@ class TestProcesses:
 
 
 class TestSecretIsNeverLogged:
-    async def test_no_log_call_and_no_repr_shows_it(self):
+    async def test_no_log_call_and_no_repr_shows_it(self) -> None:
         rig = Rig()
         rig.registry.inc()
         rig.events.enqueue(search_event())
@@ -582,15 +583,15 @@ async def run_ticks(pusher: MetricsPusher, ticks: int = 1) -> None:
 
 class TestPusherWiring:
     @pytest.fixture(autouse=True)
-    def _empty_buffer(self):
+    def _empty_buffer(self) -> Iterator[None]:
         event_buffer.drain()
         yield
         event_buffer.drain()
 
-    def test_install_secret_is_not_a_required_field(self):
+    def test_install_secret_is_not_a_required_field(self) -> None:
         assert "installSecret" not in REQUIRED_CONFIG_FIELDS
 
-    async def test_auto_with_a_secret_sends_v3_and_not_legacy(self, monkeypatch):
+    async def test_auto_with_a_secret_sends_v3_and_not_legacy(self, monkeypatch) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         pusher = make_pusher(node_config(installSecret=SECRET), collector, monkeypatch)
         event_buffer.enqueue(search_event(1))
@@ -608,7 +609,7 @@ class TestPusherWiring:
         pusher._config_service.set_config.assert_not_called()  # Python never writes the config
         assert SECRET not in str(pusher._logger.mock_calls)
 
-    async def test_auto_without_a_secret_is_legacy(self, monkeypatch):
+    async def test_auto_without_a_secret_is_legacy(self, monkeypatch) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         pusher = make_pusher(node_config(), collector, monkeypatch)
         await run_ticks(pusher)
@@ -616,7 +617,7 @@ class TestPusherWiring:
         pusher._push.assert_called_once()
         pusher._ship_events.assert_called_once()
 
-    async def test_auto_falls_back_to_legacy_on_an_old_collector(self, monkeypatch):
+    async def test_auto_falls_back_to_legacy_on_an_old_collector(self, monkeypatch) -> None:
         collector = FakeCollector(v3=False)
         pusher = make_pusher(node_config(installSecret=SECRET), collector, monkeypatch)
         await run_ticks(pusher, 2)
@@ -624,14 +625,14 @@ class TestPusherWiring:
         assert pusher._push.call_count == 2
         assert pusher._ship_events.call_count == 2
 
-    async def test_legacy_mode_never_calls_v3(self, monkeypatch):
+    async def test_legacy_mode_never_calls_v3(self, monkeypatch) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         pusher = make_pusher(node_config(installSecret=SECRET), collector, monkeypatch, mode="legacy")
         await run_ticks(pusher, 2)
         assert collector.requests == []
         assert pusher._push.call_count == 2
 
-    async def test_unset_setting_is_legacy_and_never_calls_v3(self, monkeypatch):
+    async def test_unset_setting_is_legacy_and_never_calls_v3(self, monkeypatch) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         pusher = make_pusher(node_config(installSecret=SECRET), collector, monkeypatch, mode=None)
         await run_ticks(pusher, 2)
@@ -639,7 +640,7 @@ class TestPusherWiring:
         assert pusher._push.call_count == 2
         assert pusher._ship_events.call_count == 2
 
-    async def test_v3_mode_never_calls_legacy(self, monkeypatch):
+    async def test_v3_mode_never_calls_legacy(self, monkeypatch) -> None:
         collector = FakeCollector(v3=False)
         for config in (node_config(), node_config(installSecret=SECRET)):
             pusher = make_pusher(config, collector, monkeypatch, mode="v3")
@@ -647,7 +648,7 @@ class TestPusherWiring:
             pusher._push.assert_not_called()
             pusher._ship_events.assert_not_called()
 
-    async def test_nothing_on_either_contract_without_consent(self, monkeypatch):
+    async def test_nothing_on_either_contract_without_consent(self, monkeypatch) -> None:
         collector = FakeCollector({INSTALL: SECRET})
         for mode in ("auto", "v3", "legacy"):
             pusher = make_pusher(
@@ -658,7 +659,7 @@ class TestPusherWiring:
             pusher._ship_events.assert_not_called()
         assert collector.requests == []
 
-    async def test_loaded_config_does_not_show_the_secret(self, monkeypatch):
+    async def test_loaded_config_does_not_show_the_secret(self, monkeypatch) -> None:
         pusher = make_pusher(node_config(installSecret=SECRET), FakeCollector(), monkeypatch)
         cfg = await pusher._load_config()
         assert cfg["install_secret"].reveal() == SECRET

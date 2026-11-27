@@ -67,10 +67,10 @@ from app.modules.transformers.blob_storage import (
     close_shared_redis,
     close_shared_session,
 )
+from app.plugins import load_plugins
 from app.services.messaging.config import ConsumerType, Topic, get_message_broker_type
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.plugins import load_plugins
 from app.utils.env_flags import validate_env_flags
 from app.utils.gc_startup import freeze_startup_heap
 from app.utils.process_hardening import mark_process_non_dumpable

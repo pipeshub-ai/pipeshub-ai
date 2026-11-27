@@ -23,7 +23,7 @@ PERSONAL = {
 }
 
 
-def _activity(value, **labels):
+def _activity(value: float, **labels: str) -> tuple[str, str, dict[str, str], float]:
     base = {
         "service": "indexing_service", "activity": "document_indexed", "connector": "Google Drive",
         "status": "ok", "org": PERSONAL["orgId"], "kb": "kb-1", "domain": PERSONAL["domain"], "mimetype": "application/pdf",
@@ -32,7 +32,7 @@ def _activity(value, **labels):
 
 
 class TestTranslateMetrics:
-    def test_dropped_labels_are_summed_and_kept_labels_renamed(self):
+    def test_dropped_labels_are_summed_and_kept_labels_renamed(self) -> None:
         points = translate_metrics([
             _activity(3),
             _activity(4, org="org-2", domain="other.io", kb="kb-9", mimetype="text/plain", service="x"),
@@ -45,7 +45,7 @@ class TestTranslateMetrics:
                   (("activity", "document_indexed"), ("connector_type", "google_drive"), ("status", "ok")), 7.0),
         ]
 
-    def test_gauges(self):
+    def test_gauges(self) -> None:
         points = translate_metrics([
             ("pipeshub_connector_active", "gauge", {"connector": "SLACK", "domain": "a.io"}, 2),
             ("pipeshub_connector_active", "gauge", {"connector": "SLACK", "domain": "b.io"}, 3),
@@ -64,7 +64,7 @@ class TestTranslateMetrics:
                   (("connector_type", "unknown"), ("indexing_status", "in_progress_")), 1.0),
         ]
 
-    def test_node_rows_share_the_table(self):
+    def test_node_rows_share_the_table(self) -> None:
         points = translate_metrics([
             ("pipeshub_org_users", "gauge", {"org": "o1", "domain": "a.io"}, 4),
             ("pipeshub_org_users", "gauge", {"org": "o2", "domain": "b.io"}, 6),
@@ -75,7 +75,7 @@ class TestTranslateMetrics:
         assert Point("pipeshub.usage.auth_methods", "gauge", (("auth_method", "google"),), 1.0) in points
         assert Point("pipeshub.usage.orgs", "gauge", (("account_type", "business"),), 2.0) in points
 
-    def test_everything_else_is_not_sent(self):
+    def test_everything_else_is_not_sent(self) -> None:
         assert translate_metrics([
             ("pipeshub_http_requests_total", "counter", {"route": "/x"}, 9),
             ("pipeshub_db_query_total", "counter", {}, 9),
@@ -84,14 +84,14 @@ class TestTranslateMetrics:
             _activity(-1),
         ]) == []
 
-    def test_counters_come_first(self):
+    def test_counters_come_first(self) -> None:
         points = translate_metrics([
             ("pipeshub_connector_active", "gauge", {"connector": "a", "domain": "d"}, 1),
             _activity(1),
         ])
         assert [p.type for p in points] == ["counter", "gauge"]
 
-    def test_no_rule_keeps_a_personal_label(self):
+    def test_no_rule_keeps_a_personal_label(self) -> None:
         banned = {"org", "org_id", "orgId", "domain", "email", "user", "user_id", "userId", "kb", "fullName", "name"}
         for rule in METRICS.values():
             assert not banned & set(rule.labels) and not banned & set(rule.labels.values())
@@ -99,19 +99,19 @@ class TestTranslateMetrics:
             assert not banned & set(rule.attributes)
             assert not banned & {new for new, _ in rule.attributes.values()}
 
-    def test_label_value(self):
+    def test_label_value(self) -> None:
         assert label_value("connector_type", "Google Drive/Team") == "google_drive_team"
         assert label_value("indexing_status", "") == "unknown"
         assert label_value("indexing_status", None) == "unknown"
         assert label_value("activity", "Document_Indexed") == "Document_Indexed"
 
 
-def _event(name, **props):
+def _event(name: str, **props: object) -> dict[str, object]:
     return {"event": name, "timestamp": "2026-11-25T08:00:00+00:00", "props": {**PERSONAL, **props}}
 
 
 class TestTranslateEvents:
-    def test_search_performed(self):
+    def test_search_performed(self) -> None:
         out = translate_event(_event("search_performed", status_code=200, num_queries="3", search_type="hybrid"))
         assert out == {
             "name": "search.performed",
@@ -120,26 +120,26 @@ class TestTranslateEvents:
         }
         assert type(out["attributes"]["num_queries"]) is int
 
-    def test_chat_session_started_drops_streaming(self):
+    def test_chat_session_started_drops_streaming(self) -> None:
         out = translate_event(_event("chat_session_started", mode="quick", search_type=None, streaming=True))
         assert out["name"] == "chat.session.started"
         assert out["attributes"] == {"mode": "quick"}
 
-    def test_agent_run_keeps_booleans(self):
+    def test_agent_run_keeps_booleans(self) -> None:
         out = translate_event(_event("agent_run", has_tools=True, streaming=False))
         assert out["name"] == "agent.run.started"
         assert out["attributes"] == {"has_tools": True, "streaming": False}
 
-    def test_agent_run_skips_a_value_of_the_wrong_type(self):
+    def test_agent_run_skips_a_value_of_the_wrong_type(self) -> None:
         out = translate_event(_event("agent_run", has_tools=1, streaming="yes"))
         assert out["attributes"] == {}
 
-    def test_connector_added_renames(self):
+    def test_connector_added_renames(self) -> None:
         out = translate_event(_event("connector_added", connector="Google Drive", scope="team"))
         assert out["name"] == "connector.added"
         assert out["attributes"] == {"connector_type": "google_drive", "connector_scope": "team"}
 
-    def test_node_events(self):
+    def test_node_events(self) -> None:
         assert translate_event(_event("login", auth_method="google", first_login=True))["attributes"] == {
             "auth_method": "google", "first_login": True,
         }
@@ -150,11 +150,11 @@ class TestTranslateEvents:
             "mcp_client_name": "claude", "mcp_client_version": "1.2",
         }
 
-    def test_events_without_a_v3_counterpart(self):
+    def test_events_without_a_v3_counterpart(self) -> None:
         for name in ("retrieve_performed", "answer_generated", "pat_created", "anything"):
             assert translate_event(_event(name, status_code=200)) is None
 
-    def test_nothing_personal_survives(self):
+    def test_nothing_personal_survives(self) -> None:
         events = [
             _event("search_performed", status_code=200, num_queries=1, search_type="hybrid"),
             _event("chat_session_started", mode="quick", search_type="hybrid", streaming=True),
@@ -182,38 +182,38 @@ class TestTranslateEvents:
 
 
 class TestDeltaTracker:
-    def test_cut_returns_the_difference_and_moves_the_baseline(self):
+    def test_cut_returns_the_difference_and_moves_the_baseline(self) -> None:
         tracker = DeltaTracker()
         assert tracker.cut({"a": 5, "b": 0}) == {"a": 5}
         assert tracker.cut({"a": 5, "b": 0}) == {}
         assert tracker.cut({"a": 8, "b": 2}) == {"a": 3, "b": 2}
 
-    def test_a_value_below_the_baseline_counts_from_zero(self):
+    def test_a_value_below_the_baseline_counts_from_zero(self) -> None:
         tracker = DeltaTracker()
         tracker.cut({"a": 10})
         assert tracker.cut({"a": 4}) == {"a": 4}
         assert tracker.cut({"a": 6}) == {"a": 2}
 
-    def test_a_series_that_vanished_and_came_back_counts_from_zero(self):
+    def test_a_series_that_vanished_and_came_back_counts_from_zero(self) -> None:
         tracker = DeltaTracker()
         tracker.cut({"a": 10})
         assert tracker.cut({}) == {}
         assert tracker.cut({"a": 12}) == {"a": 12}
 
-    def test_rebase_takes_current_as_delivered(self):
+    def test_rebase_takes_current_as_delivered(self) -> None:
         tracker = DeltaTracker()
         tracker.rebase({"a": 7})
         assert tracker.cut({"a": 7}) == {}
         assert tracker.cut({"a": 9}) == {"a": 2}
 
-    def test_a_series_left_out_by_the_limit_is_in_the_next_cut(self):
+    def test_a_series_left_out_by_the_limit_is_in_the_next_cut(self) -> None:
         tracker = DeltaTracker()
         assert tracker.cut({"a": 1, "b": 2, "c": 3}, limit=2) == {"a": 1, "b": 2}
         assert tracker.cut({"a": 1, "b": 2, "c": 4}, limit=2) == {"c": 4}
 
 
 class TestBackendSnapshot:
-    def test_counters_and_gauges_without_created_or_histograms(self):
+    def test_counters_and_gauges_without_created_or_histograms(self) -> None:
         backend = PrometheusBackend()
         backend.counter("t_activity_total", "h", ["a"]).inc("x", value=3)
         backend.gauge("t_active", "h", ["b"]).set("y", value=2)
@@ -224,12 +224,12 @@ class TestBackendSnapshot:
             ("t_activity_total", "counter", {"a": "x"}, 3.0),
         ]
 
-    def test_noop_backend_has_nothing(self):
+    def test_noop_backend_has_nothing(self) -> None:
         assert NoopBackend().snapshot() == []
 
 
 class TestEventBufferTake:
-    def test_take_leaves_the_rest_and_requeue_puts_back_in_front(self):
+    def test_take_leaves_the_rest_and_requeue_puts_back_in_front(self) -> None:
         buffer = EventBuffer()
         for i in range(5):
             buffer.enqueue({"event": str(i)})

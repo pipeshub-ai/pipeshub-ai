@@ -45,11 +45,11 @@ from app.harness.journal_node.credentials import ConfiguredWorkerCredential
 from app.harness.journal_node.live_layer import NodeLiveLayerSource
 from app.harness.metrics_exposition import worker_metrics_exposition
 from app.harness.placement import model_regions
+from app.harness.plugin_metrics import gateway_metrics
 from app.harness.provider_gate import provider_admission
 from app.harness.run_policy.live import worker_live_layer
 from app.harness.run_policy.select import org_access_policies as policy_source
 from app.harness.telemetry import harness_tracer
-from app.harness.plugin_metrics import gateway_metrics
 from app.plugins import load_plugins
 from app.utils.gc_startup import freeze_startup_heap
 from app.utils.output_limits import model_output_limits

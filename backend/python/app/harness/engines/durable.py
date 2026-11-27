@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any, cast, override
 
 from app.agents.agent_loop.artifact_provenance import SANDBOX_TOOL_NAMES
 from app.agents.agent_loop.connected_sources import ConnectedSources
-from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.activity import journals_commands
 from app.harness.approvals import engine_guarded, layer_ask_answers
 from app.harness.artifacts.events import EventPublicationLog, presented_event
@@ -103,6 +102,7 @@ from app.harness.labels import (
     inherited_label,
 )
 from app.harness.memories import recalled_event_for, source_free
+from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.quarantine import bind_summarizer
 from app.harness.repositories import (
     REPOSITORY_FETCH,

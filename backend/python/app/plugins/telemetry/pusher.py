@@ -177,12 +177,11 @@ class MetricsPusher:
                     interval_s = cfg["interval_s"]
                     # Reflect current consent locally each tick (not pushed while off).
                     set_metric_collection_enabled(self._service_name, cfg["enabled"])
-                    if cfg["enabled"]:
-                        # v3 sends its own batches inside tick(); LEGACY means this
-                        # tick is for the legacy endpoints; HOLD means send nothing.
-                        if await self._usage.tick(self._v3_target(cfg)) is Route.LEGACY:
-                            await self._push(cfg)
-                            await self._ship_events(cfg)
+                    # v3 sends its own batches inside tick(); LEGACY means this
+                    # tick is for the legacy endpoints; HOLD means send nothing.
+                    if cfg["enabled"] and await self._usage.tick(self._v3_target(cfg)) is Route.LEGACY:
+                        await self._push(cfg)
+                        await self._ship_events(cfg)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

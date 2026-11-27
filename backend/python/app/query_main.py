@@ -67,11 +67,11 @@ from app.edition_services import (  # noqa: E402 - like the imports around it, a
     register_extra_toolsets,
 )
 from app.health.health import Health
+from app.plugins import load_plugins
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.plugins import load_plugins
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.route_template import route_template

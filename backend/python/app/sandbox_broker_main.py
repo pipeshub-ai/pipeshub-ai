@@ -33,6 +33,7 @@ from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
 from app.harness.credential_roles import listener_auth
 from app.harness.placement import deployment_region
+from app.harness.plugin_metrics import broker_metrics, metrics_text
 from app.harness.sandbox import docker_broker, docker_policy
 from app.harness.sandbox.docker_broker import (
     VOLUME_PREFIX,
@@ -44,9 +45,8 @@ from app.harness.sandbox.egress_config import broker_egress_wiring
 from app.harness.sandbox.engine_images import EngineImageAvailability
 from app.harness.sandbox.images import mcp_runner_image, sandbox_image
 from app.harness.supply_chain.images import image_trust_from_env
-from app.sandbox.docker_proxy import ENV_BROKER_CALLER_TOKEN
-from app.harness.plugin_metrics import broker_metrics, metrics_text
 from app.plugins import load_plugins
+from app.sandbox.docker_proxy import ENV_BROKER_CALLER_TOKEN
 from harness_core.clock import SystemClock
 from harness_core.engines.controller import (
     EngineControllerConfig,

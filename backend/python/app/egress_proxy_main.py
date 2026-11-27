@@ -54,6 +54,7 @@ from app.harness.credential_roles import (
 )
 from app.harness.gateway.tokens import NodeGatewayTokens, NodeGatewayTokenSource
 from app.harness.inline import node_state_url
+from app.harness.plugin_metrics import egress_volume_metrics, metrics_text
 from app.harness.sandbox.egress_config import (
     ENV_BLOCKED_CIDRS,
     NO_EGRESS_STOPS,
@@ -66,7 +67,6 @@ from app.harness.sandbox.egress_config import (
 from app.harness.sandbox.egress_credentials import sealed_token_source
 from app.harness.sandbox.egress_resolver import PublicHostResolver
 from app.harness.sandbox.egress_state import durable_state, egress_sealers
-from app.harness.plugin_metrics import egress_volume_metrics, metrics_text
 from app.plugins import load_plugins
 from app.utils.env_flags import validate_env_flags
 from harness_core.clock import SystemClock
