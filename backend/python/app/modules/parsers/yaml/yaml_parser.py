@@ -23,12 +23,18 @@ import yaml
 
 from app.models.blocks import BlocksContainer, DataFormat
 from app.modules.parsers.json.json_parser import JSONParser
+from app.modules.parsers.loop_offload import YAML_DECODE_THRESHOLD_BYTES
 from app.modules.parsers.yaml.structural_yaml_parser import StructuralYAMLParser
 from app.modules.parsers.yaml.template_dialect import detect_template_dialect
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+from app.utils.cpu_offload import offload_if_large
 from app.utils.logger import create_logger
 
 logger = create_logger("yaml_parser")
+
+
+def _decode_utf8(content: bytes) -> str:
+    return content.decode("utf-8")
 
 
 class _TagKeepingLoader(yaml.SafeLoader):
@@ -69,11 +75,14 @@ class YAMLParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if not content or not content.strip():
+        # ``isspace`` stops at the first non-blank byte; ``strip`` would copy a large payload.
+        if not content or content.isspace():
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "YAML content is empty")
 
         try:
-            text = content.decode("utf-8")
+            text = await offload_if_large(
+                _decode_utf8, content, threshold_bytes=YAML_DECODE_THRESHOLD_BYTES
+            )
         except UnicodeDecodeError as e:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,

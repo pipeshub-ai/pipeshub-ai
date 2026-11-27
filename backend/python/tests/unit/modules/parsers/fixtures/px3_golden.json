@@ -1,0 +1,264 @@
+{
+ "html/empty_body": {
+  "blocks": 0,
+  "groups": 0,
+  "metadata": {
+   "images": []
+  },
+  "sha256": "622c7f2ac3690aea208587a866a4939494fa0e9371c605a1ef0994d791ef4b71"
+ },
+ "html/images": {
+  "blocks": 1,
+  "groups": 0,
+  "metadata": {
+   "images": [
+    {
+     "alt_text": "x",
+     "new_alt_text": "Image_1",
+     "url": "https://example.com/dir/a.png"
+    },
+    {
+     "alt_text": "",
+     "new_alt_text": "Image_2",
+     "url": "https://example.com/b.png"
+    }
+   ]
+  },
+  "sha256": "90377e360055d4e84ac17ee1f32ffc2151a09808623fcedde1f0d498a7eb80a8"
+ },
+ "html/page": {
+  "blocks": 4,
+  "groups": 1,
+  "metadata": {
+   "images": []
+  },
+  "sha256": "fa3dad24b47e062c30dd04fd235d31a225574e210cec08798a57909d0b091021"
+ },
+ "html/table": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "images": []
+  },
+  "sha256": "00cef3aba1c23197ecf06cab5db8af81d94c3bb475470240d0162a64477a1c64"
+ },
+ "html/unicode": {
+  "blocks": 1,
+  "groups": 0,
+  "metadata": {
+   "images": []
+  },
+  "sha256": "48db25466d291161b784cea95f4eb67a1c9ecd04bb0a06cfb06f4438879a03fe"
+ },
+ "json/array_of_ints": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "594c9eddf0edce2f37590d2a1d63f9207c3f249f18007900bb67aedcadfa1f70"
+ },
+ "json/array_of_objects": {
+  "blocks": 40,
+  "groups": 2,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "1e48508f400ef6b8b3d38347275a4595931fd82ae83a0e2f84593a0fcbe0444b"
+ },
+ "json/blank": {
+  "error": "ParseError:ParseErrorCode.EMPTY_CONTENT"
+ },
+ "json/bom_utf8": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "30235e7a7f28542ec98ea3b2ce050d7dd84513902d966ce95720efbc2bed1241"
+ },
+ "json/comments": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "3f798e3203d195eaa15c6e01169aad87c0ed0a2ce4ca5bf57dd0157abb309ab2"
+ },
+ "json/empty_array": {
+  "blocks": 0,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "e24edb2e13ebd521566518a703bfc043c9fbe9bb5885413feb5946ca1ff5e659"
+ },
+ "json/empty_object": {
+  "blocks": 0,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "40bb669d415e66aff8180fd26a2da4dfc319aadea196764e31b8b0abdce7fe22"
+ },
+ "json/latin1": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "e8b739430d8e9ec8e374ec5eaaafb384037035c987dc04a4de0fe9690633ce46"
+ },
+ "json/long_text": {
+  "blocks": 2,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "66f22e6497718ab57c05bf12eef56f3bf619d0fd0a65b43561d403d427924f1e"
+ },
+ "json/nested_lists": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "7b6cc36a271d966c950f3da76a375df6810440ea94b1b634a94fedd41fa28dd9"
+ },
+ "json/not_json": {
+  "error": "ParseError:ParseErrorCode.PARSE_FAILED"
+ },
+ "json/object": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "a455f2a46e66d07d66ef672c49f58052c092513182b970caa28ad4a9b0a0c5b0"
+ },
+ "json/unicode": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "5550df1cc295938fed8fb790820a5b4acc2194f8809b8664be39a32aaebbd06e"
+ },
+ "json/utf16_bom": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "record_name": "r"
+  },
+  "sha256": "47550513ba33d8899e131ce52b55a53528ae819fafc8467691e52b6fea16deab"
+ },
+ "xlsx/blanks_inside": {
+  "blocks": 3,
+  "groups": 2,
+  "metadata": null,
+  "sha256": "bebd44acaedc062e2d08e58680b6a8d801209633f31007dc324205d59fc138c4"
+ },
+ "xlsx/headers": {
+  "blocks": 3,
+  "groups": 2,
+  "metadata": null,
+  "sha256": "52ea8e8f99e385088a9fcf72e9eaed131de14a7a1bc212787514688275ded30f"
+ },
+ "xlsx/no_headers_generated": {
+  "blocks": 3,
+  "groups": 2,
+  "metadata": null,
+  "sha256": "e6b5797a9ca46cd87b7571e7a66f7b12fee82146b9b904e4393951b0da11c1a3"
+ },
+ "xlsx/two_tables": {
+  "blocks": 2,
+  "groups": 3,
+  "metadata": null,
+  "sha256": "439e1ede7e9cd306063fa43960bab4d022eae18f1f63181fd75addbc9144d6c1"
+ },
+ "yaml/anchors": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "record_name": "r"
+  },
+  "sha256": "ffd7fb25edcbd33dd524c8b43e4a15a640c745d7e8cbf91dd04d8b1d5a5bf1d7"
+ },
+ "yaml/bad_utf8": {
+  "error": "ParseError:ParseErrorCode.PARSE_FAILED"
+ },
+ "yaml/blank": {
+  "error": "ParseError:ParseErrorCode.EMPTY_CONTENT"
+ },
+ "yaml/comments_only": {
+  "error": "ParseError:ParseErrorCode.EMPTY_CONTENT"
+ },
+ "yaml/custom_tags": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "record_name": "r"
+  },
+  "sha256": "c2bf9674d0447683a17925ae7da98880faa4f855d5a505165e5ff70843638baf"
+ },
+ "yaml/mapping": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "record_name": "r"
+  },
+  "sha256": "13e776110a0fad0a7f4ed778202f1bdfa0d7cacc776b3826e4aeb1ffd1bf74e7"
+ },
+ "yaml/multi_document": {
+  "blocks": 3,
+  "groups": 2,
+  "metadata": {
+   "document_count": 3,
+   "record_name": "r"
+  },
+  "sha256": "0310e88ab140382dba2ac4b20e49b5edf855968b48d919035dec9b308ea6d9b3"
+ },
+ "yaml/sequence_of_maps": {
+  "blocks": 30,
+  "groups": 2,
+  "metadata": {
+   "document_count": 1,
+   "record_name": "r"
+  },
+  "sha256": "ca2c6e5588658464bbd4716f19dddbbb473e7461b1da08d6cc5330af62d557fe"
+ },
+ "yaml/syntax_error_fallback": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "parser": "structural",
+   "record_name": "r",
+   "template_dialect": null
+  },
+  "sha256": "2d23fac924a81e55ad8e1fcd9db85ffed0e6e141ce535b8c9c264cf72b1a07b0"
+ },
+ "yaml/template_fallback": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "parser": "structural",
+   "record_name": "r",
+   "template_dialect": "go"
+  },
+  "sha256": "8250057cab8e71f4d6d915e518a1b146b2ae2eab7785cba502a94b9900413c10"
+ },
+ "yaml/unicode": {
+  "blocks": 1,
+  "groups": 1,
+  "metadata": {
+   "document_count": 1,
+   "record_name": "r"
+  },
+  "sha256": "c96c52b38df32e15ae4cf05713d267208091d9594e9a69a6bb00e051707c7c5f"
+ }
+}

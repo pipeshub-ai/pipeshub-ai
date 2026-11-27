@@ -68,6 +68,7 @@ from app.modules.parsers.email.msg_to_html import msg_to_html
 from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.loop_offload import HTML_CLEAN_THRESHOLD_BYTES
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
@@ -125,6 +126,24 @@ if TYPE_CHECKING:
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
 # A mail's worker past this is stuck on the file, not slow.
 MSG_PARSE_TIMEOUT_SECONDS = 60
+
+
+def _dumps_payload(payload: object) -> bytes:
+    return json.dumps(payload, default=str, ensure_ascii=False).encode("utf-8")
+
+
+async def _html_pass(html_parser: object, method: str, html: str) -> str:
+    """Run a whole-document HTML pass (``clean_html``, ``replace_relative_image_urls``).
+
+    BeautifulSoup parses and re-serialises the whole page in pure Python, which holds the
+    event loop for as long as the page is large. A backend that says it is safe to run these
+    on a thread does so above ``HTML_CLEAN_THRESHOLD_BYTES``; any other backend (Docling), or
+    a stand-in that does not set the flag to exactly ``True``, runs it inline as it always did.
+    """
+    fn = getattr(html_parser, method)
+    if getattr(html_parser, "PASSES_MAY_RUN_OFF_LOOP", False) is True:
+        return await offload_if_large(fn, html, threshold_bytes=HTML_CLEAN_THRESHOLD_BYTES)
+    return fn(html)
 
 
 class Processor:
@@ -1053,7 +1072,7 @@ class Processor:
         _, html_parser = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
         if not html_parser:
             raise ValueError("HTML parser is not configured")
-        html_content = html_parser.clean_html(html_data)
+        html_content = await _html_pass(html_parser, "clean_html", html_data)
 
         caption_map: Dict[str, str] = {}
         modified_html, images = await offload_if_large(
@@ -1723,8 +1742,8 @@ class Processor:
             self.logger.debug("Processing HTML content")
             html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
-            html_content = html_parser.clean_html(html_content)
-            html_content = html_parser.replace_relative_image_urls(html_content)
+            html_content = await _html_pass(html_parser, "clean_html", html_content)
+            html_content = await _html_pass(html_parser, "replace_relative_image_urls", html_content)
 
             # Extract image URLs and convert to base64 (mirrors the Markdown flow)
             caption_map: Dict[str, str] = {}
@@ -2562,7 +2581,8 @@ class Processor:
                 return
 
             if isinstance(file_content, (dict, list)):
-                file_content = json.dumps(file_content, default=str, ensure_ascii=False).encode("utf-8")
+                # A dict or list has no cheap size, so ``offload_if_large`` always hops for it.
+                file_content = await offload_if_large(_dumps_payload, file_content)
             elif isinstance(file_content, str):
                 file_content = file_content.encode("utf-8")
 

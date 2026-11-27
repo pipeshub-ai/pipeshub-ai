@@ -1,0 +1,258 @@
+{
+"epub|HEAVY|fallback|1048576": [
+"unknown",
+0
+],
+"epub|HEAVY|fallback|209715200": [
+"unknown",
+838860800
+],
+"epub|HEAVY|fallback|4096": [
+"unknown",
+0
+],
+"epub|HEAVY|fallback|52428800": [
+"unknown",
+209715200
+],
+"epub|HEAVY|measured|1048576": [
+"unknown",
+1073741824
+],
+"epub|HEAVY|measured|209715200": [
+"unknown",
+1073741824
+],
+"epub|HEAVY|measured|4096": [
+"unknown",
+1073741824
+],
+"epub|HEAVY|measured|52428800": [
+"unknown",
+1073741824
+],
+"epub|LIGHT|fallback|1048576": [
+"unknown",
+0
+],
+"epub|LIGHT|fallback|209715200": [
+"unknown",
+838860800
+],
+"epub|LIGHT|fallback|4096": [
+"unknown",
+0
+],
+"epub|LIGHT|fallback|52428800": [
+"unknown",
+209715200
+],
+"epub|LIGHT|measured|1048576": [
+"unknown",
+1589137899
+],
+"epub|LIGHT|measured|209715200": [
+"unknown",
+1589137899
+],
+"epub|LIGHT|measured|4096": [
+"unknown",
+1589137899
+],
+"epub|LIGHT|measured|52428800": [
+"unknown",
+1589137899
+],
+"html|HEAVY|fallback|1048576": [
+"text",
+0
+],
+"html|HEAVY|fallback|209715200": [
+"text",
+838860800
+],
+"html|HEAVY|fallback|4096": [
+"text",
+0
+],
+"html|HEAVY|fallback|52428800": [
+"text",
+209715200
+],
+"html|HEAVY|measured|1048576": [
+"text",
+0
+],
+"html|HEAVY|measured|209715200": [
+"text",
+10385096704
+],
+"html|HEAVY|measured|4096": [
+"text",
+0
+],
+"html|HEAVY|measured|52428800": [
+"text",
+2206203904
+],
+"html|LIGHT|fallback|1048576": [
+"text",
+0
+],
+"html|LIGHT|fallback|209715200": [
+"text",
+838860800
+],
+"html|LIGHT|fallback|4096": [
+"text",
+0
+],
+"html|LIGHT|fallback|52428800": [
+"text",
+209715200
+],
+"html|LIGHT|measured|1048576": [
+"text",
+49828331
+],
+"html|LIGHT|measured|209715200": [
+"text",
+10900492779
+],
+"html|LIGHT|measured|4096": [
+"text",
+0
+],
+"html|LIGHT|measured|52428800": [
+"text",
+2721599979
+],
+"json|HEAVY|fallback|1048576": [
+"text",
+0
+],
+"json|HEAVY|fallback|209715200": [
+"text",
+838860800
+],
+"json|HEAVY|fallback|4096": [
+"text",
+0
+],
+"json|HEAVY|fallback|52428800": [
+"text",
+209715200
+],
+"json|HEAVY|measured|1048576": [
+"text",
+0
+],
+"json|HEAVY|measured|209715200": [
+"text",
+10385096704
+],
+"json|HEAVY|measured|4096": [
+"text",
+0
+],
+"json|HEAVY|measured|52428800": [
+"text",
+2206203904
+],
+"json|LIGHT|fallback|1048576": [
+"text",
+0
+],
+"json|LIGHT|fallback|209715200": [
+"text",
+838860800
+],
+"json|LIGHT|fallback|4096": [
+"text",
+0
+],
+"json|LIGHT|fallback|52428800": [
+"text",
+209715200
+],
+"json|LIGHT|measured|1048576": [
+"text",
+49828331
+],
+"json|LIGHT|measured|209715200": [
+"text",
+10900492779
+],
+"json|LIGHT|measured|4096": [
+"text",
+0
+],
+"json|LIGHT|measured|52428800": [
+"text",
+2721599979
+],
+"yaml|HEAVY|fallback|1048576": [
+"text",
+0
+],
+"yaml|HEAVY|fallback|209715200": [
+"text",
+838860800
+],
+"yaml|HEAVY|fallback|4096": [
+"text",
+0
+],
+"yaml|HEAVY|fallback|52428800": [
+"text",
+209715200
+],
+"yaml|HEAVY|measured|1048576": [
+"text",
+0
+],
+"yaml|HEAVY|measured|209715200": [
+"text",
+10385096704
+],
+"yaml|HEAVY|measured|4096": [
+"text",
+0
+],
+"yaml|HEAVY|measured|52428800": [
+"text",
+2206203904
+],
+"yaml|LIGHT|fallback|1048576": [
+"text",
+0
+],
+"yaml|LIGHT|fallback|209715200": [
+"text",
+838860800
+],
+"yaml|LIGHT|fallback|4096": [
+"text",
+0
+],
+"yaml|LIGHT|fallback|52428800": [
+"text",
+209715200
+],
+"yaml|LIGHT|measured|1048576": [
+"text",
+49828331
+],
+"yaml|LIGHT|measured|209715200": [
+"text",
+10900492779
+],
+"yaml|LIGHT|measured|4096": [
+"text",
+0
+],
+"yaml|LIGHT|measured|52428800": [
+"text",
+2721599979
+]
+}
