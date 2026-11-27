@@ -2595,6 +2595,7 @@ index kg.records_parent on kg.records unique=false exclusion=false valid=true de
 index kg.records_pc_tops on kg.records unique=false exclusion=false valid=true def=c4d5739d6261e059ab393c652f6ae2ed
 index kg.records_pkey on kg.records unique=true exclusion=false valid=true def=8f0f1990df7a2315c96effeb3b4dec8b
 index kg.records_trash on kg.records unique=false exclusion=false valid=true def=897458ed8e4dcb94d61161b893119a21
+index kg.records_trash_app_batch on kg.records unique=false exclusion=false valid=true def=e80250054d027ad64732e74f00615a28
 index kg.records_trash_batch on kg.records unique=false exclusion=false valid=true def=55f171719201e6a8ad1c9a2cc0d5ef57
 index kg.records_undecided on kg.records unique=false exclusion=false valid=true def=f92470ea3ce0b7233b15b8257f63823c
 index kg.restamp_queue_pkey on kg.restamp_queue unique=true exclusion=false valid=true def=71ae5c6cc52ed6d3af6c14276df32e01
