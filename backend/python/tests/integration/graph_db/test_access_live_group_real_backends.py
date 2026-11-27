@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
 from tests.integration.graph_permissions.fixture_graph import (
     DRIVE,
     KB,
@@ -312,6 +313,20 @@ async def _edges_to_app(w: _World) -> dict[str, bool]:
     return {w.plain(r["id"]): bool(r["ext"]) for r in rows}
 
 
+async def _until_it_meets(g: Any, task: asyncio.Task) -> None:  # noqa: ANN401
+    """Returns once ``task`` has met the open writer: it finished (ArangoDB answers a conflict at once, and a reaper the writer does not hold
+    finishes) or Neo4j shows a transaction blocked on a lock. Fails if neither happens in 10 s; a fixed sleep let a slow start skip the overlap."""
+    for _ in range(200):
+        if task.done():
+            return
+        if hasattr(g, "client"):
+            rows = await g.client.execute_query("SHOW TRANSACTIONS YIELD status WHERE status STARTS WITH 'Blocked' RETURN count(*) AS n")
+            if rows and rows[0]["n"]:
+                return
+        await asyncio.sleep(0.05)
+    raise AssertionError("it neither finished nor waited on a lock")
+
+
 async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool = False) -> list[str]:
     """Run the reaper while the writer's transaction is open, then commit the writer. A reaper that loses to the writer raises a write conflict (its
     transaction, if it had one, is rolled back) and runs again once the writer has committed, as its caller does; one that returns has its
@@ -332,7 +347,7 @@ async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool
             await g.commit_transaction(rid)
     reap = asyncio.create_task(once())
     try:
-        await asyncio.sleep(1.0)
+        await _until_it_meets(g, reap)
         await g.commit_transaction(writer_tid)
     except BaseException:      # the writer failed: nothing is left running, and the reaper's transaction is rolled back
         reap.cancel()
@@ -422,9 +437,6 @@ async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(world: _Wor
 
 async def _grant_through_the_store(w: _World, ext: str) -> str:
     """A connector's grant write alone (no ensure_app_membership after it), in a transaction left open; returns it."""
-    from app.connectors.core.base.data_store.graph_data_store import (
-        GraphTransactionStore,
-    )
     g = w.graph
     tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
     try:
@@ -454,7 +466,7 @@ async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World)
     rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"])
     await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
     grant = asyncio.create_task(_grant_through_the_store(w, ext))
-    await asyncio.sleep(1.0)
+    await _until_it_meets(g, grant)
     await g.commit_transaction(rid)
     try:
         tid = await grant
@@ -464,3 +476,31 @@ async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World)
         tid = await _grant_through_the_store(w, ext)
     await g.commit_transaction(tid)
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct"}
+
+
+async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_from_a_reaper_that_overlaps_it(world: _World) -> None:
+    """ext-fresh is a flagged collaborator of the App and a member of the group fresh, which grants nothing yet: the reaper would drop it. The
+    store writes fresh's grant on a record in a transaction still open while the reaper runs, after locking the flagged memberships of fresh's
+    members on the record's App: the reaper waits for it (Neo4j) or conflicts and runs again (ArangoDB), and ext-fresh keeps the App."""
+    w, g = world, world.graph
+    extra = {"Role": {"externalRoleId": "ext-fresh", "connectorName": DRIVE, "connectorId": w.sid(APP), "createdAtTimestamp": TS}}
+    group, member = _node(w.kind, "fresh", name="fresh", **extra.get(w.kind, {})), _node("User", "ext-fresh", email="ext-fresh@example.com", fullName="Ext fresh")
+    w.nodes += [group, member]      # removed with the world
+    for n in (group, member):
+        assert await g.batch_upsert_nodes([{**n["props"], "id": w.sid(n["id"]), "orgId": w.org}], collection=NODE_TARGETS[n["kind"]])
+    coll = NODE_TARGETS[w.kind]
+    assert await g.batch_create_edges([{"from_id": w.sid("ext-fresh"), "from_collection": "users", "to_id": w.sid(APP), "to_collection": "apps",
+                                        "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
+    assert await g.batch_create_edges([{"from_id": w.sid("ext-fresh"), "from_collection": "users", "to_id": w.sid("fresh"), "to_collection": coll,
+                                        "type": "USER", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation"])
+    try:
+        assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges(
+            [{"from_id": w.sid("fresh"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
+              "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}], "permission")
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await g.rollback_transaction(tid)
+        raise
+    await _reap_while(w, tid)
+    assert "ext-fresh" in await _edges_to_app(w)

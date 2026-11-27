@@ -9,6 +9,7 @@ import logging
 
 import pytest
 
+from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
 from .pg_support import new_org
@@ -223,9 +224,6 @@ async def _x2_flagged(p, org: str) -> None:
 async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_reaper_that_overlaps_it(pg_db) -> None:
     """A connector's grant write alone (no ensure_app_membership after it): the store locks x2's flagged membership before it writes the grant, in
     the grant's transaction, still open while the reaper runs. The reaper waits for it and sees the grant: both commit and x2 keeps the App."""
-    from app.connectors.core.base.data_store.graph_data_store import (
-        GraphTransactionStore,
-    )
     p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
     with ctx(org):
         await _x2_flagged(p, org)
@@ -238,9 +236,6 @@ async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_re
 async def test_a_reaper_that_decided_before_the_grant_still_reaps_and_the_grant_waits_for_it(pg_db) -> None:
     """The reverse order: the reaper's transaction has removed x2's membership (no grant then) and is still open when a grant to x2 is written
     through the store. The grant's lock waits for the reaper; both commit; the membership is gone and the grant is kept."""
-    from app.connectors.core.base.data_store.graph_data_store import (
-        GraphTransactionStore,
-    )
     p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
     with ctx(org):
         await _x2_flagged(p, org)
@@ -262,3 +257,38 @@ async def test_a_reaper_that_decided_before_the_grant_still_reaps_and_the_grant_
                     await p.rollback_transaction(t)
         grants = await pg_db.run(lambda tx: tx.fetch("SELECT 1 FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'x2'", org))
         assert (await _app_edges(pg_db, org), len(grants)) == ({}, 1)
+
+
+@pytest.mark.parametrize("member", ["groups", "roles", "teams"])
+async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_from_a_reaper_that_overlaps_it(pg_db, member) -> None:
+    """x2 is a flagged collaborator of app1 and a member of g, which grants nothing yet: the reaper would drop it. g's grant on r1 is written
+    through the store in a transaction still open while the reaper runs. The store locks the flagged memberships of g's members on r1's App first,
+    so the reaper waits for it and sees the grant: x2 keeps the App."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], member)
+        await p.batch_create_edges([_perm("x2", "users", "g", member)], "permission")
+        tid = await p.begin_transaction([], [])
+        await GraphTransactionStore(p, tid, explicit=True).batch_create_edges([_perm("g", member, "r1", "records", "GROUP")], "permission")
+        await _reap_while(p, tid, pg_db=pg_db)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}
+
+
+async def test_the_lock_holds_only_the_memberships_the_grants_keep(pg_db) -> None:
+    """On r1's App only: x2's own membership for its grant on r1, x3's as a member of g for g's grant on r1, every app of x4's for its grant to g.
+    An ordinary member, a flagged one of another App and a person with none are not held."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _world_x(p, org)
+        await p.batch_upsert_nodes([{"_key": "app2", "name": "Mail", "type": "MAIL", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": u, "orgId": org, "email": f"{u}@example.com"} for u in ("x2", "x3", "x4", "x5")], "users")
+        await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], "groups")
+        flagged = {"isExternalUser": True, "syncState": "COMPLETED", "lastSyncUpdate": 1}
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", **flagged), edge("x2", "users", "app2", "apps", **flagged),
+                                    edge("x3", "users", "app1", "apps", **flagged), edge("x4", "users", "app2", "apps", **flagged),
+                                    edge("x5", "users", "app1", "apps", isExternalUser=False, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        await p.batch_create_edges([_perm("x3", "users", "g", "groups"), _perm("x5", "users", "g", "groups")], "permission")
+        held = await p.lock_external_app_memberships([("users", "x2", "records", "r1"), ("groups", "g", "records", "r1"),
+                                                      ("users", "x4", "groups", "g"), ("person", "nobody", "records", "r1")])
+    assert held == [("users", "x2", "app1"), ("users", "x3", "app1"), ("users", "x4", "app2")]

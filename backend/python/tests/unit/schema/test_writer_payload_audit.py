@@ -692,6 +692,9 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     # reap_stale_external_app_relations: sets each flagged user-app edge's isExternalUser to the value it already holds (true), only to take
     # the edge's write lock before the grants are read, then deletes the stale edges and the people they stranded; no caller payload
     'reap_stale_external_app_relations',
+    # lock_external_app_memberships: only the matchLock flag, set and removed in the same statement on the flagged user-app edges a grant keeps,
+    # to take their write lock before the grant is written; no caller payload, nothing kept
+    'lock_external_app_memberships',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
     'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',

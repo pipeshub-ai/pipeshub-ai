@@ -19291,29 +19291,52 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def lock_external_app_memberships(
         self,
-        principals: list[tuple[str, str]],
+        grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
-    ) -> None:
-        """Write-lock the principals' flagged (external-collaborator) app memberships until
-        the transaction ends, as the reaper does before it decides
-        (``reap_stale_external_app_relations``). A principal with none locks nothing."""
-        relationship = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
+    ) -> list[tuple[str, str, str]]:
+        """Write-lock, until the transaction ends, the flagged (external-collaborator) app
+        memberships the grants ``(holder collection, holder, target collection, target)``
+        would keep, as the reaper does before it decides
+        (``reap_stale_external_app_relations``): the holder's own on the target's app, or
+        on every app when the target is a group, role or team; for a group, role or team
+        holder, its members' on the target's app. Returns them as ``(principal
+        collection, principal, app)``; a principal with none locks nothing."""
+        rel = edge_collection_to_relationship(CollectionNames.USER_APP_RELATION.value)
+        perm = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
         app_label = collection_to_label(CollectionNames.APPS.value)
-        ids: dict[str, list[str]] = {}
-        for collection, key in principals:
-            ids.setdefault(collection, []).append(key)
-        for collection in sorted(ids):
-            await self.client.execute_query(
+        people = {collection_to_label(c): c for c in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value)}
+        by_kind: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        for hc, hi, tc, ti in grants:
+            by_kind.setdefault((hc, tc), set()).add((hi, ti))
+        held: set[tuple[str, str, str]] = set()
+        for (hc, tc), pairs in sorted(by_kind.items()):
+            holder, target = collection_to_label(hc), collection_to_label(tc)
+            on_records = tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value)
+            if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
+                match = (f"MATCH (t:{target} {{id: row.t}}) MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label} {{id: t.connectorId}})"
+                         if on_records else f"MATCH (p:{holder} {{id: row.h}})-[r:{rel}]->(app:{app_label})")
+            elif on_records:
+                match = (f"MATCH (t:{target} {{id: row.t}}) MATCH (p)-[r:{rel}]->(app:{app_label} {{id: t.connectorId}}) "
+                         f"WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(:{holder} {{id: row.h}}) }}")
+            else:
+                continue      # a grant from a group to a group keeps no one's membership
+            rows = await self.client.execute_query(
                 f"""
-                UNWIND $ids AS pid
-                MATCH (principal:{collection_to_label(collection)} {{id: pid}})-[r:{relationship}]->(:{app_label})
-                WHERE r.isExternalUser = true
+                UNWIND $rows AS row
+                {match}
+                WITH DISTINCT p, r, app WHERE r.isExternalUser = true
                 SET r.{_MATCH_LOCK} = true
                 REMOVE r.{_MATCH_LOCK}
+                RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"ids": sorted(set(ids[collection]))},
+                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
                 txn_id=transaction,
             )
+            for row in rows or []:
+                coll = next((people[label] for label in row["labels"] if label in people), None)
+                if coll:
+                    held.add((coll, row["id"], row["app"]))
+        return sorted(held)
 
     def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an

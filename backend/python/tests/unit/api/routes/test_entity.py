@@ -641,7 +641,7 @@ class TestCreateTeam:
         a retry must finish that team, not add one."""
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(conflicts_on=2, honours_explicit=honours_explicit)
+        graph = _TeamGraph(conflicts_on=3, honours_explicit=honours_explicit)  # the node, the lock of the owner's memberships, the edge
         req.app.state.graph_provider = graph
 
         resp = await create_team(req)
@@ -658,7 +658,7 @@ class TestCreateTeam:
         self, honours_explicit: bool,
     ) -> None:
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(fails_on=2, honours_explicit=honours_explicit)
+        graph = _TeamGraph(fails_on=3, honours_explicit=honours_explicit)  # the node, the lock of the owner's memberships, the edge
         req.app.state.graph_provider = graph
 
         with pytest.raises(HTTPException) as exc:
@@ -743,6 +743,10 @@ class _TeamGraph:
 
     async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None) -> None:
         return None
+
+    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None) -> list:
+        self._statement()      # a statement like any other: it can be the one that conflicts
+        return []
 
     async def get_team_with_users(
         self, team_id: str, org_id: str, user_key: str,

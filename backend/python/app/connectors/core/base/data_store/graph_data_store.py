@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.core.org_context import bound_org_id
 from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, GraphWriteError
 from app.models.entities import (
     AppMetadata,
@@ -232,28 +233,39 @@ write_collections = [
     collection.value for collection in CollectionNames
 ]
 
-# a grant from one of these to one of those is what keeps an external collaborator's app membership (reap_stale_external_app_relations)
+# a grant from one of these to one of those is what keeps an external collaborator's app membership (reap_stale_external_app_relations): a user's
+# or person's own, or a group's, role's or team's for its members
 _GRANT_HOLDERS = frozenset({CollectionNames.USERS.value, CollectionNames.PEOPLE.value})
-_REAPER_GRANT_TARGETS = frozenset({CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.GROUPS.value,
-                                   CollectionNames.ROLES.value, CollectionNames.TEAMS.value})
+_GRANT_VIAS = frozenset({CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value})
+_GRANTED = frozenset({CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value})
+_REAPER_GRANT_TARGETS = _GRANTED | _GRANT_VIAS
 
 _REGRANT_ATTEMPTS = 3
 
 
-def _ends(e: dict) -> tuple[str | None, str | None, str | None]:
+def _ends(e: dict) -> tuple[str | None, str | None, str | None, str | None]:
     if "_from" in e:
         fc, fi = e["_from"].split("/", 1)
-        return fc, fi, e.get("_to", "").split("/", 1)[0]
-    return e.get("from_collection"), e.get("from_id"), e.get("to_collection")
+        tc, _, ti = e.get("_to", "").partition("/")
+        return fc, fi, tc, ti
+    return e.get("from_collection"), e.get("from_id"), e.get("to_collection"), e.get("to_id")
 
 
-def _grant_holders(edges: list[dict]) -> list[tuple[str, str]]:
-    """The users and people a grant write gives a grant the reaper counts, sorted (the order locks are taken in)."""
-    return sorted({(fc, fi) for fc, fi, to in map(_ends, edges) if fc in _GRANT_HOLDERS and fi and to in _REAPER_GRANT_TARGETS})
+def _counted_grants(edges: list[dict]) -> list[tuple[str, str, str, str]]:
+    """The grants of a write the reaper counts, ``(holder collection, holder, target collection, target)``, sorted (the order locks are taken in)."""
+    return sorted({(fc, fi, tc, ti) for fc, fi, tc, ti in map(_ends, edges) if fi and ti and (
+        (fc in _GRANT_HOLDERS and tc in _REAPER_GRANT_TARGETS) or (fc in _GRANT_VIAS and tc in _GRANTED))})
+
+
+def _person_of(doc: dict | None) -> Person | None:
+    if not doc:
+        return None
+    # the person is the bound org's: the grant writing it and the reaper both run for that org
+    return Person(email=doc.get("email"), source_key=doc.get("sourceKey"), org_id=bound_org_id(), full_name=doc.get("fullName"))
 
 
 def _from_moved(e: dict, moved: dict[str, str]) -> dict:
-    fc, fi, _ = _ends(e)
+    fc, fi, _, _ = _ends(e)
     if fc != CollectionNames.PEOPLE.value or fi not in moved:
         return e
     return {**e, "_from": f"{fc}/{moved[fi]}"} if "_from" in e else {**e, "from_id": moved[fi]}
@@ -347,6 +359,8 @@ class GraphTransactionStore(TransactionStore):
             _GuardedProvider(graph_provider) if self.tracked else graph_provider)
         self.txn = txn  # Transaction ID (string) for HTTP provider
         self.explicit = explicit  # the block runs in one real transaction
+        # each person this store upserted, by the id it got: without a transaction, what a grant to one the reaper removed is written to again
+        self._people_written: dict[str, Person] = {}
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -692,33 +706,46 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
     async def _write_grant(self, edges: list[dict], collection: str, write: Callable[[list[dict]], Awaitable[_T]]) -> _T:
-        """Writes ``edges`` with ``write``. Before a grant, the flagged app memberships of the users and people it grants are locked as the
-        external-collaborator reaper locks them before it decides, so a reaper either waits for this grant to commit and sees it, or decided before
-        the grant existed. Without a transaction each statement commits alone: a person the reaper removed after its upsert is created again and the
-        grant written to it."""
-        holders = _grant_holders(edges) if collection == CollectionNames.PERMISSION.value else []
-        if holders:
-            await self.graph_provider.lock_external_app_memberships(holders, transaction=self.txn)
-        people = [] if self.explicit else [k for c, k in holders if c == CollectionNames.PEOPLE.value]
-        if not people:
+        """Writes ``edges`` with ``write``. Before a grant, the flagged app memberships it would keep (its users' and people's own, or the members' of a
+        group, role or team it comes from) are locked as the external-collaborator reaper locks them before it decides, so a reaper either waits for
+        this grant to commit and sees it, or decided before the grant existed."""
+        grants = _counted_grants(edges) if collection == CollectionNames.PERMISSION.value else []
+        held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn) if grants else []
+        if self.explicit or not grants:
             return await write(edges)
-        docs = {k: await self.graph_provider.get_document(k, CollectionNames.PEOPLE.value, transaction=self.txn) for k in people}
+        return await self._write_grant_alone(edges, grants, held, write)
+
+    async def _write_grant_alone(self, edges: list[dict], grants: list[tuple[str, str, str, str]], held: list[tuple[str, str, str]],
+                                 write: Callable[[list[dict]], Awaitable[_T]]) -> _T:
+        """Without a transaction each statement commits alone, so the lock orders nothing: the reaper may remove, between the lock and the grant, a
+        person (the grant's edge then finds no node) or a membership the grant keeps. Both are looked for after the write and made again.
+        shortcut: auto-commit gives no isolation, so a reaper that runs again in between wins again; explicit transactions (the default) do not need this."""
+        people = sorted({hi for hc, hi, _, _ in grants if hc == CollectionNames.PEOPLE.value})
+        known = {k: self._people_written.get(k) or _person_of(await self.graph_provider.get_document(
+            k, CollectionNames.PEOPLE.value, transaction=self.txn, raise_on_error=True)) for k in people}
         for _ in range(_REGRANT_ATTEMPTS):
             result = await write(edges)
-            gone = [k for k in docs if not await self.graph_provider.get_document(k, CollectionNames.PEOPLE.value, transaction=self.txn)]
+            gone = [k for k in known if not await self.graph_provider.get_document(
+                k, CollectionNames.PEOPLE.value, transaction=self.txn, raise_on_error=True)]
             if not gone:
+                kept = set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn))
+                for coll, key, app in sorted(set(held) - kept):
+                    await self.ensure_app_membership(key, coll, app, is_external=True)
                 return result
-            moved = {k: await self._person_again(docs[k]) for k in gone}
+            moved = {k: await self._person_again(known[k]) for k in gone}
             edges = [_from_moved(e, moved) for e in edges]
-            docs = {moved.get(k, k): d for k, d in docs.items()}
+            known = {moved.get(k, k): p for k, p in known.items()}
+            grants = sorted({(hc, moved.get(hi, hi) if hc == CollectionNames.PEOPLE.value else hi, tc, ti) for hc, hi, tc, ti in grants})
+            held = [(c, moved.get(k, k) if c == CollectionNames.PEOPLE.value else k, a) for c, k, a in held]
         raise GraphWriteError("the people of a grant were removed while it was written")
 
-    async def _person_again(self, doc: dict | None) -> str:
-        """The id of a person created again from the document of one the reaper removed."""
-        doc = doc or {}
-        person = Person(email=doc.get("email"), source_key=doc.get("sourceKey"), org_id=doc.get("orgId"), full_name=doc.get("fullName"))
-        key = (await self.upsert_person_by_email(person, raise_on_error=True) if person.email
-               else await self.upsert_person_by_source_key(person, raise_on_error=True) if person.source_key else None)
+    async def _person_again(self, person: Person | None) -> str:
+        """The id of a person created again from what was known of one the reaper removed."""
+        key = None
+        if person is not None and person.org_id:
+            again = Person(email=person.email, source_key=person.source_key, org_id=person.org_id, full_name=person.full_name)
+            key = (await self.upsert_person_by_email(again, raise_on_error=True) if again.email
+                   else await self.upsert_person_by_source_key(again, raise_on_error=True) if again.source_key else None)
         if not key:
             raise GraphWriteError("a person of a grant was removed while it was written and cannot be created again")
         return key
@@ -917,9 +944,12 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
-        return await self.graph_provider.upsert_person_by_email(
+        key = await self.graph_provider.upsert_person_by_email(
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
+        if key:
+            self._people_written[key] = person
+        return key
 
 
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
@@ -931,9 +961,12 @@ class GraphTransactionStore(TransactionStore):
         return self.graph_provider.is_transient_error(error)
 
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
-        return await self.graph_provider.upsert_person_by_source_key(
+        key = await self.graph_provider.upsert_person_by_source_key(
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
+        if key:
+            self._people_written[key] = person
+        return key
     async def ensure_app_membership(
         self,
         principal_id: str,

@@ -9614,24 +9614,47 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def lock_external_app_memberships(
         self,
-        principals: list[tuple[str, str]],
+        grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
-    ) -> None:
-        """Touch the principals' flagged (external-collaborator) app memberships, as
-        ``ensure_app_membership`` does: a reaper removing one of them in a snapshot older than
-        this write conflicts with it (``reap_stale_external_app_relations``). A principal with
-        none writes nothing."""
-        if not principals:
-            return
-        await self.http_client.execute_aql(
+    ) -> list[tuple[str, str, str]]:
+        """Touch the flagged (external-collaborator) app memberships the grants ``(holder
+        collection, holder, target collection, target)`` would keep, as
+        ``ensure_app_membership`` does: a reaper removing one of them in a snapshot older
+        than this write conflicts with it (``reap_stale_external_app_relations``). The
+        holder's own on the target's app (every app for a group, role or team target),
+        or a group, role or team holder's members' on the target's app. Returns them as
+        ``(principal collection, principal, app)``; a principal with none writes nothing."""
+        if not grants:
+            return []
+        uar = CollectionNames.USER_APP_RELATION.value
+        rows = await self.http_client.execute_aql(
             f"""
-            FOR uar IN {CollectionNames.USER_APP_RELATION.value}
-                FILTER uar._from IN @froms AND uar.isExternalUser == true
-                UPDATE uar WITH {{ updatedAtTimestamp: @now }} IN {CollectionNames.USER_APP_RELATION.value}
+            LET keys = UNIQUE(FLATTEN(
+                FOR g IN @grants
+                    LET on_records = g.tc IN @record_colls
+                    LET t = on_records ? DOCUMENT(CONCAT(g.tc, "/", g.ti)) : null
+                    LET app = t != null ? CONCAT("{CollectionNames.APPS.value}/", t.connectorId) : null
+                    LET holder = CONCAT(g.hc, "/", g.hi)
+                    RETURN g.hc IN @people_colls
+                        ? (FOR u IN {uar} FILTER u._from == holder AND u.isExternalUser == true AND (on_records ? u._to == app : true) RETURN u._key)
+                        : (on_records AND app != null
+                            ? (FOR u IN {uar} FILTER u._to == app AND u.isExternalUser == true
+                                FILTER LENGTH(FOR m IN {CollectionNames.PERMISSION.value}
+                                    FILTER m._from == u._from AND m._to == holder AND m.type == "USER" LIMIT 1 RETURN 1) > 0
+                                RETURN u._key)
+                            : [])
+            ))
+            FOR k IN keys
+                UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar}
+                RETURN {{ principal: NEW._from, app: NEW._to }}
             """,
-            bind_vars={"froms": sorted({f"{c}/{k}" for c, k in principals}), "now": get_epoch_timestamp_in_ms()},
+            bind_vars={"grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
+                       "record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
+                       "people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
+                       "now": get_epoch_timestamp_in_ms()},
             txn_id=transaction,
         )
+        return sorted({(*r["principal"].split("/", 1), r["app"].split("/", 1)[1]) for r in rows or []})
 
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an

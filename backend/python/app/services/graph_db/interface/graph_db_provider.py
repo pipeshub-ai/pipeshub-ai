@@ -4513,20 +4513,26 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def lock_external_app_memberships(
         self,
-        principals: list[tuple[str, str]],
+        grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
-    ) -> None:
+    ) -> list[tuple[str, str, str]]:
         """
-        Hold the principals' flagged (``isExternalUser``) app memberships, on every app, until
-        the transaction ends: the lock ``reap_stale_external_app_relations`` takes before it
-        decides. A grant writer calls it before writing a grant, so a reaper either waits for
-        the grant to commit and sees it, or has decided before the grant existed.
+        Hold, until the transaction ends, the flagged (``isExternalUser``) app memberships
+        that the grants would keep: the lock ``reap_stale_external_app_relations`` takes
+        before it decides. A grant writer calls it before writing the grants, so a reaper
+        either waits for them to commit and sees them, or decided before they existed.
 
-        A principal with no flagged membership locks and writes nothing. Raises on failure.
+        Each grant is ``(holder collection, holder, target collection, target)``. A user or
+        person holder's own membership of the target's app is held (of every app when the
+        target is a group, role or team: what the membership hop grants is not known
+        here); for a group, role or team holder of a record or record group, its members'
+        memberships of the target's app.
 
-        Args:
-            principals: ``(collection, key)`` pairs, CollectionNames.USERS or PEOPLE
-            transaction: The grant writer's transaction
+        Nothing is locked or written for a principal with no flagged membership. Raises on
+        failure.
+
+        Returns:
+            The memberships held, as ``(principal collection, principal, app)``, sorted.
         """
         pass
 
