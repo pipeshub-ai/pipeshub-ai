@@ -7020,7 +7020,17 @@
       "thisApp": "tato aplikace",
       "help": "Uživatelé, kteří tuto aplikaci připojí, mohou prohledávat a číst jen to, co zde vyberete, a nikdy víc, než sami vidí.",
       "everything": "Vše, co vidí každý uživatel",
-      "everythingHint": "Zahrnuje i zdroje přidané později."
+      "everythingHint": "Zahrnuje i zdroje přidané později.",
+      "clientCredentials": {
+        "title": "Podrobná oprávnění pro servisní účty jsou k dispozici v edici Enterprise",
+        "description": "Omezte aplikaci, která používá client_credentials, na zdroje, prostory, složky a soubory, které vyberete.",
+        "kept_one": "Tato aplikace má dřívější omezení: vidí {{count}} vybranou položku. Nedostane žádné tokeny, dokud omezení neodeberete.",
+        "kept_few": "Tato aplikace má dřívější omezení: vidí {{count}} vybrané položky. Nedostane žádné tokeny, dokud omezení neodeberete.",
+        "kept_many": "Tato aplikace má dřívější omezení: vidí {{count}} vybrané položky. Nedostane žádné tokeny, dokud omezení neodeberete.",
+        "kept_other": "Tato aplikace má dřívější omezení: vidí {{count}} vybraných položek. Nedostane žádné tokeny, dokud omezení neodeberete.",
+        "remove": "Odebrat omezení",
+        "removeToSave": "Chcete-li použít client_credentials, odeberte omezení znalostí na kartě Podrobná oprávnění."
+      }
     },
     "appLimited_one": "{{appName}} vidí jen {{count}} položku vybranou tvůrcem, a jen pokud ji vidíte i vy.",
     "appLimited_few": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",

@@ -23,6 +23,7 @@ import {
   selectionFromLimit,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
+import { ClientCredentialsKnowledgeLimitField, clientCredentialsKnowledgeLimit } from '@/config';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import {
   DestructiveTypedConfirmationDialog,
@@ -649,7 +650,17 @@ export function ManageOAuthApplicationPanel({
   const scopesRequirementMet =
     totalScopeCount === 0 || selectedScopes.size > 0;
 
-  const limitValid = isKnowledgeLimitValid(knowledgeLimit);
+  const usesClientCredentials = grantTypes.has('client_credentials');
+  const limitProblem = usesClientCredentials
+    ? clientCredentialsKnowledgeLimit.problem(knowledgeLimit, {
+        limit: detail?.knowledgeLimit,
+        hadClientCredentials:
+          !!detail && parseGrantTypesFromDetail(detail.allowedGrantTypes).has('client_credentials'),
+      })
+    : isKnowledgeLimitValid(knowledgeLimit)
+      ? null
+      : 'knowledgeLimit.pickOne';
+  const limitValid = limitProblem === null;
 
   const formStructurallyValid = baseGeneralValid && scopesRequirementMet && limitValid;
 
@@ -667,8 +678,8 @@ export function ManageOAuthApplicationPanel({
       if (baseGeneralValid && !scopesRequirementMet) {
         return t('workspace.oauth2.create.errorScopeRequired');
       }
-      if (baseGeneralValid && !limitValid) {
-        return t('knowledgeLimit.pickOne');
+      if (baseGeneralValid && limitProblem) {
+        return t(limitProblem);
       }
       return t('workspace.oauth2.manageApplication.saveDisabledInvalid');
     }
@@ -684,7 +695,7 @@ export function ManageOAuthApplicationPanel({
     formStructurallyValid,
     baseGeneralValid,
     scopesRequirementMet,
-    limitValid,
+    limitProblem,
     isDirty,
     t,
   ]);
@@ -1596,13 +1607,22 @@ export function ManageOAuthApplicationPanel({
             <Tabs.Content value="granular">
               <fieldset disabled={!isCreator} style={EDITABLE_FIELDSET_STYLE}>
                 <Box style={CARD_STYLE}>
-                  <KnowledgeLimitChoice
-                    appName={name.trim() || t('knowledgeLimit.app.thisApp')}
-                    value={knowledgeLimit}
-                    onChange={setKnowledgeLimit}
-                    idPrefix="oauth-app-manage"
-                    forApp
-                  />
+                  {usesClientCredentials ? (
+                    <ClientCredentialsKnowledgeLimitField
+                      appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                      value={knowledgeLimit}
+                      onChange={setKnowledgeLimit}
+                      idPrefix="oauth-app-manage"
+                    />
+                  ) : (
+                    <KnowledgeLimitChoice
+                      appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                      value={knowledgeLimit}
+                      onChange={setKnowledgeLimit}
+                      idPrefix="oauth-app-manage"
+                      forApp
+                    />
+                  )}
                 </Box>
               </fieldset>
             </Tabs.Content>

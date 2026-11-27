@@ -7098,7 +7098,15 @@
       "thisApp": "diese App",
       "help": "Nutzer, die diese App verbinden, können nur durchsuchen und lesen, was Sie hier auswählen, und nie mehr, als sie selbst sehen können.",
       "everything": "Alles, was jeder Nutzer sehen kann",
-      "everythingHint": "Gilt auch für später hinzugefügte Quellen."
+      "everythingHint": "Gilt auch für später hinzugefügte Quellen.",
+      "clientCredentials": {
+        "title": "Granulare Berechtigungen für Dienstkonten sind in der Enterprise Edition verfügbar",
+        "description": "Beschränken Sie eine Anwendung, die client_credentials verwendet, auf die Quellen, Bereiche, Ordner und Dateien, die Sie auswählen.",
+        "kept_one": "Diese Anwendung hat eine frühere Beschränkung: Sie kann {{count}} ausgewähltes Element sehen. Sie erhält keine Tokens, bis Sie die Beschränkung entfernen.",
+        "kept_other": "Diese Anwendung hat eine frühere Beschränkung: Sie kann {{count}} ausgewählte Elemente sehen. Sie erhält keine Tokens, bis Sie die Beschränkung entfernen.",
+        "remove": "Beschränkung entfernen",
+        "removeToSave": "Entfernen Sie die Wissensbeschränkung auf dem Tab „Granulare Berechtigungen“, um client_credentials zu verwenden."
+      }
     },
     "appLimited_one": "{{appName}} kann nur {{count}} vom Ersteller ausgewähltes Element sehen, und nur, wenn Sie es sehen können.",
     "appLimited_other": "{{appName}} kann nur {{count}} vom Ersteller ausgewählte Elemente sehen, und nur die, die Sie sehen können."

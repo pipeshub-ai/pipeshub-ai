@@ -61,6 +61,7 @@ import {
   JWT_BEARER_GRANT,
 } from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
+import { clientCredentialsKnowledgeLimit } from '../services/client-credentials-knowledge-limit';
 import {
   clientTags,
   recordEvent,
@@ -975,9 +976,15 @@ export class OAuthProviderController {
       accountType = org.accountType;
     }
 
-    // Generate tokens (no refresh token for client_credentials)
+    // Generate tokens (no refresh token for client_credentials). The token
+    // carries the limit the client_credentials policy gives it, not the app's.
     const tokens = await this.oauthTokenService.generateTokens(
-      app,
+      {
+        ...app,
+        knowledgeLimit: clientCredentialsKnowledgeLimit().tokenLimit(
+          toKnowledgeLimit(app.knowledgeLimit),
+        ),
+      },
       null, // No user
       app.orgId,
       filteredScopes,

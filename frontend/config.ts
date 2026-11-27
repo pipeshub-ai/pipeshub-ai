@@ -80,6 +80,8 @@ export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/w
 export { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 // Which edition this is, on General settings (OSS: Community Edition, with a link to what Enterprise adds)
 export { WorkspaceEditionSection } from '@/app/(main)/workspace/general/edition-section';
+// What an OAuth app that uses client_credentials may see (OSS: no limit; one it already has can only be removed)
+export { ClientCredentialsKnowledgeLimitField, clientCredentialsKnowledgeLimit } from '@/app/(main)/workspace/developer-settings/oauth2/components/client-credentials-knowledge-limit';
 export { McpAgentApprovalsNotice } from '@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice';
 // Rules beyond the usual one that decide who approves an ask, and the card's note for one (OSS: none; nothing shown)
 export { approvalAskRules } from '@/app/(main)/chat/approval-ask-rules';
