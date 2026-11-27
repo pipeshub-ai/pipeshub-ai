@@ -180,6 +180,15 @@ def _parsed_like(twin: dict[str, Any]) -> dict[str, str]:
     return {"parsingStatus": status} if status in _PARSE_DONE else {}
 
 
+def _is_meaningful_block_data(data: Any) -> bool:  # noqa: ANN401 - a block's data is any JSON value
+    """Whether a block's ``data`` holds something to compare: a blank Notion line has ``""``."""
+    if isinstance(data, str):
+        return bool(data.strip())
+    if isinstance(data, (list, dict)):
+        return bool(data)
+    return data is not None
+
+
 def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
     """Whether this record should be parsed as source and projected into the code graph.
 
@@ -524,7 +533,7 @@ class EventProcessor:
             if content:  # as `_check_duplicate_by_md5`: no bytes, no checksum
                 data = content.encode("utf-8") if isinstance(content, str) else content
                 md5 = await offload_if_large(self._hash_for_dedup, data, record.get("recordType"), record.get("mimeType"))
-                if record.get("md5Checksum") != md5:
+                if md5 and record.get("md5Checksum") != md5:
                     fields["md5Checksum"] = md5
             if not fields:
                 return
@@ -1340,13 +1349,15 @@ class EventProcessor:
         content: bytes,
         record_type: str | None = None,
         mime_type: str | None = None,
-    ) -> str:
-        """Normalise then hash, as one synchronous unit for ``offload_if_large``."""
-        return hashlib.md5(
-            self._normalize_content_for_dedup(
-                content=content, record_type=record_type, mime_type=mime_type
-            )
-        ).hexdigest()
+    ) -> str | None:
+        """Normalise then hash, as one synchronous unit for ``offload_if_large``.
+
+        ``None`` when nothing is left to compare: every blank page would otherwise share one hash, and so one virtual record.
+        """
+        normalized = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
+        if not normalized:
+            return None
+        return hashlib.md5(normalized).hexdigest()
 
     def _normalize_content_for_dedup(
         self,
@@ -1375,10 +1386,7 @@ class EventProcessor:
                     tag.attrs.pop("data-emoji-id", None)
                     tag.attrs.pop("data-emoji-fallback", None)
                 text = soup.get_text(separator="\n", strip=True)
-                if text:
-                    return text.encode("utf-8")
-                # self.info(f"🔍 HTML normalized for dedup: {text}")  
-                return content    
+                return text.encode("utf-8")
             except Exception as e:
                 # No text: a UnicodeDecodeError's args carry the document's bytes.
                 log_failure(self.logger, "index.dedup_normalize_failed", e, level=logging.WARNING, include_error_text=False)
@@ -1390,15 +1398,19 @@ class EventProcessor:
 
             if "block_groups" in parsed or "blocks" in parsed:
                 parts: list[str] = []
+                meaningful = False
                 for bg in parsed.get("block_groups", []):
                     if bg.get("data") is not None:
                         parts.append(json.dumps(bg["data"], sort_keys=True, default=str))
+                        meaningful = meaningful or _is_meaningful_block_data(bg["data"])
                 for b in parsed.get("blocks", []):
                     if b.get("data") is not None:
                         parts.append(json.dumps(b["data"], sort_keys=True, default=str))
-                if parts:
-                    return "\n".join(parts).encode("utf-8")
-                return content
+                        meaningful = meaningful or _is_meaningful_block_data(b["data"])
+                # Emptiness is judged apart from `parts`, so a page with any data hashes exactly as before.
+                if not meaningful:
+                    return b""
+                return "\n".join(parts).encode("utf-8")
             return json.dumps(parsed, sort_keys=True, default=str).encode("utf-8")
         except (json.JSONDecodeError, Exception):
             return content
@@ -1754,7 +1766,8 @@ class EventProcessor:
             md5_checksum = md5 or await offload_if_large(
                 self._hash_for_dedup, content, record_type, mime_type
             )
-            if existing_md5_checksum != md5_checksum:
+            # No hash for blank content, and none written: md5Checksum may hold the source's own MD5 (Google Drive).
+            if md5_checksum and existing_md5_checksum != md5_checksum:
                 success = await self.update_record_fields(
                     doc,
                     {"md5Checksum": md5_checksum},
