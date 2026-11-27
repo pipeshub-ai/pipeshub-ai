@@ -160,6 +160,7 @@ async def _fetched(tx) -> int:
     return await tx.fetchval("SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'nodes%'")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_copy_page_of_records_reads_the_page_not_the_records_after_its_cursor(pg_db) -> None:
     """3,000 records of another connector sort between the cursor and app1's next records: a page of 10 of app1's records reads about 10 rows, fresh and analysed (the role's own statement cannot seek
     the connector's index under row-level security, and read every record after the cursor). The page is app1's next records in byte order."""

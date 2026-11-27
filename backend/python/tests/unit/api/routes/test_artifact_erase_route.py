@@ -184,6 +184,31 @@ async def test_qa15g_3_the_recorded_uploader_decides_and_an_unrecorded_upload_ne
     assert sorted(graph.nodes["records"]) == ["legacy-service"]
 
 
+async def test_an_unrecorded_upload_whose_owner_edge_read_fails_is_a_503_not_refused() -> None:
+    """Refused was final (Node counts it and moves on); a 503 has Node send the step again once the store answers."""
+    from app.api.routes.chatbot import erase_attachments
+
+    graph, blob = FakeGraphProvider(), FakeBlobStore()
+    graph.add_user("u1")
+    _attachment(graph, blob, "legacy-mine", org="org-1", owner="u1")
+
+    async def edge_read_fails(*, raise_on_error: bool = False, **_: object) -> None:
+        if raise_on_error:  # as Neo4j and ArangoDB do; without the flag the failure reads as "no edge"
+            raise ConnectionError("store unreachable")
+
+    graph.get_edge = edge_read_fails
+    graph.delete_nodes_and_edges = AsyncMock()
+    with patch("app.api.routes.chatbot.BlobStorage", return_value=blob), pytest.raises(HTTPException) as exc:
+        await authed(erase_attachments)(
+            _request({"attachments": [{"recordId": "legacy-mine", "ownerId": "u1"}]}),
+            graph, MagicMock(), {"orgId": "org-1"},
+        )
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"Retry-After": "5"}
+    graph.delete_nodes_and_edges.assert_not_called()
+    assert "legacy-mine" in graph.nodes["records"]
+
+
 @pytest.mark.parametrize(
     "body",
     [

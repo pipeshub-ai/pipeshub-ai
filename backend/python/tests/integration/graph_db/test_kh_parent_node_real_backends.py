@@ -196,10 +196,10 @@ async def test_a_group_has_its_app_as_parent_and_the_app_has_none(tree: _Tree) -
     assert await tree.parent_of(tree.connector_id) is None
 
 
-def _allow_every_node(tree: _Tree, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The breadcrumbs drop what the user cannot see; these tests are about the walk, not access."""
+def _allow_every_node(tree: _Tree, monkeypatch: pytest.MonkeyPatch, *, hidden: frozenset[str] = frozenset()) -> None:
+    """The breadcrumbs drop what the user cannot see; these tests are about the walk, not access, so every node but ``hidden`` is visible."""
     async def check_access(user_key: str, org_id: str, *, node_ids=(), **_: object) -> AccessCheck:
-        return AccessCheck(node_ids=frozenset(node_ids))
+        return AccessCheck(node_ids=frozenset(node_ids) - hidden)
     monkeypatch.setattr(tree.graph, "check_access", check_access)
 
 
@@ -244,6 +244,19 @@ async def _membership(tree: _Tree, record: str, group: str, *, hierarchy: bool) 
         )
 
 
+async def _shared_top_level_records(tree: _Tree, home_id: str, shared_id: str, names: list[str], *, home_edge_rewritten: bool) -> list[str]:
+    """Top-level records of group "home" shared into "0S:someone", as the processor writes them (each group a BELONGS_TO and a hierarchy edge)."""
+    await _groups_with_ids(tree, tree.group("home", group_id=home_id), tree.group("0S:someone", group_id=shared_id))
+    await tree.processor.on_new_records([(tree.record(name, group="home", shared=("0S:someone",)), []) for name in names])
+    record_ids = [await tree.record_id(name) for name in names]
+    if home_edge_rewritten:
+        for record_id in record_ids:
+            await tree.graph.delete_edge(record_id, CollectionNames.RECORDS.value, home_id,
+                                         CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
+            await tree.graph.create_record_group_relation(record_id, home_id)
+    return record_ids
+
+
 @pytest.mark.parametrize("home_edge_rewritten", [False, True], ids=["as-written", "home-edge-rewritten"])
 @pytest.mark.parametrize("home_sorts_first", [True, False], ids=["home-id-first", "shared-id-first"])
 async def test_a_top_level_record_shared_into_a_second_group_has_its_own_group_as_parent(
@@ -251,20 +264,13 @@ async def test_a_top_level_record_shared_into_a_second_group_has_its_own_group_a
 ) -> None:
     low, high = _ordered_ids()
     home_id, shared_id = (low, high) if home_sorts_first else (high, low)
-    await _groups_with_ids(tree, tree.group("home", group_id=home_id), tree.group("0S:someone", group_id=shared_id))
-    names = [f"report-{n}" for n in range(6)]
-    await tree.processor.on_new_records([(tree.record(name, group="home", shared=("0S:someone",)), []) for name in names])
-    if home_edge_rewritten:
-        for name in names:
-            record_id = await tree.record_id(name)
-            await tree.graph.delete_edge(record_id, CollectionNames.RECORDS.value, home_id,
-                                         CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
-            await tree.graph.create_record_group_relation(record_id, home_id)
+    record_ids = await _shared_top_level_records(tree, home_id, shared_id, [f"report-{n}" for n in range(6)],
+                                                 home_edge_rewritten=home_edge_rewritten)
 
-    parents = {name: await tree.parent_of(await tree.record_id(name)) for name in names}
+    parents = {record_id: await tree.parent_of(record_id) for record_id in record_ids}
 
     home = {"id": home_id, "name": "home", "nodeType": "recordGroup", "subType": "DRIVE"}
-    assert {name: parent for name, parent in parents.items() if parent != home} == {}
+    assert {record_id: parent for record_id, parent in parents.items() if parent != home} == {}
 
 
 async def test_a_record_moved_to_another_group_after_it_was_shared_has_its_new_group_as_parent(tree: _Tree) -> None:
@@ -464,24 +470,38 @@ async def test_a_record_with_only_inherit_edges_to_several_groups_has_the_lowest
     assert await tree.parent_of(record_id) == _group_parent(low, "low")
 
 
+@pytest.mark.parametrize("home_edge_rewritten", [False, True], ids=["as-written", "home-edge-rewritten"])
 @pytest.mark.parametrize("home_sorts_first", [True, False], ids=["home-id-first", "shared-id-first"])
 async def test_the_breadcrumbs_of_a_shared_top_level_record_go_through_its_own_group(
-    tree: _Tree, monkeypatch: pytest.MonkeyPatch, home_sorts_first: bool,
+    tree: _Tree, monkeypatch: pytest.MonkeyPatch, home_sorts_first: bool, home_edge_rewritten: bool,
 ) -> None:
     _allow_every_node(tree, monkeypatch)
     low, high = _ordered_ids()
     home_id, shared_id = (low, high) if home_sorts_first else (high, low)
-    await _groups_with_ids(tree, tree.group("home", group_id=home_id), tree.group("0S:someone", group_id=shared_id))
-    await tree.processor.on_new_records([(tree.record("report", group="home", shared=("0S:someone",)), [])])
-    record_id = await tree.record_id("report")
-    await tree.graph.delete_edge(record_id, CollectionNames.RECORDS.value, home_id,
-                                 CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
-    await tree.graph.create_record_group_relation(record_id, home_id)
+    record_ids = await _shared_top_level_records(tree, home_id, shared_id, [f"report-{n}" for n in range(6)],
+                                                 home_edge_rewritten=home_edge_rewritten)
 
-    trail = await _breadcrumb_ids(tree, record_id)
+    # Neo4j gave no order to the groups a record belongs to, so one record's answer could change from call to call.
+    for record_id in record_ids:
+        for _ in range(10):
+            trail = await _breadcrumb_ids(tree, record_id)
+            assert trail == [tree.connector_id, home_id, record_id]
+            assert trail[-2] == (await tree.parent_of(record_id))["id"]
 
-    assert trail == [tree.connector_id, home_id, record_id]
-    assert trail[-2] == (await tree.parent_of(record_id))["id"]
+
+@pytest.mark.parametrize("home_sorts_first", [True, False], ids=["home-id-first", "shared-id-first"])
+async def test_the_breadcrumbs_skip_a_shared_records_own_group_the_user_cannot_see(
+    tree: _Tree, monkeypatch: pytest.MonkeyPatch, home_sorts_first: bool,
+) -> None:
+    """The hidden group is left out of the trail, not replaced by the other group the record is shared into."""
+    low, high = _ordered_ids()
+    home_id, shared_id = (low, high) if home_sorts_first else (high, low)
+    record_ids = await _shared_top_level_records(tree, home_id, shared_id, [f"report-{n}" for n in range(6)], home_edge_rewritten=False)
+    _allow_every_node(tree, monkeypatch, hidden=frozenset({home_id}))
+
+    trails = {record_id: await _breadcrumb_ids(tree, record_id) for record_id in record_ids}
+
+    assert trails == {record_id: [tree.connector_id, record_id] for record_id in record_ids}
 
 
 async def test_the_breadcrumbs_of_a_record_under_a_folder_shared_into_a_group_go_through_the_folder(

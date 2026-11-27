@@ -645,7 +645,7 @@ export function ModelConfigDialog({
         // Preserve the existing default flag on edit so that tweaking
         // dimensions / api key / etc. does not silently remove the model
         // from being the default.
-        await AIModelsApi.updateProvider(modelType, editModel.modelKey, {
+        const updated = await AIModelsApi.updateProvider(modelType, editModel.modelKey, {
           provider: provider.providerId,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
@@ -653,6 +653,9 @@ export function ModelConfigDialog({
           isDefault: editModel.isDefault ?? false,
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
+        if (updated?.details?.forwardingCredentialsCleared) {
+          toast.warning(t('workspace.aiModels.configForwardingCredentialsCleared'));
+        }
       }
 
       endCheck([]);

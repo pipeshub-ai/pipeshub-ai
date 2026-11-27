@@ -251,6 +251,7 @@ from app.utils.pdf_stream_conversion import libreoffice_to_pdf, safe_conversion_
 from app.modules.indexing import refresh_intent
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import (
+    await_or_503,
     check_record_access_or_503,
     get_document_or_503,
     get_org_or_503,
@@ -3424,7 +3425,7 @@ async def reindex_connector(
         # KB collection and the user has OWNER/WRITER/READER role
         if not instance:
             graph_provider = request.app.state.graph_provider
-            app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            app_doc = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
             
             if app_doc and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
                 # This is a KB collection, check KB permissions
@@ -5601,11 +5602,7 @@ async def get_connector_instance_config(
         config_service = resolve_config_service(container, org_id)
         config_path = _get_config_path_for_instance(connector_id)
 
-        try:
-            config = await config_service.get_config(config_path)
-        except Exception as e:
-            logger.warning(f"No config found for instance {connector_id}: {e}")
-            config = None
+        config = await await_or_503(read_oauth_config(config_service, config_path))
 
         if not config:
             config = {"auth": {}, "sync": {}, "filters": {}}
@@ -8125,7 +8122,7 @@ async def get_connector_instance_filters(
         # Get credentials based on auth type
         config_service = resolve_config_service(container, user_context["org_id"])
         config_path = _get_config_path_for_instance(connector_id)
-        config = await config_service.get_config(config_path)
+        config = await await_or_503(read_oauth_config(config_service, config_path))
 
         auth_type = (instance.get("authType") or "").upper()
         token_or_credentials = None
@@ -8717,7 +8714,7 @@ async def _build_and_store_connector(
         connector_type = connector_type.replace(" ", "").lower()
 
         # Fetch scope and createdBy from database App node
-        connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_doc = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         if not connector_doc:
             logger.error(f"Connector {connector_id} not found in database")
             raise HTTPException(
@@ -9008,7 +9005,7 @@ async def toggle_connector_instance(
             auth_type = (instance.get("authType") or "").upper()
             config_service = resolve_config_service(container, org_id)
             config_path = _get_config_path_for_instance(connector_id)
-            config = await config_service.get_config(config_path)
+            config = await await_or_503(read_oauth_config(config_service, config_path))
 
             org_account_type = str(org.get("accountType", "")).lower()
             custom_google_business_logic = (
@@ -11036,7 +11033,7 @@ async def _admin_connector_app(request: Request, connector_id: str, graph_provid
     not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     org_id = current_org_id()
     user_id = request.state.user.get("userId")
-    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
+    app = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
     if not app or not org_id or not await request.app.state.connector_registry.get_connector_instance(
         connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=True
     ):

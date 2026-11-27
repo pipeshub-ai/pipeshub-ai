@@ -9,6 +9,8 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -117,7 +119,24 @@ class TestFetchPrsBatched:
 
         assert await sync.fetch_prs_batched(make_repo(repo_id=10)) is False
 
-        c.issues._write_checkpoint.assert_awaited_once()
+        group, written = c.issues._write_checkpoint.await_args.args
+        assert group == "10-pull-requests"
+        assert written["listing_resume_page"] == 2
+        assert written["listing_resume_watermark"] > 0
+        c.issues._update_sync_checkpoint.assert_not_awaited()
+
+    async def test_a_sync_stopped_between_pages_keeps_its_place(self) -> None:
+        """A restart while the next page waits out a rate limit reads on from that page."""
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            ok_response([_pr(number=n) for n in range(100)]),
+            asyncio.CancelledError(),
+        ])
+        sync = self._sync(c)
+
+        with pytest.raises(asyncio.CancelledError):
+            await sync.fetch_prs_batched(make_repo(repo_id=10))
+
         group, written = c.issues._write_checkpoint.await_args.args
         assert group == "10-pull-requests"
         assert written["listing_resume_page"] == 2

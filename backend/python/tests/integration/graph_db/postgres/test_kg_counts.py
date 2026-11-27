@@ -239,7 +239,7 @@ async def _own_records(p, org: str, n: int) -> list[str]:
 async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_up_to_its_total_on_every_page(pg_db, monkeypatch) -> None:
     """12 rows the viewer reads by class (counted by the counters) and 6 records it reads by their own grant (plus the group, by its own): with the cap at 4 the scan of the
     own-grant rows stops at 4, so the total is 12 + 4, a lower bound that says so, and the counts by type add up to it. The service carries both on its cursor, so every
-    page of the listing reports the same total and counts."""
+    page of the listing reports the same counts, and the same total until the rows shown pass it: then the total is the rows shown, never fewer."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -257,19 +257,20 @@ async def test_a_capped_listing_keeps_the_exact_class_count_and_its_counts_add_u
     assert sum(page["counts"].values()) == page["total"] and page["counts"]["record"] >= 12
 
     service = KnowledgeHubService(logging.getLogger("kg-counts"), p, _Config())
-    seen, cursor = [], None
+    seen, cursor, shown = [], None, 0
     for _ in range(10):
         with ctx(org):
             got = await service.get_nodes(user_id="user-1", org_id=org, parent_id="app1", parent_type="app", flattened=True, include=["counts"], limit=5,
                                           sort_by="name", sort_order="asc", **({"cursor": cursor} if cursor else {}))
         assert got.success, got
+        shown += len(got.items)
         seen.append((got.pagination.totalItems, got.pagination.totalCapped, got.counts.total, tuple(sorted((c.label, c.count) for c in got.counts.items))))
+        assert got.pagination.totalItems == got.counts.total == max(16, shown) and got.pagination.totalCapped is True, seen
         cursor = got.pagination.nextCursor
         if not cursor:
             break
-    assert len(seen) > 1 and len(set(seen)) == 1, seen                          # one total and one breakdown for the whole listing
-    total, capped, counted, items = seen[0]
-    assert total == counted == sum(n for _, n in items) == 16 and capped is True
+    assert len(seen) > 1 and len({items for *_, items in seen}) == 1, seen      # one breakdown for the whole listing
+    assert sum(n for _, n in seen[0][3]) == seen[0][0] == 16 and shown == 19
 
 
 async def test_a_restore_keeps_no_counter_and_the_seed_counts_the_restored_rows(pg_db) -> None:

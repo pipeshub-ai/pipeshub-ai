@@ -954,6 +954,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
 
       try {
         await controller.createOrg(req, res);
@@ -983,6 +985,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
 
       try {
         await controller.createOrg(req, res);
@@ -1007,6 +1011,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       eventBuffer.drain();
 
       await controller.createOrg(req, res);
@@ -1030,6 +1036,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
       // Hold the unit of work open after its body ran, so a kick from inside the body would show.
       let commit!: () => void;
@@ -1070,6 +1078,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       mockEventService.publishEvent.rejects(new Error('outbox write failed'));
       const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
 
@@ -1097,6 +1107,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
 
       try {
         await controller.createOrg(req, res);
@@ -1120,6 +1132,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
 
       try {
         await controller.createOrg(req, res);
@@ -1143,6 +1157,8 @@ describe('OrgController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups.prototype, 'save').resolves();
       sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      // The create's last write makes the hidden organisation live.
+      sinon.stub(Org, 'updateOne').resolves({} as any);
 
       try {
         await controller.createOrg(req, res);
