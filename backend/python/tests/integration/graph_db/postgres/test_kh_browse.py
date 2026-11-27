@@ -1058,6 +1058,38 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     assert not set(walked) & set(KIDS), walked
 
 
+async def test_a_wide_nodes_child_of_a_class_its_sample_did_not_read_is_asked_of_the_check(pg_db, monkeypatch) -> None:
+    """The classes of a wide node's children are read from a sample of them (``kgl.browse_classes_sql``, up to the count's cap): a child of a class the sample missed is
+    undecided (``_browse_undecided``'s ``known``): left out of the count by class and asked of the access check, which admits it. Here the readable children's class is
+    left out of what the sample found."""
+    import asyncpg
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 8, readable_kids=KIDS[1:6])
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        missed = await con.fetchval("SELECT class_id FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c0001'", org)
+        every = await con.fetchval("SELECT count(*) FROM kg.scope_classes c JOIN kg.node_keys a ON a.org_id = c.org_id AND a.sk = c.app_sk WHERE c.org_id = $1 AND a.id = 'app1'", org)
+    finally:
+        await con.close()
+    monkeypatch.setattr(kh_listing, "CLASS_MAX", every - 1)      # the connector's every class is too many: the browse reads its children's
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 3)
+    real_sets = kh_browse.class_sets
+
+    async def sampled(tx, org_, app_sk, held, only=None) -> object:
+        return await real_sets(tx, org_, app_sk, held, None if only is None else [c for c in only if c != missed])
+    monkeypatch.setattr(kh_browse, "class_sets", sampled)
+    asked: list[str] = []
+    real_check = type(p)._kh_v3_accessible_rows
+
+    async def check(self, user_key, org_id, node_ids, *a, **kw) -> object:      # the access check the browse asks about rows its classes do not decide
+        asked.extend(node_ids)
+        return await real_check(self, user_key, org_id, node_ids, *a, **kw)
+    monkeypatch.setattr(type(p), "_kh_v3_accessible_rows", check)
+    page = await browse(p, org, "fold", ["fold", *KIDS[1:6]])
+    assert [r["id"] for r in page["rows"]] == KIDS[1:6] and page["total"] == 5 and not page.get("totalCapped"), (page["total"], page.get("totalCapped"))
+    assert set(KIDS[1:6]) <= set(asked), asked      # the children of the class the sample missed: the check's
+
+
 async def test_an_arrow_samples_the_same_children_it_asks_about(pg_db, monkeypatch) -> None:
     """A folder of 250 children the classes decide (none readable) and one placeholder, first by name and written last, that leads to a readable record. The arrow's probe and
     its sample read the same first children (the children index's order), so the placeholder is in both and the folder's arrow is on, as opening it lists the placeholder."""

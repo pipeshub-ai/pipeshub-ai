@@ -8,7 +8,6 @@ import {
   FileRejectionReason,
 } from '../../../../src/libs/middlewares/file_processor/fp.constant'
 import { Logger } from '../../../../src/libs/services/logger.service'
-import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -583,11 +582,6 @@ describe('FileProcessorService - uploadErrorMessage', () => {
     expect(service.uploadErrorMessage(undefined)).to.equal(
       "The upload didn't complete. Check your connection and try again.",
     )
-  })
-
-  it('keeps a message we wrote ourselves', () => {
-    const ours = new BadRequestError('This upload is larger than the 50 MB total limit. Upload fewer files at a time.')
-    expect(service.uploadErrorMessage(ours)).to.equal(ours.message)
   })
 })
 

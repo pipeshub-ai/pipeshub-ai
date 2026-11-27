@@ -4,7 +4,9 @@ import sinon from 'sinon'
 import { PassThrough } from 'stream'
 import type { NextFunction, Request, RequestHandler, Response } from 'express'
 import multer from 'multer'
-import { createMulter } from '../../../src/libs/utils/multer.utils'
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { BUSBOY_PARSE_ERRORS, createMulter, isUploadLimit } from '../../../src/libs/utils/multer.utils'
 import { FileProcessorService } from '../../../src/libs/middlewares/file_processor/fp.service'
 import { FileProcessingType } from '../../../src/libs/middlewares/file_processor/fp.constant'
 import { Logger } from '../../../src/libs/services/logger.service'
@@ -94,4 +96,29 @@ describe('FileProcessorService upload keeps non-ASCII names', () => {
       expect(req.files?.map((f) => f.originalname)).to.deep.equal([NAME])
     })
   }
+})
+
+describe('isUploadLimit', () => {
+  for (const code of ['LIMIT_FILE_SIZE', 'LIMIT_FILE_COUNT', 'LIMIT_PART_COUNT', 'LIMIT_FIELD_KEY', 'LIMIT_FIELD_VALUE', 'LIMIT_FIELD_COUNT']) {
+    it(`takes ${code} for an upload past a limit`, () => {
+      expect(isUploadLimit(code)).to.equal(true)
+    })
+  }
+
+  for (const code of ['LIMIT_UNEXPECTED_FILE', 'MISSING_FIELD_NAME', 'INVALID_FIELD_NAME', 'STREAM_DESTROYED', 'ECONNRESET', '', undefined, 413]) {
+    it(`does not take ${String(code)} for one`, () => {
+      expect(isUploadLimit(code)).to.equal(false)
+    })
+  }
+})
+
+describe('BUSBOY_PARSE_ERRORS', () => {
+  // Upgrade guard: busboy's parse errors have no code, so a renamed message would silently fall back to a 500.
+  it('each message is still one the installed busboy throws', () => {
+    const lib = join(dirname(require.resolve('busboy/package.json')), 'lib')
+    const source = ['index.js', 'types/multipart.js', 'types/urlencoded.js'].map((f) => readFileSync(join(lib, f), 'utf8')).join('\n')
+    for (const message of [...BUSBOY_PARSE_ERRORS, 'Unsupported content type: ']) {
+      expect(source, message).to.include(message)
+    }
+  })
 })

@@ -665,8 +665,9 @@
     "moreOptions": "Weitere Optionen",
     "docs": "Dokumentation",
     "enterprise": {
-      "label": "In EE verfügbar",
-      "tooltip": "Teil der PipesHub Enterprise Edition"
+      "label": "In Enterprise verfügbar",
+      "tooltip": "In der PipesHub Enterprise Edition enthalten",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Etwas ist schiefgelaufen",
@@ -1046,6 +1047,7 @@
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Wird geladen…",
     "sharedAgentChat": "Geteilter Agent-Chat",
+    "sharedAgentChatNotice": "Personen, mit denen du diesen Chat teilst, können ihn lesen, aber den Agenten nicht öffnen, solange du den Agenten nicht auch mit ihnen teilst.",
     "myAgents": "Meine Agenten",
     "moreAgents": "Weitere Agenten",
     "agentHeaderMenuAria": "Agentenoptionen",
@@ -2075,7 +2077,7 @@
       "title": "Gruppen",
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
-      "enterpriseMessage": "Upgraden Sie auf die Enterprise Edition, um Gruppenberechtigungen zu nutzen.",
+      "enterpriseMessage": "Gruppenbasierte Zugriffskontrolle: einer ganzen Gruppe auf einmal Zugriff geben.",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -2159,18 +2161,168 @@
       }
     },
     "enterprise": {
-      "contact": "Mit dem Vertrieb sprechen",
+      "contact": "Sprechen Sie mit uns",
       "scim": {
-        "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
-        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren."
+        "heading": "SCIM-Provisionierung ist in der Enterprise Edition verfügbar",
+        "message": "Automatisieren Sie das Provisionieren und Deprovisionieren von Benutzern aus Okta oder Microsoft Entra ID.",
+        "benefits": {
+          "providers": "Funktioniert mit Okta und Microsoft Entra ID über SCIM 2.0",
+          "offboarding": "Deprovisionierte Benutzer verlieren automatisch den Zugriff",
+          "noManualWork": "Kein manuelles Einladen und Entfernen von Benutzern mehr"
+        }
       },
       "auditLogs": {
-        "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann."
+        "heading": "Audit-Protokolle sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann.",
+        "benefits": {
+          "everyEvent": "Jede Aktion mit Akteur, Zeit, IP-Adresse, Ziel und Ergebnis",
+          "filters": "Nach Benutzer, Aktion oder Ergebnis filtern",
+          "alerts": "Warnungen einrichten und Protokolle für Compliance-Prüfungen exportieren"
+        }
       },
       "usage": {
-        "heading": "Nutzung, Credits und Abrechnung sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest."
+        "heading": "Nutzung & Abrechnung ist in der Enterprise Edition verfügbar",
+        "message": "KI-Ausgaben sehen und steuern. Nach Benutzer, Agent, Connector und Modell verfolgen, festlegen, wie viel jeder Benutzer ausgeben darf, und Guthaben und Rechnungen verwalten.",
+        "benefits": {
+          "breakdown": "KI-Ausgaben nach Benutzer, Agent, Connector und Modell",
+          "billing": "Guthaben und Rechnungen an einem Ort",
+          "alerts": "Warnungen, wenn die KI-Ausgaben Ihr Limit überschreiten"
+        }
+      },
+      "benefitsTitle": "Was enthalten ist",
+      "relatedTitle": "Ebenfalls in Enterprise",
+      "tenants": {
+        "heading": "Mandantenfähigkeit ist in der Enterprise Edition verfügbar",
+        "message": "Geben Sie jedem Team, jeder Region oder jedem Kunden eine eigene Organisation, alles in einer Installation.",
+        "benefits": {
+          "separate": "Jeder Mandant hat eigene Benutzer, Gruppen, Connectors, Sammlungen und Agents",
+          "inherit": "Legen Sie fest, welche Einstellungen Mandanten erben, etwa KI-Modelle, E-Mail und Anmeldung",
+          "manage": "Alle Mandanten an einem Ort anlegen und verwalten"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Einer ganzen Gruppe auf einmal Zugriff geben",
+          "teams": "Ganze Teams oder einzelne Benutzer zu einer Gruppe hinzufügen",
+          "builtIn": "Mit den integrierten Gruppen „Admin“ und „Alle“ beginnen"
+        }
+      },
+      "seeWhatsInEnterprise": "Was Enterprise bietet",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und mehr.",
+        "action": "Alle Funktionen ansehen",
+        "dismiss": "Enterprise-Edition-Karte ausblenden"
+      },
+      "overview": {
+        "currentEdition": "Aktuelle Edition: Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Alles aus der Community Edition, dazu Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und Kostenkontrolle.",
+        "seePreview": "Vorschau",
+        "seePreviewLabel": "Vorschau: {{name}}",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Aktuelle Edition",
+            "summary": "Kostenlos, Open Source, selbst gehostet",
+            "lead": "In Community enthalten",
+            "items": {
+              "search": "Suchen und chatten über Ihre verbundenen Apps",
+              "agents": "KI-Agents, Aktionen und MCP-Server",
+              "people": "Benutzer und Teams",
+              "signIn": "Anmeldung mit Passwort, Einmalcode per E-Mail, Google und Microsoft"
+            },
+            "current": "Ihre aktuelle Edition"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "Für größere Organisationen. Preis auf Anfrage.",
+            "lead": "Alles aus Community, dazu:",
+            "seeAll": "Alle Funktionen ansehen"
+          }
+        },
+        "compare": {
+          "title": "Editionen vergleichen",
+          "feature": "Funktion",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Preis auf Anfrage",
+          "included": "Enthalten",
+          "notIncluded": "Nicht enthalten",
+          "communityHas": {
+            "scim": "Manuelle Benutzerverwaltung",
+            "collaborativeChat": "Einen Chat zum Lesen teilen",
+            "groups": "Teams",
+            "sso": "Passwort, Einmalcode per E-Mail, Google und Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Fragen",
+          "free": {
+            "question": "Bleibt die Community Edition kostenlos?",
+            "answer": "Ja. Sie bleibt Open Source und kostenlos."
+          },
+          "preview": {
+            "question": "Kann ich mir eine Funktion vorher ansehen?",
+            "answer": "Ja. Funktionen mit „{{label}}“ öffnen die Seite, auf der sie wären, mit einer Vorschau des Bildschirms."
+          },
+          "get": {
+            "question": "Wie bekomme ich die Enterprise Edition?",
+            "answer": "{{contact}}. Wir besprechen, was Ihre Organisation braucht und wie die Einrichtung abläuft."
+          }
+        },
+        "groups": {
+          "scale": "Skalierung",
+          "governance": "Zugriff und Steuerung",
+          "security": "Sicherheit und Compliance",
+          "cost": "Kosten und Indexierung"
+        },
+        "items": {
+          "tenants": {
+            "name": "Mandantenfähigkeit",
+            "description": "Eigene Organisationen für jedes Team, jede Region oder jeden Kunden, in einer Installation."
+          },
+          "scim": {
+            "name": "SCIM-Bereitstellung",
+            "description": "Benutzer automatisch aus Okta oder Microsoft Entra ID provisionieren und deprovisionieren."
+          },
+          "collaborativeChat": {
+            "name": "Gemeinsamer Chat",
+            "description": "Gemeinsam in einer Unterhaltung chatten und sie mit Teams und Gruppen teilen."
+          },
+          "groups": {
+            "name": "Gruppenberechtigungen",
+            "description": "Gruppenbasierte Zugriffskontrolle: einer ganzen Gruppe auf einmal Zugriff geben."
+          },
+          "toolApprovals": {
+            "name": "Richtlinien für Tool-Freigaben",
+            "description": "Organisationsweite Regeln für jedes Agent-Tool: ausführen, Freigabe anfordern oder sperren."
+          },
+          "actOnBehalf": {
+            "name": "Im Namen einer Person handeln",
+            "description": "Ein Dienstkonto handelt als ein bestimmter Benutzer (delegierter Zugriff). Jeder Versuch wird protokolliert."
+          },
+          "peoplesOwnApps": {
+            "name": "Kontrolle über Benutzer-Apps",
+            "description": "OAuth-Apps, Aktionen und MCP-Server prüfen und entfernen, die Benutzer verbinden."
+          },
+          "sso": {
+            "name": "Single Sign-on (SSO)",
+            "description": "Anmeldung über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-(OIDC-)Anbieter."
+          },
+          "auditLogs": {
+            "name": "Audit-Protokolle",
+            "description": "Jede Aktion nach Akteur, Zeit, IP-Adresse und Ergebnis verfolgen. Filtern, warnen und exportieren."
+          },
+          "usage": {
+            "name": "Nutzung & Abrechnung",
+            "description": "Transparenz und Kontrolle über KI-Ausgaben: nach Benutzer, Agent, Connector und Modell verfolgen und festlegen, wie viel jeder Benutzer ausgeben darf."
+          },
+          "indexingPriority": {
+            "name": "Indexierungspriorität",
+            "description": "Festlegen, welche Datensätze, Sammlungen und Uploads zuerst indexiert werden."
+          }
+        }
       }
     },
     "teams": {
@@ -2683,7 +2835,7 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
-        "usageAndCredits": "Nutzung & Credits",
+        "usageAndCredits": "Nutzung & Abrechnung",
         "security": "Sicherheit",
         "personal": "Persönlich",
         "people": "Personen",
@@ -2715,7 +2867,7 @@
         "groups": "Gruppen",
         "scim": "SCIM",
         "auditLogs": "Audit-Logs",
-        "usage": "Nutzung & Credits",
+        "usage": "Nutzung & Abrechnung",
         "teams": "Teams",
         "webSearch": "Websuche",
         "tenants": "Mandanten",
@@ -2724,6 +2876,7 @@
         "personalAccessTokens": "Persönliche Zugriffstoken",
         "apiDocumentation": "API-Dokumentation",
         "serviceAccounts": "Dienstkonten",
+        "enterprise": "Enterprise Edition",
         "aiAccounts": "KI-Konten",
         "schedules": "Zeitpläne",
         "memories": "Erinnerungen",
@@ -2994,6 +3147,11 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
+      },
+      "edition": {
+        "title": "Edition",
+        "name": "Community Edition",
+        "description": "Open Source und selbst gehostet. Die Enterprise Edition bietet zusätzlich Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und mehr."
       }
     },
     "mcpAccess": {
@@ -5048,7 +5206,7 @@
     },
     "tenants": {
       "title": "Mandanten",
-      "subtitle": "Mandantenorganisationen im Arbeitsbereich erstellen und verwalten",
+      "subtitle": "Mandanten-Organisationen in dieser Installation anlegen und verwalten",
       "createTenant": "Mandanten erstellen",
       "searchPlaceholder": "Mandanten suchen...",
       "emptyTitle": "Noch keine Mandanten erstellt",
@@ -6883,6 +7041,13 @@
       "hidden": "Einige Zeichen hier wären unsichtbar oder würden die Reihenfolge des Textes ändern. Sie werden deshalb als Codes wie ⟨U+202E⟩ angezeigt. Prüfen Sie, ob Sie genau das senden möchten.",
       "host": "{{ascii}} mischt Alphabete und sieht aus wie {{unicode}}. Die Adresse wird in ihrer echten Form angezeigt, weil sie womöglich nicht die Website ist, die sie zu sein scheint.",
       "markerTitle": "Ein Zeichen, das sonst unsichtbar wäre oder den Text umordnen würde"
+    },
+    "schedule": {
+      "name": "Name",
+      "when": "Wann",
+      "ask": "Jeder Lauf wird gefragt",
+      "notify": "Benachrichtigen über",
+      "where": "Jeder Lauf startet eine eigene Unterhaltung. Pausieren oder löschen Sie ihn jederzeit unter Workspace > Zeitpläne."
     }
   },
   "codeTaskCard": {
@@ -7811,7 +7976,8 @@
     "status": {
       "active": "Aktiv",
       "paused": "Pausiert",
-      "disabled": "Ausgeschaltet"
+      "disabled": "Ausgeschaltet",
+      "ranOnce": "Einmal ausgeführt"
     },
     "trigger": {
       "cron": "Cron",
@@ -7834,7 +8000,8 @@
         "cron": "Geplant",
         "manual": "Jetzt ausführen",
         "event": "Ausgelöst",
-        "cronCaughtUp": "Geplant (nachgeholt)"
+        "cronCaughtUp": "Geplant (nachgeholt)",
+        "once": "Einmalig"
       },
       "openConversation": "Unterhaltung öffnen",
       "admitted": "Gestartet",
@@ -7887,7 +8054,13 @@
       "notifyUnknown": "Gerade nicht verfügbar.",
       "notifyCheckFailed": "Die verfügbaren Kanäle konnten nicht geprüft werden, daher wird nur PipesHub angeboten.",
       "webhookCantSign": "Der Aufrufer kann nicht signieren. Stattdessen ein Token im Header verwenden",
-      "webhookCantSignHint": "Wer das Token sieht, kann den Webhook aufrufen. Signieren ist sicherer."
+      "webhookCantSignHint": "Wer das Token sieht, kann den Webhook aufrufen. Signieren ist sicherer.",
+      "kindOnce": "Einmal, zu Datum und Uhrzeit",
+      "onceAt": "Datum und Uhrzeit",
+      "onceAtHint": "In Ihrer Zeitzone ({{timeZone}}). Frühestens in einer Minute, höchstens ein Jahr im Voraus.",
+      "onceNotExisting": "Diese Uhrzeit gibt es an diesem Tag in Ihrer Zeitzone nicht: Die Uhren springen darüber. Wählen Sie eine andere Uhrzeit.",
+      "onceTooSoon": "Wählen Sie eine Zeit frühestens in einer Minute.",
+      "onceTooFar": "Wählen Sie eine Zeit höchstens ein Jahr im Voraus."
     },
     "webhook": {
       "title": "Ihr Webhook",
@@ -7913,7 +8086,10 @@
       "limit": "Sie haben die zulässige Anzahl an Zeitplänen erreicht. Löschen Sie zuerst einen.",
       "budgetCeiling": "Das Budget pro Lauf ist zu hoch.",
       "unavailable": "Geplante Läufe benötigen den dauerhaften Agent-Chat, der für Ihre Organisation ausgeschaltet ist.",
-      "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut."
+      "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut.",
+      "ranOnce": "Dieser Zeitplan ist schon einmal gelaufen. Er läuft nicht noch einmal; Sie können ihn löschen.",
+      "notApproved": "Dieser Zeitplan wurde nicht genehmigt und daher nicht angelegt.",
+      "approvalUsed": "Mit dieser Genehmigung wurde bereits ein Zeitplan angelegt, der gelöscht wurde. Fragen Sie erneut, um einen neuen einzurichten."
     },
     "reason": {
       "scheduledRunsDisabled": "geplante Läufe wurden für die Organisation ausgeschaltet",
@@ -7949,6 +8125,21 @@
       "latest": "Immer die Live-Version verwenden",
       "latestHint": "Jeder Lauf verwendet die zuletzt veröffentlichte Version.",
       "save": "Speichern"
+    },
+    "ranOnce": "Einmal ausgeführt. Er läuft nicht noch einmal.",
+    "when": {
+      "cron": "{{cron}} (Cron)",
+      "everyMinute": "Jede Minute",
+      "everyMinutes": "Alle {{count}} Minuten",
+      "hourly": "Jede Stunde um :{{minute}}",
+      "daily": "Jeden Tag um {{time}}",
+      "weekdays": "Jeden Werktag um {{time}}",
+      "weekly": "Jeden {{day}} um {{time}}",
+      "monthly": "Jeden Monat am {{day}}. um {{time}}",
+      "onceToday": "Einmal, heute um {{time}}",
+      "onceTomorrow": "Einmal, morgen um {{time}}",
+      "onceOn": "Einmal, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8733,7 +8924,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}} ({{count}} Aufrufe)",
       "install_packages_one": "Pakete installieren",
-      "install_packages_other": "{{count}}-mal Pakete installieren"
+      "install_packages_other": "{{count}}-mal Pakete installieren",
+      "scheduleCreate_one": "Zeitplan einrichten",
+      "scheduleCreate_other": "{{count}} Zeitpläne einrichten"
     },
     "engineWants": "{{engine}} möchte:",
     "childWants": "Die Code-Aufgabe möchte:",
@@ -8801,7 +8994,8 @@
     "waitingForOwner_one": "Wartet darauf, dass der Besitzer der Unterhaltung über einen Schritt entscheidet",
     "waitingForOwner_other": "Wartet darauf, dass der Besitzer der Unterhaltung über {{count}} Schritte entscheidet",
     "denyAllLabel": "Alle ablehnen: {{title}}",
-    "titleSiteUpload": "Uploads an {{destination}} für diesen Lauf erlauben?"
+    "titleSiteUpload": "Uploads an {{destination}} für diesen Lauf erlauben?",
+    "titleSchedule": "Zeitplan einrichten"
   },
   "engineSignIn": {
     "title": "Anmeldung für Coding-Engines",

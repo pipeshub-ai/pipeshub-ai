@@ -684,7 +684,7 @@ class KbPushService:
             if e.status == 413 and e.limit_bytes is not None:
                 raise resolved_too_large(min(MAX_INLINED_BYTES, e.limit_bytes), e.limit_bytes) from None
             if e.status == 400:
-                # Not an oversize file (create() maps that to 413): retrying the same bytes cannot succeed.
+                # Not an oversize file (storage answers 413 for that): retrying the same bytes cannot succeed.
                 raise _refuse(500, "STORAGE_REJECTED", "The content was rejected by storage.") from None
             raise _refuse(503, "STORAGE_UNAVAILABLE", "The content could not be stored; retry.", retryAfter=5) from None
 
