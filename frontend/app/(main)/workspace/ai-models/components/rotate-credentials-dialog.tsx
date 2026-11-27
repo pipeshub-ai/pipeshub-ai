@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Button, Dialog, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { AIModelsApi } from '../api';
+import { resolveConnectionSecretError } from '../resolve-model-config-save-error';
 import type { ConfiguredModel } from '../types';
 import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
@@ -35,7 +36,7 @@ export function RotateCredentialsDialog({ model, onClose, onSaved }: RotateCrede
       onSaved?.();
       onClose();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t('workspace.aiModels.rotateCredentialsFailed'));
+      setError(resolveConnectionSecretError(err, t, 'workspace.aiModels.rotateCredentialsFailed'));
     } finally {
       setSaving(false);
     }

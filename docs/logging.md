@@ -1112,7 +1112,11 @@ their own HTTP clients.
 - **What it never has:** the URL, the query string, headers, bodies, or the error's message. The line is a fact about the
   call, not the error report: the request's `http.request.error` still logs the failure once. `handleBackendError` logs
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
-  lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
+  lines too, and is answered 502 (501 stays 501; 503 and 504 stay transient). A 4xx it passes on keeps its status and the
+  service's words in its message (405/406 and the hop's own 407/411/414/417/421/426/431 are our wiring: a 500
+  `internal`; a 408 is a 504 `timeout`). A 5xx's own detail
+  stays in the service's log. A service command keeps the status of an error answer whose body is not JSON (a proxy's HTML
+  page), so it is classed by that status, not as our `internal` parse failure.
   A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)").
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
