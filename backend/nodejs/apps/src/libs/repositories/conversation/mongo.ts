@@ -2192,6 +2192,7 @@ export class MongoConversationRepository implements ConversationRepository {
   ): Promise<number> {
     if (!validIds(orgId, exceptSessionId) || recordIds.length === 0) return 0;
     const ids = [...recordIds];
+    // row-writer-exempt: an erased upload is marked removed on other chats' rows, unstamped: their readers see it at their next full read
     const marked = await ChatSessionMessage.updateMany(
       {
         orgId: oid(orgId),

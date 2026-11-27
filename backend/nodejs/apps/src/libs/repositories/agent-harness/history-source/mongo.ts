@@ -182,6 +182,7 @@ export async function appendAccounted(
   const nextSeq = before.nextSeq ?? 0;
   const stored = messages.map(
     (message, index) =>
+      // row-writer-exempt: the harness's own rows, accounted in the session's ledger rather than stamped
       new ChatSessionMessage({
         ...message,
         sessionId: before._id,
@@ -205,6 +206,7 @@ export async function appendAccounted(
     : null;
   if (stored.length > 0) {
     await transactionWrites.insert(tx, ChatSessionMessage, stored, () =>
+      // row-writer-exempt: the harness's own rows, accounted in the session's ledger rather than stamped
       ChatSessionMessage.insertMany(stored, { ordered: true, session: tx }),
     );
   }

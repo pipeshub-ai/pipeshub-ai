@@ -31,6 +31,7 @@ const markRemovedElsewhere =
   (org: Types.ObjectId, session: Types.ObjectId): MarkAttachmentsRemoved =>
   async (recordIds) => {
     const ids = [...recordIds];
+    // row-writer-exempt: an erased upload is marked removed on other chats' rows, unstamped: their readers see it at their next full read
     const marked = await ChatSessionMessage.updateMany(
       {
         orgId: org,
@@ -137,6 +138,7 @@ export class HarnessConversationEraser
       );
       citations += deleted.deletedCount;
     }
+    // row-writer-exempt: an erased chat's rows go with it; nobody reads them again
     const removedMessages = await ChatSessionMessage.deleteMany(
       { sessionId: session, orgId: org },
       MAJORITY,

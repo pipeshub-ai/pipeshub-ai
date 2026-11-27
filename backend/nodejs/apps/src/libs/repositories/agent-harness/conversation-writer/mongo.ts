@@ -132,6 +132,7 @@ export class HarnessConversationWriter implements ConversationWriter<Tx> {
       .slice(answerAt + 1)
       .find((m) => m.messageType === 'user_query');
     if (question === undefined) return null;
+    // row-writer-exempt: the harness's own rows: a durable turn asked again drops its old ones, and the session's ledger, not a row stamp, accounts for them
     await ChatSessionMessage.deleteMany(
       {
         sessionId: ref.sessionId,
