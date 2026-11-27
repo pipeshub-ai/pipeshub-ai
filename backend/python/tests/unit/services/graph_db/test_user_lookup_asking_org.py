@@ -135,5 +135,6 @@ async def test_without_an_org_the_lookup_needs_no_bound_org_as_before(
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")  # this folder's conftest runs in shadow mode
     p = _arango() if store == "arango" else _neo4j()
     assert await p.get_user_by_user_id(USER_ID) is None
+    assert await p.get_user_by_user_id(USER_ID, org_id="") is None  # matches no user, refused by no check
     with pytest.raises(MissingOrgContext):
         await p.get_user_by_user_id(USER_ID, org_id=ORG)

@@ -303,7 +303,7 @@ def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], 
 
 def org_optional[F: Callable[..., object]](fn: F) -> F:
     """Mark a method whose ``org_id`` only narrows what it reads: called without one it needs no ambient org, as before
-    it took one; given one, :func:`instrument_org_methods` checks it like any other."""
+    it took one, and an empty one matches nothing; given one, :func:`instrument_org_methods` checks it like any other."""
     fn._org_optional = True  # type: ignore[attr-defined]
     return fn
 
@@ -324,7 +324,7 @@ def instrument_org_methods(cls: type) -> None:
             @functools.wraps(fn)
             async def wrapper(*args: object, **kwargs: object) -> object:
                 explicit = kwargs["org_id"] if "org_id" in kwargs else (args[idx] if len(args) > idx else None)
-                if explicit is not None or not optional:
+                if explicit or not optional:  # an optional filter of None or "" reads nothing of another org
                     ambient_org(explicit, site=site, caller=functools.partial(_caller, 3))
                 return await fn(*args, **kwargs)
 
