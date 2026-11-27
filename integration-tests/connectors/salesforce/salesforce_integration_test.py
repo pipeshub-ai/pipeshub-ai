@@ -435,7 +435,8 @@ class TestSalesforceConnector:
             finally:
                 if was_active and not pipeshub_client.get_connector(salesforce_connector).get("isActive"):
                     pipeshub_client.toggle_sync(salesforce_connector, enable=True)
-        await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
+                # Also on a failure: the next test's resync would meet this run still going.
+                await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
         await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
                            salesforce_users, org_id, "the cleared filter")
 
