@@ -28,7 +28,8 @@ CHART = REPO / "deployment" / "helm" / "pipeshub-ai"
 
 # The files an install runs: the base file and the overlays its docs name. The other Compose files under
 # deployment/docker-compose are classified below, so a new file must be placed in one list or the other.
-SHIPPED = ("docker-compose.yml", "docker-compose.monitoring.yml", "docker-compose.agent-harness.yml",
+SHIPPED = ("docker-compose.yml", "docker-compose.monitoring.yml", "docker-compose.monitoring-postgres.yml",
+           "docker-compose.agent-harness.yml",
            "docker-compose.egress-tunnels.yml", "docker-compose.secret-key-file.yml",
            # Main's opt-in PostgreSQL document store (#5274): install.sh runs it from PIPESHUB_COMPOSE_OVERRIDES.
            "docker-compose.postgres-docstore.yml",

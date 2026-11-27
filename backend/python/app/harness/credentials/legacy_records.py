@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from app.config.configuration_service import delete_config_or_raise
 from app.harness.credentials.binding_writer import ImportRequest, Material
 from app.harness.credentials.migration import owner_ref, record_expiry_ms, record_mode
 from app.harness.credentials.read_through import credentials_switch_on, record_digest
@@ -100,12 +101,13 @@ class LegacyCredentialRecords:
         return True
 
     async def remove(self, kind: Kind, org_id: str, instance_id: str, owner_id: str, *, user_id: str | None = None) -> None:
-        """Disconnects ``owner_id`` (a user or an agent) from the instance."""
+        """Disconnects ``owner_id`` (a user or an agent) from the instance; raises when the record may still be stored
+        (``ConfigKeyNotDeletedError`` when the store kept it, the store's own error when it could not answer)."""
         if credentials_switch_on():
             writer = await self._writer()
             for owner in (f"user:{owner_id}", f"agent:{owner_id}"):
                 _ = await writer.revoke_owner(org_id, instance_id, owner, user_id=user_id)
-        _ = await self._config.delete_config(old_path(kind, instance_id, owner_id))
+        await delete_config_or_raise(self._config, old_path(kind, instance_id, owner_id))
 
 
 _PROCESS: dict[int, tuple[object, LegacyCredentialRecords]] = {}

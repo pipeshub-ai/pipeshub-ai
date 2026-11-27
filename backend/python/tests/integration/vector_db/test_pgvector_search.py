@@ -22,6 +22,7 @@ from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
     CollectionNotFoundError,
     OrgRequired,
+    SearchBusy,
     SpaceMismatch,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
@@ -135,6 +136,23 @@ async def test_the_all_connectors_check_answers_beside_the_search_within_its_own
         assert await store._db.run(budget) == "150ms"
         lower = await store._db.run(budget, timeout_ms=40)
     assert lower.endswith("ms") and int(lower[:-2]) <= 40                                   # a unit's own lower limit is kept
+
+
+async def test_a_search_that_gets_no_connection_in_time_is_busy_not_an_empty_answer(store) -> None:
+    """Every pooled connection held elsewhere: the dense leg's tier and its degraded path both time out waiting for one. The search
+    used to answer an empty list, which reads as "nothing matched"; it is busy, and answers once a connection is free."""
+    await store.upsert_points("records", [point(A, n) for n in (1, 2, 3)])
+    [warm] = await store.query_nearest_points("records", [req(A, limit=3)])          # the catalog and the sizing are cached now
+    pool = store._db._pool
+    held = [await pool.acquire() for _ in range(pool.get_max_size())]
+    try:
+        with pytest.raises(SearchBusy):                                               # without payload no later read fails instead
+            await store.query_nearest_points("records", [req(A, limit=3, with_payload=False)])
+    finally:
+        for con in held:
+            await pool.release(con)
+    [again] = await store.query_nearest_points("records", [req(A, limit=3)])
+    assert [h.id for h in warm] == [h.id for h in again] == [pid(A, n) for n in (1, 2, 3)]
 
 
 async def test_deleted_points_are_not_found_and_the_refusals(store) -> None:
