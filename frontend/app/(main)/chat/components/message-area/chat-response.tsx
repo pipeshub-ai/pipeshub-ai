@@ -1136,9 +1136,43 @@ export const ChatResponse = React.memo(function ChatResponse({
       (isStreaming && multiStep && !questionPending) ||
       (messagePlan?.steps.length ?? 0) >= 2 ||
       trailInteractions.length > 0);
-  // A host that draws the answer elsewhere (the answer panel) passes its own padding.
-  const renderTabContent = (opts?: { padding?: string }) => {
-    const spacing: React.CSSProperties = { padding: opts?.padding ?? 'var(--space-4) 0' };
+  // How sure the model is of its answer, whenever it gave a level, whether or not it read sources. The badge tops the
+  // answer text, under the steps and the cards, so a run with no answer text yet shows none, and a turn that ended on
+  // its question shows none. The level comes with the saved answer: while the answer streams the badge's place is kept,
+  // so its appearing moves nothing. Should the answer end without one (a stop, a model that gave none), the place
+  // closes as the steps fold, with the same motion, and the answer under it is held where the reader has it.
+  const [keptLevelPlace, setKeptLevelPlace] = useState(false);
+  if (isStreaming && answerShown && !textHeld && !keptLevelPlace) setKeptLevelPlace(true);
+  const levelShown = !isStreaming && Boolean(confidence) && !endedOnQuestion;
+  const levelPlaceCloses = keptLevelPlace && !isStreaming && !levelShown && !ext.hideConfidence;
+  const levelBadge = ext.hideConfidence
+    ? null
+    : levelShown && confidence
+      ? <ConfidenceIndicator confidence={confidence} marginBottom="0" />
+      : isStreaming || keptLevelPlace
+        ? <ConfidenceIndicator confidence="High" marginBottom="0" placeholder />
+        : null;
+  // One element from the first streamed word to the end, so the badge taking its place is the same node.
+  const confidenceBadge = levelBadge && (
+    <div className="level-slot" data-open={!levelPlaceCloses}>
+      <div>
+        <div style={{ paddingBottom: 'var(--space-2)' }}>{levelBadge}</div>
+      </div>
+    </div>
+  );
+  // Before paint, as the steps' fold does: the scroll box around the answer holds it still while the place closes.
+  useLayoutEffect(() => {
+    if (levelPlaceCloses) shellRef.current?.dispatchEvent(new Event(TRAIL_FOLD_EVENT, { bubbles: true }));
+  }, [levelPlaceCloses]);
+
+  const renderTabContent = (opts?: { padding?: string; leadTight?: boolean }) => {
+    // 24px under the question or the tabs, as a margin so it merges with the question's own and with the first
+    // block's (a status line, a heading): the first line lands in one place, with steps or without, live or done.
+    // On a wide row, 16 straight under the question. No bottom spacing: the last block's own margin and the actions'
+    // 24px collapse into one gap. A host that draws the answer elsewhere (the answer panel) passes its own padding.
+    const spacing: React.CSSProperties = opts?.padding
+      ? { padding: opts.padding }
+      : { marginTop: wideRow ? 'var(--space-4)' : 'var(--space-5)' };
     const answerContent = (
       <AnswerContent
         content={answerShown}
@@ -1161,10 +1195,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           );
         }
         return (
-          <Box style={spacing}>
-            {/* Confidence only with a finished answer, never on a question */}
-            {!isStreaming && confidence && !endedOnQuestion && !ext.hideConfidence && <ConfidenceIndicator confidence={confidence} />}
-
+          <Box style={spacing} className={opts?.leadTight ? 'answer-lead-tight' : undefined}>
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
                 While streaming, the live status ("Thinking...", "Using
@@ -1300,12 +1331,17 @@ export const ChatResponse = React.memo(function ChatResponse({
               <Box
                 data-testid="chat-answer"
                 style={{
-                  marginTop:
-                    persistedAskUserQuestion || askQuestionMatchesRow
+                  // 24px above the badge, as a margin that merges with the one above it; 16px under a question card.
+                  marginTop: confidenceBadge && !levelPlaceCloses
+                    ? 'var(--answer-lead-gap, var(--space-5))'
+                    : persistedAskUserQuestion || askQuestionMatchesRow
                       ? 'var(--space-4)'
                       : 0,
+                  // The badge's place closing eases this to the answer's own spacing, with the fold.
+                  transition: keptLevelPlace ? 'margin-top calc(var(--motion-page) * 0.9375) var(--motion-ease)' : undefined,
                 }}
               >
+                {confidenceBadge}
                 {ext.ownSelectionBar ? (
                   answerContent
                 ) : (
@@ -1733,7 +1769,8 @@ export const ChatResponse = React.memo(function ChatResponse({
             {renderTabContent()}
           </div>
         ) : (
-          renderTabContent()
+          // With no tabs over it, on a wide row the answer starts 16px under the question (`.answer-lead-tight`).
+          renderTabContent(wideRow && !ext.beforeTabs ? { leadTight: true } : undefined)
         )
       )}
 

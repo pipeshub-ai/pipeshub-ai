@@ -1922,7 +1922,7 @@ export function CollapsibleActivitySection({
   }, [collapsed]);
 
   return (
-    <Box ref={rootRef} style={{ marginBottom: 'var(--space-3)' }}>
+    <Box ref={rootRef} data-testid="chat-activity-card" style={{ marginBottom: 'var(--space-3)' }}>
       <Flex
         align="center"
         gap="2"
