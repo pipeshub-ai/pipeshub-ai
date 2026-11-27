@@ -99,7 +99,6 @@ VIEWER_GRANTS = """/* pipeshub:kg.viewer_grants */ SELECT m.app_sk, array_agg(DI
       AND m.app_sk = ANY($3::bigint[]) AND (c.via <> 'org' OR m.gtype = ANY($4::text[])) AND (c.app_sk = 0 OR m.app_sk = c.app_sk) OFFSET 0) m
     GROUP BY m.app_sk"""
 APP_KEYS = "/* pipeshub:kg.app_keys */ SELECT sk, id FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = ANY($2::text[])"
-PRINCIPALS_DONE = "/* pipeshub:kg.principals_done */ SELECT backfill_cursor = 'done' FROM kg.projection_state WHERE org_id = $1 AND app_sk = 0"
 
 
 @dataclass(frozen=True)
@@ -513,8 +512,8 @@ class KhListingMixin(PgBase):
 
     async def _kh_kg_grants(self, tx: Tx, org: str, app_id: str, user_key: str, gated_app_ids: list[str]) -> KhGrants | None:
         """The viewer's grants as kg keys (:data:`VIEWER_GRANTS`), in the page's snapshot, and the gate the access check reads the rest by (``_check_gate``). None, for the read
-        by id, unless kg holds every connector the viewer is gated into current (``drainer.current_apps``: nothing waiting that can change it, its own or the organisation's), the
-        principals' copy is finished (the closure is part of every grant) and this process distrusts none of them."""
+        by id, unless kg serves every connector the viewer is gated into (``kg.read.serves``: current, enforced, verified by this code, the principals' copy finished, not
+        distrusted by this process), as every reader that answers from kg asks."""
         got = await self._kh_kg_gate(tx, org, user_key, gated_app_ids)
         if got is None:
             return None
@@ -534,9 +533,8 @@ class KhListingMixin(PgBase):
             return gate, []
         # the gate of this snapshot, within the caller's: a connector the caller was gated into and this snapshot is not has no grant, as the read by id buckets them
         apps = [a for a in gated_app_ids if a in set(gate["gated_app_ids"])]
-        if apps and set(apps) - await drainer.current_apps(tx, org, apps):
-            return None
-        if apps and not await tx.fetchval(PRINCIPALS_DONE, org):
+        # the gate every reader answering from kg asks (``kg.read.serves``): a connector in shadow, verified by other code or not verified has keys kg does not vouch for
+        if apps and set(apps) - await drainer.serving_apps(tx, org, apps):
             return None
         for a in apps if net.DISTRUSTED else ():
             if await net.distrusted(tx, org, a):

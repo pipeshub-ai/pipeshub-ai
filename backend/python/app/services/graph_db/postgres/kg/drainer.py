@@ -178,11 +178,17 @@ async def serves(tx: Tx, org: str, app_id: str) -> bool:
     """May a reader answer from kg for this connector? The stricter question, for the readers: :func:`is_current`, and the connector is in ``enforce`` (``shadow`` only compares), it was
     verified by this code (``code_epoch`` is the code's, ``verified_at`` is set), and the org's principals are copied (their pseudo-connector, ``app_sk`` 0, has finished its copy:
     the closure of every user is part of every answer). Anything else is the walk."""
-    if not await is_current(tx, org, app_id):
-        return False
-    row = await tx.fetchrow("""/* pipeshub:kg.serves */ SELECT s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
-        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
-    return bool(row and row["mode"] == "enforce" and row["code_epoch"] == CODE_EPOCH and row["verified_at"] is not None and row["principals"] == "done")
+    return app_id in await serving_apps(tx, org, [app_id])
+
+
+async def serving_apps(tx: Tx, org: str, app_ids: list[str]) -> set[str]:
+    """Of ``app_ids``, the connectors :func:`serves` holds, read once for all of them (:func:`current_apps`, then their states in one statement)."""
+    current = await current_apps(tx, org, app_ids)
+    if not current:
+        return set()
+    rows = await tx.fetch("""/* pipeshub:kg.serves */ SELECT k.id, s.mode, s.code_epoch, s.verified_at, (SELECT p.backfill_cursor FROM kg.projection_state p WHERE p.org_id = s.org_id AND p.app_sk = 0) AS principals
+        FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk WHERE s.org_id = $1 AND k.coll = 1 AND k.id = ANY($2::text[])""", org, sorted(current))
+    return {r["id"] for r in rows if r["mode"] == "enforce" and r["code_epoch"] == CODE_EPOCH and r["verified_at"] is not None and r["principals"] == "done"}
 
 
 async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> int:

@@ -25,6 +25,7 @@ from . import test_kh_kg_grants as kgg
 from .pg_support import new_org
 from .test_conformance_kh_pg import CHUNK, KhPgLayer, _bad, _describe, check
 from .test_kg_derivation import ctx
+from .test_kg_read import _admin, _switch
 from .test_kh_listing_flat import prov
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(1800)]
@@ -138,6 +139,36 @@ async def test_a_page_that_finds_kg_behind_reads_by_node_id_and_names_the_same_p
     assert seen(got) == seen(want) | {"L3"}
     k0 = {i: (parent, arrow) for rows, _, _ in got for i, parent, arrow in rows}
     assert k0["k0"] == {i: (parent, arrow) for rows, _, _ in want for i, parent, arrow in rows}["k0"] == ("F", False), k0
+
+
+# a connector kg holds current but does not serve (``kg.read.serves``): its keys are not vouched for, so every page reads the grants by node id
+NOT_SERVED = {
+    "shadow": "UPDATE kg.projection_state s SET mode = 'shadow' FROM kg.node_keys k WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND s.org_id = $1 AND k.coll = 1 AND k.id = 'app2'",
+    "stale_code_epoch": "UPDATE kg.projection_state s SET code_epoch = s.code_epoch - 1 FROM kg.node_keys k WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND s.org_id = $1 AND k.coll = 1 AND k.id = 'app2'",
+    "not_verified": "UPDATE kg.projection_state s SET verified_at = NULL FROM kg.node_keys k WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND s.org_id = $1 AND k.coll = 1 AND k.id = 'app2'",
+}
+
+
+@pytest.mark.parametrize("state", list(NOT_SERVED))
+async def test_a_gated_connector_kg_does_not_serve_reads_every_grant_by_node_id_and_lists_what_the_walk_lists(pg_db, reads, state) -> None:
+    p, org = prov(pg_db), new_org()
+    await kgg.world(p, pg_db, org, [kgg._perm("u1", "users", "F"), kgg._perm("grp1", "groups", "L1", "records", "GROUP"), kgg._perm("u1", "users", "A1"),
+                                    kgg._perm("sg", "groups", "L5", "records", "GROUP")])
+    await _admin(NOT_SERVED[state], org)
+    reads.clear()
+    got = await all_records(p, org, "u1")
+    assert reads and not any(reads), reads
+    assert got == await as_before(p, all_records(p, org, "u1"))
+    assert {"F", "k0", "k1", "L1", "L5"} <= seen(got), got
+    if state == "stale_code_epoch":      # kg's copy is of other code: the listing leaves the connector out, and a browse of it says it is being prepared, by any grant read
+        assert "A1" not in seen(got)
+        return
+    reads.clear()
+    browse = await kgg.pages(p, org, "u1")
+    assert reads and not any(reads), reads
+    with _switch("0"):
+        walk, browse_walk = await all_records(p, org, "u1"), await kgg.pages(p, org, "u1")
+    assert (got, browse) == (walk, browse_walk) and "A1" in seen(got)
 
 
 async def test_all_records_grant_blocks_grow_by_a_fraction_of_a_block_per_grant(pg_db, monkeypatch) -> None:
