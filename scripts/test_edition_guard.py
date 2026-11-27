@@ -142,6 +142,8 @@ class OpenEditionRoots(unittest.TestCase):
             ("backend/python/app/connectors/sources/box/connector.py",
              "from app.ee.permission_sync.box import BoxPermissionsMixin"),
             ("backend/python/app/x.py", "import app.ee.permission_sync"),
+            ("backend/python/app/x.py", "from app.ee import permission_sync"),
+            ("backend/python/app/x.py", "from app import models"),
             ("backend/python/app/x.py", "module = importlib.import_module(" + '"app.ee.permission_sync")'),
             ("backend/python/app/x.py", "import app.ee.permission_sync.box, app.ee.permission_sync.zoom"),
             ("backend/nodejs/apps/src/modules/x/y.ts", "import { X } from '../../ee/modules/license/license-state';"),
@@ -164,7 +166,8 @@ class OpenEditionRoots(unittest.TestCase):
     def test_imports_beside_an_open_root_still_fail(self) -> None:
         for path, line in (
             ("backend/python/app/x.py", "from app.ee.harness import edition"),
-            ("backend/python/app/x.py", "from app.ee import permission_sync"),
+            ("backend/python/app/x.py", "from app.ee import permission_sync, harness"),
+            ("backend/python/app/x.py", "from app.ee import *"),
             ("backend/python/app/x.py", "from app.ee.permission_syncer import x"),
             ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/billing/x';"),
             ("frontend/config.ts", "import { Y } from '@/ee/lib/license';"),
@@ -211,9 +214,17 @@ class PythonImportsAreParsed(unittest.TestCase):
             (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", \"app.ee.permission_sync\")")),
             ("backend/python/app/x.py", ("from .ee.permission_sync.box import X; from .ee.harness import edition",)),
             ("backend/python/app/x.py", ("from app.ee.permission_sync.box import (", "    X,", ")", "import app.ee.harness")),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", __package__)")),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", package=\"app.ee.permission_sync\")")),
+            # A relative name against a package the guard cannot read is read as closed.
+            ("backend/python/app/x.py", ("import importlib", "m = importlib.import_module(\".models\", pkg)")),
         ):
             with self.subTest(lines=lines):
                 self.assertEqual(len(self._errors(path, *lines)), 1, lines)
+
+    def test_a_relative_import_module_against_this_package_passes_in_shared_code(self) -> None:
+        lines = ("import importlib", "m = importlib.import_module(\".models\", __package__)")
+        self.assertEqual(self._errors("backend/python/app/x.py", *lines), [])
 
     def test_a_parenthesised_import_of_shared_modules_passes(self) -> None:
         for path in ("backend/python/app/x.py", "backend/python/app/connectors/sources/box/connector.py",
@@ -226,6 +237,9 @@ class PythonImportsAreParsed(unittest.TestCase):
             ("from .box_access import (", "    read_grants,", ")"),
             ("from ...models.entities \\", "    import Record"),
             ("import importlib", "m = importlib.import_module(\".zoom\", \"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", package=\"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(name=\".zoom\", package=\"app.ee.permission_sync\")"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", __package__)"),
         ):
             with self.subTest(lines=lines):
                 self.assertEqual(self._errors(self.BRIDGE, *lines), [])

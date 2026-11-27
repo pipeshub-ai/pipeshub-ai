@@ -100,34 +100,54 @@ def _python_package_path(path: str, level: int) -> str:
     return base
 
 
+def _from_targets(module_path: str, names: Sequence[str]) -> list[str]:
+    """A ``from`` import loads its module, and each name may be a submodule of it (``from app import ee``). A closed
+    module is judged by its names alone, so ``from app.ee import permission_sync`` passes and ``harness`` does not."""
+    named = [posixpath.join(module_path, name) for name in names]
+    return named if _closed_ee_target(module_path) else [module_path, *named]
+
+
+def _import_module_targets(path: str, node: ast.Call) -> list[str]:
+    """What an ``import_module(name, package)`` call loads, its arguments bound by position or keyword. A relative
+    name resolves against a literal package, or ``__package__`` (this file's package); against anything else it is
+    unknown, and read as closed."""
+    bound: dict[str, ast.expr | None] = {
+        "name": node.args[0] if node.args else None,
+        "package": node.args[1] if len(node.args) > 1 else None,
+    }
+    for keyword in node.keywords:
+        if keyword.arg in bound:
+            bound[keyword.arg] = keyword.value
+    name, package = bound["name"], bound["package"]
+    if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+        return []
+    module = name.value
+    if not module.startswith("."):
+        return [_python_module_path(module)]
+    dots = len(module) - len(module.lstrip("."))
+    rest = [part for part in module[dots:].split(".") if part]
+    if isinstance(package, ast.Name) and package.id == "__package__":
+        return [posixpath.join(_python_package_path(path, dots), *rest)]
+    if isinstance(package, ast.Constant) and isinstance(package.value, str) and package.value:
+        parts = package.value.split(".")
+        return [_python_module_path(".".join([*parts[: len(parts) - (dots - 1)], *rest]))]
+    return [posixpath.join(PYTHON_ROOT, "app", "ee")]
+
+
 def _python_import_targets(path: str, node: ast.AST) -> list[str]:
-    """The repository paths one import statement (or ``import_module`` call with literal names) loads. An absolute
-    ``from`` is judged by its module; a relative one with no module, by its package and each name, since a name may
-    be a module (``from ... import ee``)."""
+    """The repository paths one import statement, or ``import_module`` call, loads."""
     if isinstance(node, ast.Import):
         return [_python_module_path(alias.name) for alias in node.names]
     if isinstance(node, ast.ImportFrom):
+        names = [alias.name for alias in node.names]
         if not node.level:
-            return [_python_module_path(node.module or "")]
+            return _from_targets(_python_module_path(node.module or ""), names)
         base = _python_package_path(path, node.level)
-        if node.module:
-            return [posixpath.join(base, *node.module.split("."))]
-        return [base, *(posixpath.join(base, alias.name) for alias in node.names)]
+        return _from_targets(posixpath.join(base, *node.module.split(".")) if node.module else base, names)
     if isinstance(node, ast.Call):
         func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
-        literal = [a.value for a in node.args[:2] if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-        if name != "import_module" or not literal:
-            return []
-        module = literal[0]
-        if not module.startswith("."):
-            return [_python_module_path(module)]
-        dots = len(module) - len(module.lstrip("."))
-        package = literal[1] if len(literal) > 1 else ""
-        if not package:
-            return [posixpath.join(PYTHON_ROOT, "app", "ee")]  # a relative name whose package is not written: unknown
-        parts = package.split(".")[: len(package.split(".")) - (dots - 1)]
-        return [_python_module_path(".".join([*parts, *filter(None, module[dots:].split("."))]))]
+        called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+        return _import_module_targets(path, node) if called == "import_module" else []
     return []
 
 
