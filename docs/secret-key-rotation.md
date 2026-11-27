@@ -50,6 +50,14 @@ Every value in the key-value store (Redis, etcd or Postgres) that is either encr
 
 ## If it goes wrong
 
-Stop all services, restore the backup, and start them with the old `SECRET_KEY`.
+Stop all services, restore the backup, and start them with the old `SECRET_KEY`. You need the time the services first started on the new key (step 4) to find what was written under it, so record it when you do step 4.
+
+The backup covers the key-value store only. Records the tool never rotated (listed in "Not rotated by the tool") read again once the old key is back, except those written while the services ran on the new key, including every secret you regenerated and every sync point re-synced in the follow-up after the switch. Those stay on the new key and do not decrypt after the rollback:
+
+- **Settings changed in the key-value store after the switch** are lost with the restore. Enter them again in the product.
+- **OAuth app client secrets** (field `clientSecretEncrypted` in the `oauthApps` collection of the document store) of every app created, or whose secret was regenerated, after the switch: find them by `createdAt` or `updatedAt` later than the switch. Regenerate each one's secret and give the new secret to the app's owner. The built-in "Personal Access Tokens", "Service Tokens" and "PipesHub agent" apps never use their stored secret; they need nothing.
+- **Connector sync points** whose sealed fields (`<field>_encrypted`, for example Outlook delta links) a connector wrote after the switch. The connector logs "Failed to decrypt" and loses its incremental position. Trigger a full re-sync of each such connector.
+
+Backing up the document store and the graph database before the switch does not avoid this: what breaks was written after the switch, so restoring an older copy loses it too.
 
 Secrets are read from the environment only, so they do not appear in the process list. Clear them from your shell history and environment afterward.

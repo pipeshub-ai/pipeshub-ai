@@ -247,6 +247,15 @@ describe('rotateEncryptedValues', () => {
     expect(after).to.equal(raw.replace(enc, rotated));
   });
 
+  it('leaves a plain string that only ends in ciphertext after an escaped quote', async () => {
+    const enc = cipher(OLD).encrypt('SK');
+    const raw = JSON.stringify({ note: `"${enc}` }); // {"note":"\"<enc>"}
+    await store.createKey('/services/note', raw);
+    const r = await rotateEncryptedValues(store, OLD, NEW, { dryRun: false });
+    expect(r.rotated).to.equal(2);
+    expect(await store.getKey('/services/note')).to.equal(raw);
+  });
+
   it('with skipUnreadable, rotates the rest and leaves every failed value exactly as it is', async () => {
     const lookalike = cipher('third-unrelated-key').encrypt('x');
     const mixed = JSON.stringify({ a: cipher(OLD).encrypt('A'), b: lookalike });

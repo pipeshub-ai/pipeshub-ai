@@ -36,10 +36,10 @@ export interface RotationResult {
 
 // iv(12 bytes):ciphertext:authTag(16 bytes), all hex, as written by EncryptionService.
 const ENCRYPTED_FORMAT = /^[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}$/i;
-// The same value as a JSON string literal. The format has no character JSON escapes, so the
-// literal is the value in quotes, and a JSON value can be rewritten in place without parsing it
-// (a parse and re-serialise would change numbers past 2^53 and other formatting).
-const QUOTED_ENCRYPTED = /"([0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32})"/gi;
+// Every JSON string literal, escapes included, scanned left to right so a match never starts at an
+// escaped quote. Each one is decoded and rewritten in place only when the whole string is in the
+// encrypted format (a parse and re-serialise of the value would change numbers past 2^53 and other formatting).
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/g;
 
 // The app's own keys for one secret: it reads what either SECRET_KEY_KDF sealed and writes under the configured one.
 // Built directly because EncryptionService.getInstance is a singleton and cannot hold two secrets.
@@ -101,10 +101,17 @@ function rotateText(
 ): string {
   if (ENCRYPTED_FORMAT.test(text)) return rotateOne(text, oldC, newC, t);
   if (!/^\s*[[{]/.test(text)) return text;
-  return text.replace(
-    QUOTED_ENCRYPTED,
-    (_m, v: string) => `"${rotateOne(v, oldC, newC, t)}"`,
-  );
+  return text.replace(JSON_STRING, (token) => {
+    let v: unknown;
+    try {
+      v = JSON.parse(token);
+    } catch {
+      return token;
+    }
+    return typeof v === 'string' && ENCRYPTED_FORMAT.test(v)
+      ? `"${rotateOne(v, oldC, newC, t)}"`
+      : token;
+  });
 }
 
 /**
