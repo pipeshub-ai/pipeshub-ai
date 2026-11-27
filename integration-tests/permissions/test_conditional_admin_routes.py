@@ -30,6 +30,7 @@ from helper.admin_route_conditional_table import (
     CONDITIONAL_ROUTES,
     GATEWAY,
     HARNESS_OFF,
+    HARNESS_OFF_FOR_ORG,
     MEMBER,
     Case,
     ConditionalRoute,
@@ -88,9 +89,10 @@ def world(
 
 @pytest.fixture(scope="module")
 def harness_on(world: World) -> bool:
-    """Whether this stack serves the agent harness: off, its namespace answers one 404 before any route."""
+    """Whether the test org has the agent harness: off for the install or for the org, its namespace
+    answers one 404 before any route."""
     reply = send("GET", f"{world.url(GATEWAY)}/api/v1/agent-harness/admin/dependencies", world.token(ADMIN))
-    return not (reply.status == 404 and HARNESS_OFF in reply.text)
+    return not (reply.status == 404 and (HARNESS_OFF in reply.text or HARNESS_OFF_FOR_ORG in reply.text))
 
 
 @pytest.fixture
