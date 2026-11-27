@@ -62,10 +62,10 @@ def _graph(kind: str) -> tuple[list, list]:
         app(APP, "Drive", connector=DRIVE, app_group="G"),
     ]
     edges = [user_app("u", APP), authenticated_as("u", "src", APP)]
-    # two external collaborators of the App, each kept there only by what its one membership grants (the reaper's question)
-    for h in ("own-live", "own-gone"):
+    # external collaborators of the App, each kept there only by what its one membership grants (the reaper's question), and one by a grant of its own
+    for h in ("own-live", "own-gone", "direct"):
         nodes.append(_node("User", f"ext-{h}", email=f"ext-{h}@example.com", fullName=f"Ext {h}"))
-        edges += [perm(f"ext-{h}", h, role="READER"),
+        edges += [perm(f"ext-{h}", h, role="READER") if h != "direct" else perm(f"ext-{h}", "r-own-live", role="READER"),
                   {"type": "USER_APP_RELATION", "from": f"ext-{h}", "to": APP, "props": {"syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}}]
     extra = {"Role": {"externalRoleId": "ext", "connectorName": DRIVE, "connectorId": APP, "createdAtTimestamp": TS}}
     for h in HOLDERS:
@@ -231,4 +231,45 @@ async def test_the_collaborator_reaper_keeps_only_whom_an_existing_group_still_g
         rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
     else:
         rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
-    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live"}
+    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct"}
+
+
+async def test_the_reaper_keeps_a_collaborator_granted_while_it_runs(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ext-own-gone is held by nothing when the reaper starts. A direct grant to it commits just before the statement that removes the
+    reaper's edges runs: the removal decides on the grant as it is then, so the collaborator stays."""
+    w, g = world, world.graph
+    ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
+    if hasattr(g, "client"):
+        real, name = g.client.execute_query, "client"
+
+        async def grant() -> None:
+            await real("MATCH (u:User {id: $u}), (r:Record {id: $r}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER', createdAtTimestamp: $ts}]->(r)",
+                       parameters={"u": ext, "r": rec_id, "ts": TS})
+
+        def removes(query: str, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
+            return "isExternalUser" in query and "DELETE" in query
+    else:
+        real, name = g.http_client.execute_aql, "http_client"
+
+        async def grant() -> None:
+            await real("INSERT {_from: @u, _to: @r, type: 'USER', role: 'READER', createdAtTimestamp: @ts} IN permission",
+                       {"u": f"users/{ext}", "r": f"records/{rec_id}", "ts": TS})
+
+        def removes(query: str, *a: Any, **k: Any) -> bool:  # noqa: ANN401
+            bind = (a[0] if a else k.get("bind_vars")) or {}
+            return "REMOVE" in query and ("userAppRelation" in query or bind.get("@collection") == "userAppRelation")
+    fired: list[bool] = []
+
+    async def hooked(query: str, *a: Any, **k: Any) -> Any:  # noqa: ANN401
+        if not fired and removes(query, *a, **k):
+            fired.append(True)
+            await grant()
+        return await real(query, *a, **k)
+    monkeypatch.setattr(getattr(g, name), "execute_query" if name == "client" else "execute_aql", hooked)
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    monkeypatch.undo()
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
+    assert fired and {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}

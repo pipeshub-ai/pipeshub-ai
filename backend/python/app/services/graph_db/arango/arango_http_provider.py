@@ -9841,30 +9841,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_id = f"{CollectionNames.APPS.value}/{connector_id}"
             grant_exists = self._external_grant_exists_aql("uar._from", "@connector_id")
 
-            # Collect first, then delete: the predicate reads `permission`, which the
-            # delete does not touch, but the principal list is needed afterwards to find
-            # the people this pass stranded.
+            # The grant is checked by the statement that removes the edge: a grant written between a separate read and the removal would
+            # otherwise lose its holder the App. The removed edges' principals are what the person cleanup below needs.
             stale_rows = await self.http_client.execute_aql(
                 f"""
                 FOR uar IN {CollectionNames.USER_APP_RELATION.value}
                     FILTER uar._to == @app_id AND uar.isExternalUser == true
                     FILTER NOT {grant_exists}
-                    RETURN {{ edge: uar._key, principal: uar._from }}
+                    REMOVE uar IN {CollectionNames.USER_APP_RELATION.value}
+                    RETURN {{ principal: OLD._from }}
                 """,
                 bind_vars={"app_id": app_id, "connector_id": connector_id},
                 txn_id=transaction,
             )
             if not stale_rows:
                 return 0
-
-            await self.http_client.execute_aql(
-                "FOR k IN @keys REMOVE k IN @@collection",
-                bind_vars={
-                    "keys": [r["edge"] for r in stale_rows],
-                    "@collection": CollectionNames.USER_APP_RELATION.value,
-                },
-                txn_id=transaction,
-            )
 
             # Only people this pass stranded, never a global sweep: a Person created
             # moments ago may not have its first edge committed yet.
@@ -24798,6 +24789,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR team_grant IN @@permission
                         FILTER team_grant._to == kb._id
                         FILTER team_grant.type == "TEAM"
+                        FILTER DOCUMENT(team_grant._from) != null
                         // Check if user is a member of this team
                         FOR team_member IN @@permission
                             FILTER team_member._from == userDoc._id
