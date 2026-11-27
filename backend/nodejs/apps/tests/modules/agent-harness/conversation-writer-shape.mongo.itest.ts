@@ -8,6 +8,10 @@
  * What a failure's error message carries about its run (code, servers, stop,
  * outcome) is one mapping both writers call, `runFailureFields`: the test
  * compares how each writer stores it, not two copies of the mapping.
+ *
+ * The history a model is sent seals each row with its id and the version of
+ * its text, so two writes of one conversation never share a ledger digest:
+ * each writer's ledger must be the one its own stored rows give instead.
  */
 import 'reflect-metadata';
 import { expect } from 'chai';
@@ -28,8 +32,8 @@ import {
   markConversationFailed,
   saveCompleteConversation,
 } from '../../../src/modules/enterprise_search/utils/utils';
-import { historyTurns } from '../../../src/modules/enterprise_search/utils/utils';
-import { extendLedger, HistoryLedger } from '../../../src/modules/agent-harness/domain/session-import';
+import { sealedHistoryTurns } from '../../../src/modules/enterprise_search/utils/utils';
+import { EMPTY_LEDGER, extendLedger, HistoryLedger } from '../../../src/modules/agent-harness/domain/session-import';
 import { inMongoTransaction } from '../../../src/libs/repositories/agent-harness/durable-transaction/mongo';
 import { HarnessRun } from '../../../src/modules/agent-harness/domain/execution';
 import { RunTranscript, UserTurn } from '../../../src/modules/agent-harness/ports/conversation-writer';
@@ -74,7 +78,7 @@ class LegacyWriter {
         plain,
         written.map((message) => ({
           seq: message.seq,
-          turns: JSON.parse(JSON.stringify(historyTurns(message))) as Array<Record<string, unknown>>,
+          turns: JSON.parse(JSON.stringify(sealedHistoryTurns(message))) as Array<Record<string, unknown>>,
           provenance: null,
         })),
         lastSeq,
@@ -171,19 +175,42 @@ const answer = (text: string, extra: Record<string, unknown> = {}): RunTranscrip
   label: { complete: true, sources: [{ kind: 'attachment', recordId: 'r-9' }] } as never,
 });
 
-/** What a stored document says less what two writes of it never share (ids, clocks). */
-const comparable = (value: unknown): unknown => {
+/**
+ * What a stored document says less what two writes of it never share (ids, clocks): a row's text version
+ * (`labelVer`) is minted at its write, so it is compared as there; the ledger's digest, which covers the rows' ids and
+ * versions, is checked against each session's own rows (`ownLedger`).
+ */
+const comparable = (value: unknown, key?: string): unknown => {
   if (value instanceof Types.ObjectId) return 'id';
   if (value instanceof Date) return 'date';
-  if (Array.isArray(value)) return value.map(comparable);
+  if (key === 'labelVer' && typeof value === 'string' && Types.ObjectId.isValid(value)) return 'version';
+  if (key === 'harnessLedger' && value !== null && typeof value === 'object') {
+    return comparable({ ...value, digest: 'digest' });
+  }
+  if (Array.isArray(value)) return value.map((inner) => comparable(inner));
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
-        .filter(([key]) => !['_id', 'lastActivityAt', 'timestamp', 'createdAt', 'updatedAt'].includes(key))
-        .map(([key, inner]) => [key, comparable(inner)]),
+        .filter(([field]) => !['_id', 'lastActivityAt', 'timestamp', 'createdAt', 'updatedAt'].includes(field))
+        .map(([field, inner]) => [field, comparable(inner, field)]),
     );
   }
   return value;
+};
+
+/** The ledger the session's stored rows give, read as the next import reads them (the history legacy sends). */
+const ownLedger = async (sessionId: string, seq: number): Promise<HistoryLedger> => {
+  const rows = (await ChatSessionMessage.find({ sessionId }).sort({ seq: 1 }).lean()) as unknown as Array<
+    IMessage & { seq: number }
+  >;
+  return extendLedger(
+    EMPTY_LEDGER,
+    rows.map((message) => ({
+      seq: message.seq,
+      turns: JSON.parse(JSON.stringify(sealedHistoryTurns(message))) as Array<Record<string, unknown>>,
+    })),
+    seq,
+  );
 };
 
 const storedState = async (sessionId: string) => {
@@ -194,6 +221,9 @@ const storedState = async (sessionId: string) => {
   })
     .sort({ content: 1 })
     .lean();
+  const ledger = (session as { harnessLedger?: HistoryLedger } | null)?.harnessLedger;
+  expect(ledger, 'the session keeps its ledger').to.not.equal(undefined);
+  expect(ledger, 'the ledger accounts for the stored rows').to.deep.equal(await ownLedger(sessionId, ledger!.seq));
   return comparable({ session, messages, citations });
 };
 

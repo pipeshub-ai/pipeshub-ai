@@ -9,8 +9,10 @@ import { join, relative, sep } from 'path'
  * what changed after a `rev` misses it for good. The row writer (`appendMessages`,
  * `updateMessageById`, `setMessageFields`, `retireMessagesById`) does that, and so do the
  * conversation repository's answer-share writes, which the row writer cannot host (it imports
- * the repository); a direct model write elsewhere would not. This walks the source, because
- * such a write reads as harmless where it is made.
+ * the repository), and the durable path's accounted append (`appendAccounted`), which stamps a
+ * turn's rows and moves `rev` in the session write its ledger rides on; a direct model write
+ * elsewhere would not. This walks the source, because such a write reads as harmless where it is
+ * made.
  *
  * A write that must not be stamped says so on the line above it, with a reason:
  * `// row-writer-exempt: <why>`.
@@ -20,7 +22,11 @@ import { join, relative, sep } from 'path'
 
 const SRC = join(__dirname, '..', '..', '..', '..', 'src')
 const ROW_WRITER = join('modules', 'enterprise_search', 'utils', 'utils.ts')
-const ROW_WRITERS = [ROW_WRITER, join('libs', 'repositories', 'conversation', 'answer-shares', 'mongo.ts')]
+const ROW_WRITERS = [
+  ROW_WRITER,
+  join('libs', 'repositories', 'conversation', 'answer-shares', 'mongo.ts'),
+  join('libs', 'repositories', 'agent-harness', 'history-source', 'mongo.ts'),
+]
 
 const WRITE =
   /\bChatSessionMessage\s*\.\s*(?:collection\b|insertMany|insertOne|create|updateOne|updateMany|replaceOne|findOneAndUpdate|findByIdAndUpdate|findOneAndReplace|findOneAndDelete|findByIdAndDelete|deleteOne|deleteMany|bulkWrite)\b|\bnew\s+ChatSessionMessage\s*\(|collection\(\s*['"`]chatSessionMessages['"`]\s*\)/g

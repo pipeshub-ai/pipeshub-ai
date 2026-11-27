@@ -68,6 +68,28 @@ describe('HarnessHistorySource', () => {
     expect(history.messages[0]!.provenance).to.deep.equal({ complete: true, sources: [] });
   });
 
+  it('seals each entry with its row and the version of its text, as the legacy stream sends history', async () => {
+    stubLedgerRow({ nextSeq: 3, rev: 5 });
+    const question = '507f1f77bcf86cd799439021';
+    const answer = '507f1f77bcf86cd799439022';
+    stubMessages([
+      { _id: question, seq: 1, messageType: 'user_query', content: 'hi' },
+      { _id: answer, seq: 2, messageType: 'bot_response', content: 'hello', labelVer: '507f1f77bcf86cd799439031' },
+      // An answer the model is given nothing of names no row.
+      { _id: '507f1f77bcf86cd799439023', seq: 3, messageType: 'bot_response', content: '' },
+    ]);
+
+    const history = await new HarnessHistorySource().read(REF as never, {} as never);
+
+    expect(history.messages.map((message) => message.turns)).to.deep.equal([
+      [{ content: 'hi', role: 'user_query', _ref: question, _ver: 'legacy', _pub: false }],
+      [{ content: 'hello', role: 'bot_response', _ref: answer, _ver: '507f1f77bcf86cd799439031', _pub: false }],
+      [{ content: '', role: 'bot_response' }],
+    ]);
+    // The session's change counter is the writer's to stamp with; the history does not carry it.
+    expect(history).to.not.have.property('rev');
+  });
+
   it('keeps the diverged mark and reads an unledgered session as such', async () => {
     stubLedgerRow({ harnessLedger: { seq: 3, digest: 'd', diverged: true } });
     stubMessages([]);

@@ -29,7 +29,7 @@ import {
   markConversationFailed,
   saveCompleteConversation,
 } from '../../../src/modules/enterprise_search/utils/utils';
-import { historyTurns } from '../../../src/modules/enterprise_search/utils/utils';
+import { sealedHistoryTurns } from '../../../src/modules/enterprise_search/utils/utils';
 import {
   EMPTY_LEDGER,
   extendLedger,
@@ -104,7 +104,7 @@ class LegacyWriter {
         ledger,
         written.map((message) => ({
           seq: message.seq,
-          turns: JSON.parse(JSON.stringify(historyTurns(message))) as Array<
+          turns: JSON.parse(JSON.stringify(sealedHistoryTurns(message))) as Array<
             Record<string, unknown>
           >,
           provenance: null,
@@ -355,7 +355,27 @@ for (const bin of pgBins()) {
         const citations = (
           await transactAs(() => repo().getCitations(citationIds, org), org)
         ).sort((a, b) => a.content.localeCompare(b.content));
-        return comparable({ row, messages, citations });
+        // The history a model is sent seals each row with its id and version, so two writes of one conversation never
+        // share a ledger digest: each must be the one its own stored rows give.
+        const ledger = row?.harnessLedger;
+        expect(ledger, 'the session keeps its ledger').to.not.equal(undefined);
+        expect(ledger, 'the ledger accounts for the stored rows').to.deep.equal(
+          extendLedger(
+            { ...EMPTY_LEDGER },
+            messages.map((m) => ({
+              seq: m.seq,
+              turns: JSON.parse(
+                JSON.stringify(sealedHistoryTurns(m as unknown as IMessage)),
+              ) as Array<Record<string, unknown>>,
+            })),
+            ledger!.seq,
+          ),
+        );
+        return comparable({
+          row: { ...row, harnessLedger: { ...ledger, digest: 'digest' } },
+          messages,
+          citations,
+        });
       };
 
       /** Each step in a unit of its own, as admission and the ending commit run them. */

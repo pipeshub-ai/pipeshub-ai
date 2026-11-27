@@ -299,10 +299,11 @@ export class MongoRunAdmissionStore
         let previousConversations: Array<Record<string, unknown>> = [];
         let imported: ImportPlan | null = null;
         let binding: SessionBinding | null = null;
-        // The session's counter and ledger as this transaction leaves them: the turn's write needs no read of it.
+        // The session's counters and ledger as this transaction leaves them: the turn's write needs no read of it.
         let accounted: AccountedConversation = {
           lastSeq: 0,
           ledger: EMPTY_LEDGER,
+          rev: 0,
         };
         const sessionScope = {
           orgId: command.orgId,
@@ -481,7 +482,11 @@ export class MongoRunAdmissionStore
             const planned = planSessionImport(history, sessionCounter !== null);
             imported = planned.plan;
             // Saved with the user's turn, in its one write of the session.
-            accounted = { lastSeq: history.lastSeq, ledger: planned.ledger };
+            accounted = {
+              ...accounted,
+              lastSeq: history.lastSeq,
+              ledger: planned.ledger,
+            };
           }
         }
 

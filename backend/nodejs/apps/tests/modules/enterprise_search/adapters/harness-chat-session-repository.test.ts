@@ -43,6 +43,7 @@ describe('HarnessChatSessionRepository', () => {
       sharedWith: [{ userId: 'u2', accessLevel: 'read' }],
       nextSeq: 4,
       harnessLedger: { seq: 4, digest: 'd4', _id: 'junk' },
+      rev: 9,
     });
     const select = sinon.stub().returns({ lean });
     const update = sinon
@@ -66,7 +67,7 @@ describe('HarnessChatSessionRepository', () => {
       ownerId: scope.actorId,
       shared: true,
       // PERF-E3: what the turn's write needs, so it does not read the session again.
-      accounted: { lastSeq: 4, ledger: { seq: 4, digest: 'd4' } },
+      accounted: { lastSeq: 4, ledger: { seq: 4, digest: 'd4' }, rev: 9 },
     });
 
     const [filter, mutation, options] = update.firstCall.args;
@@ -91,7 +92,7 @@ describe('HarnessChatSessionRepository', () => {
     });
     expect(options).to.deep.equal({ returnDocument: 'after', session: tx });
     expect(
-      select.calledWith('+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith'),
+      select.calledWith('+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith rev'),
     ).to.equal(true);
   });
 
@@ -117,7 +118,7 @@ describe('HarnessChatSessionRepository', () => {
         tx as never,
         'collaborator',
       ),
-    ).to.deep.equal({ ownerId: 'owner-1', shared: true, accounted: { lastSeq: 0, ledger: null } });
+    ).to.deep.equal({ ownerId: 'owner-1', shared: true, accounted: { lastSeq: 0, ledger: null, rev: 0 } });
     const [filter, , options] = update.firstCall.args;
     expect(filter).to.not.have.property('userId');
     expect(filter).to.include({ isShared: true, isDeleted: false });

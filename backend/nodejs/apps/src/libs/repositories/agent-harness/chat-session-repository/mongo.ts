@@ -163,7 +163,7 @@ export class HarnessChatSessionRepository implements ChatSessionRepository<Tx> {
       { returnDocument: 'after', session: tx },
     )
       .select(
-        '+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith',
+        '+sessionType +harnessVersion +nextSeq +harnessLedger userId isShared sharedWith rev',
       )
       .lean();
     if (bound === null) return null;

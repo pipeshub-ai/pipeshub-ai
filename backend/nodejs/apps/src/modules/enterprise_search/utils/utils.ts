@@ -549,9 +549,9 @@ export const sanitizeMessageForPersistence = (message: IMessage): IMessage =>
 /**
  * A row as it is written: no signed URL in any field, then sealed (sanitised answer text, a fresh `labelVer`, the
  * label bound to both). The label itself is kept whole: the signed-URL walk drops subtrees it cannot finish, and a
- * label is never stored cut.
+ * label is never stored cut. The durable path's writer stores its rows in this form too (`appendAccounted`).
  */
-const storedForm = (message: IMessage): IMessage => {
+export const storedForm = (message: IMessage): IMessage => {
   const { provenance, labelHistory, ...rest } = message;
   return sealAnswerForStorage({
     ...sanitizeMessageForPersistence(rest as IMessage),
@@ -1898,6 +1898,25 @@ const sealOf = (
 };
 
 /**
+ * One message's history entries, each sealed with its row and the version of its text (`sealOf`). Both paths send a
+ * stored row this way: a legacy turn after its reader check (`checkedHistoryTurns`), a durable admission as the row is
+ * stored (`asHistory`), so the two send the AI backend the same history.
+ */
+export const sealedHistoryTurns = (
+  msg: IMessage,
+  askResults: PreviousToolResult[] = [],
+): HistoryTurn[] =>
+  historyTurns(msg, askResults).map((turn) => ({
+    ...turn,
+    // The row and the version of its text: the new answer's label names the earlier answers it was given by them.
+    ...sealOf(
+      msg,
+      (turn.tool_results?.length ?? 0) > 0 ||
+        (turn.referenceData?.length ?? 0) > 0,
+    ),
+  }));
+
+/**
  * Fields added to one history row, or `null` to leave the row out. Lets a caller attribute rows
  * (who asked, which agent answered) without changing the shape of the rest.
  */
@@ -1925,16 +1944,9 @@ const checkedHistoryTurns = (
       },
     ];
   }
-  return historyTurns(msg, turnAskToolResults(messages, index)).map((turn) => ({
-    ...turn,
-    // The row and the version of its text: the new answer's label names the earlier answers it was given by them.
-    ...sealOf(
-      msg,
-      (turn.tool_results?.length ?? 0) > 0 ||
-        (turn.referenceData?.length ?? 0) > 0,
-    ),
-    ...annotations,
-  }));
+  return sealedHistoryTurns(msg, turnAskToolResults(messages, index)).map(
+    (turn) => ({ ...turn, ...annotations }),
+  );
 };
 
 /**
@@ -2992,7 +3004,7 @@ export interface SessionPatch {
 }
 
 /** How many `conversationErrors` a session keeps, newest last. */
-const MAX_CONVERSATION_ERRORS = 50;
+export const MAX_CONVERSATION_ERRORS = 50;
 
 /**
  * The terminal write of a turn: only the fields the turn changed, conditional on the session still
