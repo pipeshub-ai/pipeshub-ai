@@ -123,3 +123,27 @@ async def records_at(g: IGraphDBProvider, org_id: str, connector_id: str, world:
     ids, _ = await _records_for_path(g, org_id, PATH, choose=lambda keys: _choose_records(
         g, org_id, keys, connector_id, file_path=PATH, repo=repo, access=access, ambiguous_ok=True), connector_id=connector_id, repo=repo)
     return sorted(ids)
+
+
+async def early_zero_backfill(g: IGraphDBProvider, logger: Any, monkeypatch: Any, strip: Any) -> None:  # noqa: ANN401
+    """A batch that updates nothing while rows remain (writers filled what it picked) must not end the backfill: the runner asks the store
+    whether any row is left, and marks the org only when none is. ``strip`` takes the fields off an org's rows, as before the scope existed."""
+    import uuid as _uuid
+
+    from app.core.org_context import for_org
+    from app.migrations import code_path_scope_migration as migration
+    org, connector = _uuid.uuid4().hex[:24], f"conn-{_uuid.uuid4().hex[:6]}"
+    with for_org(org, job="code-path-scope-test"):
+        world = await write_world(g, org, connector, 3)
+    await strip(org)
+    real, calls = g.backfill_code_path_scope, {"n": 0}
+
+    async def first_idle(limit: int = 5000) -> int:
+        calls["n"] += 1
+        return 0 if calls["n"] == 1 else await real(limit=limit)
+    monkeypatch.setattr(g, "backfill_code_path_scope", first_idle)
+    await backfill(g, logger)
+    with for_org(org, job="code-path-scope-test"):
+        assert await migration.scope_ready(g, org)
+        files = await g.get_nodes_by_field_in(CollectionNames.CODE_FILES.value, "_key", world["records"], raise_on_error=True)
+    assert calls["n"] > 1 and all(f.get("connectorId") == connector for f in files), (calls, files)

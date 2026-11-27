@@ -181,3 +181,8 @@ async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only
         await g.remove_sync_point(migration.marker_key(org), "syncPoints")         # the org-wide lookup, as the oracle
         assert not await migration.scope_ready(g, org)
         assert {repo: await world_of.records_at(g, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
+
+
+async def test_a_batch_that_updates_nothing_while_rows_remain_does_not_end_the_backfill(store, monkeypatch) -> None:
+    g, strip = store
+    await world_of.early_zero_backfill(g, LOG, monkeypatch, lambda org: strip(g, org))

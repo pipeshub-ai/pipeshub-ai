@@ -6,7 +6,9 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_A
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 
 import pytest
 
@@ -123,9 +125,10 @@ async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only
         assert {repo: await world_of.records_at(pg_provider, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
 
 
-async def test_a_write_of_other_records_or_of_an_unmoved_code_record_does_no_code_file_work(pg_provider, monkeypatch) -> None:
-    """The scope sync costs nothing where nothing moved: a batch of other records runs the writer's own statement alone, and a code record
-    written with the group it had runs no copy."""
+async def test_a_write_of_other_records_or_without_the_scope_fields_does_no_code_file_work(pg_provider, monkeypatch) -> None:
+    """The scope copy costs nothing where it cannot change anything: an upsert of other record types runs the writer's own statement alone,
+    a patch that sets neither field runs exactly the original statement (code records too), and a code record written with the scope it had
+    rewrites no code file."""
     from app.core.db import uow
     org, connector = new_org(), "conn-code"
     with ctx(org):
@@ -142,18 +145,69 @@ async def test_a_write_of_other_records_or_of_an_unmoved_code_record_does_no_cod
               "externalRecordId": f"ext-file-{i}", "origin": "CONNECTOR", "connectorName": "GITHUB", "version": 1} for i in range(20)]
     with ctx(org):
         await pg_provider.batch_upsert_nodes(files, "records")
-        assert not [s for s in ran if "scope" in s or "scoped" in s], ran            # a record type the upsert knows: its own statement alone
+        assert not [s for s in ran if "scope" in s], ran            # a record type the upsert knows: its own statement alone
         ran.clear()
-        # a patch carries no record type: the update's one statement reads the rows' stored type, and runs no copy
-        await pg_provider.batch_update_nodes([{"id": f["_key"], "recordGroupId": world["groups"][1][1]} for f in files], "records")
-        assert len(ran) == 1 and "sync_code_file_scope" not in ran[0], ran
-        ran.clear()
-        # a patch that sets neither field (a status, a timestamp) runs exactly the writer's original statement, for code records too
         await pg_provider.batch_update_nodes([{"id": r, "updatedAtTimestamp": 1} for r in world["records"]], "records")
         await pg_provider.update_node(world["records"][0], "records", {"updatedAtTimestamp": 2})
         assert ran == ["/* pipeshub:graph.batch_update_nodes ", "/* pipeshub:graph.update_node "], ran
-        ran.clear()
+    before = await _code_file_versions(org)
+    with ctx(org):
         doc = await pg_provider.get_document(world["records"][0], "records")
-        await pg_provider.batch_upsert_nodes([doc], "records")                                     # a code record, its group unchanged
+        await pg_provider.batch_upsert_nodes([doc], "records")                                     # a code record, its scope unchanged
         await pg_provider.batch_update_nodes([{"id": world["records"][0], "recordGroupId": doc["recordGroupId"]}], "records")
-    assert [s for s in ran if "sync_code_file_scope" in s] == [], ran
+    assert await _code_file_versions(org) == before
+
+
+async def _code_file_versions(org: str) -> dict[str, str]:
+    """Each code file's row version (xmin): a rewrite changes it."""
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return {r["id"]: r["v"] for r in await con.fetch("SELECT id, xmin::text AS v FROM graph.nodes WHERE org_id = $1 AND coll = 'codeFiles'", org)}
+    finally:
+        await con.close()
+
+
+async def test_two_writers_moving_one_code_record_leave_its_code_file_where_the_record_ends(pg_provider) -> None:
+    """Writer 1 moves the record to B and holds its transaction; writer 2 moves it back to A and waits for the row. The code file ends with
+    the record's final group, A: each writer copies the record as its own transaction left it."""
+    org, connector = new_org(), "conn-code"
+    with ctx(org):
+        world = await world_of.write_world(pg_provider, org, connector, 2)
+    rid, a, b = world["records"][0], world["groups"][0][1], world["groups"][1][1]
+    with ctx(org):
+        tid = await pg_provider.begin_transaction(read=[], write=["records", "codeFiles"])
+        await pg_provider.update_node(rid, "records", {"recordGroupId": b}, transaction=tid)
+        second = asyncio.ensure_future(_move(pg_provider, org, rid, a))
+        await asyncio.sleep(0.5)
+        assert not second.done()                                     # waiting for writer 1's row
+        await pg_provider.commit_transaction(tid)
+        await second
+        record = await pg_provider.get_document(rid, "records")
+        code_file = await pg_provider.get_document(rid, "codeFiles")
+    assert record["recordGroupId"] == a and code_file["recordGroupId"] == a, (record["recordGroupId"], code_file["recordGroupId"])
+
+
+async def _move(p, org: str, rid: str, group: str) -> None:
+    with ctx(org):
+        await p.batch_update_nodes([{"id": rid, "recordGroupId": group}], "records")
+
+
+async def test_a_code_record_whose_group_is_cleared_clears_its_code_files_group(pg_provider) -> None:
+    """An upsert that sets the group to null (the clear runs before the merge) takes the null to the code file."""
+    org, connector = new_org(), "conn-code"
+    with ctx(org):
+        world = await world_of.write_world(pg_provider, org, connector, 2)
+        rid = world["records"][0]
+        doc = await pg_provider.get_document(rid, "records")
+        await pg_provider.batch_upsert_nodes([{**doc, "recordGroupId": None}], "records")
+        assert (await pg_provider.get_document(rid, "codeFiles")).get("recordGroupId") is None
+
+
+async def test_a_batch_that_updates_nothing_while_rows_remain_does_not_end_the_backfill(pg_provider, monkeypatch) -> None:
+    await world_of.early_zero_backfill(pg_provider, LOG, monkeypatch, _strip)
+
+
+async def _strip(org: str) -> None:
+    await _admin("UPDATE graph.nodes SET doc = doc - 'connectorId' - 'recordGroupId' WHERE org_id = $1 AND coll = 'codeFiles'", org)
+    await _admin("UPDATE graph.nodes SET doc = doc - 'repoKey' WHERE org_id = $1 AND coll = 'recordGroups'", org)

@@ -269,7 +269,7 @@ async def _path_scope_ready(graph_provider: IGraphDBProvider, org_id: str) -> bo
     return org_id in _SCOPED_ORGS
 
 
-async def _repo_groups(graph_provider: IGraphDBProvider, org_id: str, repo: str) -> list[str]:
+async def _repo_groups(graph_provider: IGraphDBProvider, org_id: str, repo: str, connector_id: str) -> list[str]:
     """Every record group ``_repo_matches`` can accept for ``repo``, and maybe more: the group ``repo`` names by id, the groups whose ``repoKey`` is the
     wanted name's (a name matches only if the keys do), and their child groups (named after their parent). The caller still applies ``_repo_matches``."""
     key = repo_key(repo.casefold().strip("/"))
@@ -279,6 +279,8 @@ async def _repo_groups(graph_provider: IGraphDBProvider, org_id: str, repo: str)
         return_fields=["_key", "connectorId", "externalGroupId"], raise_on_error=True,
     ) or []
     for top in map(_unwrap, tops):
+        if top.get("connectorId") not in (None, "", connector_id):       # another connector's repo holds none of this connector's files
+            continue
         found.add(top.get("_key") or top.get("id"))
         if top.get("connectorId") and top.get("externalGroupId"):
             for child in await graph_provider.get_nodes_by_filters(
@@ -333,7 +335,7 @@ async def _records_for_path(
     candidates = [file_path] + ["/".join(parts[i:]) for i in range(len(parts) - 1)]
     # ``choose`` keeps only the connector's records (and the repo's): read only those code files, once every one carries its scope.
     scoped = choose is not None and connector_id is not None and await _path_scope_ready(graph_provider, org_id)
-    groups = await _repo_groups(graph_provider, org_id, repo) if scoped and repo else None
+    groups = await _repo_groups(graph_provider, org_id, repo, connector_id) if scoped and repo else None
     for candidate in dict.fromkeys(candidates):
         rows = await _code_files_at(graph_provider, org_id, candidate, connector_id if scoped else None, groups)
         keys = [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]

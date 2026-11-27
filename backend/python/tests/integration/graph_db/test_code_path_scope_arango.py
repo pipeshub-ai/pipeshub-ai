@@ -180,3 +180,17 @@ async def test_a_write_of_other_records_does_no_code_file_work(arango, monkeypat
     with for_org(org, job="code-path-scope-test"):
         await arango.batch_upsert_nodes(files, "records")
     assert not [q for q in seen if "code_files" in q or q == "BEGIN"], seen
+
+
+async def test_a_batch_that_updates_nothing_while_rows_remain_does_not_end_the_backfill(arango, monkeypatch) -> None:
+    await world_of.early_zero_backfill(arango, LOG, monkeypatch, lambda org: _strip_scope(arango, org))
+
+
+async def test_a_partial_upsert_naming_no_type_moves_a_code_files_scope(arango) -> None:
+    """An existing code record upserted with only its new group (no recordType): the copy reads the stored type and follows the move."""
+    org, connector = _new_org()
+    with for_org(org, job="code-path-scope-test"):
+        world = await world_of.write_world(arango, org, connector, 2)
+        rid, new_group = world["records"][0], world["groups"][1][1]
+        await arango.batch_upsert_nodes([{"_key": rid, "orgId": org, "recordGroupId": new_group}], "records")
+        assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == new_group

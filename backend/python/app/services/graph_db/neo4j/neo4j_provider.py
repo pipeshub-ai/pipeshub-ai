@@ -11045,17 +11045,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         page = await self.client.execute_query(
             # A group with no orgId is never looked up by one, and could not be matched back below: a page of those would end the backfill early.
             f"MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL "
-            "RETURN g.id AS id, g.orgId AS orgId, g.groupName AS name LIMIT $limit",
+            "RETURN g.id AS id, g.groupName AS name LIMIT $limit",
             {"limit": limit - done},
         )
         if not page:
             return done
         # Casefolded in Python: Cypher's toLower is not str.casefold. The name is read again under the lock, so a rename keeps its writer's key.
-        rows = [{"id": p["id"], "orgId": p["orgId"], "name": p["name"], "key": repo_key(p["name"])} for p in page]
+        rows = [{"id": p["id"], "name": p["name"], "key": repo_key(p["name"])} for p in page]
         groups = await self.client.execute_query(
             f"""
             UNWIND $rows AS row
-            MATCH (g:{group} {{id: row.id}}) WHERE g.orgId = row.orgId
+            MATCH (g:{group} {{id: row.id}}) WHERE g.orgId IS NOT NULL
             SET g.{_MATCH_LOCK} = true
             REMOVE g.{_MATCH_LOCK}
             WITH g, row WHERE g.repoKey IS NULL AND g.groupName = row.name
@@ -11065,6 +11065,27 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"rows": rows},
         )
         return done + (int(groups[0].get("updated") or 0) if groups else 0)
+
+    async def code_path_scope_pending(self) -> bool:
+        """Whether a row the backfill fills remains; see the interface."""
+        code_file = collection_to_label(CollectionNames.CODE_FILES.value)
+        record = collection_to_label(CollectionNames.RECORDS.value)
+        group = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        rows = await self.client.execute_query(
+            f"""
+            CALL () {{
+                MATCH (c:{code_file}) WHERE c.connectorId IS NULL
+                MATCH (r:{record} {{id: c.id}}) WHERE r.orgId = c.orgId AND r.connectorId IS NOT NULL
+                RETURN 1 AS one LIMIT 1
+                UNION
+                MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL
+                RETURN 1 AS one LIMIT 1
+            }}
+            RETURN count(one) > 0 AS pending
+            """,
+            {},
+        )
+        return bool(rows and rows[0].get("pending"))
 
     async def update_sync_point_if(
         self,

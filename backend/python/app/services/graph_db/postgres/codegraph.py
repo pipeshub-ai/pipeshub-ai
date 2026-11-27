@@ -754,6 +754,22 @@ class CodeGraphMixin(PgBase):
         self._raise_failed(errors)
         return done
 
+    async def code_path_scope_pending(self) -> bool:
+        current_or_system()
+        errors: list[tuple[str, Exception]] = []
+        pending = False
+        for org_id in await self._sweep_orgs():
+            with self._sweep(org_id, errors):
+                org = current_org_id()
+                pending = bool(await self._q(lambda tx, org=org: tx.fetchval("""/* pipeshub:graph.code_path_scope_pending */ SELECT
+                    EXISTS (SELECT 1 FROM graph.nodes f JOIN graph.nodes x ON x.org_id = f.org_id AND x.coll = 'records' AND x.id = f.id
+                        WHERE f.org_id = $1 AND f.coll = 'codeFiles' AND NOT (f.doc ? 'connectorId') AND x.doc->>'connectorId' IS NOT NULL)
+                    OR EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups' AND NOT (doc ? 'repoKey') AND doc->>'groupName' IS NOT NULL)""", org), None))
+            if pending:
+                break
+        self._raise_failed(errors)
+        return pending
+
     # ---- records: revision-guarded write -------------------------------------------------------------------------
     async def compare_and_set_record_fields(self, record_ids: list[str], content_rev: str, fields: dict[str, Any]) -> list[str]:
         org = current_org_id()

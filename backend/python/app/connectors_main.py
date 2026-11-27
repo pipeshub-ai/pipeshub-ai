@@ -1208,7 +1208,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
             await run_code_path_scope_backfill(graph_provider, logger)
         except Exception as e:
-            logger.error("Code path scope backfill failed: %s", e, exc_info=True)
+            error_class.log_failure(logger, "code_path_scope.backfill.failed", e, include_error_text=False)
 
         # After nameFolded: re-indexes repos whose blocks predate this code
         # graph version, once per version.

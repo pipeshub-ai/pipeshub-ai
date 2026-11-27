@@ -314,6 +314,8 @@ class ArangoHTTPClient:
         self.record_guard: RecordSchemaGuard | None = None
         # The same for the apps schema, applied at start and by the poll only (an apps write refused meanwhile is not sent again).
         self.apps_guard: RecordSchemaGuard | None = None
+        # The same for the record groups schema.
+        self.record_group_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """

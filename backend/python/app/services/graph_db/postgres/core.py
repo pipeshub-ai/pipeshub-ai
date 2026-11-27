@@ -224,21 +224,15 @@ class CoreMixin(PgBase):
         org = current_org_id()
         upd = {k: v for k, v in node_updates.items() if k not in ("_key", "_id", "id")}
         _VALIDATOR.validate_node_update(collection, upd)
-        if not (collection == CollectionNames.RECORDS.value and any(f in upd for f in SCOPE_FIELDS)):
-            r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
-                WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd)), transaction, write=True)
-            return bool(r)
+        scoped = collection == CollectionNames.RECORDS.value and any(f in upd for f in SCOPE_FIELDS)
 
-        async def go(tx: Tx) -> bool:      # a record's scope: the code record it changed takes its code file along
-            rows = await tx.fetch("""/* pipeshub:graph.update_node_scoped */ WITH o AS MATERIALIZED (SELECT n.id, n.doc->'connectorId' AS c, n.doc->'recordGroupId' AS g
-                  FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->>'recordType' = 'CODE_FILE'),
-                u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
-                  WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING id, doc->'connectorId' AS c, doc->'recordGroupId' AS g)
-                SELECT u.id, EXISTS (SELECT 1 FROM o WHERE o.id = u.id AND (u.c IS DISTINCT FROM o.c OR u.g IS DISTINCT FROM o.g)) AS moved FROM u""",
-                                  org, collection, key, _j(upd))
-            await _sync_code_file_scope(tx, org, [r for r in rows if r["moved"]])
-            return bool(rows)
-        return await self._q(go, transaction, write=True)
+        async def go(tx: Tx) -> int:
+            n = await tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+                WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd))
+            if scoped and n:
+                await _sync_code_file_scope(tx, org, [key])
+            return n
+        return bool(await self._q(go, transaction, write=True))
 
     async def store_time(self) -> float:
         return float(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.store_time */ SELECT extract(epoch FROM clock_timestamp())::float8"), None))
@@ -262,17 +256,9 @@ class CoreMixin(PgBase):
         scoped = [it["id"] for it in items if any(f in it["doc"] for f in SCOPE_FIELDS)] if collection == CollectionNames.RECORDS.value else []
 
         async def go(tx: Tx) -> None:
-            if not scoped:
-                await tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
-                    FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, collection, _j(items))
-                return
-            # a record's scope: the code records it changed take their code files along
-            await _sync_code_file_scope(tx, org, await tx.fetch("""/* pipeshub:graph.batch_update_nodes_scoped */ WITH o AS MATERIALIZED (SELECT n.id, n.doc->'connectorId' AS c,
-                  n.doc->'recordGroupId' AS g FROM unnest($4::text[]) q(id) JOIN graph.nodes n ON n.org_id = $1 AND n.coll = $2 AND n.id = q.id WHERE n.doc->>'recordType' = 'CODE_FILE'),
-                u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
-                  FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id
-                  RETURNING n.id, n.doc->'connectorId' AS c, n.doc->'recordGroupId' AS g)
-                SELECT u.id FROM u JOIN o ON o.id = u.id WHERE u.c IS DISTINCT FROM o.c OR u.g IS DISTINCT FROM o.g""", org, collection, _j(items), scoped))
+            await tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
+                FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, collection, _j(items))
+            await _sync_code_file_scope(tx, org, scoped)
         if items:
             await self._q(go, transaction, write=True)
         return True

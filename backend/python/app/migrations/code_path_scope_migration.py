@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 MARKER = "code-path-scope-v1"
 _BATCH = 5000
+_IDLE_PASSES = 100
 
 
 def marker_key(org_id: str) -> str:
@@ -37,8 +38,17 @@ async def run_code_path_scope_backfill(graph_provider: IGraphDBProvider, logger:
     total = 0
     # Started detached with no context: an org-scoped store reaches every organisation only under a system context.
     with system("code_path_scope_backfill"):
-        while updated := await graph_provider.backfill_code_path_scope(_BATCH):
-            total += updated
+        idle = 0
+        while True:
+            if updated := await graph_provider.backfill_code_path_scope(_BATCH):
+                total, idle = total + updated, 0
+                continue
+            # A batch can update nothing while rows remain (writers filled what it picked): done only when none is left.
+            if not await graph_provider.code_path_scope_pending():
+                break
+            idle += 1
+            if idle >= _IDLE_PASSES:
+                raise RuntimeError("code path scope backfill made no progress; it runs again at the next start")
 
     async def mark(org_id: str) -> None:
         if not await scope_ready(graph_provider, org_id):

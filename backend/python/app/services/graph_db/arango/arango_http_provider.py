@@ -110,6 +110,7 @@ from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
+    RECORD_GROUP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
@@ -441,8 +442,9 @@ def _scope_changed_keys(docs: list[dict]) -> list[str]:
 
 
 def _code_file_keys(docs: list[dict]) -> list[str]:
-    """The keys of the code records among ``docs`` whose write sets a field their code file copies."""
-    return _scope_changed_keys([d for d in docs if d.get("recordType") == "CODE_FILE"])
+    """The keys of the records among ``docs`` that are, or (a partial document naming no type) may be, code records whose write sets a
+    field their code file copies; the copy reads the stored type."""
+    return _scope_changed_keys([d for d in docs if d.get("recordType", "CODE_FILE") == "CODE_FILE"])
 
 
 # After an UPDATE of record ``n`` (NEW) in the same statement: its code file takes the record's scope where it differs. A subquery on the code
@@ -1324,6 +1326,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
                 collection=CollectionNames.APPS.value,
             )
+            self.http_client.record_group_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=record_group_schema, generation=RECORD_GROUP_SCHEMA_GENERATION,
+                collection=CollectionNames.RECORD_GROUPS.value,
+            )
 
             # Ensure database exists
             if not await self.http_client.database_exists(arango_db):
@@ -1349,7 +1355,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _stop_schema_guards(self) -> None:
         """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard, self.http_client.record_group_guard) if self.http_client else ():
             if guard is not None:
                 await guard.stop()
 
@@ -1373,7 +1379,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records and apps schemas are applied only while the live generation is
+        """Apply ``schema`` to a collection. The records, apps and record groups schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
@@ -1383,6 +1389,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             guard = client.record_guard
         elif client is not None and name == CollectionNames.APPS.value:
             guard = client.apps_guard
+        elif client is not None and name == CollectionNames.RECORD_GROUPS.value:
+            guard = client.record_group_guard
         if guard is not None:
             # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
             # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
@@ -1404,7 +1412,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
         """Check the live records and apps schemas every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
+        for guard in (self.http_client.record_guard, self.http_client.apps_guard, self.http_client.record_group_guard) if self.http_client else ():
             if guard is not None:
                 guard.start(interval)
 
@@ -11524,9 +11532,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR c IN @@files
                 FILTER c._key == k
                 LET r = DOCUMENT(@@records, k)
-                FILTER r != null AND r.orgId == c.orgId AND (c.connectorId != r.connectorId OR c.recordGroupId != r.recordGroupId)
+                FILTER r != null AND r.recordType == "CODE_FILE" AND r.orgId == c.orgId AND (c.connectorId != r.connectorId OR c.recordGroupId != r.recordGroupId)
                 UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
         """, {"keys": sorted(set(keys)), "@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value}, txn_id=transaction)
+
+    async def code_path_scope_pending(self) -> bool:
+        """Whether a row the backfill fills remains; see the interface."""
+        rows = await self.http_client.execute_aql("""
+        RETURN LENGTH(FOR c IN @@files FILTER c.connectorId == null LET r = DOCUMENT(@@records, c._key)
+                          FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null LIMIT 1 RETURN 1) > 0
+            OR LENGTH(FOR g IN @@groups FILTER g.repoKey == null AND g.groupName != null LIMIT 1 RETURN 1) > 0
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "@groups": CollectionNames.RECORD_GROUPS.value})
+        return bool(rows and rows[0])
 
     async def backfill_code_path_scope(self, limit: int = 5000) -> int:
         """Copy a code file's scope from its record, and set a record group's repoKey; see the interface."""

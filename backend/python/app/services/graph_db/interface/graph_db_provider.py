@@ -5659,6 +5659,12 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def code_path_scope_pending(self) -> bool:
+        """Whether any row ``backfill_code_path_scope`` would fill remains: a code file lacking ``connectorId`` whose record has one, or a record
+        group with a ``groupName`` and no ``repoKey``. Read directly, so the backfill is done only when this says so, whatever one batch updated."""
+        pass
+
+    @abstractmethod
     async def update_sync_point_if(
         self,
         sync_point_key: str,
