@@ -383,10 +383,11 @@ class KernelDB:
         return self._open_org(write=write, timeout_ms=timeout_ms, isolation=isolation, lineage=lineage,
                             custom_plan=custom_plan, idempotent=idempotent, jobs=False)
 
-    def runtime_uow(self, *, write: bool = False, timeout_ms: int | None = None) -> AbstractAsyncContextManager[Tx]:
+    def runtime_uow(self, *, write: bool = False, timeout_ms: int | None = None, org: bool = False) -> AbstractAsyncContextManager[Tx]:
         """One transaction for the platform's own tables (key-value entries, the work queue): no org is bound, so no org row is visible.
-        The service role's grants on those internal tables are the only access."""
-        return self._open_runtime(write=write, timeout_ms=timeout_ms)
+        The service role's grants on those internal tables are the only access. ``org`` binds the ambient org (``app.org_id``) instead,
+        for an entry that belongs to it; with no org context it raises, as :meth:`uow` does."""
+        return self._open_runtime(write=write, timeout_ms=timeout_ms, org=org)
 
     def jobs_uow(self, *, write: bool = False, timeout_ms: int | None = None, isolation: Isolation = "read_committed",
                  lineage: bool = False, custom_plan: bool = False, idempotent: bool = False) -> AbstractAsyncContextManager[Tx]:
@@ -443,12 +444,13 @@ class KernelDB:
                     _current_tx.reset(token)
 
     @asynccontextmanager
-    async def _open_runtime(self, *, write: bool, timeout_ms: int | None) -> AsyncIterator[Tx]:
+    async def _open_runtime(self, *, write: bool, timeout_ms: int | None, org: bool) -> AsyncIterator[Tx]:
         # Not tracked as the current unit: a key-value read may happen while an org unit is open (config lookups), on its own connection.
+        org_id = (org_context.current().org_id or "") if org else ""
         pool = await self._pool_here(jobs=False)
         if pool is None:
             raise DbConfigError("KernelDB is not started")
-        async with self._open(pool, role=self.cfg.role, org_id="", request_id="runtime", klass=self.cfg.timeout_class,
+        async with self._open(pool, role=self.cfg.role, org_id=org_id, request_id="runtime", klass=self.cfg.timeout_class,
                               write=write, timeout_ms=timeout_ms) as tx:
             yield tx
 
