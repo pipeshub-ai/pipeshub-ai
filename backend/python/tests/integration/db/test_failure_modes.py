@@ -21,6 +21,7 @@ from app.core.db import (
     DbTimeout,
     FailedTransaction,
     KernelDB,
+    LockTimeout,
     PoolTimeout,
     PrologueFailed,
     SessionRoleLeak,
@@ -704,16 +705,20 @@ async def test_cancellation_variants(env, make, where) -> None:
         await px.stop()
 
 
-async def test_a_unit_that_notifies_waits_at_commit_for_another_notifying_commit_instead_of_failing_on_its_lock_timeout(env, make) -> None:
+
+@pytest.mark.parametrize("held_s, commits", [(6.5, True), (14, False)], ids=["short_holder_commits", "stuck_holder_fails_at_the_bound"])
+async def test_a_unit_that_notifies_waits_at_commit_for_another_notifying_commit_up_to_its_statement_timeout(env, make, held_s, commits) -> None:
     """A COMMIT that queued a NOTIFY takes the notification-queue lock, which another notifying commit holds until it is durable. Here that
-    commit waits for a synchronous standby that never answers, holding the lock; the unit's 5 s lock_timeout must not cancel the unit's COMMIT."""
+    commit waits for a synchronous standby that never answers, holding the lock, for ``held_s``. The unit (lock_timeout 5 s, an 8 s budget)
+    waits past its lock_timeout for a holder that lets go within the budget, and still fails at the budget for one that does not: the
+    server does not apply statement_timeout to the commit itself, so the wait has to stay bounded."""
     admin, holder = await env.admin(), await env.admin()
     await admin.execute(f"ALTER DATABASE {env.db} SET synchronous_commit = local")         # this database's units never wait for the standby
     await admin.execute("ALTER SYSTEM SET synchronous_standby_names = 'nosuchstandby'")
     await admin.execute("SELECT pg_reload_conf()")
     hold = None
     try:
-        db = await make("indexing", pool_max=2)                                            # lock_timeout 5 s, statement_timeout 60 s
+        db = await make("indexing", pool_max=2)                                            # lock_timeout 5 s
         await holder.execute("SET synchronous_commit = on")
         await holder.execute("BEGIN")
         await holder.execute("INSERT INTO kx.log VALUES ('bbbbbbbbbbbbbbbbbbbbbbbb', 'holder')")
@@ -723,15 +728,24 @@ async def test_a_unit_that_notifies_waits_at_commit_for_another_notifying_commit
             if await admin.fetchval("SELECT wait_event FROM pg_stat_activity WHERE pid = $1", holder.get_server_pid()) == "SyncRep":
                 break
             await asyncio.sleep(0.1)
+        else:
+            pytest.fail("the holder never waited for the standby: there is no contention to test")
 
         async def fn(tx) -> None:
             await tx.execute("INSERT INTO kx.log VALUES ('aaaaaaaaaaaaaaaaaaaaaaaa', 'notified')")
-            await tx.execute("/* t */ SELECT pg_notify('pipeshub_test', '')")
+            await tx.execute("/* t */ SELECT 1; NOTIFY pipeshub_test")
         loop = asyncio.get_running_loop()
-        loop.call_later(7, lambda: loop.create_task(admin.execute("SELECT pg_cancel_backend($1)", holder.get_server_pid())))      # past the lock_timeout
+        loop.call_later(held_s, lambda: loop.create_task(admin.execute("SELECT pg_cancel_backend($1)", holder.get_server_pid())))
+        t0 = time.monotonic()
         with as_org("aaaaaaaaaaaaaaaaaaaaaaaa"):
-            await db.run(fn, write=True)
-        assert await admin.fetchval("SELECT count(*) FROM kx.log WHERE note = 'notified'") == 1
+            if commits:
+                await db.run(fn, write=True, timeout_ms=8000)
+            else:
+                with pytest.raises(LockTimeout):
+                    await db.run(fn, write=True, timeout_ms=8000)
+        waited = time.monotonic() - t0
+        assert await admin.fetchval("SELECT count(*) FROM kx.log WHERE note = 'notified'") == (1 if commits else 0)
+        assert (held_s - 0.5 < waited < 8) if commits else (7 < waited < 10), waited
     finally:
         await admin.execute("ALTER SYSTEM RESET synchronous_standby_names")
         await admin.execute("SELECT pg_reload_conf()")

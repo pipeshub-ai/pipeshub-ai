@@ -80,11 +80,12 @@ _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
 # A statement that writes the graph's documents or edges: the guard of the projection into kg (app.services.graph_db.postgres.kg) looks at these before they run. What the unit
 # wrote is not decided by this text but by the capture trigger, which marks the transaction (kg.wrote), so a form this misses is still projected.
-_NOTIFY = re.compile(r"\bpg_notify\s*\(|^\s*notify\b", re.I | re.M)
+_NOTIFY = re.compile(r"\bpg_notify\s*\(|(?:^|;)\s*notify\b", re.I | re.M)
 # A unit that queued a NOTIFY takes the database-wide notification-queue lock at COMMIT, held by every other notifying unit until its commit is
-# durable. The unit's lock_timeout would then cancel the COMMIT itself (55P03) whenever another commit is slow: it waits instead, bounded by
-# statement_timeout, which still applies to the COMMIT.
-COMMIT_LOCK_WAIT = "/* pipeshub:kernel.commit_lock_wait */ SET LOCAL lock_timeout = 0"
+# durable. The unit's lock_timeout would then cancel the COMMIT itself (55P03) whenever another commit is slow: for its COMMIT it waits as long
+# as its statement_timeout instead. Never unbounded: the server turns statement_timeout off before it commits (finish_xact_command), so the
+# lock_timeout is the COMMIT's only bound.
+COMMIT_LOCK_WAIT = "/* pipeshub:kernel.commit_lock_wait */ SELECT set_config('lock_timeout', $1, true)"
 _GRAPH_DML = re.compile(r'\b(?:insert\s+into|update(?:\s+only)?|delete\s+from(?:\s+only)?|merge\s+into(?:\s+only)?)\s+"?graph"?\s*\.\s*"?(?:nodes|edges)"?\b', re.I)
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
@@ -566,7 +567,7 @@ class KernelDB:
             for step in tx.before_commit:
                 await step(tx)
             if tx.notified and not tx.failed:      # a failed unit's COMMIT reports the failure, as before
-                await tx._run("execute", COMMIT_LOCK_WAIT, internal=True)
+                await tx._run("execute", COMMIT_LOCK_WAIT, f"{max(statement_ms, tc.lock_ms)}ms", internal=True)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()
