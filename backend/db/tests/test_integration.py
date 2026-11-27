@@ -677,7 +677,7 @@ def test_the_jobs_role_reads_the_organisation_gauges_only_through_functions_and_
             c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
         assert c.execute(policies).fetchone()[0] == 1
         assert [tuple(x) for x in c.execute(grants)] == families
-        as_jobs(c, (), 12)      # every identity table refused, the gauges still answer
+        as_jobs(c, (), 13)      # every identity table refused (identity_0008 adds org_slugs), the gauges still answer
         for fn in gauges:
             who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
             assert who == ["pipeshub_jobs", "pipeshub_vetted_identity"], who      # the grant, and the owner

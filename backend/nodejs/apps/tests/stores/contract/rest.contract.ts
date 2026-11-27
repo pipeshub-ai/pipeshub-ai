@@ -4,6 +4,7 @@
  * with them. Store-neutral: only the repository interfaces are used.
  */
 import { expect } from 'chai';
+import { ValidationError } from '../../../src/libs/errors/validation.error';
 import type { NewOrgIds, NewOrgWithAdmin, OrgRepository } from '../../../src/libs/repositories/org/types';
 import type { ProjectRepository } from '../../../src/libs/repositories/project/types';
 import type { ConnectorsConfigRepository } from '../../../src/libs/repositories/connectors-config/types';
@@ -127,6 +128,27 @@ export function describeOrgContract(fx: OrgFixture): void {
       const b = await createOrgLikeSignUp(fx, { ...orgInput(), slug: '' });
       const num = (s?: string): number => Number((s ?? '').replace('org-', ''));
       expect(num(b.org.slug)).to.equal(num(a.org.slug) + 1);
+    });
+
+    it('refuses a taken, malformed or counter-shaped slug with one answer, and the counter keeps working', async () => {
+      const slug = `org-${uniq('taken')}`;
+      await createOrgLikeSignUp(fx, { ...orgInput(), slug });
+      for (const bad of [slug, 'Not A Slug', 'org-', `org-${'x'.repeat(61)}`, 'org-1001', 'org-99999999']) {
+        const err = await createOrgLikeSignUp(fx, { ...orgInput(), slug: bad }).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect(err, bad).to.be.instanceOf(ValidationError);
+        expect((err as ValidationError).message, bad).to.equal('slug is not available');
+      }
+      const a = await newOrg();
+      const b = await newOrg();
+      expect(b.org.slug).to.match(/^org-\d+$/).and.not.equal(a.org.slug);
+    });
+
+    it('takes the slug from input.slug only, never from the org fields', async () => {
+      const { org } = await newOrg({ slug: `org-${uniq('field')}` });
+      expect(org.slug).to.match(/^org-\d+$/);
     });
 
     it('rolls everything back when the unit of work fails (replica set); keeps partial writes otherwise', async () => {

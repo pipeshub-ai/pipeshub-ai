@@ -53,7 +53,10 @@ export interface NewOrgWithAdmin {
   ids: NewOrgIds;
   /** Organisation fields as the caller supplied them, plus the derived domain and onboarding status. */
   org: Record<string, unknown>;
-  /** The organisation's slug; omitted or empty, the store assigns the next `org-<n>`. */
+  /**
+   * The organisation's slug; omitted or empty, the store assigns the next `org-<n>`. Lower-case words joined by hyphens, at most
+   * 64 characters, not `org-<digits>`; one that is malformed or already taken fails with the same `ValidationError`.
+   */
   slug?: string;
   admin: { fullName: string; email: string };
   passwordHash: string;

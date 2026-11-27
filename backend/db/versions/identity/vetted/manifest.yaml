@@ -67,3 +67,36 @@ functions:
     test:
       checks: [privileges, catalog]
       args: []
+
+  # A new organisation's chosen slug, claimed in its creation unit before its row is written: true when it is now the org's; false,
+  # with nothing written, when it is malformed, the counter's 'org-<digits>' shape, held by an organisation (an imported one too) or
+  # claimed by another unit, so the answer tells nothing about which. No ON CONFLICT (check 57): a concurrent claim of the same slug
+  # waits for the first and then fails on the unique key.
+  - name: identity.org_slug_claim
+    class: write
+    scope: org
+    writer: pipeshub_node
+    args:
+      - {name: p_slug, type: text, length: [1, 200]}
+    returns: boolean
+    no_org: "false"
+    reads: [identity.orgs]
+    body: |
+      IF length(p_slug) > 64 OR p_slug !~ '^[a-z0-9]+(-[a-z0-9]+)*$' OR p_slug ~ '^org-[0-9]+$'
+         OR EXISTS (SELECT 1 FROM identity.orgs o WHERE o.slug = p_slug) THEN
+        RETURN false;
+      END IF;
+      BEGIN
+        INSERT INTO identity.org_slugs (org_id, slug) VALUES (v_org, p_slug);
+      EXCEPTION WHEN unique_violation THEN
+        RETURN false;
+      END;
+      RETURN true;
+    test:
+      needle: "DELETE FROM identity.org_slugs"
+      state: "SELECT count(*) FROM identity.org_slugs WHERE org_id = '{org}'"
+      args: ["needle-slug"]
+      own_result: [[true]]
+      other_result: [[true]]
+      no_org_result: [[false]]
+      bad_args: [[""], [null], ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]]
