@@ -136,9 +136,16 @@ const notApproved = (why: string): HarnessScheduleRefusedError =>
  * The run is part of it because an interaction id is unique only within its run: the loop's first approval is
  * `ix.approve.t1.0` in every run, so an id of the org and the interaction alone gave every run the first one's schedule.
  */
-export const chatScheduleId = (orgId: string, runId: string, interactionId: string): string =>
+export const chatScheduleId = (
+  orgId: string,
+  runId: string,
+  interactionId: string,
+): string =>
   `sch_${createHash('sha256')
-    .update(`schedule-from-chat\u0000${orgId}\u0000${runId}\u0000${interactionId}`, 'utf8')
+    .update(
+      `schedule-from-chat\u0000${orgId}\u0000${runId}\u0000${interactionId}`,
+      'utf8',
+    )
     .digest('hex')
     .slice(0, 32)}`;
 
@@ -319,12 +326,19 @@ export class ChatScheduleService {
     interactionId: string,
   ): Promise<AgentSchedule | null> {
     const found = await this.options.store.get(orgId, id);
-    if (found === null || found === undefined) return null;
+    if (found === null) return null;
     const origin = found.origin;
-    if (origin?.interactionId === interactionId && origin.runId === run.runId && found.actorId === run.actorId) {
+    if (
+      origin?.interactionId === interactionId &&
+      origin.runId === run.runId &&
+      found.actorId === run.actorId
+    ) {
       return found;
     }
-    throw new HarnessScheduleRefusedError('SCHEDULE_FORBIDDEN', 'That schedule is not this chat’s to answer with');
+    throw new HarnessScheduleRefusedError(
+      'SCHEDULE_FORBIDDEN',
+      'That schedule is not this chat’s to answer with',
+    );
   }
 
   private assertApproved(
