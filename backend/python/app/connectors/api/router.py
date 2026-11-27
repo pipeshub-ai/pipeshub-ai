@@ -10749,7 +10749,7 @@ async def list_oauth_configs(
                 {
                     **row,
                     OAuthConfigKeys.CONFIG: mask_oauth_config_for_response(
-                        row, user_context["org_id"], is_admin=True, reveal=reveal
+                        row, user_context["org_id"], is_admin=True, reveal=reveal, request=request
                     )["config"],
                 }
                 if isinstance(row.get(OAuthConfigKeys.CONFIG), dict)
@@ -10844,6 +10844,7 @@ async def get_oauth_config_by_id(
             user_context["org_id"],
             is_admin=user_context["is_admin"],
             reveal=can_reveal_secrets(request),
+            request=request,
         )
 
         # For admins: return full config (edition may redact inherited secrets)

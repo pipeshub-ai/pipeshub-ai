@@ -185,17 +185,19 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
   async findLiveAllowedScopes(clientId: string): Promise<{
     allowedScopes: string[];
     knowledgeLimit?: KnowledgeLimit;
+    clientSecretEncrypted: string;
   } | null> {
     const app = await OAuthApp.findOne({
       clientId: { $eq: clientId },
       isDeleted: false,
     })
-      .select('allowedScopes knowledgeLimit')
+      .select('allowedScopes knowledgeLimit clientSecretEncrypted')
       .lean()
       .exec();
     return app
       ? {
           allowedScopes: app.allowedScopes,
+          clientSecretEncrypted: app.clientSecretEncrypted,
           ...(app.knowledgeLimit !== undefined && {
             knowledgeLimit: app.knowledgeLimit,
           }),

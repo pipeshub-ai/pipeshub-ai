@@ -22,7 +22,7 @@ import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 const leanResult = (value: unknown): any => ({ lean: () => Promise.resolve(value) })
 
 // The re-read after a user grant stores its tokens.
-function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
+function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown; clientSecretEncrypted?: string } | null) {
   return sinon.stub(OAuthApp, 'findOne').returns({
     select: sinon.stub().returns({
       lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
@@ -275,6 +275,23 @@ describe('OAuthTokenService', () => {
         expect(accessRevoke.calledOnce).to.be.true
         expect(accessRevoke.firstCall.args[1]).to.include({ isRevoked: true })
         expect(refreshRevoke.calledOnce).to.be.true
+      })
+
+      it('revokes the new tokens when the client secret was rotated while they were minted', async () => {
+        stubCurrentApp({ allowedScopes: ['org:read', 'offline_access'], clientSecretEncrypted: 'rotated' })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await service.generateTokens(
+            { ...mockApp, clientSecretEncrypted: 'read-by-the-grant' }, userId, orgId, ['org:read', 'offline_access'],
+            true, undefined, undefined, { recheckAppScopes: true },
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(accessRevoke.calledOnce).to.be.true
       })
 
       it('revokes the new tokens when the app was deleted while they were minted', async () => {
