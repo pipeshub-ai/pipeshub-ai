@@ -70,7 +70,7 @@ from app.api.middlewares.auth import (
     require_service_token,
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
-from app.api.middlewares.person_caller import refuse_unless_a_person
+from app.api.middlewares.person_caller import require_a_person
 from app.api.middlewares.request_log import (
     add_request_log_fields,
     bind_request_log_fields,
@@ -4061,6 +4061,8 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
             )
         ),
         Depends(require_agent_execute_for_named_agents),
+        # Before anything is read: where every agent runs as the caller, only a person acting as themself is served.
+        Depends(require_a_person),
     ],
 )
 async def get_agent_run_definition(
@@ -4098,7 +4100,6 @@ async def get_agent_run_definition(
     from app.harness.mcp_hub.settings import hub_enabled as mcp_hub_enabled
     from app.services.featureflag.platform_settings import is_actions_enabled
 
-    refuse_unless_a_person(getattr(request.state, "user", None))
     try:
         services = await get_services(request)
         graph_provider = services["graph_provider"]
@@ -5243,6 +5244,7 @@ UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
     dependencies=[
         Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_a_person),
     ],
 )
 async def chat(request: Request, agent_id: str) -> JSONResponse:
@@ -5487,14 +5489,13 @@ async def _resolve_mcp_server_configs(
             )
         ),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_a_person),
     ],
 )
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     from app import edition
 
-    # Before anything is read: where every agent runs as the caller, only a person acting as themself is served.
-    refuse_unless_a_person(getattr(request.state, "user", None))
     timer = StageTimer()
     resolved = None
     try:

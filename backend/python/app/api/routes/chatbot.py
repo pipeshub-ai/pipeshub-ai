@@ -44,7 +44,7 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
-from app.api.middlewares.person_caller import refuse_unless_a_person
+from app.api.middlewares.person_caller import require_a_person
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -2205,7 +2205,7 @@ async def _parse_chat_query(
     return query_info, resolved
 
 
-@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT)), Depends(require_a_person)])
 @inject
 async def askAI(
     request: Request,
@@ -2220,7 +2220,6 @@ async def askAI(
     Called by Node's `POST /api/v1/conversations/create` and
     `POST /api/v1/conversations/:id/messages`.
     """
-    refuse_unless_a_person(getattr(request.state, "user", None))
     query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=False)
     await assert_identity_allowed(
         _chat_principal(request),
@@ -2241,7 +2240,9 @@ async def askAI(
     return outcome.to_response()
 
 
-@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.post(
+    "/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT)), Depends(require_a_person)]
+)
 @inject
 async def askAIStream(
     request: Request,
@@ -2256,7 +2257,6 @@ async def askAIStream(
     agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
     for the mode → tool/prefetch behavior.
     """
-    refuse_unless_a_person(getattr(request.state, "user", None))
     query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=True)
     await assert_identity_allowed(
         _chat_principal(request),

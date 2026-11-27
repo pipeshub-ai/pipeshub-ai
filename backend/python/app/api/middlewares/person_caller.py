@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.api.middlewares.auth import SERVICE_IDENTITY_CLAIM
 from app.api.middlewares.token_policy import is_service_token
@@ -50,3 +50,9 @@ def refuse_unless_a_person(user: Mapping[str, Any] | None) -> None:
 
     if edition.AGENTS_RUN_AS_THE_CALLER and not acts_as_a_person(user):
         raise HTTPException(status_code=403, detail=NOT_A_PERSON_DETAIL)
+
+
+async def require_a_person(request: Request) -> None:
+    """Route dependency form of ``refuse_unless_a_person``, for the routes that run an agent as the caller. It stays
+    ``async`` so it runs in the request's own context, as the other auth dependencies do."""
+    refuse_unless_a_person(getattr(request.state, "user", None))
