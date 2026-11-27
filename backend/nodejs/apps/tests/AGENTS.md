@@ -1,6 +1,6 @@
 # Node test suite — agent guide
 
-The Mocha suite for the Node API (`backend/nodejs/apps`): unit tests that run on every pull request, and real-store tests (`*.itest.ts`): the module MongoDB and Redis ones in the unit-test job (`test:itest`), the rest in their own workflows. Read this before you add or move a test, a helper or a global hook, or before you change `.mocharc.yaml`, `.c8rc.json` or the test scripts in `package.json`.
+The Mocha suite for the Node API (`backend/nodejs/apps`): unit tests that run on every pull request, and real-store tests (`*.itest.ts`): the module MongoDB and Redis ones in the unit-test job (`test:itest`), the rest in their own workflows, though some are run by none (see below). Read this before you add or move a test, a helper or a global hook, or before you change `.mocharc.yaml`, `.c8rc.json` or the test scripts in `package.json`.
 
 Repo-wide rules are in the root [AGENTS.md](../../../../AGENTS.md). Setup, the npm scripts and coverage reports are in [README.md](./README.md); this file adds what it does not say. How each module's tests are run is in that module's guide (for example [libs/middlewares/AGENTS.md](../src/libs/middlewares/AGENTS.md)).
 
@@ -61,7 +61,7 @@ flowchart LR
 - **The logger-isolation hook reports at the end, not in `afterEach`** (#4796). A failing `afterEach` makes Mocha skip the rest of the suite and its cleanup.
 - **A serial run guards against root `sinon.restore` hooks** (#3552). The bug only shows without `--parallel`, so the guard test is written to fail there.
 - **Workers wait to write coverage on SIGTERM** (#3520). Mocha's pool killed workers mid-write under c8 and their coverage was silently lost.
-- **Real-store suites fail on a skip** (`scripts/assert_no_skips.py`, #4706). A suite skips only when its service is missing, which in CI means the workflow is broken; a green run with skips tested nothing.
+- **A real-store workflow fails on a skip** (`scripts/assert_no_skips.py`, #4706), where it runs that check: `pg-stores.yml`, `pg-runtime.yml`, `docstore-migrate.yml` and the MongoDB job in `storage-backends.yml`, not `node-pg-runtime.yml` or the file-storage job. A suite skips only when its service is missing, which in CI means the workflow is broken; a green run with skips tested nothing.
 
 ## Changing this code
 
