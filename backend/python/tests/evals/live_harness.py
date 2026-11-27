@@ -181,6 +181,13 @@ def _confidence_not_high_when_a_needed_source_was_missing() -> CaseAssertion:
     return check
 
 
+def _called_at_most_once(tool: str) -> CaseAssertion:
+    def check(t: TraceResult) -> bool:
+        return t.tool_calls.count(tool) <= 1
+    check.__doc__ = f"'{tool}' called at most once"
+    return check
+
+
 def _answer_not_empty() -> CaseAssertion:
     def check(t: TraceResult) -> bool:
         return bool(t.final_answer and t.final_answer.strip())
@@ -242,6 +249,20 @@ GOLDEN_CASES: list[GoldenCase] = [
              _final_answer_tool_called_exactly_once()),
             ("answer_not_empty",
              _answer_not_empty()),
+        ],
+    ),
+    GoldenCase(
+        id="C-05-later-is-a-schedule",
+        description="A request for later is proposed as one schedule (ADR-SCH-01), not answered now.",
+        # The person approves the schedule on its own card before anything is
+        # made; here the run only has to propose it, once, before anything else.
+        query="Can you tell me a joke in 5 minutes?",
+        granted_tools=["schedule_create", "knowledgegraph__search"],
+        assertions=[
+            ("first_tool_is_schedule_create",
+             _first_tool_is("schedule_create")),
+            ("one_schedule",
+             _called_at_most_once("schedule_create")),
         ],
     ),
 ]
