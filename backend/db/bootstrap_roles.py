@@ -65,7 +65,9 @@ class MissingPassword(ValueError):
     pass
 
 
-_SCHEMA = re.compile(r"^[a-z][a-z0-9_]*$")
+# a schema name as a vetted manifest names it (db.lib.vetted: lower case, digits, underscores, not starting with a digit), short enough
+# that its owner's name pipeshub_vetted_<schema> fits PostgreSQL's 63-byte identifiers (a longer one would be cut and not match)
+_SCHEMA = re.compile(r"^[a-z_][a-z0-9_]{0,46}$")
 
 
 def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), passwords: Mapping[str, str] | None = None,

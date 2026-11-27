@@ -227,6 +227,12 @@ def test_an_extension_schema_gets_its_own_vetted_owner_whose_functions_write_onl
                                     "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_c')",
         "a schema the owner role does not own": "CREATE SCHEMA late_d; SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_d')",
         "a core schema": "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('identity')",
+        "a schema that holds a type": "CREATE SCHEMA late_e AUTHORIZATION pipeshub_owner; CREATE TYPE late_e.colour AS ENUM ('red'); "
+                                      "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_e')",
+        "a schema that holds a domain": "CREATE SCHEMA late_f AUTHORIZATION pipeshub_owner; CREATE DOMAIN late_f.d AS int; "
+                                        "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_f')",
+        "a schema that holds a collation": "CREATE SCHEMA late_g AUTHORIZATION pipeshub_owner; CREATE COLLATION late_g.c FROM \"C\"; "
+                                           "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_g')",
     }
     for why, sql in refused.items():
         with cluster.admin(name) as c, c.transaction(force_rollback=True):

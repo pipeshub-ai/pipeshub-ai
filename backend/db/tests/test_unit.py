@@ -458,6 +458,36 @@ def test_bootstrap_creates_the_vetted_owner_of_each_schema_an_extra_location_def
     assert bootstrap_roles.location_vetted_schemas() == []
 
 
+def test_bootstrap_accepts_every_schema_name_a_vetted_manifest_accepts(tmp_path, monkeypatch):
+    """A manifest may name schema _demo (db.lib.vetted's identifier rule); the bootstrap must create its owner, not refuse the name.
+    Only a name whose owner would not fit PostgreSQL's 63-byte role names is refused, before anything is created."""
+    from db import bootstrap_roles
+    from db.lib import vetted
+
+    class Reached(Exception):
+        pass
+
+    class Conn:                                                   # the name check runs before the first statement
+        def execute(self, *_a, **_k):
+            raise Reached
+
+    mod = tmp_path / "extra" / "demo"
+    (mod / "vetted").mkdir(parents=True)
+    ed = tmp_path / "edition.py"
+    ed.write_text(f'EXTRA_MIGRATION_LOCATIONS = ["{mod}"]\n')
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
+    fn = {"class": "read", "scope": "org", "args": [], "returns": "boolean", "no_org": "false", "body": "RETURN true;", "test": {"checks": ["privileges"]}}
+    for schema in ("_demo", "a", "a_1", "_", "x" * 47):
+        (mod / "vetted" / "manifest.yaml").write_text(yaml.safe_dump({"functions": [{"name": f"{schema}.one", **fn}]}))
+        assert vetted.load(mod / "vetted" / "manifest.yaml")[0].schema == schema        # the manifest accepts it
+        with pytest.raises(Reached):
+            bootstrap_roles.bootstrap(Conn(), [])
+        assert len(f"pipeshub_vetted_{schema}") <= 63
+    (mod / "vetted" / "manifest.yaml").write_text(yaml.safe_dump({"functions": [{"name": f"{'x' * 48}.one", **fn}]}))
+    with pytest.raises(ValueError, match="not a schema name"):
+        bootstrap_roles.bootstrap(Conn(), [])
+
+
 def test_shipped_edition_seam_names_only_module_directories_that_exist():
     """An edition's extra migration modules must all be there: a missing one would silently migrate less."""
     spec = importlib.util.spec_from_file_location("_shipped_edition", locations.BACKEND_DIR / "python" / "app" / "edition.py")
