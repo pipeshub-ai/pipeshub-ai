@@ -25,6 +25,7 @@ import { SharedArtifactService } from '../../../../src/modules/agent-harness/app
 import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access'
 import { conversationExtensions, useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { chatArchivesScope, withListScope } from '../helpers/list-scope'
+import { VECTOR_EXAMPLES } from '../../agent-harness/support/canary-scan'
 
 /**
  * A shared conversation, archive or saved search shows each viewer only the
@@ -1439,6 +1440,61 @@ const useViewsWithoutActivity = () => {
   useConversationExtensions(undefined)
   useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: withoutActivity } })
 }
+
+describe("the owner reads a collaborator's turn the chat's own turn code wrote as one the harness wrote", () => {
+  afterEach(() => sinon.restore())
+  const COLLABORATOR = '999999999999999999999999'
+  /** A write share's turn as the chat's turn code stores it: who wrote the question and who asked for the answer, no sender. */
+  const collaboratorTurn = (answerOver: Record<string, unknown> = {}) => [
+    { messageType: 'user_query', content: 'theirs', authorUserId: COLLABORATOR },
+    { messageType: 'bot_response', content: 'collaborator answer', requestedBy: COLLABORATOR, ...answerOver },
+  ]
+  const ownerRead = async (citations: unknown) => {
+    const r = res()
+    const next = sinon.stub()
+    await behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { citations: citations as never }) as Handler, 'chat')(
+      req(OWNER, { params: { conversationId: SESSION } }) as never,
+      r as never,
+      next as never,
+    )
+    sinon.assert.notCalled(next)
+    return r.json.firstCall.args[0].conversation.messages as any[]
+  }
+
+  it('its citations pass the harness check with the owner\'s access, as a harness turn\'s do: it ran with the collaborator\'s', async () => {
+    // The record check would show it; the harness check, which decides cited records here, refuses it.
+    const citations = { checksRecords: () => true, decide: () => Promise.resolve(CitationAccess.denyRecords()) }
+    const cites = { citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] }
+    const harnessTurn = [
+      { messageType: 'user_query', content: 'theirs', senderId: COLLABORATOR },
+      { messageType: 'bot_response', content: 'collaborator answer', senderId: COLLABORATOR, ...cites },
+    ]
+    const replies: any[] = []
+    for (const rows of [collaboratorTurn(cites), harnessTurn]) {
+      stubAccess(['rec-ok', 'rec-no'])
+      stubConversation(rows, [{ userId: COLLABORATOR, accessLevel: 'write' }])
+      replies.push((await ownerRead(citations))[1])
+      sinon.restore()
+    }
+
+    const [ours, harness] = replies
+    expect(harness.answerHidden, 'a harness turn').to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(ours.answerHidden).to.deep.equal(harness.answerHidden)
+    expect(JSON.stringify(ours)).to.not.contain(SECRET)
+  })
+
+  it('it leaves through the shared redactor, as every message that is not the reader\'s own', async () => {
+    // One on a single line, so the text can be searched for it as it is.
+    const secret = VECTOR_EXAMPLES.find((example) => /^[\x21-\x7e]+$/.test(example.secret))?.secret as string
+    stubAccess([])
+    const citations = { checksRecords: () => true, decide: () => Promise.resolve(CitationAccess.denyRecords()) }
+    stubConversation(collaboratorTurn({ content: `the key is ${secret}` }), [{ userId: COLLABORATOR, accessLevel: 'write' }])
+    const [, reply] = await ownerRead(citations)
+
+    expect(reply.content).to.contain('the key is')
+    expect(reply.content).to.not.contain(secret)
+  })
+})
 
 describe('what a viewer sees of another user\'s reasoning and tool steps', () => {
   afterEach(() => {

@@ -350,6 +350,17 @@ const sentByCollaborator = (message: unknown): boolean => {
 };
 
 /**
+ * Whether `message` is another person's for `viewer` in a chat `owner` owns: by the harness's sender (`senderId`,
+ * `messageActor`) or by who wrote or asked for it, as the chat's own turns store it (`rowOwnerOf`). Either one
+ * naming someone else is enough.
+ */
+const othersFor =
+  (viewer: string, owner: string) =>
+  (message: unknown): boolean =>
+    messageActor(message, owner) !== viewer ||
+    rowOwnerOf(owner)(message as object) !== viewer;
+
+/**
  * A reader who does not own the conversation sees a cited record only when
  * they can read it now (P1b C-6), and an artifact only when they can read
  * every source it was derived from (SS0); the others become placeholders.
@@ -374,18 +385,21 @@ async function withViewerChecks<
   const checked = await withAccessChecks(response, req, checks, ids);
   const viewer = String(req.user?.userId);
   const owner = String(response.initiator);
+  const others = othersFor(viewer, owner);
   return {
     ...checked,
     messages: checked.messages.map((message) =>
-      messageActor(message, owner) === viewer
-        ? message
-        : shapedForViewer(message),
+      others(message) ? shapedForViewer(message) : message,
     ),
   };
 }
 
 async function withAccessChecks<
-  T extends { messages: unknown[]; access: { isOwner: boolean } },
+  T extends {
+    messages: unknown[];
+    access: { isOwner: boolean };
+    initiator?: unknown;
+  },
 >(
   response: T,
   req: AuthenticatedUserRequest,
@@ -393,7 +407,13 @@ async function withAccessChecks<
   ids: ViewerRead,
 ): Promise<T> {
   if (response.access.isOwner) {
-    const foreign = response.messages.filter(sentByCollaborator);
+    // A collaborator's turn as the harness stores it, or as the chat's own turns store it: both ran with the
+    // collaborator's access, and the per-record view leaves their citations to this check.
+    const owner = String(response.initiator);
+    const others = othersFor(String(req.user?.userId), owner);
+    const foreign = response.messages.filter(
+      (message) => sentByCollaborator(message) || others(message),
+    );
     if (foreign.length === 0) return response;
     const checked = await checkedForViewer(foreign, req, checks, ids);
     const byOriginal = new Map(
