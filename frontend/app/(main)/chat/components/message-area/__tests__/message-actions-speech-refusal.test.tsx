@@ -27,7 +27,8 @@ vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: h.
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: {} }));
 vi.mock('../../../api', () => ({ ChatApi: {} }));
 vi.mock('../../../store', () => {
-  const state = () => ({ activeSlotId: 's1', slots: { s1: h.slot }, bumpConversationsVersion: vi.fn() });
+  // The store always holds its settings; the answer's actions read the models the app knows.
+  const state = () => ({ activeSlotId: 's1', slots: { s1: h.slot }, bumpConversationsVersion: vi.fn(), settings: { availableModels: [] } });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), { getState: state });
   return { useChatStore };
 });

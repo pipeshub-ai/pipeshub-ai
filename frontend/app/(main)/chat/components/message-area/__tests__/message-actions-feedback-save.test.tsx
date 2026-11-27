@@ -28,7 +28,8 @@ vi.mock('../../../api', () => ({
   ChatApi: { submitFeedback: h.submitFeedback, submitAgentFeedback: h.submitAgentFeedback },
 }));
 vi.mock('../../../store', () => {
-  const state = () => ({ activeSlotId: 's1', slots: { s1: h.slot } });
+  // The store always holds its settings; the answer's actions read the models the app knows.
+  const state = () => ({ activeSlotId: 's1', slots: { s1: h.slot }, settings: { availableModels: [] } });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), {
     getState: state,
   });

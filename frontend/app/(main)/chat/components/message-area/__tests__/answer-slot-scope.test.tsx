@@ -23,6 +23,8 @@ type FakeSlot = {
 type FakeState = {
   activeSlotId: string | null;
   agentContextAccess: null;
+  // The answer's actions read the models the app knows (the store always holds its settings).
+  settings: { availableModels: [] };
   previewFile: null;
   slots: Record<string, FakeSlot>;
   updateSlot(slotId: string, patch: Partial<FakeSlot>): void;
@@ -103,6 +105,7 @@ function freshState(): FakeState {
   const state: FakeState = {
     activeSlotId: ACTIVE,
     agentContextAccess: null,
+    settings: { availableModels: [] },
     previewFile: null,
     slots: { [ACTIVE]: slot('conv-active'), [SIDE]: slot('conv-side') },
     updateSlot: (slotId, patch) => {
