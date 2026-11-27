@@ -65,7 +65,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         from app import edition_services
         from app.config.providers.kv_cipher import InstallKeyCipher
 
-        if not isinstance(edition_services.kv_cipher(lambda: self.encryption_service), InstallKeyCipher):
+        if type(edition_services.kv_cipher(lambda: self.encryption_service)) is not InstallKeyCipher:   # a subclass may change encrypt
             raise RuntimeError("Etcd3EncryptedKeyValueStore supports only the platform cipher; use EncryptedKeyValueStore (KV_STORE_TYPE=etcd)")
 
         self.logger.debug("🔧 Creating ETCD store...")

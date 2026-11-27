@@ -28,12 +28,14 @@ export class KeyValueStoreService implements IKVStoreConnection {
 
   private encode<T>(key: string, value: T): T {
     const codec = this.valueCodec();
-    return codec ? (codec.encode(key, value) as T) : value;
+    return codec && typeof value === 'string'
+      ? (codec.encode(key, value) as T)
+      : value;
   }
 
   private decode<T>(key: string, stored: T | null): T | null {
     const codec = this.valueCodec();
-    return codec && stored !== null && stored !== undefined
+    return codec && typeof stored === 'string'
       ? (codec.decode(key, stored) as T)
       : stored;
   }
@@ -297,15 +299,15 @@ export class KeyValueStoreService implements IKVStoreConnection {
   ): Promise<boolean> {
     await this.ensureConnection();
     let expected: T | null = expectedValue;
-    if (this.valueCodec()) {
-      // The caller compares against what it read (decoded); the store compares what it keeps: swap in the kept value when it
-      // decodes to the one expected, so the store's own compare stays the atomic step.
+    if (
+      this.valueCodec() &&
+      (typeof expectedValue === 'string' || expectedValue === null)
+    ) {
+      // The caller compares against the string it read (decoded); the store compares what it keeps: swap in the kept string
+      // when it decodes to exactly the one expected, so the store's own compare stays the atomic step. Anything other than a
+      // string is not encoded, so the store compares it as given.
       const kept = (await this.store.getKey(key)) as T | null;
-      if (
-        JSON.stringify(this.decode<T>(key, kept)) !==
-        JSON.stringify(expectedValue ?? null)
-      )
-        return false;
+      if (this.decode<T>(key, kept) !== expectedValue) return false;
       expected = kept;
     }
     const success = await this.store.compareAndSet(

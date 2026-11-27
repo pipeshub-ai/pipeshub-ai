@@ -79,3 +79,21 @@ def test_the_legacy_etcd3_store_refuses_a_cipher_other_than_the_platforms(env, m
     with patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=MagicMock()), \
             pytest.raises(RuntimeError, match="only the platform cipher"):
         Etcd3EncryptedKeyValueStore(logging.getLogger("kv-cipher-test"))
+
+
+def test_the_legacy_etcd3_store_refuses_a_subclass_of_the_platform_cipher_too(env, monkeypatch) -> None:  # noqa: F811
+    from unittest.mock import MagicMock
+
+    from app.config.providers.etcd.etcd3_encrypted_store import (
+        Etcd3EncryptedKeyValueStore,
+    )
+    from app.config.providers.kv_cipher import InstallKeyCipher
+
+    class Overriding(InstallKeyCipher):            # passes an isinstance check, but its own encrypt would be ignored here
+        def encrypt(self, key: str, text: str) -> str:
+            return "other:" + super().encrypt(key, text)
+
+    monkeypatch.setattr(edition_services, "kv_cipher", Overriding)
+    with patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=MagicMock()), \
+            pytest.raises(RuntimeError, match="only the platform cipher"):
+        Etcd3EncryptedKeyValueStore(logging.getLogger("kv-cipher-test"))

@@ -84,4 +84,22 @@ describe('KeyValueStoreService value codec', () => {
     expect(await s.compareAndSet('/a', 'v', 'w')).to.equal(true);
     expect(kept.get('/a')).to.equal('enc(/a|w)');
   });
+  it('hands the codec strings only: other values are kept and compared as given', async () => {
+    const seen: unknown[] = [];
+    sinon.stub(edition, 'kvValueCodec').returns({
+      encode: (key: string, v: string) => (seen.push(v), `enc(${v})`),
+      decode: (key: string, v: string) =>
+        v.replace(/^enc\(/, '').replace(/\)$/, ''),
+    });
+    const s = service();
+    const map = new Map([['a', 1]]);
+    await s.set('/obj', map as unknown as string);
+    expect(kept.get('/obj')).to.equal(map); // not a string: not given to the codec
+    expect(seen).to.deep.equal([]);
+    // a value that serializes like the kept one but is not it must not match (JSON.stringify of a Map is "{}")
+    expect(
+      await s.compareAndSet('/obj', new Map() as unknown as string, 'w'),
+    ).to.equal(false);
+    expect(kept.get('/obj')).to.equal(map);
+  });
 });
