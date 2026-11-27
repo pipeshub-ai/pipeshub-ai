@@ -906,8 +906,11 @@ export const AgentsApi = {
     const body: Partial<AgentFormPayload> & AgentSaveOptions = { ...payload };
     if (options?.publish === false) body.publish = false;
     if (options?.versionNote?.trim()) body.versionNote = options.versionNote.trim();
-    const request = options?.suppressErrorToast ? { suppressErrorToast: true } : undefined;
-    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, body, request);
+    const url = `${AGENTS_BASE_URL}/${agentKey}`;
+    // A caller that shows its own error asks for no toast; without that, the request is the plain PUT.
+    const { data } = options?.suppressErrorToast
+      ? await apiClient.put<UpdateAgentApiResponse>(url, body, { suppressErrorToast: true })
+      : await apiClient.put<UpdateAgentApiResponse>(url, body);
 
     if (data?.status === 'partial_success') {
       const { agent } = await this.getAgent(agentKey);
