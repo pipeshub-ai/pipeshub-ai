@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.writers import KgWriter
 
@@ -187,6 +186,9 @@ class Judged:
 async def decide_sks(tx: Tx, org: str, sks: list[int], access: dict[str, Any]) -> Judged:
     """``kg.read.decide`` for nodes known by their sks (the root's judges), by the same rules in the same order; a sk kg holds no row of is left out of ``rows`` (the caller asks the
     check about it by its id). Under the caller's kg.read.PROFILE."""
+    from app.services.graph_db.postgres.kg import (
+        read as kg_read,  # imports drainer, which imports project, which imports this module
+    )
     j = Judged()
     gated = set(access["gated_app_ids"])
     granted = access_sql.grants_of(access)
