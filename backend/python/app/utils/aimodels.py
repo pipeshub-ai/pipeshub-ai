@@ -76,11 +76,17 @@ def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, 
     return decorate_chat_model(instrument_model(model, provider, config), provider, model_name, config)
 
 
-def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
+def _decorate_embeddings(
+    embeddings: Embeddings, provider: str, model_name: str | None, config: dict[str, Any]
+) -> Embeddings:
     from app.edition_services import decorate_embeddings
     from app.services.model_identity.transport.instrument import instrument_model
+    from app.utils.embedding_response_adapter import decode_embedding_responses
 
-    return decorate_embeddings(instrument_model(embeddings, provider, config), provider, model_name, config)
+    # Every OpenAI-protocol embeddings client decodes its responses off the event loop (see the adapter's docstring).
+    return decorate_embeddings(
+        instrument_model(decode_embedding_responses(embeddings), provider, config), provider, model_name, config
+    )
 
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.
