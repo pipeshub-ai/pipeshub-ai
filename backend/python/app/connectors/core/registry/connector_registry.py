@@ -906,7 +906,9 @@ class ConnectorRegistry:
         ``affected: false`` would otherwise go on answering for an install nobody counted. Node reads a missing
         report as affected. A failed delete is logged."""
         from app.config.configuration_service import delete_config_confirmed
-        from app.connectors.core.base.data_processor.permission_sync_gate import INSTALL_AFFECTED_KEY
+        from app.connectors.core.base.data_processor.permission_sync_gate import (
+            INSTALL_AFFECTED_KEY,
+        )
 
         try:
             if await delete_config_confirmed(self.container.config_service(), INSTALL_AFFECTED_KEY):
