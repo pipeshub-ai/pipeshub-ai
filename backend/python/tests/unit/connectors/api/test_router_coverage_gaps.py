@@ -831,14 +831,14 @@ class TestGetConnectorInstanceConfigGaps:
 
     @pytest.mark.asyncio
     async def test_config_not_found_returns_empty(self):
-        """When config is not in etcd (raises exception), return default empty config."""
+        """When config is not in etcd (the read answers None), return default empty config."""
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
             "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("not found"))
+        config_service.get_config = AsyncMock(return_value=None)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))

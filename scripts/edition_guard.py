@@ -5,9 +5,10 @@ Other editions build on this repository through its extension points (see CONTRI
 points"); their own code lives in their own repositories. A change here therefore fails when it
 
 1. adds a file under an ``ee/`` directory at any depth, or an edition-only build file
-   (``Dockerfile.ee``, a workflow named ``*-ee.yml``, a deployment file named ``*.ee.*``);
+   (``Dockerfile.ee``, a workflow named ``*-ee.yml``, a deployment file named ``*.ee.*``), except under one of the
+   ``OPEN_EE_ROOTS`` this repository ships (see below);
 2. adds an import of an ``ee`` package or directory (Python ``app.ee``; TypeScript ``@/ee/``, ``./ee/``,
-   ``../ee/``);
+   ``../ee/``, or any relative import that resolves under an ``ee/`` directory), except of one of those roots;
 3. adds a file to a directory that accepts fixes only (``FROZEN``);
 4. adds a proprietary licence marker;
 5. names a private edition repository, in an added line or a commit message: both are public once pushed;
@@ -32,7 +33,9 @@ Standard library only, so CI and ``scripts/verify.sh`` run it with ``python3 -I`
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
+import posixpath
 import re
 import subprocess
 import sys
@@ -48,6 +51,157 @@ EDITION_PATHS = (
     re.compile(r"^\.github/workflows/.*-ee\.ya?ml$"),
     re.compile(r"^deployment/.*\.ee\."),
 )
+
+# The ee/ directories this repository ships: the paid features a licence key turns on (permission sync's readers
+# and the licence check), kept in their own named directories so the line between free and paid stays visible.
+# A file under one of these, or an import of one, passes rules 1 and 2. Every other ee/ path or import still fails.
+OPEN_EE_ROOTS = (
+    "backend/python/app/ee/permission_sync/",
+    "backend/python/tests/unit/ee/__init__.py",
+    "backend/python/tests/unit/ee/permission_sync/",
+    "backend/nodejs/apps/src/ee/modules/license/",
+    "backend/nodejs/apps/tests/ee/modules/license/",
+)
+# Every ee module or path a line names, each judged on its own: a line passes only when all of them are open.
+_PYTHON_EE_TARGET = re.compile(r"\bapp\.ee(?:\.\w+)*")
+_SCRIPT_EE_TARGET = re.compile(r"""["']((?:@/|(?:\.{1,2}/)+)ee/[^"']*)["']""")
+
+
+def _open_ee_path(path: str) -> bool:
+    """A directory root admits what is under it; a file root admits that file only."""
+    return any(path.startswith(root) if root.endswith("/") else path == root for root in OPEN_EE_ROOTS)
+
+
+def _open_python_import(text: str) -> bool:
+    targets = _PYTHON_EE_TARGET.findall(text)
+    return bool(targets) and all(t == "app.ee.permission_sync" or t.startswith("app.ee.permission_sync.") for t in targets)
+
+
+# Script imports with a relative specifier, resolved against the importing file: one that lands under an ee/ directory
+# outside the open roots fails, wherever the importing file is (``from '../billing/x'`` inside an open root included).
+_SCRIPT_RELATIVE = re.compile(r"""(?:\bfrom\s+|^\s*import\s+|\b(?:require|import)\(\s*)["'](\.{1,2}/[^"']*)["']""")
+PYTHON_ROOT = "backend/python"
+
+
+def _script_relative_targets(path: str, text: str) -> list[str]:
+    return [posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)) for spec in _SCRIPT_RELATIVE.findall(text)]
+
+
+def _python_module_path(module: str) -> str:
+    """The repository path of an absolute module of the Python service (``app.ee.x`` -> ``backend/python/app/ee/x``)."""
+    return posixpath.join(PYTHON_ROOT, *module.split("."))
+
+
+def _python_package_path(path: str, level: int) -> str:
+    """The directory a relative import with ``level`` dots starts from, in the file at ``path``."""
+    base = posixpath.dirname(path)
+    for _ in range(level - 1):
+        base = posixpath.dirname(base)
+    return base
+
+
+def _from_targets(module_path: str, names: Sequence[str]) -> list[str]:
+    """A ``from`` import loads its module, and each name may be a submodule of it (``from app import ee``). A closed
+    module is judged by its names alone, so ``from app.ee import permission_sync`` passes and ``harness`` does not."""
+    named = [posixpath.join(module_path, name) for name in names]
+    return named if _closed_ee_target(module_path) else [module_path, *named]
+
+
+def _import_module_targets(path: str, node: ast.Call) -> list[str]:
+    """What an ``import_module(name, package)`` call loads, its arguments bound by position or keyword. A relative
+    name resolves against a literal package, or ``__package__`` (this file's package); against anything else it is
+    unknown, and read as closed."""
+    bound: dict[str, ast.expr | None] = {
+        "name": node.args[0] if node.args else None,
+        "package": node.args[1] if len(node.args) > 1 else None,
+    }
+    for keyword in node.keywords:
+        if keyword.arg in bound:
+            bound[keyword.arg] = keyword.value
+    name, package = bound["name"], bound["package"]
+    if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+        return []
+    module = name.value
+    if not module.startswith("."):
+        return [_python_module_path(module)]
+    dots = len(module) - len(module.lstrip("."))
+    rest = [part for part in module[dots:].split(".") if part]
+    if isinstance(package, ast.Name) and package.id == "__package__":
+        return [posixpath.join(_python_package_path(path, dots), *rest)]
+    if isinstance(package, ast.Constant) and isinstance(package.value, str) and package.value:
+        parts = package.value.split(".")
+        return [_python_module_path(".".join([*parts[: len(parts) - (dots - 1)], *rest]))]
+    return [posixpath.join(PYTHON_ROOT, "app", "ee")]
+
+
+def _python_import_targets(path: str, node: ast.AST) -> list[str]:
+    """The repository paths one import statement, or ``import_module`` call, loads."""
+    if isinstance(node, ast.Import):
+        return [_python_module_path(alias.name) for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        names = [alias.name for alias in node.names]
+        if not node.level:
+            return _from_targets(_python_module_path(node.module or ""), names)
+        base = _python_package_path(path, node.level)
+        return _from_targets(posixpath.join(base, *node.module.split(".")) if node.module else base, names)
+    if isinstance(node, ast.Call):
+        func = node.func
+        called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+        return _import_module_targets(path, node) if called == "import_module" else []
+    return []
+
+
+def _closed_python_imports(path: str, source: str | None) -> list[tuple[int, int]] | None:
+    """The line spans of the statements in ``source`` that import a closed ee package, or ``None`` when it cannot be
+    parsed. Parsed, so a second statement on a line, a continued line and a parenthesised list are all read."""
+    if source is None:
+        return None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    return [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call))
+        and any(_closed_ee_target(t) for t in _python_import_targets(path, node))
+    ]
+
+
+def _reader_from_diff(lines: Sequence["AddedLine"]) -> Callable[[str], str | None]:
+    """For a diff alone (no tree to read): a file whose added lines are all of it, numbered from 1 without a gap."""
+    by_path: dict[str, list[AddedLine]] = {}
+    for line in lines:
+        by_path.setdefault(line.path, []).append(line)
+
+    def read(path: str) -> str | None:
+        added = by_path.get(path, [])
+        whole = [line.number for line in added] == list(range(1, len(added) + 1))
+        return "\n".join(line.text for line in added) + "\n" if added and whole else None
+
+    return read
+
+
+def _closed_ee_target(target: str) -> bool:
+    """A resolved import target under an ee/ directory that no open root admits (as a directory or a module file)."""
+    stem = target.rstrip("/")
+    return bool(EDITION_PATHS[0].search(stem + "/")) and not (
+        _open_ee_path(stem + "/") or _open_ee_path(stem + ".py")
+    )
+
+
+def _open_script_import(path: str, text: str) -> bool:
+    """Relative specifiers are resolved against the importing file; an alias (``@/ee/``) never names an open root."""
+    targets = _SCRIPT_EE_TARGET.findall(text)
+    return bool(targets) and all(
+        not spec.startswith("@/")
+        and any(
+            posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)).startswith(root)
+            for root in OPEN_EE_ROOTS
+            if root.endswith("/")
+        )
+        for spec in targets
+    )
 
 PYTHON_SOURCES = (".py", ".pyi")
 SCRIPT_SOURCES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
@@ -146,20 +300,45 @@ def _frozen(path: str) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in FROZEN)
 
 
-def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -> Report:
+def check(
+    added_paths: Sequence[str], diff: str, messages: Sequence[str] = (), read: Callable[[str], str | None] | None = None
+) -> Report:
+    """``read`` gives a changed file's whole new content, so Python imports are parsed; without it, a file whose
+    added lines are all of it is read from the diff, and any other falls back to reading line by line."""
     report = Report()
+    lines = added_lines(diff)
+    read = read or _reader_from_diff(lines)
+    added_at: dict[str, set[int]] = {}
+    for line in lines:
+        added_at.setdefault(line.path, set()).add(line.number)
+    # Per parsed Python file: the line each closed import statement this diff adds or changes is reported at (its
+    # first added line); None for a file that could not be parsed.
+    parsed: dict[str, set[int] | None] = {}
+    for path in (p for p in added_at if p.endswith(PYTHON_SOURCES)):
+        spans = _closed_python_imports(path, read(path))
+        parsed[path] = None if spans is None else {
+            min(hit) for start, end in spans if (hit := added_at[path] & set(range(start, end + 1)))
+        }
     for path in added_paths:
-        if any(pattern.search(path) for pattern in EDITION_PATHS):
+        if any(pattern.search(path) for pattern in EDITION_PATHS) and not _open_ee_path(path):
             report.errors.append(f"{path}: an edition-only path; it belongs in that edition's repository")
         if _frozen(path):
             report.errors.append(f"{path}: a new file in a directory that accepts fixes only")
         if any(pattern.search(path) for pattern in TRACKER_PATHS):
             report.errors.append(f"{path}: a project-tracking document; the tracker is kept outside this repository")
-    for line in added_lines(diff):
+    for line in lines:
         where = f"{line.path}:{line.number}"
-        if line.path.endswith(PYTHON_SOURCES) and any(p.search(line.text) for p in PYTHON_IMPORTS):
+        closed = parsed.get(line.path)
+        if closed is not None:
+            python_import = line.number in closed
+        else:  # unparsable: the line alone
+            python_import = any(p.search(line.text) for p in PYTHON_IMPORTS) and not _open_python_import(line.text)
+        script_import = any(_closed_ee_target(t) for t in _script_relative_targets(line.path, line.text)) or (
+            any(p.search(line.text) for p in SCRIPT_IMPORTS) and not _open_script_import(line.path, line.text)
+        )
+        if line.path.endswith(PYTHON_SOURCES) and python_import:
             report.errors.append(f"{where}: imports an edition package; use an extension point instead")
-        if line.path.endswith(SCRIPT_SOURCES) and any(p.search(line.text) for p in SCRIPT_IMPORTS):
+        if line.path.endswith(SCRIPT_SOURCES) and script_import:
             report.errors.append(f"{where}: imports an edition directory; use an extension point instead")
         if LICENCE_MARKER in line.text:
             report.errors.append(f"{where}: a proprietary licence marker; this repository's code is Apache-2.0")
@@ -352,8 +531,9 @@ def main(argv: list[str] | None = None) -> int:
     added, diff, messages = collect(args.base, args.worktree)
     if args.pr_body is not None and args.pr_body.is_file():
         messages.append(args.pr_body.read_text(encoding="utf-8"))
-    report = check(added, diff, messages)
-    surfaces = check_admin_surfaces(*tree(args.worktree))
+    files, read = tree(args.worktree)
+    report = check(added, diff, messages, read)
+    surfaces = check_admin_surfaces(files, read)
     report.errors.extend(surfaces.errors)
     report.warnings.extend(surfaces.warnings)
     for warning in report.warnings:

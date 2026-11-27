@@ -19,6 +19,8 @@ class MultimodalProviderConfig:
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     base_url: str | None = None
+    # Whether a model with no saved credentials may use the server's own.
+    allow_ambient_credentials: bool = False
     # Dimension the target collection was created with. Providers that let
     # the caller choose an output length (Bedrock Titan) must request this
     # one, or every point they return is rejected by

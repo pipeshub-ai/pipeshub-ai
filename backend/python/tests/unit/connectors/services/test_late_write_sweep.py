@@ -23,9 +23,15 @@ from app.connectors.services.late_write_sweep import (
 )
 from app.core.org_context import current_org_id
 
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
+
 NOW = 30 * 24 * 60 * 60 * 1000
 ORG, CONNECTOR = "org1", "conn1"
-KEY = f"{PENDING_DIRECTORY}{CONNECTOR}"
+KEY = f"{PENDING_DIRECTORY}{ORG}/{CONNECTOR}/r"
 
 
 class Config:
@@ -137,23 +143,27 @@ async def test_every_pass_sweeps_the_groups_read_before_the_delete() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_retried_delete_keeps_the_groups_the_first_attempt_read() -> None:
+async def test_a_retried_delete_keeps_the_groups_the_first_attempt_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """The first attempt may have removed some groups before it failed; their links still need sweeping."""
     config = Config()
     await record_pending_late_write_sweep(config, Graph(groups=["rg1", "rg2"]), org_id=ORG, connector_id=CONNECTOR)
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r2"))
     await record_pending_late_write_sweep(config, Graph(groups=["rg2"]), org_id=ORG, connector_id=CONNECTOR)
-    assert intent(config)["recordGroupIds"] == ["rg1", "rg2"]
+    [pending] = await list_pending_late_write_sweeps(config)
+    assert sorted(pending["recordGroupIds"]) == ["rg1", "rg2"]
 
 
 @pytest.mark.asyncio
-async def test_an_earlier_intent_that_cannot_be_read_refuses_the_delete() -> None:
-    """Rewritten from an unknown earlier value, the intent would drop the groups the first attempt saved."""
+async def test_an_earlier_intent_that_cannot_be_read_keeps_the_groups_it_saved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The next attempt has an entry of its own, so nothing is rewritten from an unknown earlier value."""
     config = Config()
     await record_pending_late_write_sweep(config, Graph(groups=["rg1"]), org_id=ORG, connector_id=CONNECTOR)
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r2"))
     config.read_error = ConnectionError("store down")
-    with pytest.raises(LateWriteSweepIntentError):
-        await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR)
-    assert intent(config)["recordGroupIds"] == ["rg1"]
+    await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR)
+    config.read_error = None
+    [pending] = await list_pending_late_write_sweeps(config)
+    assert pending["recordGroupIds"] == ["rg1"]
 
 
 @pytest.mark.asyncio
@@ -305,3 +315,38 @@ async def test_another_replica_holding_the_lease_sweeps_instead() -> None:
 
 def test_passes_back_off_to_an_hour() -> None:
     assert [retry_delay_ms(n) for n in range(6)] == [RETRY_MS * 2 ** n for n in range(4)] + [RETRY_CAP_MS] * 2
+
+
+@pytest.mark.asyncio
+async def test_an_intent_never_sweeps_or_settles_another_orgs_connector() -> None:
+    graph = Graph(app={"_key": CONNECTOR, "orgId": "org2", "status": "DELETING"})
+    config = await recorded(age_ms=STALE_MS - 1)
+    assert await sweeper(graph, config).tick() == {}
+    assert graph.swept_in == [] and intent(config) is not None
+
+    stale = await recorded(age_ms=STALE_MS + 1)
+    assert await sweeper(graph, stale).tick() == {"dropped": 1}
+    assert graph.swept_in == [] and intent(stale) is None
+
+
+@pytest.mark.asyncio
+async def test_another_orgs_pending_sweep_is_neither_replaced_nor_merged() -> None:
+    config = await recorded(age_ms=GRACE_MS, recordGroupIds=["theirs"])
+    theirs = config.kv[KEY]
+    await record_pending_late_write_sweep(config, Graph(), org_id="org2", connector_id=CONNECTOR, now_ms=NOW)
+    assert config.kv[KEY] == theirs
+    assert config.kv[f"{PENDING_DIRECTORY}org2/{CONNECTOR}/r"]["recordGroupIds"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_delete_recorded_while_a_sweep_runs_stays_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = await recorded(age_ms=QUIET_MS + 1)
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r2"))
+
+    class Deleting(Graph):
+        async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: object = ()) -> tuple[int, int]:
+            await record_pending_late_write_sweep(config, Graph(), org_id=ORG, connector_id=CONNECTOR, now_ms=NOW)
+            return 0, 0
+
+    assert await sweeper(Deleting(), config).tick() == {"cleared": 1}
+    assert [i["requestedAt"] for i in await list_pending_late_write_sweeps(config)] == [NOW]

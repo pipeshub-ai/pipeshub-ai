@@ -6,6 +6,7 @@ hook sends. Credentials are redacted; nothing here makes a model call.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.services.model_identity.call_context import ModelCallContext
@@ -23,7 +24,13 @@ if TYPE_CHECKING:
     )
 
 REDACTED = "[redacted]"
-_SECRET_HEADER_HINTS = ("key", "token", "secret", "password", "auth")
+# Header names that may carry a credential. Node redacts and restores stored header
+# templates by the same pattern (configuration_manager/utils/maskConfigSecrets.ts); the
+# contract fixture backend/nodejs/apps/tests/contract/credential-header-hints.fixture.json
+# keeps the two equal.
+CREDENTIAL_HEADER_HINT = re.compile(
+    r"auth|cookie|key|token|secret|password|credential|signature|assertion", re.IGNORECASE
+)
 
 
 def redact_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -31,12 +38,12 @@ def redact_headers(headers: dict[str, str]) -> dict[str, str]:
 
     Placeholders cannot render a secret (only identity fields exist), so a header
     carries one only if an admin typed it into a template. That is caught by the
-    name hints below, not guaranteed: a credential in a header named outside them
+    name pattern above, not guaranteed: a credential in a header named outside them
     would show in the preview an admin sees.
     """
     return {
         name: REDACTED
-        if is_forbidden_header_name(name) or any(hint in name.lower() for hint in _SECRET_HEADER_HINTS)
+        if is_forbidden_header_name(name) or CREDENTIAL_HEADER_HINT.search(name)
         else value
         for name, value in headers.items()
     }
@@ -61,8 +68,11 @@ def build_preview(
     )
     identity = IdentityProjector(pseudonym_key=pseudonym_key).project(ctx, governance, groups=groups)
     notes = []
+    forwarding = settings.to_dict(redact=True)
+    # The caller fills in the stored templates, so a literal credential typed into one is here too.
+    forwarding["headerTemplates"] = redact_headers(forwarding["headerTemplates"])
     result: dict[str, Any] = {
-        "forwarding": settings.to_dict(redact=True),
+        "forwarding": forwarding,
         "principal": {"kind": principal.kind.value, "orgId": principal.org_id},
         "workload": {"name": workload.value, "class": workload_class(workload).value},
         "identity": {

@@ -850,3 +850,88 @@ class TestRemainingQuickGaps:
             RecordGroupType.PROJECT,
         )
         assert records == []
+
+
+class TestPerAttachmentFailure:
+    """One attachment that cannot be built leaves out only itself: the issue and its other files are written, and a
+    full sync keeps the failed one as stored with its issue."""
+
+    _ATTACHMENTS = [
+        {"id": "1", "filename": "a.txt", "mimeType": "text/plain"},
+        {"id": "2", "filename": "b.txt", "mimeType": "text/plain"},
+        {"id": "3", "filename": "c.txt", "mimeType": "text/plain"},
+    ]
+
+    @staticmethod
+    def _connector(failing: set[str]) -> JiraDataCenterConnector:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.site_url = "https://jira.example"
+
+        async def _lookup(connector_id: str, external_record_id: str) -> None:
+            if external_record_id in failing:
+                raise RuntimeError("store lookup failed")
+
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=_lookup)
+        mapper = MagicMock()
+        mapper.map_type.return_value = "Task"
+        mapper.map_status.return_value = "Open"
+        mapper.map_priority.return_value = "Low"
+        conn.value_mapper = mapper
+        return conn
+
+    def _issue(self) -> dict[str, Any]:
+        return {
+            "id": "100",
+            "key": "P-1",
+            "fields": {
+                "summary": "T",
+                "updated": "2024-01-01T00:00:00.000+0000",
+                "created": "2024-01-01T00:00:00.000+0000",
+                "issuetype": {"name": "Task"},
+                "attachment": [dict(a) for a in self._ATTACHMENTS],
+            },
+        }
+
+    @staticmethod
+    def _stored_file(external_id: str) -> MagicMock:
+        record = MagicMock()
+        record.id = f"rec-{external_id}"
+        record.external_record_id = external_id
+        record.parent_external_record_id = "100"
+        record.record_type = RecordType.FILE
+        return record
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_new_project", [True, False], ids=["full", "incremental"])
+    async def test_one_failing_attachment_leaves_the_others_written(self, is_new_project: bool) -> None:
+        conn = self._connector({"attachment_2"})
+
+        records = await conn._build_issue_records([self._issue()], "pid", [], is_new_project=is_new_project)
+
+        assert [r.external_record_id for r, _ in records] == ["100", "attachment_1", "attachment_3"]
+        assert conn._issues_not_written == {"100"}
+        conn.data_entities_processor.on_record_deleted.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_sync_keeps_the_failed_attachment_as_stored(self) -> None:
+        conn = self._connector({"attachment_2"})
+        records = await conn._build_issue_records([self._issue()], "pid", [], is_new_project=True)
+        assert [r.external_record_id for r, _ in records] == ["100", "attachment_1", "attachment_3"]
+        stored = [self._stored_file("attachment_2")]
+        conn.data_entities_processor.note_kept_record_group = AsyncMock()
+        conn.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=stored)
+        conn.data_entities_processor.note_kept_records = MagicMock()
+
+        await conn._keep_stored_records("pid", conn._issues_not_written, close=conn._issues_failed_to_build)
+
+        conn.data_entities_processor.note_kept_records.assert_called_once_with("conn-dc-gaps", ["rec-attachment_2"])
+
+    @pytest.mark.asyncio
+    async def test_all_attachments_built_writes_them_all(self) -> None:
+        conn = self._connector(set())
+
+        records = await conn._build_issue_records([self._issue()], "pid", [], is_new_project=True)
+
+        assert [r.external_record_id for r, _ in records] == ["100", "attachment_1", "attachment_2", "attachment_3"]
+        assert conn._issues_not_written == set()

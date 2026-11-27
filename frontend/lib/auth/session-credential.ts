@@ -117,7 +117,7 @@ export type AccessTokenAnswer =
   | { outcome: 'issued'; accessToken: string; refreshToken?: string }
   /** The server said no (signed out, expired, no session): sign in again. */
   | { outcome: 'refused' }
-  /** No answer (offline, server down): the session may still be good. */
+  /** No answer (offline, server down, rate limited): the session may still be good. */
   | { outcome: 'unreachable' };
 
 async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
@@ -131,7 +131,8 @@ async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
   } catch {
     return { outcome: 'unreachable' };
   }
-  if (response.status >= 500) return { outcome: 'unreachable' };
+  // The global limiter answers before authentication, keyed per IP: like a 5xx, it is no verdict on the session.
+  if (response.status >= 500 || response.status === 429) return { outcome: 'unreachable' };
   if (!response.ok) return { outcome: 'refused' };
   let data: { accessToken?: unknown; refreshToken?: unknown } | null;
   try {
