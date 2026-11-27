@@ -279,11 +279,11 @@ async def test_the_generic_plan_of_the_page_reads_an_index_range_of_about_a_page
         skewed = ("from_coll", "from_id", "to_coll", "to_id")
         try:
             for c in skewed:
-                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} SET (n_distinct = 1, n_distinct_inherited = 1)")
+                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} SET (n_distinct_inherited = 1)")      # the partitioned table's statistics only: the option does not reach a partition
             await _admin("ANALYZE graph.edges")
         finally:
             for c in skewed:
-                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} RESET (n_distinct, n_distinct_inherited)")
+                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} RESET (n_distinct_inherited)")
         await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
                      "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
         await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || (g % 3000), 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
