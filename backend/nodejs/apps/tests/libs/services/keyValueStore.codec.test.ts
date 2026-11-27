@@ -102,4 +102,16 @@ describe('KeyValueStoreService value codec', () => {
     ).to.equal(false);
     expect(kept.get('/obj')).to.equal(map);
   });
+  it('answers false, as the store does, when the read before the compare fails', async () => {
+    sinon
+      .stub(edition, 'kvValueCodec')
+      .returns({
+        encode: (k: string, v: string) => v,
+        decode: (k: string, v: string) => v,
+      });
+    const s = service();
+    store.getKey = sinon.stub().rejects(new Error('connection reset'));
+    expect(await s.compareAndSet('/a', 'v', 'w')).to.equal(false);
+    expect(store.compareAndSet.called).to.equal(false);
+  });
 });

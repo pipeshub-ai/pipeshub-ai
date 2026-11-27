@@ -306,7 +306,16 @@ export class KeyValueStoreService implements IKVStoreConnection {
       // The caller compares against the string it read (decoded); the store compares what it keeps: swap in the kept string
       // when it decodes to exactly the one expected, so the store's own compare stays the atomic step. Anything other than a
       // string is not encoded, so the store compares it as given.
-      const kept = (await this.store.getKey(key)) as T | null;
+      let kept: T | null;
+      try {
+        kept = (await this.store.getKey(key)) as T | null;
+      } catch (error) {
+        // the same contract as the store's own compare-and-set: a failure is `false` (the callers retry), never a rejection
+        this.logger.warn('compare-and-set read failed', {
+          error: (error as Error).message,
+        });
+        return false;
+      }
       if (this.decode<T>(key, kept) !== expectedValue) return false;
       expected = kept;
     }
