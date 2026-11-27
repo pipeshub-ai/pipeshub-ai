@@ -189,6 +189,16 @@ export const chatSessions: CollectionMapping = {
   ],
   dropped: [
     {
+      path: 'failedRunBy',
+      reason:
+        "who asked the run that left the chat failed (only they are told of it); the PostgreSQL store keeps no such field, and a moved chat's failure reads as one there does",
+    },
+    {
+      path: 'projectVisibleAt',
+      reason:
+        'when the chat last became visible to its project, which decides who reads it as a reader from before; the PostgreSQL store keeps no such field',
+    },
+    {
       path: 'compareOf',
       reason:
         'Compare models is off on the PostgreSQL document store; branches are not copied yet',
@@ -197,6 +207,11 @@ export const chatSessions: CollectionMapping = {
       path: 'compareFromMessageId',
       reason:
         'Compare models is off on the PostgreSQL document store; branches are not copied yet',
+    },
+    {
+      path: 'rev',
+      reason:
+        "the chat's change counter for readers holding a copy; the PostgreSQL store keeps none, and a moved chat is read whole",
     },
   ],
   transforms: [
@@ -276,7 +291,31 @@ export const chatSessionMessages: CollectionMapping = {
       },
     },
   ],
+  // A removed row is kept as an emptied marker, so a reader that holds it learns it is gone; the PostgreSQL store keeps
+  // no markers, and a moved chat is read whole.
+  skip: (doc) =>
+    doc.removedAt !== undefined && doc.removedAt !== null
+      ? 'a removed row (an emptied marker); the PostgreSQL store keeps no markers'
+      : null,
   dropped: [
+    {
+      path: 'requestedBy',
+      reason:
+        'who asked the run behind an answer or error (a reader is shown only the failures of runs they asked); the PostgreSQL store keeps no such column, and a moved row reads as one written there',
+    },
+    {
+      path: 'inReplyTo',
+      reason:
+        'the question an answer answers; the PostgreSQL store keeps no such column',
+    },
+    {
+      path: 'removedAt',
+      reason: 'a row that has it is not copied (see skip)',
+    },
+    {
+      path: 'removedBy',
+      reason: 'a row that has it is not copied (see skip)',
+    },
     {
       path: 'authorUserId',
       reason:
@@ -286,6 +325,21 @@ export const chatSessionMessages: CollectionMapping = {
       path: 'sourceRecordIds',
       reason:
         'messages keep no source-record list; the citations hold the records',
+    },
+    {
+      path: 'changeRev',
+      reason:
+        "a row's change stamp from its chat's counter; the PostgreSQL store keeps none, and a moved chat is read whole",
+    },
+    {
+      path: 'answerMatchType',
+      reason:
+        'marks a capability card answer for display; the PostgreSQL store keeps none, and the card reads as an answer',
+    },
+    {
+      path: 'unavailableTools',
+      reason:
+        'the tools the asker could not use on a turn, shown under it; the PostgreSQL store keeps none',
     },
   ],
 };
