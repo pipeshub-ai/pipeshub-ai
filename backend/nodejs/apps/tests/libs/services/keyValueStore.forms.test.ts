@@ -15,24 +15,41 @@ describe('KeyValueStoreService stored forms', () => {
 
   function service(): KeyValueStoreService {
     (KeyValueStoreService as any).instance = undefined;
-    return KeyValueStoreService.getInstance({ storeType: 'redis', storeConfig: {}, redisConfig: {}, secretKey: 'k', algorithm: 'aes-256-gcm' } as any);
+    return KeyValueStoreService.getInstance({
+      storeType: 'redis',
+      storeConfig: {},
+      redisConfig: {},
+      secretKey: 'k',
+      algorithm: 'aes-256-gcm',
+    } as any);
   }
 
   beforeEach(() => {
     kept = new Map();
     store = {
-      createKey: sinon.stub().callsFake(async (k: string, v: unknown) => { kept.set(k, v); }),
-      updateValue: sinon.stub().callsFake(async (k: string, v: unknown) => { kept.set(k, v); }),
-      getKey: sinon.stub().callsFake(async (k: string) => kept.get(k) ?? null),
-      compareAndSet: sinon.stub().callsFake(async (k: string, e: unknown, n: unknown) => {
-        if ((kept.get(k) ?? null) !== e) return false;
-        kept.set(k, n);
-        return true;
+      createKey: sinon.stub().callsFake(async (k: string, v: unknown) => {
+        kept.set(k, v);
       }),
+      updateValue: sinon.stub().callsFake(async (k: string, v: unknown) => {
+        kept.set(k, v);
+      }),
+      getKey: sinon.stub().callsFake(async (k: string) => kept.get(k) ?? null),
+      compareAndSet: sinon
+        .stub()
+        .callsFake(async (k: string, e: unknown, n: unknown) => {
+          if ((kept.get(k) ?? null) !== e) return false;
+          kept.set(k, n);
+          return true;
+        }),
       healthCheck: sinon.stub().resolves(true),
     };
     sinon.stub(KeyValueStoreFactory, 'createStore').returns(store);
-    sinon.stub(require('../../../src/libs/services/logger.service').Logger, 'getInstance').returns(createMockLogger());
+    sinon
+      .stub(
+        require('../../../src/libs/services/logger.service').Logger,
+        'getInstance',
+      )
+      .returns(createMockLogger());
   });
 
   afterEach(() => sinon.restore());
@@ -57,6 +74,14 @@ describe('KeyValueStoreService stored forms', () => {
     kept.set('/q', JSON.stringify(C));
     expect(await s.compareAndSet('/q', 'other', 'new')).to.equal(false);
     expect(kept.get('/q')).to.equal(JSON.stringify(C));
-    expect(store.compareAndSet.callCount).to.equal(3);              // one retry for the quoted form; a real mismatch is not retried
+    expect(store.compareAndSet.callCount).to.equal(3); // one retry for the quoted form; a real mismatch is not retried
+  });
+  it('keeps the quoted form when a compare-and-set replaces a quoted ciphertext with another', async () => {
+    const s = service();
+    const next = `${'d4'.repeat(12)}:${'e5'.repeat(8)}:${'f6'.repeat(16)}`;
+    kept.set('/lease', JSON.stringify(C));
+    expect(await s.compareAndSet('/lease', C, next)).to.equal(true);
+    expect(kept.get('/lease')).to.equal(JSON.stringify(next)); // still the form its earlier readers read
+    expect(await s.get('/lease')).to.equal(next);
   });
 });

@@ -33,7 +33,7 @@ def stores() -> list[str]:
 @pytest.fixture(params=stores())
 def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dict:
     if request.param == "none":
-        pytest.fail("no store configured: set REDIS_IT_HOST, ETCD_IT_URL and/or the PG_* URLs")
+        pytest.skip("no store configured: set REDIS_IT_HOST, ETCD_IT_URL and/or the PG_* URLs")
     e = {"SECRET_KEY": SECRET, "KV_STORE_TYPE": request.param, "REDIS_KV_PREFIX": f"x{secrets.token_hex(3)}:"}
     if request.param == "redis":
         e |= {"REDIS_HOST": os.environ["REDIS_IT_HOST"], "REDIS_PORT": os.environ.get("REDIS_IT_PORT", "6379"), "REDIS_DB": "0"}

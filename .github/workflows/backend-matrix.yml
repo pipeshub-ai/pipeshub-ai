@@ -469,12 +469,15 @@ jobs:
         env:
           IMAGE: pgvector/pgvector:0.8.7-pg17-bookworm@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
         run: |
+          set -euo pipefail
           docker run -d --name pg-kv-it -p 127.0.0.1:5442:5432 -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE"
           for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5442 -U postgres && break; sleep 1; done
           python -m venv "$RUNNER_TEMP/migrate-venv"
           "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
-          eval "$(PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5442/postgres scripts/prepare_pg_test_db.sh pipeshub_kv)"
-          for v in PG_CORE_URL PG_NODE_URL PG_POOLER PG_RUNTIME_SERVICE; do echo "$v=${!v}" >> "$GITHUB_ENV"; done
+          # an assignment, not eval "$(...)": a failing helper fails the step instead of leaving the variables empty
+          vars=$(PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5442/postgres scripts/prepare_pg_test_db.sh pipeshub_kv)
+          eval "$vars"
+          for v in PG_CORE_URL PG_NODE_URL PG_POOLER PG_RUNTIME_SERVICE; do test -n "${!v}"; echo "$v=${!v}" >> "$GITHUB_ENV"; done
 
       - name: Start ${{ matrix.backend }}
         if: env.SUITE_RUNS == 'true'

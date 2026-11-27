@@ -12,6 +12,7 @@ import { ConfigurationManagerConfig } from '../../modules/configuration_manager/
 // An encrypted value (`iv:ciphertext:tag`, hex) as the Python services kept it until they stored it as its own text: JSON-encoded,
 // with the quotes. Read as the text inside, which is what this service keeps and what its callers decrypt.
 const QUOTED_CIPHERTEXT = /^"[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}"$/;
+const CIPHERTEXT = /^[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}$/;
 
 function readable<T>(stored: T | null): T | null {
   return typeof stored === 'string' && QUOTED_CIPHERTEXT.test(stored)
@@ -99,7 +100,10 @@ export class KeyValueStoreService implements IKVStoreConnection {
 
         if (attempt < maxRetries) {
           // Calculate delay with exponential backoff
-          const delay = Math.min(baseDelay * Math.pow(2, attempt - 1), maxDelay);
+          const delay = Math.min(
+            baseDelay * Math.pow(2, attempt - 1),
+            maxDelay,
+          );
           this.logger.warn(
             `Failed to connect to key-value store (attempt ${attempt}/${maxRetries}). ` +
               `Retrying in ${delay / 1000} seconds...`,
@@ -111,9 +115,12 @@ export class KeyValueStoreService implements IKVStoreConnection {
     }
 
     // All retries failed
-    this.logger.error('Failed to connect to key-value store after all retries', {
-      error: lastError,
-    });
+    this.logger.error(
+      'Failed to connect to key-value store after all retries',
+      {
+        error: lastError,
+      },
+    );
     throw lastError;
   }
 
@@ -182,7 +189,6 @@ export class KeyValueStoreService implements IKVStoreConnection {
     }
   }
 
-
   private async publishCacheInvalidation(key: string): Promise<void> {
     if (this.store.publishCacheInvalidation) {
       await this.store.publishCacheInvalidation(key);
@@ -248,7 +254,9 @@ export class KeyValueStoreService implements IKVStoreConnection {
     callback: (value: T | null) => void,
   ): Promise<void> {
     await this.ensureConnection();
-    await this.store.watchKey(key, (value: T | null) => callback(readable(value)));
+    await this.store.watchKey(key, (value: T | null) =>
+      callback(readable(value)),
+    );
   }
 
   /**
@@ -268,7 +276,11 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * @param newValue - The new value to set if the comparison succeeds
    * @returns true if the update was successful (values matched), false otherwise
    */
-  async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
+  async compareAndSet<T>(
+    key: string,
+    expectedValue: T | null,
+    newValue: T,
+  ): Promise<boolean> {
     await this.ensureConnection();
     let success = await this.store.compareAndSet(key, expectedValue, newValue);
     if (!success && typeof expectedValue === 'string') {
@@ -276,7 +288,12 @@ export class KeyValueStoreService implements IKVStoreConnection {
       // when it reads as the expected value: the store's compare is still the atomic check.
       const kept = (await this.store.getKey(key)) as T | null;
       if (kept !== expectedValue && readable(kept) === expectedValue) {
-        success = await this.store.compareAndSet(key, kept, newValue);
+        // the entry keeps the form it had: a ciphertext replacing a quoted one is written quoted, as its earlier readers expect
+        const next =
+          typeof newValue === 'string' && CIPHERTEXT.test(newValue)
+            ? (JSON.stringify(newValue) as T)
+            : newValue;
+        success = await this.store.compareAndSet(key, kept, next);
       }
     }
     if (success) {
