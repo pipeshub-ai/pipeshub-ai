@@ -171,10 +171,12 @@ JUDGES = """/* pipeshub:kg.root_judges */ SELECT r.sk, r.coll, r.id, r.kind, r.a
     FROM unnest($2::bigint[]) AS q(sk)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r"""
 # The connectors of the judges, once each (a handful): their ids, by node_keys' key as kg.read.BY_ID reads a row's connector.
-# Of the judges' ids, those kg holds in more than one of the collections kg.read.BY_ID asks (apps, groups, records): kg.read.decide leaves such an id to the
-# walk, whose answer is by id, and so does decide_sks. One index scan of records_id per id, its three collections the scan's array keys.
-JUDGE_SHARED_IDS = """/* pipeshub:kg.root_judge_shared_ids */ SELECT q.id FROM unnest($2::text[]) AS q(id)
-    CROSS JOIN LATERAL (SELECT count(*) AS n FROM kg.records k WHERE k.org_id = $1 AND k.coll = ANY('{1,2,3}'::smallint[]) AND k.id = q.id) c WHERE c.n > 1"""
+# Of the judges' ids, those kg holds in another of the collections kg.read.BY_ID asks (apps, groups, records): kg.read.decide leaves such an id to the walk,
+# whose answer is by id, and so does decide_sks. A seek of records_id per id and other collection, as BY_ID's; the judge's own collection is not sought again.
+JUDGE_SHARED_IDS = """/* pipeshub:kg.root_judge_shared_ids */ SELECT DISTINCT q.id FROM unnest($2::text[], $3::smallint[]) AS q(id, coll)
+    CROSS JOIN LATERAL (SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 1 AND s.id = q.id
+        UNION ALL SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 2 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 2 AND s.id = q.id
+        UNION ALL SELECT 1 FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.coll = 3 AND k.id >= q.id ORDER BY k.id LIMIT 1) s WHERE q.coll <> 3 AND s.id = q.id) o"""
 JUDGE_APPS = """/* pipeshub:kg.root_judge_apps */ SELECT n.sk, n.id FROM unnest($2::bigint[]) AS q(sk)
     CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.node_keys k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk AND s.coll = 1 OFFSET 0) n"""
 
@@ -199,7 +201,8 @@ async def decide_sks(tx: Tx, org: str, sks: list[int], access: dict[str, Any]) -
     for i in range(0, len(sks), kg_read.CHUNK):
         for r in await tx.fetch(JUDGES, org, sks[i:i + kg_read.CHUNK]):
             j.rows[r["sk"]] = r
-    shared = {r["id"] for r in await tx.fetch(JUDGE_SHARED_IDS, org, sorted({r["id"] for r in j.rows.values()}))} if j.rows else set()
+    rows = list(j.rows.values())
+    shared = {r["id"] for r in await tx.fetch(JUDGE_SHARED_IDS, org, [r["id"] for r in rows], [r["coll"] for r in rows])} if rows else set()
     apps = sorted({r["app_sk"] for r in j.rows.values() if r["app_sk"] is not None})
     app_id = {r["sk"]: r["id"] for r in await tx.fetch(JUDGE_APPS, org, apps)} if apps else {}
     served: dict[str, bool] = {}

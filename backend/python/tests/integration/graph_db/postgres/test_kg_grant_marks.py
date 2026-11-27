@@ -401,15 +401,15 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
                 keyed = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kgl.KEYS_OF, org, sks)
             await tx.fetchval(kg_read.PROFILE)
             judges = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGES, org, sks)
-            ids = [r["id"] for r in await tx.fetch("SELECT id FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sks)]
-            shared = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_SHARED_IDS, org, ids)
+            js = await tx.fetch("SELECT id, coll FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])", org, sks)
+            shared = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_SHARED_IDS, org, [r["id"] for r in js], [r["coll"] for r in js])
             apps = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.JUDGE_APPS, org, [app])
             cands = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.CANDIDATES, org, "u2", app)
             return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands, judges, apps, shared))
         with ctx(org):
             n, chain, keyed, cands, judges, apps, shared = await pg_db.run(go, custom_plan=True)
         got = [(n.get("Index Name"), n.get("Index Cond", "")) for n in plan_gate.scans(shared, ("records",))]
-        assert got and all(i == "records_id" and "org_id = " in c and "id = " in c for i, c in got), f"{state} judge ids: {got}"      # by the id's key, its collections the array
+        assert got and all(i == "records_id" and "id >= " in c for i, c in got), f"{state} judge ids: {got}"      # a seek of the id's key in each other collection
         # the judges by their keys (kg.root_judges) and their connectors (kg.root_judge_apps), under kg.read's profile: a seek of each table's key per key, one row each
         for name, plan, table, index in (("judges", judges, "records", "records_pkey"), ("judge apps", apps, "node_keys", "node_keys_org_id_sk_key")):
             got = [(n.get("Index Name"), n.get("Index Cond", ""), n.get("Actual Rows", 0)) for n in plan_gate.scans(plan, (table,))]
@@ -481,8 +481,9 @@ async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int
 
 async def test_the_roots_chain_tops_read_about_one_seek_per_judge_whatever_their_number(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Reads per candidate: a root of 200 and of 2,000 chain-tops, each judged by its own folder. Its judges are read by their keys once each (kg.root_judges) and the connector of
-    them once, not mapped to ids and then sought once per collection (kg.keys_of, then kg.read_rows): at either size, about three index scans of kg's rows and keys per
-    chain-top and browse (its judge's row, the check that its id is in one collection only, and its own key, which the grants it is checked against are named by), not five."""
+    them once, not mapped to ids and then sought once per collection (kg.keys_of, then kg.read_rows): at either size, about four seeks of kg's rows and keys per
+    chain-top and browse (its judge's row, its id in each of the two other collections, since kg cannot decide an id held in two, and its own key, which the grants it is
+    checked against are named by), whatever their number."""
     per = {}
     for n in (200, 2000):
         p, org = pg_provider, new_org()
@@ -490,7 +491,7 @@ async def test_the_roots_chain_tops_read_about_one_seek_per_judge_whatever_their
         tops, loops = await _root_seeks(p, org, monkeypatch)
         assert tops == min(n, 50)
         per[n] = loops / (2 * n)      # two browses
-    assert all(v <= 3.5 for v in per.values()), per
+    assert all(v <= 4.5 for v in per.values()), per
 
 
 @pytest.mark.parametrize("why", ["hidden", "two collections"])
