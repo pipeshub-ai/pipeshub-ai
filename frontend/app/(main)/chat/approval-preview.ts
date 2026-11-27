@@ -353,3 +353,47 @@ export function diffTarget(diff: string): string | null {
   const target = header?.[1]?.trim();
   return target && target !== '/dev/null' ? target : null;
 }
+
+/** `schedule_create`'s arguments (ADR-SCH-01 D2) as its card shows them: each text masked and display-safe. */
+export interface ScheduleCallPreview {
+  name: PreviewField;
+  ask: PreviewField;
+  when: { kind: 'once'; at: string; timeZone: string } | { kind: 'cron'; cron: string; timeZone: string };
+  notify: string[];
+}
+
+function textField(key: string, value: string, mode: DisplayMode, limit: number): PreviewField {
+  const { text, redacted } = redactText(value);
+  const full = displaySafe(text, mode);
+  const truncated = full.length > limit;
+  return { key, label: '', value: truncated ? `${full.slice(0, limit).trimEnd()}…` : full, redacted, truncated, full };
+}
+
+/**
+ * The schedule a `schedule_create` call would make, or null when its arguments are not one (the card then lists
+ * them as any call's): the name, when it runs, what each run is asked and where its notices go.
+ */
+export function scheduleCallOf(args: string, limit = PREVIEW_CHARS): ScheduleCallPreview | null {
+  const parsed = parseArgs(args);
+  if (!isRecord(parsed) || typeof parsed.name !== 'string' || typeof parsed.ask !== 'string') return null;
+  if (parsed.name.trim() === '' || parsed.ask.trim() === '' || !isRecord(parsed.when)) return null;
+  const when = parsed.when;
+  const timeZone = typeof when.timeZone === 'string' ? safeText(when.timeZone) : '';
+  let shown: ScheduleCallPreview['when'];
+  if (when.kind === 'once' && typeof when.at === 'string' && !Number.isNaN(Date.parse(when.at))) {
+    shown = { kind: 'once', at: when.at, timeZone };
+  } else if (when.kind === 'cron' && typeof when.cron === 'string' && when.cron.trim() !== '') {
+    shown = { kind: 'cron', cron: safeText(when.cron), timeZone };
+  } else {
+    return null;
+  }
+  const notify = Array.isArray(parsed.notify)
+    ? parsed.notify.filter((channel): channel is string => typeof channel === 'string').map((channel) => safeText(channel))
+    : [];
+  return {
+    name: textField('name', parsed.name, 'identifier', limit),
+    ask: textField('ask', parsed.ask, 'prose', limit),
+    when: shown,
+    notify,
+  };
+}

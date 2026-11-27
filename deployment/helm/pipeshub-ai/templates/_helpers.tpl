@@ -1637,6 +1637,10 @@ adds what is specific to its role after it (the main pod: Node and the agent har
               value: {{ .Values.config.connectorPublicBackend | quote }}
             - name: FRONTEND_PUBLIC_URL
               value: {{ .Values.config.frontendPublicUrl | quote }}
+            - name: INTERNAL_ROUTES_PUBLIC_ACCESS
+              value: {{ .Values.config.internalRoutesPublicAccess | default "log" | quote }}
+            - name: INTERNAL_ROUTES_TRUSTED_CIDRS
+              value: {{ .Values.config.internalRoutesTrustedCidrs | default "" | quote }}
             
             # Internal service URLs
             - name: QUERY_BACKEND

@@ -128,14 +128,14 @@ describe('Graph relay through Express', () => {
     })
   }
 
-  it('maps the service 503 to a 503 and its 500 to a 500 without its words', async () => {
+  it('maps the service 503 to a 503 and its 500 to a 502 without its words', async () => {
     fetchStub.resolves(json(503, { detail: 'Graph unavailable.' }))
     const unavailable = await call(build(), '/api/v1/graph/expand', BODY)
     expect(unavailable.status).to.equal(503)
     expect(unavailable.headers['cache-control']).to.equal('private, no-store')
     fetchStub.resolves(json(500, { detail: 'secret internals block:abc' }))
     const failed = await call(build(), '/api/v1/graph/revalidate', BODY)
-    expect(failed.status).to.equal(500)
+    expect(failed.status).to.equal(502)
     expect(text(failed)).to.not.include('secret internals')
   })
 

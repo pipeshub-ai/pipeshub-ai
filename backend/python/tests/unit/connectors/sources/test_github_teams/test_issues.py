@@ -869,6 +869,19 @@ class TestProcessIssueToTicket:
         assert link.relation_type.value == "BLOCKS"
         assert link.record_name is None  # another repository's title is not copied
 
+    async def test_blocking_only_closed_issues_is_still_read(self) -> None:
+        """``blocking`` counts open blocked issues only; ``total_blocking`` counts open and closed
+        (GitHub's GraphQL schema, IssueDependenciesSummary.totalBlocking). An issue that blocks only
+        closed issues still has its links read."""
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_blocking": ok_response([{"number": 1, "title": "Done", "repository": {"id": 42}}]),
+        })
+        related = await IssuesSync(c)._related_from_dependencies(
+            make_repo(repo_id=42), 2, {"blocked_by": 0, "total_blocked_by": 0, "blocking": 0, "total_blocking": 1}
+        )
+        assert [r.external_record_id for r in related] == ["42/issues/1"]
+
     async def test_blocking_link_in_same_repo_keeps_the_title(self) -> None:
         c = make_mock_connector()
         c.runtime.ds_call.side_effect = _dispatch(c, {

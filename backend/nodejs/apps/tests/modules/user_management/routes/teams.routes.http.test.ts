@@ -397,7 +397,7 @@ describe('Teams over HTTP', () => {
     it('hides what the team service said when it failed on its side', async () => {
       backend.on('DELETE', TEAM_PATH, { status: 500, body: { detail: 'arangodb: write-write conflict on permission/8812 at 10.2.0.4' } })
       const res = await send('DELETE', `/${TEAM_ID}`, session(OWNER))
-      expect(res.status).to.equal(500)
+      expect(res.status).to.equal(502)
       expect(errorMessage(res)).to.not.match(/arango|10\.2\.0\.4|permission\//)
       expect(JSON.stringify(res.body)).to.not.include('stack')
     })

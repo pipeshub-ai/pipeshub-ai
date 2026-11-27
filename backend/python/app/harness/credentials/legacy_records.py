@@ -109,6 +109,11 @@ class LegacyCredentialRecords:
                 _ = await writer.revoke_owner(org_id, instance_id, owner, user_id=user_id)
         await delete_config_or_raise(self._config, old_path(kind, instance_id, owner_id))
 
+    async def revoke_instance(self, org_id: str, instance_id: str, *, user_id: str | None = None) -> None:
+        """Every owner's binding of the instance revoked (its connection target changed, or it is gone); a no-op off."""
+        if credentials_switch_on():
+            _ = await (await self._writer()).revoke_installation(org_id, instance_id, user_id=user_id)
+
 
 _PROCESS: dict[int, tuple[object, LegacyCredentialRecords]] = {}
 

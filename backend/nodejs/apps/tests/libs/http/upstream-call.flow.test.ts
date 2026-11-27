@@ -143,7 +143,7 @@ describe('upstream-call: what a request logs about its upstream call', () => {
 
   it("an upstream 500 is one WARN call line and reads upstream_5xx on the request's lines", async () => {
     mode = 'fail'
-    expect(await request('GET', `/api/v1/connectors/${CONNECTOR_ID}/stats`)).to.equal(500)
+    expect(await request('GET', `/api/v1/connectors/${CONNECTOR_ID}/stats`)).to.equal(502)
     const access = await accessLine()
     expect(callLines().map((l) => [l.level, l.meta.upstream, l.meta.route, l.meta.status, l.meta.error_class])).to.deep.equal([
       ['warning', 'connector', '/connector/api/v1/stats', 500, 'upstream_5xx'],

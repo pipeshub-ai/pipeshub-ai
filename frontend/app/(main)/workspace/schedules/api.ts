@@ -10,6 +10,7 @@ import type {
   FiringKind,
   FiringStatus,
   NewSchedule,
+  NewTrigger,
   NoticeChannelBlock,
   NoticeChannelChoice,
   NotifyChannel,
@@ -26,7 +27,7 @@ const CATCH_UP: readonly CatchUpPolicy[] = ['skip', 'run_latest', 'run_all'];
 const OVERLAP: readonly OverlapPolicy[] = ['skip', 'queue', 'allow'];
 export const NOTIFY_CHANNELS: readonly NotifyChannel[] = ['in_app', 'email', 'slack'];
 const BLOCKS: readonly NoticeChannelBlock[] = ['org_off', 'no_slack_bot'];
-const FIRING_KINDS: readonly FiringKind[] = ['cron', 'manual', 'event'];
+const FIRING_KINDS: readonly FiringKind[] = ['cron', 'once', 'manual', 'event'];
 const FIRING_STATUSES: readonly FiringStatus[] = ['pending', 'admitted', 'refused', 'skipped'];
 
 function toTrigger(value: unknown): ScheduleTrigger | null {
@@ -36,6 +37,12 @@ function toTrigger(value: unknown): ScheduleTrigger | null {
     const timeZone = text(value.timeZone);
     if (!cron || !timeZone) return null;
     return { kind: 'cron', cron, timeZone, catchUp: oneOf(value.catchUp, CATCH_UP) ?? 'skip' };
+  }
+  if (value.kind === 'once') {
+    const at = text(value.at);
+    const timeZone = text(value.timeZone);
+    if (!at || Number.isNaN(Date.parse(at))) return null;
+    return { kind: 'once', at, timeZone: timeZone ?? 'UTC' };
   }
   if (value.kind === 'webhook') {
     // A webhook made before signatures has no `auth`: it takes the token.
@@ -115,16 +122,19 @@ function toNoticeChannel(value: unknown): NoticeChannelChoice | null {
   return { channel, available: value.available === true && reason === null, reason };
 }
 
+function triggerBody(trigger: NewTrigger): Record<string, unknown> {
+  if (trigger.kind === 'cron') return { kind: 'cron', cron: trigger.cron, timeZone: trigger.timeZone, catchUp: trigger.catchUp };
+  if (trigger.kind === 'once') return { kind: 'once', at: trigger.at, timeZone: trigger.timeZone };
+  return { kind: 'webhook', auth: trigger.auth };
+}
+
 function createBody(input: NewSchedule): Record<string, unknown> {
   return {
     name: input.name,
     ...(input.agentKey ? { agentKey: input.agentKey } : {}),
     ...(input.agentKey && input.agentVersion ? { agentVersion: input.agentVersion } : {}),
     input: { query: input.query },
-    trigger:
-      input.trigger.kind === 'cron'
-        ? { kind: 'cron', cron: input.trigger.cron, timeZone: input.trigger.timeZone, catchUp: input.trigger.catchUp }
-        : { kind: 'webhook', auth: input.trigger.auth },
+    trigger: triggerBody(input.trigger),
     ...(input.maxCostUsd !== null ? { maxCostUsd: input.maxCostUsd } : {}),
     ...(input.deadlineS !== null ? { deadlineS: input.deadlineS } : {}),
     overlap: input.overlap,

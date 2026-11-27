@@ -1,11 +1,14 @@
 import { forEnumeratedOrg } from '../../../libs/context/orgContext';
 import { randomUUID } from 'node:crypto';
+import { HarnessScheduleRefusedError } from '../domain/errors';
 import type { HarnessRun, RunStatus } from '../domain/execution';
 import {
   type AgentSchedule,
   coalescedSlot,
   cronSlotKey,
+  type CronDecision,
   decideCron,
+  decideOnce,
   eventSlotKey,
   FIRING_LEASE_MS,
   FIRING_MAX_ATTEMPTS,
@@ -19,6 +22,10 @@ import {
   MAX_DUE_PER_TICK,
   MAX_WATCHED_PER_TICK,
   type NotifyChannel,
+  MAX_ONCE_LATENESS_MS,
+  ONCE_TOO_LATE,
+  onceSlotKey,
+  RAN_ONCE,
   OVERLAP_RECHECK_MS,
   firedScheduleOf,
   parseScheduleIdempotencyKey,
@@ -93,6 +100,8 @@ export interface ScheduleFirerOptions {
   records?: RecordReadAccess;
   /** The org's allowed notice channels (TR-07). Absent: every channel the schedule names. */
   settings?: Pick<TriggerSettings, 'notifyChannels'>;
+  /** The org harness predicate (ADR-OPS-08: switch and Labs). Absent: on. */
+  harnessOn?: (orgId: string) => Promise<boolean>;
   logger?: HarnessLogger;
   newId?: () => string;
 }
@@ -140,6 +149,7 @@ export class ScheduleFirer {
   private readonly connectorEvents?: TriggerSourceSwitch;
   private readonly records?: RecordReadAccess;
   private readonly settings?: Pick<TriggerSettings, 'notifyChannels'>;
+  private readonly harnessOn?: (orgId: string) => Promise<boolean>;
   private readonly logger: HarnessLogger;
   private readonly newId: () => string;
   private timer: NodeJS.Timeout | null = null;
@@ -157,6 +167,7 @@ export class ScheduleFirer {
     this.connectorEvents = options.connectorEvents;
     this.records = options.records;
     this.settings = options.settings;
+    this.harnessOn = options.harnessOn;
     this.logger = options.logger ?? silentHarnessLogger;
     this.newId = options.newId ?? randomUUID;
   }
@@ -219,28 +230,42 @@ export class ScheduleFirer {
     return fired;
   }
 
-  /** One due schedule's slot, as the schedule's org: claimed and fired, or skipped; true when it fired. */
+  /**
+   * One due schedule's slot, as the schedule's org: claimed and fired, or skipped; true when it fired. A one-time
+   * schedule's claim also disables it (`ran_once`), in the same store write, so no firer fires it again.
+   */
   private async fireSlot(
     schedule: AgentSchedule,
     now: number,
   ): Promise<boolean> {
-    if (schedule.trigger.kind !== 'cron' || schedule.nextFireAt === null) {
+    const trigger = schedule.trigger;
+    if (schedule.nextFireAt === null) return false;
+    let decision: CronDecision;
+    if (trigger.kind === 'cron') {
+      decision = decideCron(trigger, schedule.nextFireAt, now);
+    } else if (trigger.kind === 'once') {
+      decision = decideOnce(schedule.nextFireAt, now);
+    } else {
       return false;
     }
-    const decision = decideCron(schedule.trigger, schedule.nextFireAt, now);
     if (decision.kind === 'wait') return false;
+    const once = trigger.kind === 'once';
+    const skipReason = once ? ONCE_TOO_LATE : 'catch_up_skip';
     const firing = this.newFiring(schedule, {
-      kind: 'cron',
-      slotKey: cronSlotKey(decision.slotAt),
+      kind: once ? 'once' : 'cron',
+      slotKey: once
+        ? onceSlotKey(decision.slotAt)
+        : cronSlotKey(decision.slotAt),
       slotAt: decision.slotAt,
       now,
       missed: decision.missed,
-      skipped: decision.kind === 'skip',
+      skipped: decision.kind === 'skip' ? skipReason : null,
     });
     const claimed = await this.store.claimCronSlot(
       firing,
       schedule.nextFireAt,
       decision.nextFireAt,
+      once ? RAN_ONCE : undefined,
     );
     if (claimed === null) return false;
     if (decision.kind === 'skip') {
@@ -249,9 +274,11 @@ export class ScheduleFirer {
         harnessLogMeta('schedule.slot_skipped', {
           ...this.fields(claimed),
           missed: decision.missed + 1,
-          reason: 'catch_up_skip',
+          reason: skipReason,
         }),
       );
+      // Nothing will ever run of it: its person hears so, as of a refused firing.
+      if (once) await this.tellRefused(claimed, ONCE_TOO_LATE, now);
       return false;
     }
     await this.fire(claimed, schedule);
@@ -264,6 +291,7 @@ export class ScheduleFirer {
    */
   async runNow(schedule: AgentSchedule, key: string): Promise<ScheduleFiring> {
     const now = await this.store.now();
+    if (schedule.trigger.kind === 'once') return this.runOnceNow(schedule, now);
     const { firing, created } = await this.store.claimSlot(
       this.newFiring(schedule, {
         kind: 'manual',
@@ -271,11 +299,68 @@ export class ScheduleFirer {
         slotAt: now,
         now,
         missed: 0,
-        skipped: false,
+        skipped: null,
       }),
     );
     if (created) await this.fire(firing, schedule);
     return (await this.store.getFiring(firing.orgId, firing.id)) ?? firing;
+  }
+
+  /**
+   * A one-time schedule's run now takes its one slot, as a tick would: by the
+   * same compare-and-set of the cursor, so a tick and a run now racing make
+   * one firing; whoever loses is told it already ran.
+   */
+  private async runOnceNow(
+    schedule: AgentSchedule,
+    now: number,
+  ): Promise<ScheduleFiring> {
+    if (schedule.trigger.kind !== 'once') throw new Error('not one-time');
+    const firing = this.newFiring(schedule, {
+      kind: 'once',
+      slotKey: onceSlotKey(Date.parse(schedule.trigger.at)),
+      slotAt: now,
+      now,
+      missed: 0,
+      skipped: null,
+    });
+    let claimed: ScheduleFiring | null = null;
+    let known = schedule;
+    if (schedule.status === 'active' && schedule.nextFireAt !== null) {
+      claimed = await this.store.claimCronSlot(
+        firing,
+        schedule.nextFireAt,
+        null,
+        RAN_ONCE,
+      );
+    } else if (schedule.status === 'paused') {
+      // Paused, it has no cursor to move: its slot key is what keeps it to one firing, and it is disabled after.
+      const slot = await this.store.claimSlot(firing);
+      claimed = slot.created ? slot.firing : null;
+      const disabled =
+        claimed === null
+          ? null
+          : await this.store.setStatus(
+              schedule.orgId,
+              schedule.id,
+              {
+                from: ['paused'],
+                to: 'disabled',
+                reason: RAN_ONCE,
+                nextFireAt: null,
+              },
+              now,
+            );
+      if (disabled !== null) known = disabled;
+    }
+    if (claimed === null) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_RAN_ONCE',
+        'This one-time schedule already ran or its time passed. Delete it or make a new one',
+      );
+    }
+    await this.fire(claimed, known);
+    return (await this.store.getFiring(claimed.orgId, claimed.id)) ?? claimed;
   }
 
   /** A webhook or connector event: one firing per schedule and coalescing window. */
@@ -297,6 +382,7 @@ export class ScheduleFirer {
       if (
         schedule.status !== 'active' ||
         trigger.kind === 'cron' ||
+        trigger.kind === 'once' ||
         trigger.kind !== event.kind
       ) {
         continue;
@@ -309,7 +395,7 @@ export class ScheduleFirer {
           slotAt,
           now: await this.store.now(),
           missed: 0,
-          skipped: false,
+          skipped: null,
         }),
         event: firingEvent(event),
       });
@@ -625,7 +711,8 @@ export class ScheduleFirer {
       slotAt: number;
       now: number;
       missed: number;
-      skipped: boolean;
+      /** Why the slot is skipped as it is claimed; null: it is to fire. */
+      skipped: string | null;
     },
   ): ScheduleFiring {
     return {
@@ -636,15 +723,15 @@ export class ScheduleFirer {
       slotKey: slot.slotKey,
       slotAt: slot.slotAt,
       kind: slot.kind,
-      status: slot.skipped ? 'skipped' : 'pending',
+      status: slot.skipped !== null ? 'skipped' : 'pending',
       runId: null,
       sessionId: null,
-      reason: slot.skipped ? 'catch_up_skip' : null,
+      reason: slot.skipped,
       missed: slot.missed,
-      attempts: slot.skipped ? 0 : 1,
+      attempts: slot.skipped !== null ? 0 : 1,
       leaseUntil: slot.now + FIRING_LEASE_MS,
       createdAt: slot.now,
-      settledAt: slot.skipped ? slot.now : null,
+      settledAt: slot.skipped !== null ? slot.now : null,
       watchUntil: null,
       notifiedAt: null,
     };
@@ -719,14 +806,27 @@ export class ScheduleFirer {
       known ?? (await this.store.get(firing.orgId, firing.scheduleId));
     if (schedule === null) return 'schedule_deleted';
     if (schedule.actorId !== firing.actorId) return 'actor_changed';
-    if (schedule.status === 'disabled') return 'schedule_disabled';
+    // A one-time schedule is disabled by the claim of its slot; that slot's retries still run it.
+    const claimedOnce =
+      firing.kind === 'once' && schedule.statusReason === RAN_ONCE;
+    if (schedule.status === 'disabled' && !claimedOnce) {
+      return 'schedule_disabled';
+    }
     if (schedule.status === 'paused' && firing.kind !== 'manual') {
       return 'schedule_paused';
     }
-    if (!(await this.enabled(schedule.orgId))) return 'scheduled_runs_disabled';
+    if (!(await this.orgOn(schedule.orgId))) return 'scheduled_runs_disabled';
+    // A retaken firing of a one-time slot is as late as its slot, whichever attempt this is.
+    if (
+      firing.kind === 'once' &&
+      (await this.store.now()) - firing.slotAt > MAX_ONCE_LATENESS_MS
+    ) {
+      return { skipped: ONCE_TOO_LATE };
+    }
     if (schedule.input === null) return 'template_missing';
-    // A person's run now is theirs to start; the policy is for what fires by itself.
-    if (firing.kind !== 'manual') {
+    // A person's run now is theirs to start, and a one-time slot has no other run to overlap; the policy is for
+    // what fires repeatedly by itself.
+    if (firing.kind !== 'manual' && firing.kind !== 'once') {
       const waiting = await this.overlap(schedule, firing);
       if (waiting !== null) return waiting;
     }
@@ -898,6 +998,8 @@ export class ScheduleFirer {
         reason,
       }),
     );
+    if (reason === ONCE_TOO_LATE)
+      await this.tellRefused(firing, ONCE_TOO_LATE, now);
   }
 
   private async refuse(firing: ScheduleFiring, reason: string): Promise<void> {
@@ -964,7 +1066,9 @@ export class ScheduleFirer {
 
   /**
    * The actor hears that their schedule could not run (UX3): once a day per
-   * schedule, read from its own firings, so every scheduler instance agrees.
+   * schedule, read from its own firings, so every scheduler instance agrees;
+   * and only while the org runs schedules (its harness and Labs), so an org
+   * that turned them off hears nothing of them. The firing is settled either way.
    */
   private async tellRefused(
     firing: ScheduleFiring,
@@ -972,6 +1076,7 @@ export class ScheduleFirer {
     now: number,
   ): Promise<void> {
     if (this.notifier === undefined) return;
+    if (!(await this.orgOn(firing.orgId))) return;
     try {
       const recent = await this.store.firings(
         firing.orgId,
@@ -1010,6 +1115,18 @@ export class ScheduleFirer {
         }),
       );
     }
+  }
+
+  /** The org state a firing runs in: the org's harness (switch and Labs) and its Labs scheduled runs. */
+  private async orgOn(orgId: string): Promise<boolean> {
+    try {
+      if (this.harnessOn !== undefined && !(await this.harnessOn(orgId))) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    return this.enabled(orgId);
   }
 
   private async enabled(orgId: string): Promise<boolean> {

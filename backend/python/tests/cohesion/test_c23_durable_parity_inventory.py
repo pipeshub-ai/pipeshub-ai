@@ -138,7 +138,7 @@ def _world(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     from tests.unit.harness.assembly import world as w
 
     monkeypatch.setenv("PIPESHUB_ENABLE_FINAL_ANSWER", "false")
-    with w.deployment():
+    with w.deployment(skills=True):
         yield
 
 
@@ -179,11 +179,9 @@ def _row(name: str) -> str | None:
 @pytest.mark.usefixtures("_world")
 @pytest.mark.parametrize("chat_mode", ["quick", "react"])
 async def test_c23_the_durable_registry_runs_what_legacy_registers_or_lists_why(
-    chat_mode: str, monkeypatch: pytest.MonkeyPatch
+    chat_mode: str,
 ) -> None:
     from tests.unit.harness.assembly import world as w
-
-    monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
     from tests.unit.harness.assembly.test_parity import (
         _durable_turn_one,
         _full_grant,

@@ -181,15 +181,20 @@ const fakeConfigManagerConfig = {
 describe('ConfigurationManager Controller', () => {
   let mockEncService: any
   let loadConfigStub: sinon.SinonStub
+  const hideSecretConfig = process.env.HIDE_SECRET_CONFIG
 
   beforeEach(() => {
     mockEncService = createMockEncryptionService()
     loadConfigStub = sinon.stub(cmConfig, 'loadConfigurationManagerConfig').returns(fakeConfigManagerConfig as any)
     sinon.stub(encryptorModule.EncryptionService, 'getInstance').returns(mockEncService)
+    // These cases read stored values back; masking is the default and has its own tests.
+    process.env.HIDE_SECRET_CONFIG = 'false'
   })
 
   afterEach(() => {
     sinon.restore()
+    if (hideSecretConfig === undefined) delete process.env.HIDE_SECRET_CONFIG
+    else process.env.HIDE_SECRET_CONFIG = hideSecretConfig
   })
 
   // -----------------------------------------------------------------------
@@ -4753,6 +4758,24 @@ describe('ConfigurationManager Controller', () => {
       expect(parsed.authority).to.include('ms-tid')
     })
 
+    it('restores the placeholders a read served from the Azure AD settings from those settings', async () => {
+      const azureAd = `encrypted:${JSON.stringify({ clientId: 'az-cid', tenantId: 'az-tid' })}`
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async (path: string) => (path === '/services/auth/azureAd' ? azureAd : null)),
+      })
+      const next = createMockNext()
+
+      await setMicrosoftAuthConfig(kvs)(
+        createMockRequest({ body: { clientId: CONFIG_SECRET_PLACEHOLDER, tenantId: CONFIG_SECRET_PLACEHOLDER } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(mockEncService.encrypt.lastCall.args[0])
+      expect(saved).to.include({ clientId: 'az-cid', tenantId: 'az-tid' })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
@@ -6336,6 +6359,351 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   // DB Config tests - happy paths
   // -----------------------------------------------------------------------
+  describe('updateAIModelProvider credential binding', () => {
+    const savedLlm = {
+      provider: 'openai',
+      configuration: { model: 'gpt-4', apiKey: 'saved-key', endpoint: 'https://a.test/v1', region: 'us-east-1' },
+      modelKey: 'key-1',
+      isDefault: true,
+    }
+    const saved = {
+      llm: [savedLlm],
+      embedding: [],
+    }
+    const withForwarding = {
+      ...saved,
+      llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, identityForwardingServiceApiKey: 'svc-saved' } }],
+    }
+    async function update(body: Record<string, unknown>, stored: unknown = saved) {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(stored))),
+      })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({ params: { modelType: 'llm', modelKey: 'key-1' }, body: { provider: 'openai', isDefault: true, ...body } }),
+        res,
+        createMockNext(),
+      )
+      const checked = check.called
+        ? JSON.parse((check.firstCall.thisValue as { body: string }).body).configuration
+        : undefined
+      return { res, kvs, checked }
+    }
+
+    it('writes nothing when another save moved the model during the health check', async () => {
+      const moved = {
+        ...saved,
+        llm: [{
+          ...savedLlm,
+          configuration: {
+            ...savedLlm.configuration,
+            apiKey: 'moved-key',
+            endpoint: 'https://b.test/v1',
+            identityForwardingServiceApiKey: 'svc-moved',
+          },
+        }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(moved)))
+      const kvs = createMockKeyValueStore({ get })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://a.test/v1' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(409)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+      expect(get.callCount).to.be.greaterThan(1)
+      for (const call of check.getCalls()) {
+        const sent = (call.thisValue as { body: string }).body
+        expect(sent).to.not.include('moved-key')
+        expect(sent).to.not.include('svc-moved')
+      }
+    })
+
+    it('writes nothing when the model moved during the health check and the request omits the endpoint', async () => {
+      const moved = {
+        ...saved,
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, endpoint: 'https://b.test/v1' } }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(moved)))
+      const kvs = createMockKeyValueStore({ get })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', apiKey: 'retyped-key' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(409)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('keeps a key rotated during the health check when the endpoint did not move', async () => {
+      const rotated = {
+        ...saved,
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, apiKey: 'rotated-key' } }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(rotated)))
+      const kvs = createMockKeyValueStore({ get })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://a.test/v1' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(200)).to.be.true
+      const written = JSON.parse(mockEncService.decrypt(kvs.compareAndSet.firstCall.args[2]))
+      expect(written.llm[0].configuration.apiKey).to.equal('rotated-key')
+    })
+
+    it('refuses a new endpoint without retyped credentials', async () => {
+      const { res, kvs, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test/v1' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('refuses the provider default over a blank saved endpoint without the key', async () => {
+      const blank = {
+        llm: [{ provider: 'ollama', configuration: { model: 'llama3', apiKey: 'saved-key' }, modelKey: 'key-1', isDefault: true }],
+        embedding: [],
+      }
+      const { res, checked, kvs } = await update(
+        { provider: 'ollama', configuration: { model: 'llama3', endpoint: 'http://host.docker.internal:11434' } },
+        blank,
+      )
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    for (const provider of ['ollama', 'litellmProxy']) {
+      it(`refuses clearing a saved ${provider} endpoint without the key`, async () => {
+        const saved = {
+          llm: [{
+            provider,
+            configuration: { model: 'm', endpoint: 'http://host.docker.internal:11434', apiKey: 'saved-key' },
+            modelKey: 'key-1',
+            isDefault: true,
+          }],
+          embedding: [],
+        }
+        const { res, checked, kvs } = await update({ provider, configuration: { model: 'm', endpoint: '' } }, saved)
+        expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+        expect(checked).to.equal(undefined)
+        expect(kvs.compareAndSet.called).to.be.false
+      })
+    }
+
+    it('still refuses another endpoint over a blank saved endpoint', async () => {
+      const blank = {
+        llm: [{ provider: 'ollama', configuration: { model: 'llama3', apiKey: 'saved-key' }, modelKey: 'key-1', isDefault: true }],
+        embedding: [],
+      }
+      const { res } = await update(
+        { provider: 'ollama', configuration: { model: 'llama3', endpoint: 'https://evil.test' } },
+        blank,
+      )
+      expect(res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+    })
+
+    it('refuses a different provider when saved credentials would be reused', async () => {
+      const { res, kvs, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('refuses a different provider even when the saved key is typed again', async () => {
+      const { res, kvs, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('Provider does not match saved model')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('accepts a provider that differs only by case and keeps the saved key', async () => {
+      const { res, checked } = await update({ provider: 'OpenAI', configuration: { model: 'gpt-4' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('saved-key')
+    })
+
+    it('refuses a different provider when the saved key is explicitly cleared', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: '' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('accepts a new endpoint when the saved key is explicitly cleared', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: '' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('')
+    })
+
+    it('refuses a different provider when a saved forwarding key would be reused', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } }, withForwarding)
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('refuses a different provider on a new endpoint', async () => {
+      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'x' } }, withForwarding)
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
+    })
+
+    it('says so when a new endpoint clears saved forwarding credentials', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } }, withForwarding)
+      expect(res.json.firstCall.args[0].details.forwardingCredentialsCleared).to.equal(true)
+    })
+
+    it('leaves the field out when the moved model had no forwarding credential', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } })
+      expect(res.json.firstCall.args[0].details).to.not.have.property('forwardingCredentialsCleared')
+    })
+
+    it('leaves the field out when the endpoint is unchanged', async () => {
+      const { res } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } }, withForwarding)
+      expect(res.json.firstCall.args[0].details).to.not.have.property('forwardingCredentialsCleared')
+    })
+
+    const forwarding = {
+      ...saved,
+      llm: [{
+        ...savedLlm,
+        configuration: {
+          ...savedLlm.configuration,
+          identityForwardingServiceApiKey: 'svc-saved',
+          identityForwardingHeaderTemplates: { 'x-api-key': 'hdr-saved', 'x-user': '{{email}}' },
+        },
+      }],
+    }
+
+    it('does not send the saved forwarding credentials to a new endpoint', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } }, forwarding)
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.identityForwardingServiceApiKey).to.equal(undefined)
+      expect(checked.identityForwardingHeaderTemplates).to.deep.equal({ 'x-user': '{{email}}' })
+    })
+
+    it('keeps nested forwarding credentials out of the health check and the saved config for a new endpoint', async () => {
+      const nestedSaved = {
+        ...saved,
+        llm: [{
+          ...savedLlm,
+          configuration: {
+            ...savedLlm.configuration,
+            identityForwarding: {
+              enabled: true,
+              serviceApiKey: 'svc-nested',
+              headerTemplates: { 'x-api-key': 'hdr-nested', 'x-user': '{{EMAIL}}' },
+            },
+          },
+        }],
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(nestedSaved))),
+      })
+      const check = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { status: 'healthy' } } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(200)).to.be.true
+      const expected = { enabled: true, headerTemplates: { 'x-user': '{{EMAIL}}' } }
+      const checked = JSON.parse((check.firstCall.thisValue as { body: string }).body).configuration
+      expect(checked.identityForwarding).to.deep.equal(expected)
+      const written = kvs.compareAndSet.firstCall.args[2] as string
+      const savedConfig = JSON.parse(mockEncService.decrypt(written)).llm[0].configuration
+      expect(savedConfig.identityForwarding).to.deep.equal(expected)
+    })
+
+    it('keeps the saved forwarding credentials when the endpoint is unchanged', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } }, forwarding)
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.identityForwardingServiceApiKey).to.equal('svc-saved')
+      expect(checked.identityForwardingHeaderTemplates).to.deep.equal({ 'x-api-key': 'hdr-saved', 'x-user': '{{email}}' })
+    })
+
+    it('still refuses a new endpoint when the api key is not retyped and a forwarding key is saved', async () => {
+      const refused = await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test/v1' } }, withForwarding)
+      expect(refused.res.status.calledWith(400)).to.be.true
+      expect(refused.res.json.firstCall.args[0].error_code).to.equal('credential_reentry_required')
+    })
+
+    it('logs only the host of the changed endpoint when it refuses', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      await update({ configuration: { model: 'gpt-4', endpoint: 'https://evil.test:8443/v1?token=abc' } })
+      const entry = warn.getCalls().map((c) => c.args[1] as Record<string, unknown>).find((m) => m?.securityEvent === 'model_destination_change_refused')
+      expect(entry?.host).to.equal('evil.test:8443')
+      const text = JSON.stringify(entry)
+      expect(text).to.not.include('token=abc')
+      expect(text).to.not.include('saved-key')
+    })
+
+    it('logs the host of a changed baseUrl when the request leaves the endpoint out', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      await update({ configuration: { model: 'gpt-4', baseUrl: 'https://c.test/v1' } })
+      const entry = warn.getCalls().map((c) => c.args[1] as Record<string, unknown>).find((m) => m?.securityEvent === 'model_destination_change_refused')
+      expect(entry?.host).to.equal('c.test')
+    })
+
+    it('accepts a new endpoint with a retyped key', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'new-key' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('new-key')
+    })
+
+    it('accepts a region change without a retyped key', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4', region: 'eu-west-1' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.apiKey).to.equal('saved-key')
+    })
+
+    it('accepts an edit that omits the endpoint', async () => {
+      const { res, checked } = await update({ configuration: { model: 'gpt-4-turbo' } })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checked.endpoint).to.equal('https://a.test/v1')
+    })
+  })
+
   describe('createArangoDbConfig (happy path)', () => {
     it('should create ArangoDB config successfully', async () => {
       const kvs = createMockKeyValueStore()
@@ -6688,6 +7056,34 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+      orgStub.restore()
+    })
+
+    it('keeps the stored tokens when the client sends back the placeholders it read', async () => {
+      const orgStub = sinon.stub(Org, 'findOne').resolves({ accountType: 'individual', _id: 'org-1' } as any)
+      const stored = { access_token: 'at-stored', refresh_token: 'rt-stored', access_token_expiry_time: 1, refresh_token_expiry_time: 1 }
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`) })
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', createMockEventService())
+      const req = createMockRequest({
+        body: {
+          access_token: CONFIG_SECRET_PLACEHOLDER,
+          refresh_token: 'rt-new',
+          // The read merges the OAuth config's client fields in and masks them; this record does not store them.
+          clientId: CONFIG_SECRET_PLACEHOLDER,
+          clientSecret: CONFIG_SECRET_PLACEHOLDER,
+          access_token_expiry_time: 9999,
+          refresh_token_expiry_time: 9999,
+          enableRealTimeUpdates: false,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace(/^encrypted:/, ''))
+      expect(saved).to.include({ access_token: 'at-stored', refresh_token: 'rt-new' })
       orgStub.restore()
     })
 

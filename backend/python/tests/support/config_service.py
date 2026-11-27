@@ -46,6 +46,8 @@ RIG_PLATFORM_FLAGS: dict[str, bool] = {
     CONFIG.ENABLE_ARTIFACT_READ: False,
     CONFIG.ENABLE_ARTIFACT_READ_SHADOW: False,
     CONFIG.ENABLE_KB_PUSH: False,
+    # Off, as it ships: a rig's tool list has no schedule_create unless a case turns scheduled runs on.
+    CONFIG.ENABLE_SCHEDULED_RUNS: False,
 }
 
 
