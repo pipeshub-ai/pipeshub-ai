@@ -112,6 +112,7 @@ class TokenRefreshService:
         self._messaging_producer = messaging_producer
         self.logger = logging.getLogger("connector_service.refresh")
         self._refresh_tasks: dict[str, asyncio.Task] = {}
+        self._background_tasks: list[asyncio.Task] = []
         self._scheduled_at: dict[str, datetime] = {}  # last logged refresh time, so a re-arm of the same one is DEBUG
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
@@ -145,14 +146,23 @@ class TokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            spawn_detached(self._refresh_all_tokens())
+            self._background_tasks.append(spawn_detached(self._refresh_all_tokens()))
 
         # Start periodic refresh check
-        spawn_detached(self._periodic_refresh_check())
+        self._background_tasks.append(spawn_detached(self._periodic_refresh_check()))
 
     async def stop(self) -> None:
         """Stop the token refresh service"""
         self._running = False
+
+        # Cancel the initial-scan/periodic loop tasks too, not just per-connector refreshes.
+        # Without this, an in-flight initial scan (or a periodic loop mid-sleep) keeps
+        # running after stop() returns, since `_running = False` alone is only checked at
+        # the loops' next iteration. Holding the references also keeps the tasks from being
+        # garbage collected while they run, as the event loop only keeps weak references.
+        for task in self._background_tasks:
+            task.cancel()
+        self._background_tasks.clear()
 
         # Cancel all refresh tasks
         for task in self._refresh_tasks.values():
