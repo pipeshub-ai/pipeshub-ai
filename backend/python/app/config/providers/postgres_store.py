@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable, Collection
 from typing import Any, Generic, TypeVar
 
+from app import edition
 from app.config.key_value_store import KeyValueStore
 from app.services.pg_runtime import KV_CHANNEL, PgListener, RuntimeDb, listen_dsn
 from app.utils.logger import create_logger
@@ -107,10 +108,10 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
             delay = min(delay * 2, 10)
         return False
 
-    async def _write(self, sql: str, *args: Any) -> Any:  # noqa: ANN401
+    async def _write(self, sql: str, key: str, *args: Any) -> Any:  # noqa: ANN401
         db = await self._rt.db()
-        async with db.runtime_uow(write=True) as tx:
-            res = await tx.fetchval(sql, *args)
+        async with db.runtime_uow(write=True, org=edition.kv_key_binds_org(key)) as tx:
+            res = await tx.fetchval(sql, key, *args)
         if time.monotonic() - self._last_purge > _PURGE_EVERY_S:
             self._last_purge = time.monotonic()
             try:  # housekeeping after the write has committed: a failure here must not fail the caller's write
@@ -152,7 +153,7 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
     async def get_key(self, key: str, *, raise_on_error: bool = False) -> T | None:
         try:
             db = await self._rt.db()
-            async with db.runtime_uow() as tx:
+            async with db.runtime_uow(org=edition.kv_key_binds_org(key)) as tx:
                 data = await tx.fetchval(_GET, key)
         except Exception as e:
             raise ConnectionError(f"Failed to get key: {e}") from e
@@ -180,7 +181,7 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
     async def _keys(self, prefix: str) -> list[str]:
         try:
             db = await self._rt.db()
-            async with db.runtime_uow() as tx:
+            async with db.runtime_uow(org=edition.kv_key_binds_org(prefix)) as tx:
                 return [
                     r["key"]
                     for r in await tx.fetch(_RANGE, prefix, _prefix_end(prefix))

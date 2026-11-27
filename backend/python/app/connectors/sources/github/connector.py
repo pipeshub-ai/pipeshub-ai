@@ -297,6 +297,7 @@ class GithubConnector(GitHubTeamsConnector):
 
     async def run_sync(self) -> None:
         """Sync every repo the configured account reaches; skip org member/email sync."""
+        self.runtime.sign_in_refused = False
         try:
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
@@ -332,6 +333,7 @@ class GithubConnector(GitHubTeamsConnector):
                 )
         except Exception as e:
             self.logger.error("Error in GitHub Personal sync: %s", e, exc_info=True)
+            await self._stop_if_sign_in_refused(e)
             raise
 
     async def run_incremental_sync(self) -> None:

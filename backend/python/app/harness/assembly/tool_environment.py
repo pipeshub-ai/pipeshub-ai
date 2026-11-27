@@ -464,12 +464,16 @@ async def _turn_scope(
     knowledge = list((agent or {}).get("knowledge") or [])
     if not universal:
         knowledge = await bounded_agent_knowledge(knowledge, run.knowledge.source_limits, graph, run.org_id)
+    # As main's agent route (chat_stream): anyone runs a service-account agent on one identity, so it keeps only
+    # what the whole org shares, and a collection only when it is bound to a service account. An unbound one reads
+    # as its creator, so no collection is put back either, the caller's own project collections included.
+    collections_allowed = agent is None or not agent.get("isServiceAccount", False) or bool(
+        agent.get("serviceAccountUserId")
+    )
     if agent is not None and agent.get("isServiceAccount", False):
-        # As main's agent route (chat_stream): anyone runs a service-account agent on one identity, so it keeps
-        # only what the whole org shares, and a collection only when it is bound to a service account.
         knowledge = await service_account_knowledge(
             graph, knowledge, user_info.get("userId", ""), run.org_id, logger,
-            bound=bool(agent.get("serviceAccountUserId")),
+            bound=collections_allowed,
         )
     requested = requested_filters(run.knowledge)
     try:
@@ -483,6 +487,7 @@ async def _turn_scope(
             logger=logger,
             project_sources=None,
             retrieval_user_id=user_info.get("userId"),
+            admit_project_collections=collections_allowed,
         )
     except (SelectionTooLargeError, SelectionNotReadyError) as exc:
         raise selection_refused(exc, agent_limit=not universal and not has_selection(requested)) from exc
