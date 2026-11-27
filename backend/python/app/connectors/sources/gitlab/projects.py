@@ -475,7 +475,10 @@ class ProjectsSync:
         permission_merge_requests_level: list[Permission] = []
 
         for member in dict_member.values():
-            if not member_has_access(member):
+            level: int = getattr(member, "access_level", 0) or 0
+            # Minimal Access (5) cannot see the project. Skip it before the lookup, so an
+            # unreadable member who would get no grant cannot hold back the rewrite.
+            if level < 10 or not member_has_access(member):
                 continue
             try:
                 permission = await self._transform_restrictions_to_permissions(member)
@@ -492,9 +495,6 @@ class ProjectsSync:
                 )
                 return
             if not permission:
-                continue
-            level: int = getattr(member, "access_level", 0) or 0
-            if level < 10:
                 continue
             permission_project_level.append(permission)
             if level == 10:

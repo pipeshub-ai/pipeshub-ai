@@ -951,6 +951,40 @@ class TestSyncProjectMembersAsPseudo:
         assert all(perms is None for perms in acl.values()), "None keeps the stored grants"
         c.note_sync_problem.assert_called_once()
 
+    async def test_a_minimal_access_member_whose_lookup_fails_does_not_keep_the_stored_access(self) -> None:
+        """Minimal Access (5) gets no grant, so its identity is never read: a member downgraded
+        to it loses access even when the store cannot read who they are."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        members = [_member(uid=1, access_level=30), _member(uid=2, access_level=5)]
+        for m in members:
+            m.state = "active"
+            m.membership_state = "active"
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=members, error=None))
+
+        async def lookup(source_user_id: str, **_kwargs: object) -> MagicMock:
+            if source_user_id == "2":
+                raise RuntimeError("store unavailable")
+            return MagicMock(email=f"user{source_user_id}@example.com")
+
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lookup)
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(project)
+
+        looked_up = [call.args[0] if call.args else call.kwargs.get("source_user_id")
+                     for call in c.data_entities_processor.get_user_by_source_id.await_args_list]
+        assert "2" not in looked_up
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert all(perms is not None for perms in acl.values()), "the rewrite is not held back"
+        assert all(len(perms) == 1 for perms in acl.values()), "only the Developer is granted"
+        c.note_sync_problem.assert_not_called()
+
     @pytest.mark.parametrize("listing", [
         MagicMock(success=True, data=[], error=None),
         MagicMock(success=False, data=None, error="boom", status_code=500),
