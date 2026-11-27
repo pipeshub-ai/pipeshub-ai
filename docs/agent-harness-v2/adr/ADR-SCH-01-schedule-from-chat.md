@@ -26,10 +26,13 @@ offset, stored in UTC), `timeZone` the IANA zone the person thinks in (for wordi
 it must be at least 60 s and at most 366 days ahead. Its one slot is `o:<iso>`, claimed as a cron slot is (the same
 compare-and-set of `nextFireAt` and the firing's unique slot key), and the same store write disables it
 (`statusReason: ran_once`), so it fires exactly once whatever the number of firers. A fired one-off is listed with
-its run and never fires again; resume and run now refuse it (`SCHEDULE_RAN_ONCE`), delete removes it. A slot missed
+its run and never fires again; resume and run now refuse it (`SCHEDULE_RAN_ONCE`), delete removes it. Run now on a
+one-off that has not fired takes its one slot early, through the same compare-and-set, so a tick and a run now can
+never both run it. A slot missed
 while PipesHub was down fires on the next tick if it is at most 24 h late (a joke 20 minutes late is still the joke
 asked for); later than that its firing is recorded skipped (`once_too_late`), the schedule is disabled and the
-person is told as for any refused firing. A one-off counts against the same per-person and per-org schedule limits;
+person is told as for any refused firing, while the org's harness and scheduled runs are on. A firing retaken after a
+lost lease is held to the same 24 hours, counted from the slot. A one-off counts against the same per-person and per-org schedule limits;
 `catchUp` and coalescing do not apply.
 
 **D2. The agent proposes, the person approves the exact schedule.** Harness runs (the loop and every engine, through
@@ -55,9 +58,11 @@ refused `SCHEDULE_NOT_APPROVED` and nothing is made. The schedule is the run's p
 `ScheduleService.create` with every check a create from the Schedules page makes (the Labs flag, rollout, quotas,
 the 5-minute cron floor, budget, notify channels), with the person's authority re-read as a firing re-reads it. It
 runs the chat's agent, agent version, model, chat mode, tools and locale, and records its origin (conversation, run,
-interaction). Its id is derived from the org and the interaction, so one decision makes one schedule: a repeat
-answers the same schedule (`created: false`). A one-off approved after its time (the person read "in 2 minutes"
-three minutes later) is still made, and fires on the next tick.
+interaction). Its id is derived from the org and the interaction, and Node journals on the run that this interaction
+made it (`x.pipeshub.schedule.created`), so one decision makes one schedule, once: a repeat answers the same schedule
+(`created: false`), and a repeat after the person deleted it is refused (`SCHEDULE_APPROVAL_USED`). A one-off
+approved after its time (the person read "in 2 minutes" three minutes later) is still made and fires on the next
+tick; its lateness still counts from the time asked for. The route is rate-limited per run.
 
 This deliberately differs from ADR-WF-01 D7 (a question card and a confirm route the person calls). Both keep the
 guarantee that matters: the person decides with their own authenticated request, and Node reads what was decided
@@ -98,7 +103,6 @@ is the person's act on the Schedules page, and a list is something a person read
 ## Deviations
 
 - Approval is the existing approval card, not a question card with a confirm route (D3).
-- A schedule deleted after it was made can be made again by a retry of the same approved call.
 
 ## Owner amendments
 
