@@ -1,4 +1,4 @@
-/** Every chat draws the run's activity in one bordered card above the confidence, with no rule under it. */
+/** Every chat draws the run's activity in one steps box, above the confidence and the answer. */
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
@@ -78,7 +78,7 @@ function answer(opts: { cited?: boolean } = {}) {
 const precedes = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
 describe('the activity card', () => {
-  it('holds the activity and its summary row in every chat, before the confidence, with no rule before the answer', () => {
+  it('holds the activity and its summary row in every chat, before the confidence', () => {
     const { activity } = answer();
     const confidence = screen.getByText('Very High');
     const card = screen.getByTestId('chat-activity-card');
@@ -86,17 +86,14 @@ describe('the activity card', () => {
     expect(card.contains(confidence)).toBe(false);
     expect(precedes(card, confidence)).toBe(true);
     expect(precedes(confidence, screen.getByText('Revenue was 4.'))).toBe(true);
-    expect(screen.queryByTestId('chat-activity-separator')).toBeNull();
   });
 
-  it('spans the answer column, on a raised fill, 24 px over what follows', () => {
+  // Drawn flat, as a section of the answer: no fill, border or radius of its own. The answer's 24 px lead under the
+  // steps is the badge's case below.
+  it('spans the answer column', () => {
     answer();
     const card = screen.getByTestId('chat-activity-card');
     expect(card.style.maxWidth).toBe('');
-    expect(card.style.border).toBe('1px solid var(--olive-5)');
-    expect(card.style.background).toBe('var(--olive-2)');
-    expect(card.style.borderRadius).toBe('var(--radius-3)');
-    expect(card.style.marginBottom).toBe('var(--space-5)');
   });
 
   it('is not drawn for an answer with no steps', () => {
