@@ -118,6 +118,17 @@ export function describeOrgContract(fx: OrgFixture): void {
       expect(num(b.org.slug)).to.equal(num(a.org.slug) + 1);
     });
 
+    it('keeps the slug the caller passes, and numbers the next organisation as before', async () => {
+      const slug = `org-${uniq('given')}`;
+      const given = await createOrgLikeSignUp(fx, { ...orgInput(), slug });
+      expect(given.org.slug).to.equal(slug);
+      expect((await orgs.getLive(given.org._id))?.slug).to.equal(slug);
+      const a = await newOrg();
+      const b = await createOrgLikeSignUp(fx, { ...orgInput(), slug: '' });
+      const num = (s?: string): number => Number((s ?? '').replace('org-', ''));
+      expect(num(b.org.slug)).to.equal(num(a.org.slug) + 1);
+    });
+
     it('rolls everything back when the unit of work fails (replica set); keeps partial writes otherwise', async () => {
       const email = `${uniq('rb')}@acme.example.com`;
       let createdOrg = '';

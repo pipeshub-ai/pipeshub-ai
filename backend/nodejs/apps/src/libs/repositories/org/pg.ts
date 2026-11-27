@@ -297,10 +297,11 @@ export class PgOrgRepository implements OrgRepository, Importable {
     const org = await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const now = new Date();
+      // without a slug, the column's own default (the shared counter)
       await k.query(
         `/* pipeshub:identity.org_create */ INSERT INTO identity.orgs
-          (org_id, registered_name, short_name, domain, contact_email, account_type, phone_number, permanent_address, on_boarding_status, signup_channel, signup_referrer_domain, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $12, $10, $10)`,
+          (org_id, slug, registered_name, short_name, domain, contact_email, account_type, phone_number, permanent_address, on_boarding_status, signup_channel, signup_referrer_domain, created_at, updated_at)
+          VALUES ($1, COALESCE(NULLIF($13, ''), 'org-' || nextval('identity.org_slug_seq')), $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $12, $10, $10)`,
         [
           orgId,
           str(o.registeredName),
@@ -316,6 +317,7 @@ export class PgOrgRepository implements OrgRepository, Importable {
           now,
           str(o.signupChannel),
           str(o.signupReferrerDomain),
+          input.slug === undefined ? null : stripNul(input.slug, 'org', 'slug'),
         ],
       );
       await k.query(
