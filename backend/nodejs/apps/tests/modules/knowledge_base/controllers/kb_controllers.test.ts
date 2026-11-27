@@ -2740,7 +2740,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-456',
         documentName: 'folder-file',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
+      const processUploads = sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecords(
         createMockKeyValueStore(),
@@ -2772,6 +2772,9 @@ describe('Knowledge Base Controller', () => {
       expect(res.writeHead.calledWith(200)).to.be.true
       expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
       expect(res.end.called).to.be.true
+      // What the upload grant is signed for travels with the batch.
+      const scope = processUploads.firstCall.args[8]
+      expect(scope).to.deep.equal({ secret: createMockAppConfig().scopedJwtSecret, userId: req.user.userId, folderId: 'folder-1' })
     })
 
     it('should handle partial failures in folder upload', async () => {
@@ -2842,7 +2845,7 @@ describe('Knowledge Base Controller', () => {
         documentId: 'doc-root',
         documentName: 'root-file',
       })
-      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
+      const processUploads = sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
       const handler = uploadRecords(
         createMockKeyValueStore(),
@@ -2864,6 +2867,9 @@ describe('Knowledge Base Controller', () => {
       expect(next.called).to.be.false
       expect(res.writeHead.calledWith(200)).to.be.true
       expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
+      // What the upload grant is signed for travels with the batch.
+      const scope = processUploads.firstCall.args[8]
+      expect(scope).to.deep.equal({ secret: createMockAppConfig().scopedJwtSecret, userId: req.user.userId, folderId: undefined })
     })
 
     it('should handle file with nested path in folder upload', async () => {

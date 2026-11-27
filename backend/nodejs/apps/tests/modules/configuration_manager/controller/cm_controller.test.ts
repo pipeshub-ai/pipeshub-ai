@@ -181,15 +181,20 @@ const fakeConfigManagerConfig = {
 describe('ConfigurationManager Controller', () => {
   let mockEncService: any
   let loadConfigStub: sinon.SinonStub
+  const hideSecretConfig = process.env.HIDE_SECRET_CONFIG
 
   beforeEach(() => {
     mockEncService = createMockEncryptionService()
     loadConfigStub = sinon.stub(cmConfig, 'loadConfigurationManagerConfig').returns(fakeConfigManagerConfig as any)
     sinon.stub(encryptorModule.EncryptionService, 'getInstance').returns(mockEncService)
+    // These cases read stored values back; masking is the default and has its own tests.
+    process.env.HIDE_SECRET_CONFIG = 'false'
   })
 
   afterEach(() => {
     sinon.restore()
+    if (hideSecretConfig === undefined) delete process.env.HIDE_SECRET_CONFIG
+    else process.env.HIDE_SECRET_CONFIG = hideSecretConfig
   })
 
   // -----------------------------------------------------------------------
@@ -4753,6 +4758,24 @@ describe('ConfigurationManager Controller', () => {
       expect(parsed.authority).to.include('ms-tid')
     })
 
+    it('restores the placeholders a read served from the Azure AD settings from those settings', async () => {
+      const azureAd = `encrypted:${JSON.stringify({ clientId: 'az-cid', tenantId: 'az-tid' })}`
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async (path: string) => (path === '/services/auth/azureAd' ? azureAd : null)),
+      })
+      const next = createMockNext()
+
+      await setMicrosoftAuthConfig(kvs)(
+        createMockRequest({ body: { clientId: CONFIG_SECRET_PLACEHOLDER, tenantId: CONFIG_SECRET_PLACEHOLDER } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(mockEncService.encrypt.lastCall.args[0])
+      expect(saved).to.include({ clientId: 'az-cid', tenantId: 'az-tid' })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
@@ -7033,6 +7056,34 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+      orgStub.restore()
+    })
+
+    it('keeps the stored tokens when the client sends back the placeholders it read', async () => {
+      const orgStub = sinon.stub(Org, 'findOne').resolves({ accountType: 'individual', _id: 'org-1' } as any)
+      const stored = { access_token: 'at-stored', refresh_token: 'rt-stored', access_token_expiry_time: 1, refresh_token_expiry_time: 1 }
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(stored)}`) })
+      const handler = createGoogleWorkspaceCredentials(kvs, 'user-1', '507f1f77bcf86cd799439011', createMockEventService())
+      const req = createMockRequest({
+        body: {
+          access_token: CONFIG_SECRET_PLACEHOLDER,
+          refresh_token: 'rt-new',
+          // The read merges the OAuth config's client fields in and masks them; this record does not store them.
+          clientId: CONFIG_SECRET_PLACEHOLDER,
+          clientSecret: CONFIG_SECRET_PLACEHOLDER,
+          access_token_expiry_time: 9999,
+          refresh_token_expiry_time: 9999,
+          enableRealTimeUpdates: false,
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(String(kvs.set.firstCall.args[1]).replace(/^encrypted:/, ''))
+      expect(saved).to.include({ access_token: 'at-stored', refresh_token: 'rt-new' })
       orgStub.restore()
     })
 

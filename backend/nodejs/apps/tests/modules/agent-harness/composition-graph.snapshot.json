@@ -15511,6 +15511,7 @@
   },
   "AgentHarnessRunStreams": {
    "class": "RunStreamService",
+   "conversationView": "null",
    "conversations": "fake:conversationReader",
    "costPushMs": "undefined",
    "heartbeatMs": "number",
