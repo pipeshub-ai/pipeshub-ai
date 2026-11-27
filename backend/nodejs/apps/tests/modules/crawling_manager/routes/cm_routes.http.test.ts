@@ -862,7 +862,7 @@ describe('Crawling manager over HTTP', () => {
         body: { detail: 'arangodb: connection refused at arango-0.internal:8529' },
       })
       const res = await send('POST', `/${TYPE}/drive-team/schedule`, session(ADMIN_A), daily())
-      expect(res.status).to.equal(500)
+      expect(res.status).to.equal(502)
       expect(errorMessage(res)).to.not.include('arango')
       expect(await repeatables()).to.have.length(0)
     })

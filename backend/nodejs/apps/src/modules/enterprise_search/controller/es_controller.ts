@@ -924,6 +924,10 @@ export const uploadChatAttachments =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(aiResponse, 'Upload Chat Attachments');
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -1028,6 +1032,13 @@ export const uploadChatAttachmentsInternal =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(
+          aiResponse,
+          'Upload Chat Attachments (Internal)',
+        );
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -5271,27 +5282,17 @@ export const search =
         throw handleBackendError(error, 'Search');
       }
 
-      if (!aiResponse?.data) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
       // A search that found nothing, or could not check access, says why as codes the client words. The error is
       // mapped as for any other failure, so the body keeps its envelope (code, message, requestId); only the codes are added.
-      const noticed = (aiResponse.data as { accessNotices?: unknown })
-        .accessNotices;
+      // An error answer that was not JSON has no data: its status is still mapped below.
+      const noticed = (
+        aiResponse?.data as { accessNotices?: unknown } | undefined
+      )?.accessNotices;
       if (
         (aiResponse.statusCode === 404 || aiResponse.statusCode === 503) &&
         Array.isArray(noticed)
       ) {
-        const mapped = handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        const mapped = handleBackendError(aiResponse, 'Search');
         throw Object.assign(mapped, {
           metadata: {
             ...(mapped as { metadata?: object }).metadata,
@@ -5300,16 +5301,10 @@ export const search =
         });
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        throw handleBackendError(aiResponse, 'Search');
+      }
+      if (!aiResponse.data) {
+        throw new InternalServerError('Failed to get response from AI service');
       }
 
       // An agent searching on a user's behalf sends false: its searches are not
@@ -5477,20 +5472,11 @@ export const retrieve =
         throw handleBackendError(error, 'Retrieve');
       }
       const data = aiResponse.data;
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse, 'Retrieve');
+      }
       if (data === undefined) {
         throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Retrieve',
-        );
       }
       res.status(HTTP_STATUS.OK).json({
         requestId,
