@@ -69,7 +69,8 @@ class _KgTx:
         return self.linked
 
     async def fetchrow(self, sql: str, *args: Any) -> dict:  # noqa: ANN401
-        assert "chain_top_grants" in sql, sql
+        from app.services.graph_db.postgres.kg import grant_marks
+        assert sql == grant_marks.CANDIDATES, sql
         self.candidates_read = True
         return {"sks": [1], "grps": [None], "pars": [None]}
 
