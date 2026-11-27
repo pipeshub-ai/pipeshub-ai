@@ -21,10 +21,10 @@ from app.core.db.errors import (
     UnsupportedIsolation,
     UowUsageError,
 )
-from app.core.db.uow import KernelDB, OrgLimits, Tx, safe_request_id
+from app.core.db.uow import KernelDB, OrgLimits, Tx, notify, safe_request_id
 
 __all__ = [
     "CapabilityError", "CommitOutcomeUnknown", "ConnectionLost", "DbConfig", "DbConfigError", "DbError", "DbTimeout",
     "DeadlockDetected", "FailedTransaction", "UowUsageError", "KernelDB", "LockTimeout", "OrgLimits", "PoolTimeout", "PrologueFailed", "ProfileEpochMismatch",
-    "RetryableConflict", "SerializationConflict", "SessionRoleLeak", "TooManyConnections", "Tx", "UnsupportedIsolation", "safe_request_id",
+    "RetryableConflict", "SerializationConflict", "SessionRoleLeak", "TooManyConnections", "Tx", "UnsupportedIsolation", "notify", "safe_request_id",
 ]

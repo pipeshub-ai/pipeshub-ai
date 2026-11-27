@@ -549,3 +549,102 @@ async def test_the_stamping_of_a_large_connector_goes_on_across_passes_and_the_c
     moved = [c for c in seen if c]
     assert len(moved) >= 3 and len(set(moved)) == len(moved)                       # one page a pass, each from where the last stopped
     assert (org, "drv") not in bootstrap._STAMP_AFTER
+
+
+async def test_the_connectors_of_an_org_take_their_turns_at_the_same_time_and_each_still_promotes(pg_db, monkeypatch) -> None:
+    # one connector's stamping must not wait for the copies of the others: their turns overlap, bounded by CONNECTORS_AT_ONCE
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=3)                                                   # four connectors
+    monkeypatch.setattr(bootstrap, "CONNECTORS_AT_ONCE", 3, raising=False)       # raising=False: the same test fails on code that takes the connectors one by one
+    active = {"now": 0, "max": 0, "arrived": 0, "alone": 0}
+    all_in = asyncio.Event()
+    real = bf.backfill
+
+    async def barrier(db, o, app, **k) -> object:
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        try:
+            if active["arrived"] < 3:                                             # the first three turns wait for each other: one at a time, the first waits alone
+                active["arrived"] += 1
+                if active["arrived"] == 3:
+                    all_in.set()
+                try:
+                    await asyncio.wait_for(all_in.wait(), 10)
+                except asyncio.TimeoutError:
+                    active["alone"] += 1
+            return await real(db, o, app, **k)
+        finally:
+            active["now"] -= 1
+    monkeypatch.setattr(bf, "backfill", barrier)
+    due: dict = {}
+    for _ in range(10):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        if await _enforced(p, org) == 4:
+            break
+    assert active["alone"] == 0 and active["max"] == 3, active                    # side by side, never more than the bound
+    assert await _enforced(p, org) == 4 and await _log_rows(p, org) == 0
+
+
+async def test_one_connectors_verify_does_not_hold_up_another_connectors_stamping_in_the_same_pass(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=1)                                                   # drv and drv0; drv takes its turn first
+    stamped = asyncio.Event()
+    real_stamp, real_verify, seen = bf._restamp_pages, bf.verify_app, {}
+
+    async def stamp(db, o, app, *a, **k) -> object:
+        out = await real_stamp(db, o, app, *a, **k)
+        if app == "drv0":
+            stamped.set()
+        return out
+
+    async def slow_verify(tx, o, app) -> object:
+        if app == "drv":                                                          # a long verify, under drv's lock
+            seen["stamped_meanwhile"] = await asyncio.wait_for(stamped.wait(), 5) if not stamped.is_set() else True
+        return await real_verify(tx, o, app)
+    monkeypatch.setattr(bf, "_restamp_pages", stamp)
+    monkeypatch.setattr(bf, "verify_app", slow_verify)
+    due: dict = {}
+    for _ in range(5):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        if await _enforced(p, org) == 2:
+            break
+    assert seen.get("stamped_meanwhile") is True, seen                            # drv0 stamped while drv was being verified
+    assert await _enforced(p, org) == 2
+
+
+async def test_stamping_a_copied_connector_rewrites_each_record_row_once(pg_db) -> None:
+    # the stamps and r13 go in one upsert: a second one would leave a second row version (and its index entries) for every record of a bootstrap
+    from app.services.graph_db.postgres.kg.locks import lock_apps
+    from app.services.graph_db.postgres.kg.stamp import stamp_app
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, extra=12)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "drv")                                     # the copy writes no stamps
+
+    async def page(tx) -> tuple[int, int]:
+        upd = "SELECT n_tup_upd FROM pg_stat_xact_user_tables WHERE relid = 'kg.records'::regclass"
+        before = await tx.fetchval(upd)
+        await lock_apps(tx, org, {"drv"}, org_wide=False)
+        assert await stamp_app(tx, org, "drv", None, 100, locked={"drv"}) is not None
+        stamped = await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND (class_id IS NOT NULL OR legacy_reason IS NOT NULL)", org)
+        return await tx.fetchval(upd) - before, stamped
+    with ctx(org):
+        updates, stamped = await pg_db.run(page, write=True)
+    assert stamped == 15 and updates == stamped, (updates, stamped)
+
+
+async def test_a_log_that_cannot_be_drained_before_the_turns_still_gives_each_connector_its_turn_and_its_retry(pg_db, monkeypatch, caplog) -> None:
+    # the drain before the turns is the org's: when it fails, each connector still copies what it can and backs off as when its own drain fails
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=1)                                                   # drv and drv0
+
+    async def broken(db, o, **k) -> object:
+        raise RuntimeError("the change log cannot be read")
+    monkeypatch.setattr(bf, "drain_org", broken)
+    due: dict = {}
+    with caplog.at_level("WARNING"):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+    assert sorted(a for (o, a) in due if o == org) == ["drv", "drv0"]
+    assert all(0 < due[(org, a)] - time.monotonic() <= bootstrap.RETRY_S for a in ("drv", "drv0")), due      # each turn ran and backs off
+    assert await _cursor(p, org) == "done"                                        # the copy went on before the failing drain
+    assert "could not be taken to enforce" in caplog.text

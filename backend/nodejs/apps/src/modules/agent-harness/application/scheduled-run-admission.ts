@@ -67,6 +67,9 @@ export class RunAdmissionScheduledRuns implements ScheduledRunAdmission {
         authorization: request.authorization,
         via: 'trigger',
         trigger: request.trigger,
+        // A firing has no browser turn to ask for the harness, and the schedule itself is that ask: without it the
+        // assistant's Agent mode routes a scheduled run to today's loop, which a firing cannot take.
+        durableRequested: true,
       });
       if (outcome.route === 'legacy') {
         return { kind: 'refused', reason: 'rollout_legacy' };

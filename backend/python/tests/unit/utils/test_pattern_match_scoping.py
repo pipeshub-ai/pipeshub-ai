@@ -528,6 +528,33 @@ class TestMergeAdjudication:
         graph.filter_accessible_virtual_record_ids.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_strict_turn_with_only_a_selection_cites_what_the_selection_holds(self) -> None:
+        """No app named, but a folder selected: the folder's scope stands in for the apps."""
+        from app.modules.retrieval import selection_scope
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        selection_scope._memo.clear()
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"folder-1"})))
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "r1", "vrid": "v1", "connectorId": "app-1"}],
+        })
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        results = await self._merge(
+            graph, [{"virtual_record_id": "v1"}],
+            filters={"apps": [], "kb": [], "records": ["folder-1"], "strictScope": True},
+        )
+
+        assert [r["virtual_record_id"] for r in results] == ["v1"]
+        call = graph.filter_accessible_virtual_record_ids.await_args.kwargs
+        assert call["scope_connector_ids"] == frozenset({"app-1"})
+        (selection,) = call["scopes"]
+        assert not selection.admits({"id": "r2", "connectorId": "app-1"})
+        selection_scope._memo.clear()
+
+    @pytest.mark.asyncio
     async def test_uses_trusted_containers_and_request_scope(self):
         graph = self._graph(trusted_apps={"app-1"}, trusted_groups={"rg-1"})
         graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})

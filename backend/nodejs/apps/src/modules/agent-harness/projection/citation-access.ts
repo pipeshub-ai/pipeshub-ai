@@ -55,6 +55,8 @@ function placeholder(citation: unknown): Json {
 export class CitationAccess {
   private constructor(
     private readonly decisions: ReadonlyMap<string, CitationDecision>,
+    /** The check could not be made: what is hidden is unknown, not refused. */
+    readonly unavailable = false,
   ) {}
 
   /** Decisions keyed by `sourceKey`; a source missing from them is hidden. */
@@ -65,8 +67,8 @@ export class CitationAccess {
   }
 
   /** Fail closed: every citation but a web page's hidden. */
-  static denyRecords(): CitationAccess {
-    return new CitationAccess(new Map());
+  static denyRecords(unavailable = false): CitationAccess {
+    return new CitationAccess(new Map(), unavailable);
   }
 
   /** Why `citation` is hidden, or `undefined` when it is shown. */

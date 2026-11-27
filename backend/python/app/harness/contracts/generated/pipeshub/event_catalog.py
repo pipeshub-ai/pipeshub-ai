@@ -30,6 +30,7 @@ from app.harness.contracts.generated.pipeshub.events.x_pipeshub_repository_fetch
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_repository_unavailable import PipeshubRepositoryUnavailableEvent
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_run_handoff import PipeshubRunHandoffEvent
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_run_notice import PipeshubRunNoticeEvent
+from app.harness.contracts.generated.pipeshub.events.x_pipeshub_schedule_created import PipeshubScheduleCreatedEvent
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_telemetry_recorded import PipeshubTelemetryRecordedEvent
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_tool_call_presented import PipeshubToolCallPresentedEvent
 from app.harness.contracts.generated.pipeshub.events.x_pipeshub_tool_result_presented import PipeshubToolResultPresentedEvent
@@ -67,6 +68,7 @@ EVENT_WRITERS: Mapping[str, frozenset[str]] = MappingProxyType({
     "x.pipeshub.repository.unavailable": frozenset({"worker"}),
     "x.pipeshub.run.handoff": frozenset({"worker"}),
     "x.pipeshub.run.notice": frozenset({"node", "worker"}),
+    "x.pipeshub.schedule.created": frozenset({"node"}),
     "x.pipeshub.telemetry.recorded": frozenset({"worker"}),
     "x.pipeshub.tool.call_presented": frozenset({"worker"}),
     "x.pipeshub.tool.result_presented": frozenset({"worker"}),
@@ -100,6 +102,7 @@ EVENT_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType({
     "x.pipeshub.repository.unavailable": PipeshubRepositoryUnavailableEvent,
     "x.pipeshub.run.handoff": PipeshubRunHandoffEvent,
     "x.pipeshub.run.notice": PipeshubRunNoticeEvent,
+    "x.pipeshub.schedule.created": PipeshubScheduleCreatedEvent,
     "x.pipeshub.telemetry.recorded": PipeshubTelemetryRecordedEvent,
     "x.pipeshub.tool.call_presented": PipeshubToolCallPresentedEvent,
     "x.pipeshub.tool.result_presented": PipeshubToolResultPresentedEvent,

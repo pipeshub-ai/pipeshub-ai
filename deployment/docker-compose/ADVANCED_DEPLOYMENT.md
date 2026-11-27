@@ -616,6 +616,23 @@ so any tool that can populate the container environment will work.
 
 ---
 
+### Internal routes and public access
+
+`INTERNAL_ROUTES_PUBLIC_ACCESS` controls requests that reach `/internal/` API routes from outside. `log` (the default) records them and lets them through. `deny` answers 404.
+
+A request counts as internal only when its source address is loopback (`127.0.0.0/8`, `::1`) or inside `INTERNAL_ROUTES_TRUSTED_CIDRS`, and it carries no `Forwarded`, `X-Forwarded-For` or `X-Real-IP` header. Everything else is public. `log` records the request and lets it through; `deny` answers 404. A private address that is not loopback, such as the Docker gateway that a published port shows for an outside client, is public unless you list it.
+
+`INTERNAL_ROUTES_TRUSTED_CIDRS` is a comma-separated list such as `10.20.0.0/16,fd00::/8`. It is empty by default. Malformed entries are ignored with a warning and never widen access.
+
+- The all-in-one image and the Compose files in this repo run the services in one container and call each other over loopback, so they need nothing.
+- If your services call the API across a network, set `INTERNAL_ROUTES_TRUSTED_CIDRS` to the ranges they come from before you set `deny`. Check the `log` output first: a service address that is logged would be refused.
+
+A reverse proxy or tunnel that runs on the same host or in the same container reaches the API over loopback. It must set `X-Forwarded-For` (or `Forwarded` or `X-Real-IP`), as nginx, Traefik, Caddy and most load balancers do when configured for it. A proxy that strips these headers makes every public request look internal.
+
+The value is read without regard to case or surrounding spaces. An unknown value is logged at startup and treated as `log`.
+
+These routes also require their scoped token.
+
 ## OAuth dynamic registration and device grant
 
 PipesHub's authorization server advertises RFC 7591 dynamic client registration

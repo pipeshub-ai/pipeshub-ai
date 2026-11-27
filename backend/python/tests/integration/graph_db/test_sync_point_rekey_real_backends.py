@@ -5,6 +5,7 @@ RB-1 ``list_sync_points`` gives one org's sync points in ``syncPointKey`` order,
 RB-2 the step counts sealed delta links by key, reseals them under the current key with the provider's
      compare-and-set, and a connector reading under the new key alone gets every link back; a compare-and-set on
      a value that changed is refused.
+RB-3 a field written as None is removed on every store, so it reads back absent (``sync_point_contract.py``).
 
 The PostgreSQL store's case is in ``postgres/test_records.py``. Runs on Neo4j and ArangoDB (backend-matrix).
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -25,6 +26,9 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.sync_point.rekey import rekey
 from app.core.org_context import for_org
 from app.utils.encryption.encryption_service import EncryptionService
+from tests.integration.graph_db.sync_point_contract import (
+    assert_a_null_clears_a_sync_point_field,
+)
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
@@ -131,3 +135,14 @@ async def test_rb2_the_step_reseals_delta_links_through_the_provider(
         for key in keys:
             await provider.remove_sync_point(key, SYNC_POINTS)
         EncryptionService._instance = None  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_rb3_a_field_written_as_none_reads_back_absent(graph: tuple[IGraphDBProvider, str]) -> None:
+    provider, run = graph
+    org = f"{run}-org"
+    key = f"{org}/cleared"
+    with for_org(org, job="test"):
+        try:
+            await assert_a_null_clears_a_sync_point_field(provider, key)
+        finally:
+            await provider.remove_sync_point(key, SYNC_POINTS)

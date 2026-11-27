@@ -747,8 +747,9 @@
     "moreOptions": "更多选项",
     "docs": "文档",
     "enterprise": {
-      "label": "EE 版提供",
-      "tooltip": "属于 PipesHub 企业版"
+      "label": "企业版提供",
+      "tooltip": "PipesHub 企业版包含此功能",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "出了点问题",
@@ -1133,6 +1134,7 @@
     "agentSidebarLabel": "智能体",
     "agentNameLoading": "正在加载…",
     "sharedAgentChat": "共享的智能体聊天",
+    "sharedAgentChatNotice": "你分享此聊天的对象可以阅读聊天内容，但除非你也与他们共享该智能体，否则无法打开该智能体。",
     "myAgents": "我的智能体",
     "moreAgents": "更多智能体",
     "agentHeaderMenuAria": "智能体选项",
@@ -2142,7 +2144,7 @@
       "title": "用户组",
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
-      "enterpriseMessage": "升级到企业版以使用用户组权限功能。",
+      "enterpriseMessage": "基于用户组的访问控制：一次为整个用户组授予访问权限。",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -2226,18 +2228,168 @@
       }
     },
     "enterprise": {
-      "contact": "联系销售",
+      "contact": "联系我们",
       "scim": {
         "heading": "SCIM 预配功能仅在企业版中提供",
-        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。"
+        "message": "通过 Okta 或 Microsoft Entra ID 自动预配和取消预配用户。",
+        "benefits": {
+          "providers": "通过 SCIM 2.0 支持 Okta 和 Microsoft Entra ID",
+          "offboarding": "取消预配的用户会自动失去访问权限",
+          "noManualWork": "不再需要手动邀请和移除用户"
+        }
       },
       "auditLogs": {
         "heading": "审计日志功能仅在企业版中提供",
-        "message": "查看工作区中谁在何时做了什么。"
+        "message": "查看工作区中谁在何时做了什么。",
+        "benefits": {
+          "everyEvent": "每项操作的执行者、时间、IP 地址、对象和结果",
+          "filters": "按用户、操作或结果筛选",
+          "alerts": "设置提醒，并导出日志用于合规审查"
+        }
       },
       "usage": {
-        "heading": "用量、额度和账单功能仅在企业版中提供",
-        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。"
+        "heading": "用量和账单功能仅在企业版中提供",
+        "message": "查看并控制 AI 支出。按用户、智能体、连接器和模型跟踪，设置每个用户可用的额度，并管理额度和发票。",
+        "benefits": {
+          "breakdown": "按用户、智能体、连接器和模型统计 AI 支出",
+          "billing": "额度和发票集中在一处",
+          "alerts": "AI 支出超出上限时提醒你"
+        }
+      },
+      "benefitsTitle": "包含内容",
+      "relatedTitle": "企业版还提供",
+      "tenants": {
+        "heading": "多租户功能仅在企业版中提供",
+        "message": "在一套部署中，为每个团队、地区或客户提供各自的组织。",
+        "benefits": {
+          "separate": "每个租户都有自己的用户、用户组、连接器、集合和智能体",
+          "inherit": "选择租户继承哪些设置，例如 AI 模型、邮件和登录",
+          "manage": "在一个地方创建和管理所有租户"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "一次为整个用户组授予访问权限",
+          "teams": "把整个团队或单个用户加入用户组",
+          "builtIn": "从内置的管理员和所有人用户组开始"
+        }
+      },
+      "seeWhatsInEnterprise": "查看企业版功能",
+      "sidebarCard": {
+        "title": "企业版",
+        "body": "多租户、SSO、SCIM 预配、审计日志等。",
+        "action": "查看包含的功能",
+        "dismiss": "隐藏企业版卡片"
+      },
+      "overview": {
+        "currentEdition": "当前版本：社区版",
+        "title": "企业版",
+        "subtitle": "包含社区版的全部功能，另有多租户、SSO、SCIM 预配、审计日志和成本控制。",
+        "seePreview": "预览",
+        "seePreviewLabel": "预览{{name}}",
+        "plans": {
+          "community": {
+            "name": "社区版",
+            "yourPlan": "当前版本",
+            "summary": "免费、开源、自行部署",
+            "lead": "社区版包含",
+            "items": {
+              "search": "在已连接的应用中搜索和聊天",
+              "agents": "AI 智能体、操作和 MCP 服务器",
+              "people": "用户和团队",
+              "signIn": "密码、邮件一次性验证码、Google 和 Microsoft 登录"
+            },
+            "current": "你当前的版本"
+          },
+          "enterprise": {
+            "name": "企业版",
+            "summary": "适合规模较大的组织。价格请咨询。",
+            "lead": "包含社区版的全部功能，另外还有：",
+            "seeAll": "查看全部功能"
+          }
+        },
+        "compare": {
+          "title": "版本对比",
+          "feature": "功能",
+          "community": "社区版",
+          "enterprise": "企业版",
+          "pricing": "价格请咨询",
+          "included": "包含",
+          "notIncluded": "不包含",
+          "communityHas": {
+            "scim": "手动管理用户",
+            "collaborativeChat": "共享聊天供阅读",
+            "groups": "团队",
+            "sso": "密码、邮件一次性验证码、Google 和 Microsoft"
+          }
+        },
+        "faq": {
+          "title": "常见问题",
+          "free": {
+            "question": "社区版会一直免费吗？",
+            "answer": "会。它将继续开源且免费。"
+          },
+          "preview": {
+            "question": "能先预览某项功能吗？",
+            "answer": "可以。标有“{{label}}”的功能会打开它所在的页面，并显示界面预览。"
+          },
+          "get": {
+            "question": "如何获得企业版？",
+            "answer": "{{contact}}。我们会了解你的组织需要什么，以及如何部署。"
+          }
+        },
+        "groups": {
+          "scale": "规模",
+          "governance": "访问与治理",
+          "security": "安全与合规",
+          "cost": "成本与索引"
+        },
+        "items": {
+          "tenants": {
+            "name": "多租户",
+            "description": "一套部署中，每个团队、地区或客户各有独立的组织。"
+          },
+          "scim": {
+            "name": "SCIM 配置",
+            "description": "通过 Okta 或 Microsoft Entra ID 自动预配和取消预配用户。"
+          },
+          "collaborativeChat": {
+            "name": "协作聊天",
+            "description": "在同一个对话中一起聊天，并与团队和用户组共享。"
+          },
+          "groups": {
+            "name": "用户组权限",
+            "description": "基于用户组的访问控制：一次为整个用户组授予访问权限。"
+          },
+          "toolApprovals": {
+            "name": "工具审批策略",
+            "description": "为每个智能体工具设置全组织规则：运行、需要审批或禁止。"
+          },
+          "actOnBehalf": {
+            "name": "代表他人执行操作",
+            "description": "让服务账号以指定用户的身份操作（委派访问），每次尝试都有记录。"
+          },
+          "peoplesOwnApps": {
+            "name": "用户应用治理",
+            "description": "审查并移除用户连接的 OAuth 应用、操作和 MCP 服务器。"
+          },
+          "sso": {
+            "name": "单点登录 (SSO)",
+            "description": "通过 Okta、OneLogin 或任意 SAML 2.0、OpenID Connect (OIDC) 提供方登录。"
+          },
+          "auditLogs": {
+            "name": "审计日志",
+            "description": "按执行者、时间、IP 地址和结果跟踪每项操作。可筛选、提醒和导出。"
+          },
+          "usage": {
+            "name": "用量和账单",
+            "description": "AI 支出的可见性与控制：按用户、智能体、连接器和模型跟踪，并设置每个用户可用的额度。"
+          },
+          "indexingPriority": {
+            "name": "索引优先级",
+            "description": "选择优先索引的记录、集合和上传内容。"
+          }
+        }
       }
     },
     "teams": {
@@ -2839,7 +2991,7 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
-        "usageAndCredits": "用量与额度",
+        "usageAndCredits": "用量和账单",
         "security": "安全",
         "personal": "个人",
         "people": "成员",
@@ -2873,13 +3025,14 @@
         "groups": "群组",
         "scim": "SCIM",
         "auditLogs": "审计日志",
-        "usage": "用量与额度",
+        "usage": "用量和账单",
         "teams": "团队",
         "webSearch": "网络搜索",
         "tenants": "租户",
         "superOrgs": "组织",
         "oauthApps": "连接器 OAuth 应用",
         "serviceAccounts": "服务账号",
+        "enterprise": "企业版",
         "aiAccounts": "AI 账户",
         "schedules": "计划任务",
         "memories": "记忆",
@@ -3150,6 +3303,11 @@
         "message": "如果放弃，您的编辑将不会被保存",
         "confirm": "放弃",
         "cancel": "继续编辑"
+      },
+      "edition": {
+        "title": "版本",
+        "name": "社区版",
+        "description": "开源、自行部署。企业版另有多租户、SSO、SCIM 预配、审计日志等功能。"
       }
     },
     "mcpAccess": {
@@ -5405,7 +5563,7 @@
     },
     "tenants": {
       "title": "租户",
-      "subtitle": "在工作区内创建和管理租户组织",
+      "subtitle": "在此部署中创建和管理租户组织",
       "createTenant": "创建租户",
       "searchPlaceholder": "搜索租户...",
       "emptyTitle": "尚未创建任何租户",
@@ -6930,6 +7088,13 @@
       "hidden": "这里有些字符原本不可见或会改变文字顺序，因此显示为 ⟨U+202E⟩ 这样的代码。请确认这正是您要发送的内容。",
       "host": "{{ascii}} 混用了不同文字，看起来像 {{unicode}}。它可能不是看上去的那个网站，因此以真实形式显示。",
       "markerTitle": "原本不可见或会改变文字顺序的字符"
+    },
+    "schedule": {
+      "name": "名称",
+      "when": "时间",
+      "ask": "每次运行要问的内容",
+      "notify": "通知方式",
+      "where": "每次运行都会开启单独的对话。可随时在“工作区 > 计划”中暂停或删除。"
     }
   },
   "codeTaskCard": {
@@ -7759,7 +7924,8 @@
     "status": {
       "active": "运行中",
       "paused": "已暂停",
-      "disabled": "已关闭"
+      "disabled": "已关闭",
+      "ranOnce": "已运行一次"
     },
     "trigger": {
       "cron": "Cron",
@@ -7782,7 +7948,8 @@
         "cron": "按计划",
         "manual": "立即运行",
         "event": "已触发",
-        "cronCaughtUp": "计划运行（补运行）"
+        "cronCaughtUp": "计划运行（补运行）",
+        "once": "一次性"
       },
       "openConversation": "打开对话",
       "admitted": "已启动",
@@ -7835,7 +8002,13 @@
       "notifyUnknown": "暂时不可用。",
       "notifyCheckFailed": "无法检查你可以使用哪些渠道，因此只提供 PipesHub。",
       "webhookCantSign": "调用方无法签名。改为在请求头中使用令牌",
-      "webhookCantSignHint": "任何看到令牌的人都能调用它。签名更安全。"
+      "webhookCantSignHint": "任何看到令牌的人都能调用它。签名更安全。",
+      "kindOnce": "一次，在指定日期和时间",
+      "onceAt": "日期和时间",
+      "onceAtHint": "按你的时区（{{timeZone}}）。至少一分钟后，最多一年内。",
+      "onceNotExisting": "在你的时区，这一天没有这个时间：时钟会跳过它。请选择其他时间。",
+      "onceTooSoon": "请选择至少一分钟后的时间。",
+      "onceTooFar": "请选择一年以内的时间。"
     },
     "webhook": {
       "title": "您的 webhook",
@@ -7861,7 +8034,10 @@
       "limit": "您已达到允许的计划任务数量上限。请先删除一个。",
       "budgetCeiling": "每次运行的预算过高。",
       "unavailable": "计划运行需要持久化代理聊天，而你的组织已将其关闭。",
-      "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。"
+      "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。",
+      "ranOnce": "此计划已运行过一次，不会再次运行；你可以删除它。",
+      "notApproved": "此计划未获批准，因此没有创建。",
+      "approvalUsed": "该批准已创建过一个计划，且该计划已被删除。请重新提出请求以创建新计划。"
     },
     "reason": {
       "scheduledRunsDisabled": "组织已关闭计划运行",
@@ -7897,6 +8073,21 @@
       "latest": "始终使用当前版本",
       "latestHint": "每次运行都使用最近发布的版本。",
       "save": "保存"
+    },
+    "ranOnce": "已运行一次，不会再次运行。",
+    "when": {
+      "cron": "{{cron}}（cron）",
+      "everyMinute": "每分钟",
+      "everyMinutes": "每 {{count}} 分钟",
+      "hourly": "每小时的第 {{minute}} 分",
+      "daily": "每天 {{time}}",
+      "weekdays": "每个工作日 {{time}}",
+      "weekly": "每{{day}} {{time}}",
+      "monthly": "每月 {{day}} 日 {{time}}",
+      "onceToday": "一次，今天 {{time}}",
+      "onceTomorrow": "一次，明天 {{time}}",
+      "onceOn": "一次，{{date}}",
+      "withZone": "{{when}}（{{timeZone}}）"
     }
   },
   "unknownEffectCard": {
@@ -8681,7 +8872,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}}（{{count}} 次调用）",
       "install_packages_one": "安装软件包",
-      "install_packages_other": "安装软件包 {{count}} 次"
+      "install_packages_other": "安装软件包 {{count}} 次",
+      "scheduleCreate_one": "设置计划",
+      "scheduleCreate_other": "设置 {{count}} 个计划"
     },
     "engineWants": "{{engine}} 想要：",
     "childWants": "代码任务想要：",
@@ -8749,7 +8942,8 @@
     "waitingForOwner_one": "正在等待对话所有者对一个步骤作出决定",
     "waitingForOwner_other": "正在等待对话所有者对 {{count}} 个步骤作出决定",
     "denyAllLabel": "全部拒绝：{{title}}",
-    "titleSiteUpload": "允许本次运行上传到 {{destination}}？"
+    "titleSiteUpload": "允许本次运行上传到 {{destination}}？",
+    "titleSchedule": "设置计划"
   },
   "engineSignIn": {
     "title": "编程引擎登录",
