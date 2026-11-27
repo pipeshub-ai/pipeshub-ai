@@ -4,7 +4,7 @@ from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 
 revision = "kg_0029"
-down_revision = "kg_0027"
+down_revision = "kg_0028"
 branch_labels = None
 depends_on = None
 older_code_compatible = "adds an index only; an index changes no answer"
