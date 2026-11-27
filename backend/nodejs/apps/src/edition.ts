@@ -81,6 +81,8 @@ export interface EditionDocstoreCoverage {
     reason: string;
   }>;
   carriers: readonly unknown[];
+  /** Tables of the document-store schemas only this edition creates that hold no collection's data (none to move), with why. */
+  unmappedTables: Readonly<Record<string, string>>;
 }
 
 export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
@@ -88,6 +90,7 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
   ignored: [],
   heldFields: [],
   carriers: [],
+  unmappedTables: {},
 };
 
 /**
