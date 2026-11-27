@@ -37,6 +37,7 @@ import type { GroupAccess } from '../ports/group-access';
 import type { EngineEligibility } from './engine-eligibility';
 import {
   HarnessConflictError,
+  HarnessForbiddenError,
   HarnessGroupAccessRefusedError,
   HarnessModelAccessRefusedError,
   HarnessNotFoundError,
@@ -918,18 +919,26 @@ export class ChildRunService {
         ...(signIn !== undefined ? { signIn } : {}),
       });
     } catch (error) {
-      if (error instanceof HarnessModelAccessRefusedError) {
+      // A coder agent that does not grant the asked model: a refused call the model reads, not a failed run.
+      const refused =
+        error instanceof HarnessForbiddenError
+          ? new HarnessModelAccessRefusedError(
+              'route_unavailable',
+              error.message,
+            )
+          : error;
+      if (refused instanceof HarnessModelAccessRefusedError) {
         this.logger.warn(
           'child.refused',
           harnessLogMeta('child.refused', {
             ...fields,
-            reason: error.code,
+            reason: refused.code,
             dimension: 'access',
             depth,
           }),
         );
       }
-      throw error;
+      throw refused;
     }
     if (decided === null) {
       throw new HarnessUnavailableError('No model access for an engine child');

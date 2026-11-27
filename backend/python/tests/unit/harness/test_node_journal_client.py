@@ -601,6 +601,13 @@ async def test_ux5_a_forgotten_attempt_still_settles_and_hands_over_followups_bu
     [
         (403, "ACCOUNT_MISSING"),
         (403, "ORG_POLICY_REFUSED"),
+        # The actor's groups do not allow the child's model: a refused call, not a failed run.
+        (403, "MODEL_GROUP_REQUIRED"),
+        (403, "ENGINE_GROUP_REQUIRED"),
+        # A coder agent that does not grant the child's model (Node answers it as a model access refusal).
+        (403, "ROUTE_UNAVAILABLE"),
+        # A 5xx access refusal is a refused call too: the access check runs before the 5xx rule.
+        (503, "VENDOR_RULES_INVALID"),
         (400, "ENGINE_PROFILE_WIDENING"),
         (409, "ENGINE_UNAVAILABLE"),
         # WP-111: the engine was turned off after the turn started; the hand-off is refused, the loop answers.
@@ -616,3 +623,12 @@ async def test_ctl6_a_child_refused_its_access_is_a_typed_refusal_naming_nodes_c
         _ = await journal.spawn(claim.token, ChildRequest("t1.0", "x"))  # type: ignore[attr-defined]
     assert refused.value.reason is ChildRefusal.ACCESS_REFUSED
     assert refused.value.code == code
+
+
+async def test_a_spawn_over_quota_is_unavailable_not_a_refused_child() -> None:
+    """A 429 is retried like an outage: the quota group is not one of the access refusals."""
+    node = _Node()
+    journal, claim = await _claimed_journal(node)
+    node.replies.append(_error(429, "QUOTA_EXCEEDED"))
+    with pytest.raises(JournalUnavailable):
+        _ = await journal.spawn(claim.token, ChildRequest("t1.0", "x"))  # type: ignore[attr-defined]

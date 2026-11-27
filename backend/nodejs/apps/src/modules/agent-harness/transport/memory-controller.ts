@@ -10,11 +10,7 @@ import {
 } from '../application/harness-log';
 import { MemoryService } from '../application/memory-service';
 import { AttemptClaims } from '../domain/authority';
-import {
-  HarnessMemoryRefusedError,
-  HarnessUnauthorizedError,
-} from '../domain/errors';
-import { transportError as publicError } from './errors';
+import { HarnessUnauthorizedError } from '../domain/errors';
 import { HarnessAttemptRequest, logAuthorityRefusal } from './internal-auth';
 import { attemptClaims, transportError } from './internal-controller';
 
@@ -110,7 +106,6 @@ export class AgentHarnessMemoryController {
       );
       return new BadRequestError('Invalid memory request');
     }
-    if (error instanceof HarnessMemoryRefusedError) return publicError(error);
     return transportError(error);
   }
 }

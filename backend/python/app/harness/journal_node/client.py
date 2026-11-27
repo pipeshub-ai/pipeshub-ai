@@ -92,13 +92,13 @@ _LOST: frozenset[ErrorCode] = frozenset(
 )
 # Node's child admission refusals (P6.1) by their reason code.
 _CHILD_REFUSALS = {refusal.value.upper(): refusal for refusal in ChildRefusal}
-_ACCESS_GROUPS = frozenset({"model_access", "model_account", "engine_profile"})
+_ACCESS_GROUPS = frozenset({"model_access", "model_account", "engine_profile", "group_access"})
 _ENGINE_CONFLICTS = frozenset({"ENGINE_UNAVAILABLE", "ENGINE_OFF"})
 
 
 def _access_refusal(code: str) -> bool:
-    """A refusal of a child's model access, model account or engine (Node's catalog groups, no engine image, or an
-    engine an admin turned off since the turn started, WP-111)."""
+    """A refusal of a child's model access, model account, groups or engine (Node's catalog groups, no engine image,
+    or an engine an admin turned off since the turn started, WP-111)."""
     entry = ERROR_CODES.get(code)  # type: ignore[call-overload]
     return code in _ENGINE_CONFLICTS or (entry is not None and entry.group in _ACCESS_GROUPS)
 LOGGER = "app.harness.journal_node"
