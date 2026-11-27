@@ -7,6 +7,7 @@ import { Project } from '../../../../src/modules/projects/schema/project.schema'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum';
 import {
+  BadGatewayError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -300,7 +301,7 @@ describe('ProjectKnowledgeBaseService', () => {
 
     const creationFailures: Array<{ status: number; ErrorType: new (...args: any[]) => Error }> = [
       { status: 403, ErrorType: ForbiddenError },
-      { status: 500, ErrorType: InternalServerError },
+      { status: 500, ErrorType: BadGatewayError },
     ];
     for (const { status, ErrorType } of creationFailures) {
       it(`maps a ${status} from KB creation to ${ErrorType.name} and leaves Mongo untouched`, async () => {
@@ -570,7 +571,7 @@ describe('ProjectKnowledgeBaseService', () => {
           HEADERS,
           makeProject({ linkedKnowledgeBaseId: 'kb-1', members: [team.member] }),
         ),
-        InternalServerError,
+        BadGatewayError,
       );
     });
   });
@@ -647,7 +648,7 @@ describe('ProjectKnowledgeBaseService', () => {
           principalId,
           'user',
         ),
-        InternalServerError,
+        BadGatewayError,
       );
     });
   });
@@ -740,7 +741,7 @@ describe('ProjectKnowledgeBaseService', () => {
           HEADERS,
           makeProject({ linkedKnowledgeBaseId: 'kb-1' }),
         ),
-        InternalServerError,
+        BadGatewayError,
       );
     });
 

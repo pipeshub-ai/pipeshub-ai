@@ -108,3 +108,24 @@ describe('getUserFacingErrorMessage', () => {
     );
   });
 });
+
+describe('an upload over its limit (413)', () => {
+  it("reads as a refused request with the server's words, not as an unknown failure", () => {
+    const processed = processError(
+      httpError(413, { error: { message: 'One of the files is larger than the 30 MB limit.' } }),
+    );
+    expect(processed.type).toBe(ErrorType.VALIDATION_ERROR);
+    expect(processed.statusCode).toBe(413);
+    expect(processed.message).toBe('One of the files is larger than the 30 MB limit.');
+  });
+
+  it("names the size when a proxy's 413 carries no words", () => {
+    const processed = processError(httpError(413, '<html><body>413 Request Entity Too Large</body></html>'));
+    expect(processed.type).toBe(ErrorType.VALIDATION_ERROR);
+    expect(processed.message).toBe('The upload is too large. Try a smaller file or fewer files.');
+  });
+
+  it('keeps the generic sentence for a 400 with no words', () => {
+    expect(processError(httpError(400, '')).message).toBe('Invalid request. Please check your input.');
+  });
+});

@@ -208,7 +208,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
       const many = Array.from({ length: 1001 }, (_v, i) => ({ name: `f${i}.txt`, bytes: 1, type: 'text/plain' }))
       const r = await upload(many)
 
-      expect(r.status).to.equal(400)
+      expect(r.status).to.equal(413)
       expect(errorMessage(r)).to.equal('You can upload up to 1000 files at a time. Upload the rest in another batch.')
       expect(h.backend.calls).to.deep.equal([])
     })
@@ -439,7 +439,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
 
       const r = await replace('huge.pdf', 1.5 * MB)
 
-      expect(r.status).to.equal(400)
+      expect(r.status).to.equal(413)
       expect(errorMessage(r)).to.equal(
         'This file is larger than the 1 MB limit. Make it smaller or split it, then upload it again.',
       )

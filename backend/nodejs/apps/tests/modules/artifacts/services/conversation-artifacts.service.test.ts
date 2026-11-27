@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import { deleteConversationArtifacts } from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import { InternalServerError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
+import { BadGatewayError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
@@ -99,7 +99,7 @@ describe('deleteConversationArtifacts', () => {
     exec.onFirstCall().resolves({ statusCode: 500, data: { detail: 'boom' } })
     exec.onSecondCall().rejects(new TypeError('fetch failed'))
 
-    expect(await caught(deleteConversationArtifacts(appConfig, CONVERSATION, request()))).to.be.instanceOf(InternalServerError)
+    expect(await caught(deleteConversationArtifacts(appConfig, CONVERSATION, request()))).to.be.instanceOf(BadGatewayError)
     expect(await caught(deleteConversationArtifacts(appConfig, CONVERSATION, request()))).to.be.instanceOf(ServiceUnavailableError)
   })
 })

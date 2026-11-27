@@ -19,6 +19,7 @@ import {
   ForbiddenError,
   NotFoundError,
   ConflictError,
+  BadGatewayError,
   InternalServerError,
   ServiceUnavailableError,
   GatewayTimeoutError,
@@ -74,10 +75,10 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(result).to.be.instanceOf(ConflictError)
     })
 
-    it('should return InternalServerError for status 500', () => {
+    it('should return BadGatewayError for status 500', () => {
       const error = { statusCode: 500, data: { detail: 'server error' }, message: '' }
       const result = handleBackendError(error, 'test operation')
-      expect(result).to.be.instanceOf(InternalServerError)
+      expect(result).to.be.instanceOf(BadGatewayError)
     })
 
     it('should keep status 422 as UnprocessableEntityError', () => {
@@ -251,11 +252,11 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(result.message).to.equal('fallback message')
     })
 
-    it('should default to "Unknown error" when all detail sources are missing', () => {
+    it('should default to the standard reason phrase when all detail sources are missing', () => {
       const error = { statusCode: 400, data: {}, message: '' }
       const result = handleBackendError(error, 'test operation')
       expect(result).to.be.instanceOf(BadRequestError)
-      expect(result.message).to.equal('Unknown error')
+      expect(result.message).to.equal('Bad Request')
     })
   })
 

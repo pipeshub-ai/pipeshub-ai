@@ -12,6 +12,7 @@ import { RedisOrgEraser } from '../../agent-harness/adapters/redis/redis-org-era
 import { createOrgDeletedAnnouncer } from '../../../libs/repositories/agent-harness/org-deleted-announcer';
 import { MailService as AuthMailService } from '../../auth/services/mail.service';
 import { Logger } from '../../../libs/services/logger.service';
+import { redactRunConversationFor } from '../utils/utils';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
@@ -271,6 +272,8 @@ export class EnterpriseSearchAgentContainer {
         gatewayTokens: createGatewayTokenStores(keyValueStoreService),
         inlineClaimer: () => appConfig.aiBackend,
         conversationReader: createConversationReader(),
+        conversationView: (viewer, conversation, opts) =>
+          redactRunConversationFor(appConfig, viewer, conversation, opts),
         // D-SLACK-ASK: a Slack turn's end, posted into its thread by the bot that answers it.
         slackThreads: new SlackBotThreadReplies(
           async () =>
