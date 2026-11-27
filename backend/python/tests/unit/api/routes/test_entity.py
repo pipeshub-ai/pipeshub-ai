@@ -694,7 +694,7 @@ class _TeamGraph:
         self.explicit_requests: list[bool | None] = []
         self._snapshots: dict[str, tuple[dict, set]] = {}
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object) -> dict:
         return {"_key": "user-key-1"}
 
     def opens_explicit_transaction(self, explicit: bool | None) -> bool:

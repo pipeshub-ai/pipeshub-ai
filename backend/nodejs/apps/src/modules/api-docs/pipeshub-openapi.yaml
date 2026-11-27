@@ -23793,6 +23793,69 @@ components:
           example: "LLM provider added successfully"
         details:
           $ref: '#/components/schemas/AIModelProviderAddedDetails'
+    CredentialReentryRequiredError:
+      type: object
+      additionalProperties: false
+      description: |
+        A save that would send a saved secret (sent back as the mask) to a different server
+        address. Nothing is stored; send the secret again in full with the new address.
+      required: [status, error_code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          example: Enter the credentials again to use this new endpoint.
+    ConnectionEndpointsDifferError:
+      type: object
+      additionalProperties: false
+      description: |
+        A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          description: Names the models on another endpoint.
+        models:
+          type: array
+          description: The connection's models whose endpoint differs from its first model's.
+          items:
+            type: object
+            additionalProperties: false
+            required: [modelKey, modelType, name]
+            properties:
+              modelKey:
+                type: string
+              modelType:
+                type: string
+              name:
+                type: string
+                description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -23806,6 +23869,10 @@ components:
         status:
           type: string
           enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+          description: Set when a changed endpoint needs its credentials entered again.
         message:
           type: string
     PrepareEmbeddingModelRequest:
@@ -24065,6 +24132,10 @@ components:
         isReasoning:
           type: boolean
           description: Whether this is a reasoning model
+        forwardingCredentialsCleared:
+          type: boolean
+          enum: [true]
+          description: Present when the update moved the model to a new endpoint and removed its saved identity forwarding service key and credential headers.
     UpdateAIModelProviderResponse:
       type: object
       additionalProperties: false
@@ -79192,7 +79263,13 @@ paths:
                 connectionId:
                   type: string
                   format: uuid
-                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                  description: |
+                    Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
+                    with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
                   description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
@@ -79237,13 +79314,19 @@ paths:
                 $ref: '#/components/schemas/AIModelBatchSSEEvent'
         '400':
           description: |
-            Invalid body, or connectionId does not match a saved connection for this provider
+            Invalid body, or connectionId does not match a saved connection for this provider.
+            `error_code: credential_reentry_required` when connectionId names a connection whose
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79273,7 +79356,12 @@ paths:
       tags:
         - AI Models Providers
       summary: Rotate credentials for every model in a connection
-      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      description: |
+        Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+        The new credentials are health-checked against the connection's first model and written to every
+        model of the connection. When the connection's models do not all share one endpoint and baseUrl
+        (a model was moved to another endpoint), the request is refused with 400
+        `credential_reentry_required` before any health check, and nothing is stored.
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
@@ -79307,15 +79395,32 @@ paths:
       responses:
         '200':
           description: Credentials updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+                    description: Models whose credentials were replaced.
         '400':
           description: |
-            Health check rejected the new credentials, or the body included a non-credential field
+            Health check rejected the new credentials, or the body included a non-credential field.
+
+            Also returned as `ConnectionEndpointsDifferError` (`credential_reentry_required`) when the connection's models use more than one endpoint; nothing is checked or stored.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79351,7 +79456,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Set identity forwarding for every model in a connection
-      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      description: |
+        Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+        A save carrying a new secret (a non-empty `serviceApiKey`, or a typed value for a credential header such as `Authorization`) is refused with 400 `credential_reentry_required` when the connection's models do not all share one endpoint and baseUrl; nothing is stored. A save without a new secret applies to every entry whatever its endpoint.
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
@@ -79415,7 +79522,13 @@ paths:
                   updated:
                     type: integer
         '400':
-          description: Invalid settings
+          description: Invalid settings, or a new secret for a connection whose models use more than one endpoint (`ConnectionEndpointsDifferError`; nothing is stored).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Authentication required
         '403':
@@ -79685,6 +79798,14 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -79709,6 +79830,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:
