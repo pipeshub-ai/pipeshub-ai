@@ -19312,25 +19312,25 @@ class TestArangoPersonMigrationAndReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_counts_only_the_people_it_stranded(self, connected_provider):
-        self._script(
+        calls = self._script(
             connected_provider,
-            [                                        # stale flagged edges
-                {"edge": "e1", "principal": "person/p1"},
-                {"edge": "e2", "principal": "person/p2"},
-                {"edge": "e3", "principal": "users/u9"},   # a user, never swept
+            [                                        # the stale flagged edges, removed by the statement that finds them
+                {"principal": "person/p1"},
+                {"principal": "person/p2"},
+                {"principal": "users/u9"},           # a user, never swept
             ],
-            [],                                      # delete the membership edges
             [1, 1],                                  # two people removed
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 2
+        # one decision: the grant is checked by the statement that removes the edge
+        assert "FILTER NOT" in calls[0][0] and "REMOVE uar IN userAppRelation" in calls[0][0]
 
     @pytest.mark.asyncio
     async def test_reaper_sweeps_people_but_never_users(self, connected_provider):
         """A User node stripped of external membership is still a platform account."""
         calls = self._script(
             connected_provider,
-            [{"edge": "e3", "principal": "users/u9"}],
-            [],
+            [{"principal": "users/u9"}],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
         assert not any("REMOVE key IN person" in q for q, _ in calls)
@@ -19339,7 +19339,7 @@ class TestArangoPersonMigrationAndReaper:
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
         calls = self._script(connected_provider, [])
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert len(calls) == 1, "must not issue a delete when there is nothing to delete"
+        assert len(calls) == 1, "must not look for people when no edge was removed"
 
     @pytest.mark.asyncio
     async def test_reaper_swallows_failure(self, connected_provider):
@@ -19348,6 +19348,26 @@ class TestArangoPersonMigrationAndReaper:
             side_effect=RuntimeError("db down")
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+
+    @pytest.mark.asyncio
+    async def test_reaper_raises_a_conflict_so_its_caller_runs_it_again(self, connected_provider) -> None:
+        """A write-write conflict (1200) removed nothing and aborted the caller's stream transaction: reported as 0 (success) the caller would commit it."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=ArangoQueryError("Query failed", 409, '{"errorNum": 1200}'))
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_num", [1200, 18, 29], ids=["conflict", "lock_timeout", "deadlock"])
+    async def test_reaper_raises_every_lost_race_so_its_caller_runs_it_again(self, connected_provider, error_num) -> None:
+        """A lock not granted in time (18) or a deadlock the server broke (29) aborts the operation as a write-write conflict (1200) does: each is
+        a transient error the caller's retry runs again, never 0 reaped."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        error = ArangoQueryError("Query failed", 409, f'{{"errorNum": {error_num}}}')
+        assert connected_provider.is_transient_error(error) and connected_provider.is_write_conflict(error)
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=error)
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
 
     @pytest.mark.asyncio
     async def test_reaper_only_touches_flagged_edges(self, connected_provider):
