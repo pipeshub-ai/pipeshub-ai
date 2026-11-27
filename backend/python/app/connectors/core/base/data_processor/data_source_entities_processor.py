@@ -42,6 +42,7 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_store.graph_data_store import (
     ends_explicit_transaction,
     is_transient_conflict,
+    is_retryable,
     is_write_conflict,
     retry_on_deadlock,
     will_retry,
@@ -6048,22 +6049,8 @@ class DataSourceEntitiesProcessor:
             self._log_failure(f"Transaction on_external_app_users failed: {str(e)}", e)
             raise e
 
-    async def reap_external_app_users(self, connector_id: str) -> int:
-        """Drop external membership for collaborators whose shares no longer exist (:meth:`_reap_external_app_users`). A conflict with
-        concurrent writers that outlasts the retries is logged and nothing is reaped: the reaper is cleanup, and the next sync decides again,
-        so it never fails the sync that called it."""
-        try:
-            return await self._reap_external_app_users(connector_id)
-        except Exception as e:
-            provider = self.data_store_provider
-            if not (is_transient_conflict(e) or is_write_conflict(e)
-                    or (isinstance(provider, DataStoreProvider) and provider.is_transient_error(e) is True)):
-                raise
-            self.logger.warning("Reaping external app users of connector %s lost to concurrent writers; the next sync reaps them", connector_id)
-            return 0
-
     @retry_on_deadlock()
-    async def _reap_external_app_users(self, connector_id: str) -> int:
+    async def reap_external_app_users(self, connector_id: str) -> int:
         """
         Drop external membership for collaborators whose shares no longer exist.
 
@@ -6075,6 +6062,9 @@ class DataSourceEntitiesProcessor:
         Connectors call this at the end of a sync, once every permission the run touched
         is committed - judging an edge against half-written permissions would reap
         someone whose share is merely still being processed.
+
+        It is cleanup: a race lost to concurrent writers on the last attempt reaps nothing and returns 0 with one
+        warning, so the sync that called it carries on, and the next sync reaps. Any other failure raises.
         """
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -6088,6 +6078,10 @@ class DataSourceEntitiesProcessor:
                 )
             return reaped
         except Exception as e:
+            if is_retryable(self, e) and not will_retry(self, e):
+                self.logger.warning("External app users of connector %s not reaped: lost to concurrent writers (%s); the next sync reaps them",
+                                    connector_id, type(e).__name__)
+                return 0
             self._log_failure(f"Transaction reap_external_app_users failed: {str(e)}", e)
             raise e
 

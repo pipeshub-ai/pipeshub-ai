@@ -16,6 +16,7 @@ Focuses on:
 - on_new_app_users error path
 """
 
+import logging
 import uuid
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9670,27 +9671,37 @@ def _store(*, transient: bool, tx_store: object) -> MagicMock:
 
 
 class TestReapExternalAppUsersBoundary:
-    """The reaper is cleanup: a conflict with concurrent writers that outlasts the retries is logged and nothing is reaped, so it never fails the sync
-    that called it. Any other failure still raises."""
+    """The reaper is cleanup: a race lost to concurrent writers on its last attempt reaps nothing, returns 0 and logs one warning (no driver text, no
+    error record), so the sync that called it carries on. Any other failure still raises and logs as before."""
+
+    @staticmethod
+    def _proc(error: Exception, *, transient: bool) -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+        proc = _make_processor()
+        proc.logger = logging.getLogger("reap-boundary-test")
+        tx_store = _make_tx_store()
+        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=error)
+        proc.data_store_provider = _store(transient=transient, tx_store=tx_store)
+        return proc, tx_store.reap_stale_external_app_relations
 
     @pytest.mark.asyncio
-    async def test_a_conflict_that_outlasts_the_retries_reaps_nothing_and_does_not_raise(self, monkeypatch) -> None:
+    async def test_a_conflict_that_outlasts_the_retries_reaps_nothing_with_one_warning(self, monkeypatch, caplog) -> None:
         from app.connectors.core.base.data_store import graph_data_store
         monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=RuntimeError("Query failed: [1200] write-write conflict"))
-        proc.data_store_provider = _store(transient=True, tx_store=tx_store)
-        assert await proc.reap_external_app_users("conn-1") == 0
-        assert tx_store.reap_stale_external_app_relations.await_count > 1      # retried first
+        proc, reap = self._proc(RuntimeError("Query failed: [1200] write-write conflict on key secret-key"), transient=True)
+        with caplog.at_level(logging.WARNING):
+            assert await proc.reap_external_app_users("conn-1") == 0
+        assert reap.await_count > 1      # retried first
+        ours = [r for r in caplog.records if r.name == "reap-boundary-test"]
+        assert [r.levelno for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert [r.levelno for r in ours] == [logging.WARNING] * reap.await_count      # one per attempt: the retries' warnings, then the skip
+        assert "secret-key" not in ours[-1].getMessage() and "not reaped" in ours[-1].getMessage()
 
     @pytest.mark.asyncio
-    async def test_any_other_failure_still_raises(self, monkeypatch) -> None:
+    async def test_any_other_failure_still_raises_and_logs_an_error(self, monkeypatch, caplog) -> None:
         from app.connectors.core.base.data_store import graph_data_store
         monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=RuntimeError("db down"))
-        proc.data_store_provider = _store(transient=False, tx_store=tx_store)
-        with pytest.raises(RuntimeError, match="db down"):
+        proc, reap = self._proc(RuntimeError("db down"), transient=False)
+        with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="db down"):
             await proc.reap_external_app_users("conn-1")
+        assert reap.await_count == 1
+        assert [r.levelno for r in caplog.records if r.name == "reap-boundary-test"] == [logging.ERROR]
