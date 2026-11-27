@@ -40,6 +40,7 @@ import {
   isTokenExpired,
   isRefreshInProgress,
   refreshOrSignOut,
+  sessionOver,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
@@ -156,7 +157,7 @@ async function ensureFreshToken(): Promise<
   }
 
   if (isRefreshInProgress() || isTokenExpired(token)) {
-    if ((await refreshOrSignOut()) !== 'refreshed') {
+    if (sessionOver(await refreshOrSignOut())) {
       return { token: null, sessionExpired: true };
     }
     token = useAuthStore.getState().accessToken;

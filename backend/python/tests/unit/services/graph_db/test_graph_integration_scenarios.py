@@ -656,13 +656,13 @@ class FakeGraphProvider:
                 results.append(rec)
         return results
 
-    async def get_user_by_user_id(self, user_id: str) -> dict[str, object] | None:
-        return await self._find_user_by_user_id(user_id)
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None) -> dict[str, object] | None:
+        return await self._find_user_by_user_id(user_id, org_id)
 
-    async def _find_user_by_user_id(self, user_id: str) -> dict[str, object] | None:
+    async def _find_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict[str, object] | None:
         users_col = self._ensure_collection(USERS)
         for doc in users_col.values():
-            if doc.get("userId") == user_id:
+            if doc.get("userId") == user_id and (org_id is None or doc.get("orgId") == org_id):
                 return doc
         return None
 

@@ -141,8 +141,10 @@ from app.services.vector_db.precision_guard import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
+    AMBIENT_MULTIMODAL_PROVIDERS,
     INDEXING_SDK_RETRIES,
     EmbeddingProvider,
+    _ambient_cloud_credentials_allowed,
     embedding_config_hash,
     is_local_cpu_embedding_provider,
 )
@@ -1399,6 +1401,7 @@ class VectorStore(Transformer):
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
+        self.allow_ambient_credentials = False
         self.base_url: str | None = None
 
         self._capabilities = self.vector_db_service.get_capabilities()
@@ -2497,6 +2500,9 @@ class VectorStore(Transformer):
         if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
+        self.allow_ambient_credentials = (
+            provider in AMBIENT_MULTIMODAL_PROVIDERS and _ambient_cloud_credentials_allowed(config)
+        )
         self.is_multimodal_embedding = bool(is_multimodal)
         self._embedding_config_hash = config_hash
         return self.is_multimodal_embedding
@@ -2677,6 +2683,7 @@ class VectorStore(Transformer):
             region_name=self.region_name,
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
+            allow_ambient_credentials=self.allow_ambient_credentials,
             base_url=getattr(self, "base_url", None),
             embedding_size=self.embedding_size,
             dense_embeddings=self.dense_embeddings,

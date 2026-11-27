@@ -65,14 +65,18 @@ def graph_error_status(error: object) -> int | None:
     return int(match.group(1) or match.group(2)) if match else None
 
 
-# Graph answers a delta link it no longer accepts with 410 and one of these codes.
+# Graph answers a delta link it no longer accepts with 410 and one of these codes; a directory (groups) link
+# past its age is a 400 that only its text tells from another bad request.
 # The data source passes errors on only as text, so they are matched in that text.
-_EXPIRED_DELTA_LINK = re.compile(r"syncStateNotFound|syncStateInvalid|resyncRequired")
+_EXPIRED_DELTA_LINK = re.compile(r"syncStateNotFound|syncStateInvalid|resyncRequired|DeltaLink older than")
 
 
 def is_expired_delta_link_error(error: object) -> bool:
     """True when a delta read failed because the saved delta link expired or was invalidated."""
-    return graph_error_status(error) == 410 or bool(_EXPIRED_DELTA_LINK.search(str(error)))
+    # An SDK error's text holds Graph's message but not its code (syncStateNotFound), so the code is read too.
+    main_error = getattr(error, "error", None)
+    text = f"{getattr(main_error, 'code', None) or ''} {error}"
+    return graph_error_status(error) == 410 or bool(_EXPIRED_DELTA_LINK.search(text))
 
 
 # Graph answers a well-known folder the mailbox does not have (e.g. no archive) with 404.
