@@ -24,7 +24,6 @@ const SELECTORS = {
   selectAgentHarnessOn,
   selectAgentHarnessEnabled,
   selectAgentHarnessResumeEnabled,
-  selectScheduledRunsEnabled,
   selectDurableAssistantAgentOffered,
 };
 
@@ -61,7 +60,8 @@ describe('GATE: the harness off for the org reads as the harness off for the ser
   for (const answer of ['killSwitch', 'infraNotReady'] as const) {
     it(`${answer} + Labs on → pages visible, new run refused`, () => {
       const state = stateFor(answer);
-      // Pages, navigation and settings (HarnessOnly, the sidebar's gates, Schedules) follow the org's harness.
+      // Pages, navigation and settings (HarnessOnly, the sidebar's gates) follow the org's harness; Schedules its
+      // own Labs flag (ADR-SCH-02 D1).
       expect(selectAgentHarnessOn(state)).toBe(true);
       expect(selectScheduledRunsEnabled(state)).toBe(true);
       // Starting a run follows admission.

@@ -1775,6 +1775,45 @@
         "declined": "你拒絕了 {{tool}}",
         "expired": "{{tool}} 未執行：請求已過期",
         "allowedNotRun": "你允許了 {{tool}}，但它沒有執行"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "排程未設定：請求已過期。如果仍需要，請再次要求。",
+            "passed": "排程未獲核准，因此未設定。",
+            "waiting": "此排程正在等待對話擁有者核准。"
+          },
+          "update": {
+            "expired": "排程未變更：請求已過期。如果仍需要，請再次要求。",
+            "passed": "變更未獲核准，因此排程未變更。",
+            "waiting": "對排程的這項變更正在等待對話擁有者核准。"
+          },
+          "delete": {
+            "expired": "排程未刪除：請求已過期。如果仍需要，請再次要求。",
+            "passed": "刪除排程未獲核准，因此已保留。",
+            "waiting": "刪除此排程正在等待對話擁有者核准。"
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "你允許了此排程",
+            "declined": "你拒絕了此排程",
+            "expired": "排程未設定：請求已過期",
+            "allowedNotRun": "你允許了此排程，但它未設定"
+          },
+          "update": {
+            "allowed": "你允許了對排程的變更",
+            "declined": "你拒絕了對排程的變更",
+            "expired": "排程未變更：請求已過期",
+            "allowedNotRun": "你允許了變更，但排程未變更"
+          },
+          "delete": {
+            "allowed": "你允許了刪除排程",
+            "declined": "你拒絕了刪除排程",
+            "expired": "排程未刪除：請求已過期",
+            "allowedNotRun": "你允許了刪除排程，但它未被刪除"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}}（僅此項目）",
@@ -1952,7 +1991,12 @@
       "namedFile": "附件 {{name}}",
       "unnamedFile_other": "其中 {{count}} 個附件"
     },
-    "archiveChatTitle": "封存此對話？"
+    "archiveChatTitle": "封存此對話？",
+    "scheduleOrigin": {
+      "startedBy": "由以下排程啟動",
+      "startedByUnnamed": "由一個排程啟動",
+      "manage": "管理排程"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -7107,7 +7151,29 @@
       "when": "時間",
       "ask": "每次執行要問的內容",
       "notify": "通知方式",
-      "where": "每次執行都會開啟獨立的對話。可隨時在「工作區 > 排程」中暫停或刪除。"
+      "where": "每次執行都會開啟獨立的對話。可隨時在「工作區 > 排程」中暫停或刪除。",
+      "manage": "隨時可在「工作區 > 排程」中管理。",
+      "change": {
+        "ask": "要問的內容",
+        "notifyNone": "無",
+        "title": {
+          "change": "變更 {{name}}",
+          "move": "調整 {{name}} 的時間",
+          "pause": "暫停 {{name}}",
+          "resume": "繼續 {{name}}",
+          "skip_next": "略過 {{name}} 的下一次執行",
+          "run_now": "立即執行 {{name}}",
+          "delete": "刪除 {{name}}"
+        },
+        "note": {
+          "edit": "變更從下一次執行開始生效；已在進行的執行不會改變。",
+          "pause": "在你繼續之前它不會執行。",
+          "resume": "它從下一個時間起再次執行；暫停期間錯過的時間會被略過。",
+          "skip_next": "只略過下一次執行；之後照常執行。",
+          "run_now": "現在執行一次；排程保持不變。",
+          "delete": "它將停止執行並刪除其歷史記錄。其執行啟動的對話會保留。"
+        }
+      }
     }
   },
   "codeTaskCard": {
@@ -7953,7 +8019,9 @@
       "resume": "恢復",
       "runNow": "立即執行",
       "history": "歷史記錄",
-      "delete": "刪除"
+      "delete": "刪除",
+      "edit": "編輯",
+      "editNamed": "編輯 {{name}}"
     },
     "delete": {
       "title": "要刪除 {{name}} 嗎？",
@@ -7975,7 +8043,9 @@
       "skippedQueueFull": "已略過：已有一次執行在等待",
       "waitingForLastRun": "正在等待上一次執行完成",
       "pending": "啟動中…",
-      "none": "尚無執行記錄。"
+      "none": "尚無執行記錄。",
+      "classic": "在經典聊天中執行",
+      "classicCapIgnored": "在經典聊天中執行；費用上限不適用"
     },
     "create": {
       "title": "新增排程",
@@ -8024,7 +8094,11 @@
       "onceAtHint": "依你的時區（{{timeZone}}）。至少一分鐘後，最多一年內。",
       "onceNotExisting": "在你的時區，這一天沒有這個時間：時鐘會跳過它。請選擇其他時間。",
       "onceTooSoon": "請選擇至少一分鐘後的時間。",
-      "onceTooFar": "請選擇一年以內的時間。"
+      "onceTooFar": "請選擇一年以內的時間。",
+      "discardTitle": "捨棄此排程？",
+      "discardMessage": "你在這裡輸入的內容尚未儲存，將會遺失。",
+      "discardConfirm": "捨棄",
+      "keepEditing": "繼續編輯"
     },
     "webhook": {
       "title": "您的 webhook",
@@ -8049,11 +8123,13 @@
       "scheduleDisabled": "此排程已被關閉，因為其擁有者已無法執行它。",
       "limit": "您已達到允許的排程數量上限。請先刪除一個。",
       "budgetCeiling": "每次執行的預算過高。",
-      "unavailable": "排程執行需要持久化代理聊天，而你的組織已將其關閉。",
+      "unavailable": "目前無法為你的組織設定排程執行。請稍後再試。",
       "triggerTokenInvalid": "Webhook 的觸發權杖不相符。請從排程中複製目前的權杖後重試。",
       "ranOnce": "此排程已執行過一次，不會再次執行；你可以刪除它。",
       "notApproved": "此排程未獲核准，因此沒有建立。",
-      "approvalUsed": "此核准已建立過一個排程，且該排程已被刪除。請重新提出要求以建立新排程。"
+      "approvalUsed": "此核准已建立過一個排程，且該排程已被刪除。請重新提出要求以建立新排程。",
+      "changed": "你編輯期間，此排程在其他地方被變更了。現在顯示的是已儲存的內容；請重新進行變更。",
+      "storeUnavailable": "排程執行需要此伺服器沒有的資料庫設定。請管理員以副本集方式執行 MongoDB。"
     },
     "reason": {
       "scheduledRunsDisabled": "組織已關閉排程執行",
@@ -8104,6 +8180,16 @@
       "onceTomorrow": "一次，明天 {{time}}",
       "onceOn": "一次，{{date}}",
       "withZone": "{{when}}（{{timeZone}}）"
+    },
+    "budgetNotApplied": "其 {{amount}} USD 的費用上限不適用：你的組織的執行使用經典聊天，經典聊天沒有費用上限。",
+    "lastChangedFrom": "上次從聊天中變更",
+    "skippedNext": "已略過下一次執行",
+    "skippedNextAt": "{{date}} 的執行將被略過",
+    "edit": {
+      "title": "編輯排程",
+      "submit": "儲存",
+      "fixedHint": "代理、預算、截止時間以及重疊或錯過的執行的處理方式維持原樣。要變更它們，請建立新排程。",
+      "discardTitle": "捨棄你的變更？"
     }
   },
   "unknownEffectCard": {
@@ -8890,7 +8976,11 @@
       "install_packages_one": "安裝套件",
       "install_packages_other": "安裝套件 {{count}} 次",
       "scheduleCreate_one": "設定排程",
-      "scheduleCreate_other": "設定 {{count}} 個排程"
+      "scheduleCreate_other": "設定 {{count}} 個排程",
+      "scheduleUpdate_one": "變更排程",
+      "scheduleUpdate_other": "變更 {{count}} 個排程",
+      "scheduleDelete_one": "刪除排程",
+      "scheduleDelete_other": "刪除 {{count}} 個排程"
     },
     "engineWants": "{{engine}} 想要：",
     "childWants": "代碼任務想要：",
@@ -8959,7 +9049,9 @@
     "waitingForOwner_other": "正在等待對話所有者對 {{count}} 個步驟作出決定",
     "denyAllLabel": "全部拒絕：{{title}}",
     "titleSiteUpload": "允許本次執行上傳到 {{destination}}？",
-    "titleSchedule": "設定排程"
+    "titleSchedule": "設定排程",
+    "titleScheduleUpdate": "變更排程",
+    "titleScheduleDelete": "刪除排程"
   },
   "engineSignIn": {
     "title": "程式設計引擎登入",

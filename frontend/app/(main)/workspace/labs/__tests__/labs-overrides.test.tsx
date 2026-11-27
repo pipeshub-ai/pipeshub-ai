@@ -31,6 +31,7 @@ const FLAGS: AvailableFlag[] = [
   { key: 'ENABLE_MCP', label: 'Enable MCP Servers', description: '', defaultEnabled: false },
   { key: 'ENABLE_SKILLS', label: 'Enable Skills', description: '', defaultEnabled: true },
   { key: 'ENABLE_AGENT_HARNESS', label: 'Enable Durable Agent Harness', description: '', defaultEnabled: true, requiresAgentHarness: true },
+  { key: 'ENABLE_SCHEDULED_RUNS', label: 'Scheduled runs', description: '', defaultEnabled: false, beta: true },
 ];
 
 const get = vi.mocked(apiClient.get);
@@ -90,12 +91,18 @@ describe('Labs saves only what changed (UX1 LB-13)', () => {
 });
 
 describe('Labs marks the agent harness flags Beta (BETA)', () => {
-  it('shows the Beta badge on a harness flag and on no other flag', async () => {
+  it('shows the Beta badge on a harness flag and a beta flag, on no other', async () => {
     page();
     const harness = await screen.findByTestId('labs-flag-ENABLE_AGENT_HARNESS');
     expect(within(harness).getByText(i18n.t('common.beta.label'))).toBeTruthy();
     expect(within(screen.getByTestId('labs-flag-ENABLE_MCP')).queryByText(i18n.t('common.beta.label'))).toBeNull();
-    expect(screen.getAllByText(i18n.t('common.beta.label'))).toHaveLength(1);
+    expect(screen.getAllByText(i18n.t('common.beta.label'))).toHaveLength(2);
+  });
+
+  it('ADR-SCH-02: Scheduled runs is Beta by its own property, without needing the harness', async () => {
+    page();
+    const scheduled = await screen.findByTestId('labs-flag-ENABLE_SCHEDULED_RUNS');
+    expect(within(scheduled).getByText(i18n.t('common.beta.label'))).toBeTruthy();
   });
 });
 

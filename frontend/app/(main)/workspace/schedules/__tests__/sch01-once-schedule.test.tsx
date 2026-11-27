@@ -1,6 +1,6 @@
 /**
  * ADR-SCH-01 D1: a one-off schedule is listed ("Once, …"), and once it ran it says so and offers neither Resume nor
- * Run now (Delete stays). The create dialog's "Once" sends `{kind: once, at, timeZone}`, a minute to a year ahead.
+ * Run now (Delete stays). The schedule drawer's "Once" sends `{kind: once, at, timeZone}`, a minute to a year ahead.
  */
 import React from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -14,12 +14,12 @@ import { ScheduleRow } from '../components/schedule-row';
 import {
   browserTimeZone,
   checkedSchedule,
-  CreateScheduleDialog,
+  ScheduleDrawer,
   emptyForm,
   localInputValue,
   onceInstant,
   toNewSchedule,
-} from '../components/create-schedule-dialog';
+} from '../components/schedule-drawer';
 import type { NewSchedule, Schedule } from '../types';
 import { scheduleView } from './fixtures';
 
@@ -150,7 +150,7 @@ describe('creating a one-off', () => {
       const onSubmit = vi.fn(async (_input: NewSchedule) => {});
       render(
         <Theme>
-          <CreateScheduleDialog open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
+          <ScheduleDrawer open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
         </Theme>,
       );
       const dialog = await screen.findByRole('dialog');
@@ -174,7 +174,7 @@ describe('creating a one-off', () => {
     }
   });
 
-  it('the upper bound follows the clock, not the moment the dialog opened', async () => {
+  it('the upper bound follows the clock, not the moment the drawer opened', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2026-12-01T10:00:00-08:00'));
@@ -182,7 +182,7 @@ describe('creating a one-off', () => {
       const onSubmit = vi.fn(async (_input: NewSchedule) => {});
       render(
         <Theme>
-          <CreateScheduleDialog open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
+          <ScheduleDrawer open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
         </Theme>,
       );
       const dialog = await screen.findByRole('dialog');
@@ -216,12 +216,12 @@ describe('creating a one-off', () => {
     expect(() => toNewSchedule(stale, new Date('2026-12-01T10:01:30-08:00'))).toThrow();
   });
 
-  it('the dialog’s "Once" option sends the picked time', async () => {
+  it('the drawer’s "Once" option sends the picked time', async () => {
     get.mockResolvedValue({ data: { channels: [{ channel: 'in_app', available: true, reason: null }] } });
     const onSubmit = vi.fn(async (_input: NewSchedule) => {});
     render(
       <Theme>
-        <CreateScheduleDialog open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
+        <ScheduleDrawer open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
       </Theme>,
     );
     const dialog = await screen.findByRole('dialog');

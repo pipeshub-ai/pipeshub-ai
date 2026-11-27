@@ -25,6 +25,7 @@ import {
 import { useToastStore } from '@/lib/store/toast-store';
 import { labsChanges, useLabsStore } from './store';
 import { LabsApi, bytesToMb, isLabsChanged, type AvailableFlag } from './api';
+import { isBetaFlag } from './beta';
 import { LABS_SETTINGS_CHANGED } from '../components/durable-default-notice';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -95,7 +96,7 @@ function FeatureFlagRow({
           >
             {label}
           </Text>
-          {flag.requiresAgentHarness ? <BetaBadge /> : null}
+          {isBetaFlag(flag) ? <BetaBadge /> : null}
           {changed ? (
             <Badge color="amber" variant="soft" size="1" data-testid={`labs-changed-${flag.key}`}>
               {t('workspace.labs.overrides.changed')}

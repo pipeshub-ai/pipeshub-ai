@@ -142,14 +142,15 @@ describe('SchedulesPage', () => {
     expect(screen.queryByText('Schedules')).toBeNull();
   });
 
-  it('UX3 SE-1: the scheduled-runs flag on but the harness off for the org: nothing that could never run is offered', async () => {
+  it('ADR-SCH-02 D1: the scheduled-runs flag on and the harness off for the org: the page is there, nothing paused', async () => {
     useFeatureFlagsStore.setState({
       flags: { ENABLE_SCHEDULED_RUNS: true },
       agentHarness: { ...HARNESS_ON, useHarness: false, reason: 'org_disabled', resumeInFlightRuns: false, harnessOn: false },
     });
     renderPage();
-    await waitFor(() => expect(replace).toHaveBeenCalledWith('/workspace/general'));
-    expect(get).not.toHaveBeenCalled();
+    expect(await screen.findByText('Monday digest')).toBeTruthy();
+    expect(replace).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('schedules-paused')).toBeNull();
   });
 
   it('kill switch + Labs on: the page stays (ADR-OPS-08) and says schedules are paused; admission refuses the firings', async () => {
@@ -277,7 +278,7 @@ describe('SchedulesPage', () => {
     ['SCHEDULE_LIMIT', 409, 'x', /reached the number of schedules allowed/],
     ['SCHEDULE_FORBIDDEN', 403, 'x', /can't do this with this schedule/],
     ['SCHEDULED_RUNS_DISABLED', 404, 'x', /Scheduled runs are turned off for your organization/],
-  ])('SP-6: %s on create is shown in the dialog, which stays open', async (code, status, message, shown) => {
+  ])('SP-6: %s on create is shown in the drawer, which stays open', async (code, status, message, shown) => {
     fail['POST /api/v1/agent-harness/schedules'] = nodeRefusal(status, code, message);
     renderPage();
     await row('Monday digest');

@@ -5,7 +5,9 @@ import type { ErrorCodeOf } from '@/lib/contracts/harness/generated/ext/pipeshub
 /** Route refusals (`HTTP_AGENT_HARNESS_<code>`): every code of the catalogue's `schedule` group (ERR-UX). */
 export const SCHEDULE_REFUSALS: Readonly<Record<ErrorCodeOf<'schedule'>, string>> = {
   SCHEDULED_RUNS_DISABLED: 'schedules.refusal.disabledForOrg',
+  // No longer raised (ADR-SCH-02 D1); kept so an older server's refusal still reads in words.
   SCHEDULED_RUNS_UNAVAILABLE: 'schedules.refusal.unavailable',
+  SCHEDULED_RUNS_STORE_UNAVAILABLE: 'schedules.refusal.storeUnavailable',
   SCHEDULE_INVALID: 'schedules.refusal.invalid',
   SCHEDULE_NOT_FOUND: 'schedules.refusal.notFound',
   SCHEDULE_FORBIDDEN: 'schedules.refusal.forbidden',
@@ -14,6 +16,7 @@ export const SCHEDULE_REFUSALS: Readonly<Record<ErrorCodeOf<'schedule'>, string>
   SCHEDULE_BUDGET_EXCEEDS_CEILING: 'schedules.refusal.budgetCeiling',
   SCHEDULE_TRIGGER_TOKEN_INVALID: 'schedules.refusal.triggerTokenInvalid',
   SCHEDULE_RAN_ONCE: 'schedules.refusal.ranOnce',
+  SCHEDULE_CHANGED: 'schedules.refusal.changed',
   SCHEDULE_NOT_APPROVED: 'schedules.refusal.notApproved',
   SCHEDULE_APPROVAL_USED: 'schedules.refusal.approvalUsed',
 };

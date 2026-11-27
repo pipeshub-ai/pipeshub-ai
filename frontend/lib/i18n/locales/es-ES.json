@@ -1717,6 +1717,45 @@
         "declined": "Rechazaste {{tool}}",
         "expired": "{{tool}} no se ejecutó: la solicitud caducó",
         "allowedNotRun": "Permitiste {{tool}}, pero no se ejecutó"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "La programación no se configuró: la solicitud caducó. Vuelve a pedirla si aún la quieres.",
+            "passed": "La programación no se aprobó, así que no se configuró.",
+            "waiting": "Esta programación espera la aprobación del propietario de la conversación."
+          },
+          "update": {
+            "expired": "La programación no se cambió: la solicitud caducó. Vuelve a pedirlo si aún lo quieres.",
+            "passed": "El cambio no se aprobó, así que la programación no se cambió.",
+            "waiting": "Este cambio en una programación espera la aprobación del propietario de la conversación."
+          },
+          "delete": {
+            "expired": "La programación no se eliminó: la solicitud caducó. Vuelve a pedirlo si aún lo quieres.",
+            "passed": "No se aprobó eliminar la programación, así que se mantiene.",
+            "waiting": "Eliminar esta programación espera la aprobación del propietario de la conversación."
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "Permitiste la programación",
+            "declined": "Rechazaste la programación",
+            "expired": "La programación no se configuró: la solicitud caducó",
+            "allowedNotRun": "Permitiste la programación, pero no se configuró"
+          },
+          "update": {
+            "allowed": "Permitiste el cambio en la programación",
+            "declined": "Rechazaste el cambio en la programación",
+            "expired": "La programación no se cambió: la solicitud caducó",
+            "allowedNotRun": "Permitiste el cambio, pero la programación no se cambió"
+          },
+          "delete": {
+            "allowed": "Permitiste eliminar la programación",
+            "declined": "Rechazaste eliminar la programación",
+            "expired": "La programación no se eliminó: la solicitud caducó",
+            "allowedNotRun": "Permitiste eliminar la programación, pero no se eliminó"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}} (solo este elemento)",
@@ -1907,7 +1946,12 @@
       "unnamedFile_many": "{{count}} de los archivos adjuntos",
       "unnamedFile_other": "{{count}} de los archivos adjuntos"
     },
-    "archiveChatTitle": "¿Archivar este chat?"
+    "archiveChatTitle": "¿Archivar este chat?",
+    "scheduleOrigin": {
+      "startedBy": "Iniciada por la programación",
+      "startedByUnnamed": "Iniciada por una programación",
+      "manage": "Gestionar programaciones"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -7126,7 +7170,29 @@
       "when": "Cuándo",
       "ask": "Lo que se pide en cada ejecución",
       "notify": "Avisarte por",
-      "where": "Cada ejecución inicia su propia conversación. Páusala o elimínala cuando quieras en Workspace > Programaciones."
+      "where": "Cada ejecución inicia su propia conversación. Páusala o elimínala cuando quieras en Workspace > Programaciones.",
+      "manage": "Gestiónala cuando quieras en Espacio de trabajo > Programaciones.",
+      "change": {
+        "ask": "Lo que pide",
+        "notifyNone": "En ningún sitio",
+        "title": {
+          "change": "Cambiar {{name}}",
+          "move": "Mover {{name}}",
+          "pause": "Pausar {{name}}",
+          "resume": "Reanudar {{name}}",
+          "skip_next": "Omitir la próxima ejecución de {{name}}",
+          "run_now": "Ejecutar {{name}} ahora",
+          "delete": "Eliminar {{name}}"
+        },
+        "note": {
+          "edit": "Los cambios se aplican desde su próxima ejecución; una ejecución en curso no cambia.",
+          "pause": "No se ejecutará hasta que la reanudes.",
+          "resume": "Vuelve a ejecutarse desde su próxima hora; las horas que perdió mientras estaba en pausa se omiten.",
+          "skip_next": "Solo se omite su próxima ejecución; después se ejecuta como siempre.",
+          "run_now": "Se ejecuta una vez ahora; su programación sigue igual.",
+          "delete": "Deja de ejecutarse y se elimina su historial. Las conversaciones que iniciaron sus ejecuciones se conservan."
+        }
+      }
     }
   },
   "codeTaskCard": {
@@ -8104,7 +8170,9 @@
       "resume": "Reanudar",
       "runNow": "Ejecutar ahora",
       "history": "Historial",
-      "delete": "Eliminar"
+      "delete": "Eliminar",
+      "edit": "Editar",
+      "editNamed": "Editar {{name}}"
     },
     "delete": {
       "title": "¿Eliminar {{name}}?",
@@ -8126,7 +8194,9 @@
       "skippedQueueFull": "Omitida: ya había una ejecución esperando",
       "waitingForLastRun": "Esperando a que termine la ejecución anterior",
       "pending": "Iniciando…",
-      "none": "Aún no hay ejecuciones."
+      "none": "Aún no hay ejecuciones.",
+      "classic": "Se ejecutó en el chat clásico",
+      "classicCapIgnored": "Se ejecutó en el chat clásico; el límite de coste no se aplica"
     },
     "create": {
       "title": "Nueva programación",
@@ -8175,7 +8245,11 @@
       "onceAtHint": "En tu zona horaria ({{timeZone}}). Al menos un minuto desde ahora, como mucho un año.",
       "onceNotExisting": "Esa hora no existe ese día en tu zona horaria: los relojes se la saltan. Elige otra hora.",
       "onceTooSoon": "Elige una hora al menos un minuto desde ahora.",
-      "onceTooFar": "Elige una hora como mucho un año más adelante."
+      "onceTooFar": "Elige una hora como mucho un año más adelante.",
+      "discardTitle": "¿Descartar esta programación?",
+      "discardMessage": "Lo que escribiste aquí no está guardado y se perderá.",
+      "discardConfirm": "Descartar",
+      "keepEditing": "Seguir editando"
     },
     "webhook": {
       "title": "Tu webhook",
@@ -8200,11 +8274,13 @@
       "scheduleDisabled": "Esta programación se desactivó porque su propietario ya no puede ejecutarla.",
       "limit": "Has alcanzado el número de programaciones permitidas. Elimina una primero.",
       "budgetCeiling": "El presupuesto por ejecución es demasiado alto.",
-      "unavailable": "Las ejecuciones programadas necesitan el chat de agente persistente, que está desactivado en tu organización.",
+      "unavailable": "Ahora mismo no se pueden configurar ejecuciones programadas para tu organización. Inténtalo más tarde.",
       "triggerTokenInvalid": "El token de activación del webhook no coincide. Copia el token actual de la programación y vuelve a intentarlo.",
       "ranOnce": "Esta programación ya se ejecutó una vez. No volverá a ejecutarse; puedes eliminarla.",
       "notApproved": "Esta programación no se aprobó, así que no se creó.",
-      "approvalUsed": "Esa aprobación ya creó una programación que se eliminó. Vuelve a pedirlo para crear una nueva."
+      "approvalUsed": "Esa aprobación ya creó una programación que se eliminó. Vuelve a pedirlo para crear una nueva.",
+      "changed": "Esta programación se cambió en otro sitio mientras la editabas. Ahora muestra lo guardado; vuelve a hacer tu cambio.",
+      "storeUnavailable": "Las ejecuciones programadas necesitan una configuración de base de datos que este servidor no tiene. Pide a tu administrador que ejecute MongoDB como conjunto de réplicas."
     },
     "reason": {
       "scheduledRunsDisabled": "las ejecuciones programadas se desactivaron para la organización",
@@ -8255,6 +8331,16 @@
       "onceTomorrow": "Una vez, mañana a las {{time}}",
       "onceOn": "Una vez, {{date}}",
       "withZone": "{{when}} ({{timeZone}})"
+    },
+    "budgetNotApplied": "Su límite de coste de {{amount}} USD no se aplica: las ejecuciones de tu organización usan el chat clásico, que no tiene límite de coste.",
+    "lastChangedFrom": "Cambiada por última vez desde un chat",
+    "skippedNext": "Próxima ejecución omitida",
+    "skippedNextAt": "La ejecución del {{date}} se omitirá",
+    "edit": {
+      "title": "Editar programación",
+      "submit": "Guardar",
+      "fixedHint": "El agente, su presupuesto, su plazo y lo que pasa con las ejecuciones solapadas o perdidas se mantienen como se configuraron. Para cambiarlos, crea una programación nueva.",
+      "discardTitle": "¿Descartar tus cambios?"
     }
   },
   "unknownEffectCard": {
@@ -9077,7 +9163,13 @@
       "install_packages_other": "Instalar paquetes {{count}} veces",
       "scheduleCreate_one": "Crear una programación",
       "scheduleCreate_many": "Crear {{count}} programaciones",
-      "scheduleCreate_other": "Crear {{count}} programaciones"
+      "scheduleCreate_other": "Crear {{count}} programaciones",
+      "scheduleUpdate_one": "Cambiar una programación",
+      "scheduleUpdate_many": "Cambiar {{count}} programaciones",
+      "scheduleUpdate_other": "Cambiar {{count}} programaciones",
+      "scheduleDelete_one": "Eliminar una programación",
+      "scheduleDelete_many": "Eliminar {{count}} programaciones",
+      "scheduleDelete_other": "Eliminar {{count}} programaciones"
     },
     "engineWants": "{{engine}} quiere:",
     "childWants": "La tarea de código quiere:",
@@ -9161,7 +9253,9 @@
     "waitingForOwner_many": "Esperando a que el propietario de la conversación decida sobre {{count}} pasos",
     "denyAllLabel": "Denegar todo: {{title}}",
     "titleSiteUpload": "¿Permitir subidas a {{destination}} en esta ejecución?",
-    "titleSchedule": "Crear una programación"
+    "titleSchedule": "Crear una programación",
+    "titleScheduleUpdate": "Cambiar una programación",
+    "titleScheduleDelete": "Eliminar una programación"
   },
   "engineSignIn": {
     "title": "Inicio de sesión en motores de código",

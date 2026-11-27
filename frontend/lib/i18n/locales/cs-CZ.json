@@ -1855,6 +1855,45 @@
         "declined": "Zamítli jste {{tool}}",
         "expired": "{{tool}} se nespustil: platnost požadavku vypršela",
         "allowedNotRun": "Povolili jste {{tool}}, ale nespustil se"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "Plán nebyl nastaven: žádost vypršela. Pokud ho stále chcete, požádejte znovu.",
+            "passed": "Plán nebyl schválen, takže nebyl nastaven.",
+            "waiting": "Tento plán čeká na schválení vlastníkem konverzace."
+          },
+          "update": {
+            "expired": "Plán nebyl změněn: žádost vypršela. Pokud to stále chcete, požádejte znovu.",
+            "passed": "Změna nebyla schválena, takže plán nebyl změněn.",
+            "waiting": "Tato změna plánu čeká na schválení vlastníkem konverzace."
+          },
+          "delete": {
+            "expired": "Plán nebyl smazán: žádost vypršela. Pokud to stále chcete, požádejte znovu.",
+            "passed": "Smazání plánu nebylo schváleno, takže zůstává.",
+            "waiting": "Smazání tohoto plánu čeká na schválení vlastníkem konverzace."
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "Povolili jste plán",
+            "declined": "Zamítli jste plán",
+            "expired": "Plán nebyl nastaven: žádost vypršela",
+            "allowedNotRun": "Povolili jste plán, ale nebyl nastaven"
+          },
+          "update": {
+            "allowed": "Povolili jste změnu plánu",
+            "declined": "Zamítli jste změnu plánu",
+            "expired": "Plán nebyl změněn: žádost vypršela",
+            "allowedNotRun": "Povolili jste změnu, ale plán nebyl změněn"
+          },
+          "delete": {
+            "allowed": "Povolili jste smazání plánu",
+            "declined": "Zamítli jste smazání plánu",
+            "expired": "Plán nebyl smazán: žádost vypršela",
+            "allowedNotRun": "Povolili jste smazání plánu, ale nebyl smazán"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
@@ -2053,7 +2092,12 @@
       "unnamedFile_many": "{{count}} z přiložených souborů",
       "unnamedFile_other": "{{count}} z přiložených souborů"
     },
-    "archiveChatTitle": "Archivovat tento chat?"
+    "archiveChatTitle": "Archivovat tento chat?",
+    "scheduleOrigin": {
+      "startedBy": "Spuštěno plánem",
+      "startedByUnnamed": "Spuštěno jedním z plánů",
+      "manage": "Spravovat plány"
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -7387,7 +7431,29 @@
       "when": "Kdy",
       "ask": "Na co se každý běh zeptá",
       "notify": "Upozornit přes",
-      "where": "Každý běh zahájí vlastní konverzaci. Kdykoli ho pozastavte nebo smažte v části Workspace > Plány."
+      "where": "Každý běh zahájí vlastní konverzaci. Kdykoli ho pozastavte nebo smažte v části Workspace > Plány.",
+      "manage": "Spravujte ho kdykoli v Pracovní prostor > Plány.",
+      "change": {
+        "ask": "Na co se ptá",
+        "notifyNone": "Nikam",
+        "title": {
+          "change": "Změnit {{name}}",
+          "move": "Přesunout {{name}}",
+          "pause": "Pozastavit {{name}}",
+          "resume": "Obnovit {{name}}",
+          "skip_next": "Přeskočit příští běh plánu {{name}}",
+          "run_now": "Spustit {{name}} hned",
+          "delete": "Smazat {{name}}"
+        },
+        "note": {
+          "edit": "Změny platí od příštího běhu; běh, který už probíhá, se nemění.",
+          "pause": "Nepoběží, dokud ho neobnovíte.",
+          "resume": "Znovu poběží od svého příštího času; časy zmeškané během pozastavení se přeskočí.",
+          "skip_next": "Přeskočí se jen příští běh; potom poběží jako obvykle.",
+          "run_now": "Teď jednou poběží; jeho plán zůstane stejný.",
+          "delete": "Přestane běžet a jeho historie se smaže. Konverzace, které jeho běhy zahájily, zůstanou."
+        }
+      }
     }
   },
   "codeTaskCard": {
@@ -8203,7 +8269,9 @@
       "resume": "Obnovit",
       "runNow": "Spustit nyní",
       "history": "Historie",
-      "delete": "Smazat"
+      "delete": "Smazat",
+      "edit": "Upravit",
+      "editNamed": "Upravit {{name}}"
     },
     "delete": {
       "title": "Smazat {{name}}?",
@@ -8225,7 +8293,9 @@
       "skippedQueueFull": "Přeskočeno: jeden běh už čekal",
       "waitingForLastRun": "Čeká na dokončení předchozího běhu",
       "pending": "Spouští se…",
-      "none": "Zatím žádné běhy."
+      "none": "Zatím žádné běhy.",
+      "classic": "Běželo v klasickém chatu",
+      "classicCapIgnored": "Běželo v klasickém chatu; limit nákladů neplatí"
     },
     "create": {
       "title": "Nový plán",
@@ -8274,7 +8344,11 @@
       "onceAtHint": "Ve vašem časovém pásmu ({{timeZone}}). Nejdříve za minutu, nejpozději za rok.",
       "onceNotExisting": "Tento čas ve vašem časovém pásmu v ten den neexistuje: hodiny ho přeskočí. Vyberte jiný čas.",
       "onceTooSoon": "Vyberte čas nejdříve za minutu.",
-      "onceTooFar": "Vyberte čas nejpozději za rok."
+      "onceTooFar": "Vyberte čas nejpozději za rok.",
+      "discardTitle": "Zahodit tento plán?",
+      "discardMessage": "To, co jste sem zadali, není uložené a ztratí se.",
+      "discardConfirm": "Zahodit",
+      "keepEditing": "Pokračovat v úpravách"
     },
     "webhook": {
       "title": "Váš webhook",
@@ -8299,11 +8373,13 @@
       "scheduleDisabled": "Tento plán byl vypnut, protože ho jeho vlastník už nemůže spouštět.",
       "limit": "Dosáhli jste povoleného počtu plánů. Nejprve jeden smažte.",
       "budgetCeiling": "Rozpočet na jedno spuštění je příliš vysoký.",
-      "unavailable": "Plánované běhy vyžadují trvalý chat s agentem, který je ve vaší organizaci vypnutý.",
+      "unavailable": "Plánované běhy teď pro vaši organizaci nelze nastavit. Zkuste to později.",
       "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu.",
       "ranOnce": "Tento plán už jednou proběhl. Znovu neproběhne; můžete ho smazat.",
       "notApproved": "Tento plán nebyl schválen, proto nebyl vytvořen.",
-      "approvalUsed": "Toto schválení už vytvořilo plán, který byl smazán. Požádejte znovu a nastavte nový."
+      "approvalUsed": "Toto schválení už vytvořilo plán, který byl smazán. Požádejte znovu a nastavte nový.",
+      "changed": "Tento plán se během vašich úprav změnil jinde. Teď ukazuje uložený stav; proveďte svou změnu znovu.",
+      "storeUnavailable": "Plánované běhy potřebují nastavení databáze, které tento server nemá. Požádejte správce, aby spustil MongoDB jako sadu replik."
     },
     "reason": {
       "scheduledRunsDisabled": "plánované běhy byly pro organizaci vypnuty",
@@ -8354,6 +8430,16 @@
       "onceTomorrow": "Jednou, zítra v {{time}}",
       "onceOn": "Jednou, {{date}}",
       "withZone": "{{when}} ({{timeZone}})"
+    },
+    "budgetNotApplied": "Jeho limit nákladů {{amount}} USD neplatí: běhy vaší organizace používají klasický chat, který limit nákladů nemá.",
+    "lastChangedFrom": "Naposledy změněno z chatu",
+    "skippedNext": "Příští běh přeskočen",
+    "skippedNextAt": "Běh v {{date}} bude přeskočen",
+    "edit": {
+      "title": "Upravit plán",
+      "submit": "Uložit",
+      "fixedHint": "Agent, jeho rozpočet, lhůta a to, co se stane s překrývajícími se nebo zmeškanými běhy, zůstávají, jak byly nastaveny. Chcete-li je změnit, vytvořte nový plán.",
+      "discardTitle": "Zahodit změny?"
     }
   },
   "unknownEffectCard": {
@@ -9212,7 +9298,15 @@
       "scheduleCreate_one": "Nastavit plán",
       "scheduleCreate_few": "Nastavit {{count}} plány",
       "scheduleCreate_many": "Nastavit {{count}} plánů",
-      "scheduleCreate_other": "Nastavit {{count}} plánů"
+      "scheduleCreate_other": "Nastavit {{count}} plánů",
+      "scheduleUpdate_one": "Změnit plán",
+      "scheduleUpdate_few": "Změnit {{count}} plány",
+      "scheduleUpdate_many": "Změnit {{count}} plánů",
+      "scheduleUpdate_other": "Změnit {{count}} plánů",
+      "scheduleDelete_one": "Smazat plán",
+      "scheduleDelete_few": "Smazat {{count}} plány",
+      "scheduleDelete_many": "Smazat {{count}} plánů",
+      "scheduleDelete_other": "Smazat {{count}} plánů"
     },
     "engineWants": "{{engine}} chce:",
     "childWants": "Programovací úloha chce:",
@@ -9311,7 +9405,9 @@
     "waitingForOwner_other": "Čeká se, až vlastník konverzace rozhodne o {{count}} krocích",
     "denyAllLabel": "Zamítnout vše: {{title}}",
     "titleSiteUpload": "Povolit v tomto běhu nahrávání na {{destination}}?",
-    "titleSchedule": "Nastavit plán"
+    "titleSchedule": "Nastavit plán",
+    "titleScheduleUpdate": "Změnit plán",
+    "titleScheduleDelete": "Smazat plán"
   },
   "engineSignIn": {
     "title": "Přihlášení do programovacích enginů",

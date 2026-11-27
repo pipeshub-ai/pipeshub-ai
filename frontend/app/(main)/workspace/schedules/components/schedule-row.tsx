@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button, Code, Flex, Link, Text } from '@radix-ui/themes';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { selectAgentHarnessOn, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { ConfirmationDialog } from '../../components/confirmation-dialog';
 import { formatDateTime } from '../../harness-ui/format';
 import { isHarnessError, refusalText, toHarnessError } from '../../harness-ui/refusal';
@@ -57,8 +58,20 @@ function TriggerSummary({ schedule }: { schedule: Schedule }) {
   );
 }
 
+/**
+ * How a run ran, where it matters (ADR-SCH-02 D2, D6): a classic run of a schedule with a cost cap says the cap did
+ * not apply; on an org that runs on the harness now, a classic run says it ran on classic chat. Otherwise nothing.
+ */
+export function runnerWords(firing: Pick<Firing, 'runner' | 'costCapIgnored'>, harnessOn: boolean): string | null {
+  if (firing.runner !== 'classic') return null;
+  if (firing.costCapIgnored) return 'schedules.firing.classicCapIgnored';
+  return harnessOn ? 'schedules.firing.classic' : null;
+}
+
 function FiringLine({ firing, agentKey }: { firing: Firing; agentKey: string | null }) {
   const { t, i18n } = useTranslation();
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
+  const ranOn = runnerWords(firing, harnessOn);
   const when = formatDateTime(firing.slotAt, i18n.language);
   const kind = t(caughtUp(firing) ? 'schedules.firing.kind.cronCaughtUp' : `schedules.firing.kind.${firing.kind}`);
   let detail: React.ReactNode;
@@ -92,6 +105,11 @@ function FiringLine({ firing, agentKey }: { firing: Firing; agentKey: string | n
         {kind}
       </Badge>
       <Text size="1">{detail}</Text>
+      {ranOn !== null && (
+        <Text size="1" data-testid="firing-runner" style={{ color: 'var(--slate-11)' }}>
+          {t(ranOn)}
+        </Text>
+      )}
     </Flex>
   );
 }
@@ -108,6 +126,7 @@ export function ScheduleRow({
   orgView,
   onAction,
   onPin,
+  onEdit,
 }: {
   schedule: Schedule;
   agentName: string;
@@ -117,6 +136,8 @@ export function ScheduleRow({
   onAction: (action: 'pause' | 'resume' | 'remove') => Promise<void>;
   /** OWD-14: move the schedule to another agent version. Rejects with a `HarnessError`. */
   onPin?: (pin: AgentVersionPin) => Promise<void>;
+  /** ADR-SCH-03 D4: open the schedule drawer on this schedule. Its owner's own list only. */
+  onEdit?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -125,6 +146,8 @@ export function ScheduleRow({
   const [ran, setRan] = useState<Firing | null>(null);
   const [firings, setFirings] = useState<Firing[] | null>(null);
   const [firingsError, setFiringsError] = useState<string | null>(null);
+  // ADR-SCH-02 D6: a cost cap holds only where the org's runs are durable; elsewhere a kept one is said not to apply.
+  const costCap = useFeatureFlagsStore(selectAgentHarnessOn);
 
   const say = (failure: unknown) =>
     setError(refusalText(t, SCHEDULE_REFUSALS, isHarnessError(failure) ? failure : toHarnessError(failure, true)));
@@ -191,11 +214,33 @@ export function ScheduleRow({
             {schedule.nextFireAt
               ? t('schedules.nextRun', { date: formatDateTime(schedule.nextFireAt, i18n.language) })
               : t(fired ? 'schedules.ranOnce' : 'schedules.noNextRun')}
-            {' · '}
-            {schedule.maxCostUsd !== null
-              ? t('schedules.budget', { amount: schedule.maxCostUsd })
-              : t('schedules.budgetDefault')}
+            {costCap ? ` · ${schedule.maxCostUsd !== null ? t('schedules.budget', { amount: schedule.maxCostUsd }) : t('schedules.budgetDefault')}` : null}
           </Text>
+          {schedule.skipNextAt !== null && !fired && (
+            <Text size="1" role="status" data-testid="schedule-skip-next" style={{ color: 'var(--amber-11)' }}>
+              {t('schedules.skippedNextAt', { date: formatDateTime(schedule.skipNextAt, i18n.language) })}
+            </Text>
+          )}
+          {schedule.lastChangedFrom !== null && !orgView && (
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
+              <Link
+                size="1"
+                data-testid="schedule-last-changed-from"
+                href={buildChatHref({
+                  agentId: schedule.lastChangedFrom.agentKey,
+                  conversationId: schedule.lastChangedFrom.conversationId,
+                })}
+              >
+                {t('schedules.lastChangedFrom')}
+              </Link>
+              {schedule.lastChangedFrom.at ? ` · ${formatDateTime(schedule.lastChangedFrom.at, i18n.language)}` : null}
+            </Text>
+          )}
+          {!costCap && schedule.maxCostUsd !== null && (
+            <Text size="1" role="note" data-testid="schedule-cap-not-applied" style={{ color: 'var(--slate-11)' }}>
+              {t('schedules.budgetNotApplied', { amount: schedule.maxCostUsd })}
+            </Text>
+          )}
           {systemStatus && (
             <Text size="1" role="status" style={{ color: 'var(--amber-11)' }}>
               {t(schedule.status === 'disabled' ? 'schedules.disabledBecause' : 'schedules.pausedBecause', {
@@ -205,6 +250,11 @@ export function ScheduleRow({
           )}
         </Flex>
         <Flex gap="2" wrap="wrap">
+          {onEdit && !orgView && !fired && (
+            <Button type="button" variant="soft" disabled={busy} onClick={onEdit} aria-label={t('schedules.actions.editNamed', { name: schedule.name })}>
+              {t('schedules.actions.edit')}
+            </Button>
+          )}
           {schedule.status === 'active' && (
             <Button type="button" variant="soft" disabled={busy} onClick={() => void run(() => onAction('pause'))}>
               {t('schedules.actions.pause')}

@@ -10,6 +10,7 @@ import type { CutShortReason, InteractionDecision, RuleLayer } from '@/lib/contr
 import type { TurnGatesRequest } from './run-gates';
 import type { ResolvedRunConfig } from '@/lib/contracts/control-plane/generated/resolved-run-config';
 import type { RepoActivity } from './repository-steps';
+import type { ScheduleOrigin } from './schedule-origin';
 
 // Chat types following project conventions
 
@@ -717,6 +718,11 @@ export interface SSEApprovalRequestedEvent {
   effect?: ApprovalEffect;
   /** When it was asked (ISO): the steps' header says since when it waits (WP-97). */
   requestedAt?: string;
+  /**
+   * `schedule_update` / `schedule_delete` (ADR-SCH-03 D5): the schedule's current values as the worker read them
+   * before asking, `{id, name, ask, when, notify, status, revision}`; unchecked until `scheduleChangeOf`.
+   */
+  schedule?: unknown;
 }
 
 /**
@@ -1662,6 +1668,8 @@ export interface MessagePart {
   denyReason?: unknown;
   /** `approval`: the arguments the person approved instead (AP-06), JSON text; unchecked until `approvalFromPart`. */
   editedArgs?: unknown;
+  /** `approval` of a schedule change: the schedule as it was when asked (ADR-SCH-03 D5); unchecked. */
+  schedule?: unknown;
   /** `engine_task`: the task (the engine run's id) and its progress lines, oldest first. */
   taskId?: string;
   frames?: SSEEngineProgressEvent[];
@@ -1914,6 +1922,8 @@ export interface ToolApprovalDetails {
   instanceId: string;
   serverName: string;
   toolName: string;
+  /** Whose tool it is (`mcp`, `toolset`, `platform`): with `toolName` it names PipesHub's own tools (ADR-SCH-02 D5). */
+  source?: string | null;
   toolTitle?: string | null;
   readOnly?: boolean;
   /** What the tool does to data; a deleting tool is marked on the card. */
@@ -1925,6 +1935,8 @@ export interface ToolApprovalDetails {
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
   arguments?: Record<string, unknown> | null;
   argumentsPreview?: string;
+  /** A schedule change's current values, as `SSEApprovalRequestedEvent.schedule` (ADR-SCH-03 D5); unchecked. */
+  schedule?: Record<string, unknown>;
 }
 
 /**
@@ -2170,6 +2182,8 @@ export interface ChatSlot {
 
   /** Set when this chat is a fork; `null` for any other chat or before the detail has loaded. */
   forkedFrom: ForkOrigin | null;
+  /** Set when a schedule's firing started this chat (ADR-SCH-02 D3); `null` otherwise or before the detail loads. */
+  scheduleOrigin?: ScheduleOrigin | null;
   forks: ForkChild[];
 
   /** Epoch ms of last interaction — used for LRU eviction. */

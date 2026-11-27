@@ -1781,6 +1781,45 @@
         "declined": "You declined {{tool}}",
         "expired": "{{tool}} didn't run: the request expired",
         "allowedNotRun": "You allowed {{tool}}, but it didn't run"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "The schedule wasn't set up: the request expired. Ask again if you still want it.",
+            "passed": "The schedule wasn't approved, so it wasn't set up.",
+            "waiting": "This schedule is waiting for the conversation owner's approval."
+          },
+          "update": {
+            "expired": "The schedule wasn't changed: the request expired. Ask again if you still want it.",
+            "passed": "The change wasn't approved, so the schedule wasn't changed.",
+            "waiting": "This change to a schedule is waiting for the conversation owner's approval."
+          },
+          "delete": {
+            "expired": "The schedule wasn't deleted: the request expired. Ask again if you still want it.",
+            "passed": "Deleting the schedule wasn't approved, so it was kept.",
+            "waiting": "Deleting this schedule is waiting for the conversation owner's approval."
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "You allowed the schedule",
+            "declined": "You declined the schedule",
+            "expired": "The schedule wasn't set up: the request expired",
+            "allowedNotRun": "You allowed the schedule, but it wasn't set up"
+          },
+          "update": {
+            "allowed": "You allowed the change to the schedule",
+            "declined": "You declined the change to the schedule",
+            "expired": "The schedule wasn't changed: the request expired",
+            "allowedNotRun": "You allowed the change, but the schedule wasn't changed"
+          },
+          "delete": {
+            "allowed": "You allowed deleting the schedule",
+            "declined": "You declined deleting the schedule",
+            "expired": "The schedule wasn't deleted: the request expired",
+            "allowedNotRun": "You allowed deleting the schedule, but it wasn't deleted"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}} (this item only)",
@@ -1963,7 +2002,12 @@
       "unnamedFile_one": "one of the attached files",
       "unnamedFile_other": "{{count}} of the attached files"
     },
-    "archiveChatTitle": "Archive this chat?"
+    "archiveChatTitle": "Archive this chat?",
+    "scheduleOrigin": {
+      "startedBy": "Started by the schedule",
+      "startedByUnnamed": "Started by a schedule",
+      "manage": "Manage schedules"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -7201,7 +7245,29 @@
       "when": "When",
       "ask": "Each run is asked",
       "notify": "Tell you on",
-      "where": "Each run starts its own conversation. Pause or delete it any time in Workspace > Schedules."
+      "where": "Each run starts its own conversation. Pause or delete it any time in Workspace > Schedules.",
+      "manage": "Manage it any time in Workspace > Schedules.",
+      "change": {
+        "ask": "What it asks",
+        "notifyNone": "Nowhere",
+        "title": {
+          "change": "Change {{name}}",
+          "move": "Move {{name}}",
+          "pause": "Pause {{name}}",
+          "resume": "Resume {{name}}",
+          "skip_next": "Skip the next run of {{name}}",
+          "run_now": "Run {{name}} now",
+          "delete": "Delete {{name}}"
+        },
+        "note": {
+          "edit": "Changes apply from its next run; a run already going isn't changed.",
+          "pause": "It won't run until you resume it.",
+          "resume": "It runs again from its next time; the times it missed while paused are skipped.",
+          "skip_next": "Only its next run is skipped; after that it runs as usual.",
+          "run_now": "It runs once now; its schedule stays the same.",
+          "delete": "It stops running and its history is deleted. Conversations its runs started are kept."
+        }
+      }
     }
   },
   "connectCard": {
@@ -8069,7 +8135,9 @@
       "resume": "Resume",
       "runNow": "Run now",
       "history": "History",
-      "delete": "Delete"
+      "delete": "Delete",
+      "edit": "Edit",
+      "editNamed": "Edit {{name}}"
     },
     "delete": {
       "title": "Delete {{name}}?",
@@ -8091,7 +8159,9 @@
       "skippedQueueFull": "Skipped: a run was already waiting",
       "waitingForLastRun": "Waiting for the last run to finish",
       "pending": "Starting…",
-      "none": "No runs yet."
+      "none": "No runs yet.",
+      "classic": "Ran on classic chat",
+      "classicCapIgnored": "Ran on classic chat; the cost cap doesn't apply"
     },
     "create": {
       "title": "New schedule",
@@ -8140,7 +8210,11 @@
       "onceAtHint": "In your time zone ({{timeZone}}). At least a minute from now, at most a year ahead.",
       "onceNotExisting": "That time doesn't exist on that day in your time zone: the clocks skip it. Pick another time.",
       "onceTooSoon": "Pick a time at least a minute from now.",
-      "onceTooFar": "Pick a time at most a year ahead."
+      "onceTooFar": "Pick a time at most a year ahead.",
+      "discardTitle": "Discard this schedule?",
+      "discardMessage": "What you entered here isn't saved and will be lost.",
+      "discardConfirm": "Discard",
+      "keepEditing": "Keep editing"
     },
     "webhook": {
       "title": "Your webhook",
@@ -8165,11 +8239,13 @@
       "scheduleDisabled": "This schedule was turned off because its owner can no longer run it.",
       "limit": "You have reached the number of schedules allowed. Delete one first.",
       "budgetCeiling": "The budget per run is too high.",
-      "unavailable": "Scheduled runs need durable agent chat, which is off for your organization.",
+      "unavailable": "Scheduled runs can't be set up for your organization right now. Try again later.",
       "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again.",
       "ranOnce": "This schedule already ran once. It won't run again; you can delete it.",
       "notApproved": "This schedule wasn't approved, so it wasn't made.",
-      "approvalUsed": "That approval already made a schedule that was deleted. Ask again to set up a new one."
+      "approvalUsed": "That approval already made a schedule that was deleted. Ask again to set up a new one.",
+      "changed": "This schedule was changed somewhere else while you were editing. It now shows what was saved; make your change again.",
+      "storeUnavailable": "Scheduled runs need a database setup this server doesn't have. Ask your administrator to run MongoDB as a replica set."
     },
     "reason": {
       "scheduledRunsDisabled": "scheduled runs were turned off for the organization",
@@ -8220,6 +8296,16 @@
       "onceTomorrow": "Once, tomorrow at {{time}}",
       "onceOn": "Once, {{date}}",
       "withZone": "{{when}} ({{timeZone}})"
+    },
+    "budgetNotApplied": "Its cost cap of {{amount}} USD doesn't apply: your organization's runs use the classic chat, which has no cost cap.",
+    "lastChangedFrom": "Last changed from a chat",
+    "skippedNext": "Next run skipped",
+    "skippedNextAt": "The run at {{date}} will be skipped",
+    "edit": {
+      "title": "Edit schedule",
+      "submit": "Save",
+      "fixedHint": "The agent, its budget, its deadline and what happens to overlapping or missed runs stay as they were set. To change them, make a new schedule.",
+      "discardTitle": "Discard your changes?"
     }
   },
   "unknownEffectCard": {
@@ -9006,7 +9092,11 @@
       "install_packages_one": "Install packages",
       "install_packages_other": "Install packages {{count}} times",
       "scheduleCreate_one": "Set up a schedule",
-      "scheduleCreate_other": "Set up {{count}} schedules"
+      "scheduleCreate_other": "Set up {{count}} schedules",
+      "scheduleUpdate_one": "Change a schedule",
+      "scheduleUpdate_other": "Change {{count}} schedules",
+      "scheduleDelete_one": "Delete a schedule",
+      "scheduleDelete_other": "Delete {{count}} schedules"
     },
     "engineWants": "{{engine}} wants to:",
     "childWants": "The code task wants to:",
@@ -9075,7 +9165,9 @@
     "waitingForOwner_other": "Waiting for the conversation's owner to decide on {{count}} steps",
     "denyAllLabel": "Deny all: {{title}}",
     "titleSiteUpload": "Allow uploads to {{destination}} for this run?",
-    "titleSchedule": "Set up a schedule"
+    "titleSchedule": "Set up a schedule",
+    "titleScheduleUpdate": "Change a schedule",
+    "titleScheduleDelete": "Delete a schedule"
   },
   "engineSignIn": {
     "title": "Coding engine sign-in",

@@ -12,12 +12,12 @@ import { ApprovalsDirectory } from '../../approvals/directory';
 import { SettingsSection } from '../../components/settings-section';
 import { SchedulesOrgTab } from '@/config';
 import { useSchedulesStore } from '../store';
-import type { ScheduleScope } from '../types';
-import { CreateScheduleDialog, type AgentOption } from './create-schedule-dialog';
+import type { Schedule, ScheduleScope } from '../types';
+import { ScheduleDrawer, type AgentOption } from './schedule-drawer';
 import { ScheduleRow } from './schedule-row';
 import { WebhookSecretDialog, type WebhookCredential } from './webhook-secret-dialog';
 
-function ScheduleList({ scope }: { scope: ScheduleScope }) {
+function ScheduleList({ scope, onEdit }: { scope: ScheduleScope; onEdit: (schedule: Schedule) => void }) {
   const { t } = useTranslation();
   const load = useSchedulesStore((s) => s[scope]);
   const reload = useSchedulesStore((s) => s.load);
@@ -47,6 +47,7 @@ function ScheduleList({ scope }: { scope: ScheduleScope }) {
                 }
                 onAction={(action) => act(scope, schedule.id, action)}
                 onPin={(agentVersion) => pin(scope, schedule.id, agentVersion)}
+                onEdit={() => onEdit(schedule)}
               />
             ))}
           </Flex>
@@ -67,7 +68,11 @@ export function SchedulesPage() {
   const isAdmin = useUserStore(selectIsAdmin);
   const paused = useFeatureFlagsStore(selectAgentHarnessPaused);
   const create = useSchedulesStore((s) => s.create);
-  const [creating, setCreating] = useState(false);
+  const update = useSchedulesStore((s) => s.update);
+  const reread = useSchedulesStore((s) => s.reread);
+  // One drawer makes a schedule and changes one (ADR-SCH-03 D4): absent `schedule`, it makes one.
+  const [drawer, setDrawer] = useState<{ schedule?: Schedule } | null>(null);
+  const creating = drawer !== null && drawer.schedule === undefined;
   const [secret, setSecret] = useState<WebhookCredential | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
 
@@ -107,12 +112,12 @@ export function SchedulesPage() {
       title={t('schedules.mineTitle')}
       description={t('schedules.mineDescription')}
       rightAction={
-        <Button type="button" onClick={() => setCreating(true)}>
+        <Button type="button" onClick={() => setDrawer({})}>
           {t('schedules.new')}
         </Button>
       }
     >
-      <ScheduleList scope="mine" />
+      <ScheduleList scope="mine" onEdit={(schedule) => setDrawer({ schedule })} />
     </SettingsSection>
   );
 
@@ -138,13 +143,19 @@ export function SchedulesPage() {
         )}
       </Box>
 
-      <CreateScheduleDialog
-        open={creating}
-        onOpenChange={setCreating}
+      <ScheduleDrawer
+        open={drawer !== null}
+        onOpenChange={(open) => !open && setDrawer(null)}
         agents={agents}
+        {...(drawer?.schedule ? { schedule: drawer.schedule } : {})}
+        onUpdate={async (id, patch) => {
+          await update(id, patch);
+          setDrawer(null);
+        }}
+        onStale={reread}
         onSubmit={async (input) => {
           const created = await create(input);
-          setCreating(false);
+          setDrawer(null);
           if (created.webhookSecret) {
             setSecret({ scheduleId: created.schedule.id, kind: 'signature', value: created.webhookSecret });
           } else if (created.webhookToken) {

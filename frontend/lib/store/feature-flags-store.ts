@@ -234,12 +234,11 @@ export const selectAgentHarnessResumeEnabled = (s: Pick<FeatureFlagsState, 'agen
   s.agentHarness?.resumeInFlightRuns === true;
 
 /**
- * Labs `ENABLE_SCHEDULED_RUNS` (P8a), and the harness on for the org (ADR-OPS-08):
- * every firing is a durable run, so with the harness off a schedule would
- * never run (UX3, R1 F14). A firing while new runs are stopped is refused by admission; the schedules stay listed.
+ * Labs `ENABLE_SCHEDULED_RUNS` (P8a) alone (ADR-SCH-02 D1): a firing runs on the harness where the org has it and as
+ * a classic chat turn where it does not, so the agent harness plays no part in whether an org has schedules.
  */
-export const selectScheduledRunsEnabled = (s: Pick<FeatureFlagsState, 'flags' | 'agentHarness'>) =>
-  s.flags?.ENABLE_SCHEDULED_RUNS === true && selectAgentHarnessOn(s);
+export const selectScheduledRunsEnabled = (s: Pick<FeatureFlagsState, 'flags'>) =>
+  s.flags?.ENABLE_SCHEDULED_RUNS === true;
 /** Labs `ENABLE_KNOWLEDGE_PUBLICATIONS` (P2.13): off unless an admin turned it on. */
 export const selectKnowledgePublicationsEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_KNOWLEDGE_PUBLICATIONS === true;

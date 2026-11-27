@@ -90,7 +90,7 @@ const EXEMPT: readonly Exempt[] = [
   },
   { file: 'app/(main)/workspace/actions/components/action-card.tsx', line: "color: cta === 'unavailable' ? 'var(--gray-9)'", why: 'disabled control' },
   {
-    file: 'app/(main)/workspace/schedules/components/create-schedule-dialog.tsx',
+    file: 'app/(main)/workspace/schedules/components/schedule-drawer.tsx',
     line: "style={blocked === null ? undefined : { color: 'var(--slate-10)' }}",
     why: 'disabled control',
   },

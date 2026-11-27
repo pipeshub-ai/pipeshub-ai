@@ -1775,6 +1775,45 @@
         "declined": "你拒绝了 {{tool}}",
         "expired": "{{tool}} 未运行：请求已过期",
         "allowedNotRun": "你允许了 {{tool}}，但它没有运行"
+      },
+      "schedule": {
+        "notice": {
+          "create": {
+            "expired": "计划未设置：请求已过期。如果仍需要，请再次请求。",
+            "passed": "计划未获批准，因此未设置。",
+            "waiting": "此计划正在等待对话所有者批准。"
+          },
+          "update": {
+            "expired": "计划未更改：请求已过期。如果仍需要，请再次请求。",
+            "passed": "更改未获批准，因此计划未更改。",
+            "waiting": "对计划的此项更改正在等待对话所有者批准。"
+          },
+          "delete": {
+            "expired": "计划未删除：请求已过期。如果仍需要，请再次请求。",
+            "passed": "删除计划未获批准，因此已保留。",
+            "waiting": "删除此计划正在等待对话所有者批准。"
+          }
+        },
+        "receipt": {
+          "create": {
+            "allowed": "你允许了此计划",
+            "declined": "你拒绝了此计划",
+            "expired": "计划未设置：请求已过期",
+            "allowedNotRun": "你允许了此计划，但它未设置"
+          },
+          "update": {
+            "allowed": "你允许了对计划的更改",
+            "declined": "你拒绝了对计划的更改",
+            "expired": "计划未更改：请求已过期",
+            "allowedNotRun": "你允许了更改，但计划未更改"
+          },
+          "delete": {
+            "allowed": "你允许了删除计划",
+            "declined": "你拒绝了删除计划",
+            "expired": "计划未删除：请求已过期",
+            "allowedNotRun": "你允许了删除计划，但它未被删除"
+          }
+        }
       }
     },
     "selectedAlone": "{{name}}（仅此项目）",
@@ -1952,7 +1991,12 @@
       "namedFile": "附件 {{name}}",
       "unnamedFile_other": "其中 {{count}} 个附件"
     },
-    "archiveChatTitle": "归档此对话？"
+    "archiveChatTitle": "归档此对话？",
+    "scheduleOrigin": {
+      "startedBy": "由以下计划启动",
+      "startedByUnnamed": "由一个计划启动",
+      "manage": "管理计划"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -7107,7 +7151,29 @@
       "when": "时间",
       "ask": "每次运行要问的内容",
       "notify": "通知方式",
-      "where": "每次运行都会开启单独的对话。可随时在“工作区 > 计划”中暂停或删除。"
+      "where": "每次运行都会开启单独的对话。可随时在“工作区 > 计划”中暂停或删除。",
+      "manage": "随时可在“工作区 > 计划”中管理。",
+      "change": {
+        "ask": "要问的内容",
+        "notifyNone": "无",
+        "title": {
+          "change": "更改 {{name}}",
+          "move": "调整 {{name}} 的时间",
+          "pause": "暂停 {{name}}",
+          "resume": "恢复 {{name}}",
+          "skip_next": "跳过 {{name}} 的下一次运行",
+          "run_now": "立即运行 {{name}}",
+          "delete": "删除 {{name}}"
+        },
+        "note": {
+          "edit": "更改从下一次运行开始生效；已在进行的运行不会改变。",
+          "pause": "在你恢复之前它不会运行。",
+          "resume": "它从下一个时间起再次运行；暂停期间错过的时间会被跳过。",
+          "skip_next": "只跳过下一次运行；之后照常运行。",
+          "run_now": "现在运行一次；计划保持不变。",
+          "delete": "它将停止运行并删除其历史记录。其运行启动的对话会保留。"
+        }
+      }
     }
   },
   "codeTaskCard": {
@@ -7953,7 +8019,9 @@
       "resume": "恢复",
       "runNow": "立即运行",
       "history": "历史记录",
-      "delete": "删除"
+      "delete": "删除",
+      "edit": "编辑",
+      "editNamed": "编辑 {{name}}"
     },
     "delete": {
       "title": "删除 {{name}}？",
@@ -7975,7 +8043,9 @@
       "skippedQueueFull": "已跳过：已有一次运行在等待",
       "waitingForLastRun": "正在等待上一次运行完成",
       "pending": "正在启动…",
-      "none": "还没有运行记录。"
+      "none": "还没有运行记录。",
+      "classic": "在经典聊天中运行",
+      "classicCapIgnored": "在经典聊天中运行；费用上限不适用"
     },
     "create": {
       "title": "新建计划任务",
@@ -8024,7 +8094,11 @@
       "onceAtHint": "按你的时区（{{timeZone}}）。至少一分钟后，最多一年内。",
       "onceNotExisting": "在你的时区，这一天没有这个时间：时钟会跳过它。请选择其他时间。",
       "onceTooSoon": "请选择至少一分钟后的时间。",
-      "onceTooFar": "请选择一年以内的时间。"
+      "onceTooFar": "请选择一年以内的时间。",
+      "discardTitle": "放弃此计划？",
+      "discardMessage": "你在这里输入的内容尚未保存，将会丢失。",
+      "discardConfirm": "放弃",
+      "keepEditing": "继续编辑"
     },
     "webhook": {
       "title": "您的 webhook",
@@ -8049,11 +8123,13 @@
       "scheduleDisabled": "此计划任务已被关闭，因为其所有者已无法运行它。",
       "limit": "您已达到允许的计划任务数量上限。请先删除一个。",
       "budgetCeiling": "每次运行的预算过高。",
-      "unavailable": "计划运行需要持久化代理聊天，而你的组织已将其关闭。",
+      "unavailable": "目前无法为你的组织设置计划运行。请稍后再试。",
       "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。",
       "ranOnce": "此计划已运行过一次，不会再次运行；你可以删除它。",
       "notApproved": "此计划未获批准，因此没有创建。",
-      "approvalUsed": "该批准已创建过一个计划，且该计划已被删除。请重新提出请求以创建新计划。"
+      "approvalUsed": "该批准已创建过一个计划，且该计划已被删除。请重新提出请求以创建新计划。",
+      "changed": "你编辑期间，此计划在其他地方被更改了。现在显示的是已保存的内容；请重新进行更改。",
+      "storeUnavailable": "计划运行需要此服务器没有的数据库设置。请让管理员以副本集方式运行 MongoDB。"
     },
     "reason": {
       "scheduledRunsDisabled": "组织已关闭计划运行",
@@ -8104,6 +8180,16 @@
       "onceTomorrow": "一次，明天 {{time}}",
       "onceOn": "一次，{{date}}",
       "withZone": "{{when}}（{{timeZone}}）"
+    },
+    "budgetNotApplied": "其 {{amount}} USD 的费用上限不适用：你的组织的运行使用经典聊天，经典聊天没有费用上限。",
+    "lastChangedFrom": "上次从聊天中更改",
+    "skippedNext": "已跳过下一次运行",
+    "skippedNextAt": "{{date}} 的运行将被跳过",
+    "edit": {
+      "title": "编辑计划",
+      "submit": "保存",
+      "fixedHint": "智能体、预算、截止时间以及重叠或错过的运行的处理方式保持原样。要更改它们，请新建一个计划。",
+      "discardTitle": "放弃你的更改？"
     }
   },
   "unknownEffectCard": {
@@ -8890,7 +8976,11 @@
       "install_packages_one": "安装软件包",
       "install_packages_other": "安装软件包 {{count}} 次",
       "scheduleCreate_one": "设置计划",
-      "scheduleCreate_other": "设置 {{count}} 个计划"
+      "scheduleCreate_other": "设置 {{count}} 个计划",
+      "scheduleUpdate_one": "更改计划",
+      "scheduleUpdate_other": "更改 {{count}} 个计划",
+      "scheduleDelete_one": "删除计划",
+      "scheduleDelete_other": "删除 {{count}} 个计划"
     },
     "engineWants": "{{engine}} 想要：",
     "childWants": "代码任务想要：",
@@ -8959,7 +9049,9 @@
     "waitingForOwner_other": "正在等待对话所有者对 {{count}} 个步骤作出决定",
     "denyAllLabel": "全部拒绝：{{title}}",
     "titleSiteUpload": "允许本次运行上传到 {{destination}}？",
-    "titleSchedule": "设置计划"
+    "titleSchedule": "设置计划",
+    "titleScheduleUpdate": "更改计划",
+    "titleScheduleDelete": "删除计划"
   },
   "engineSignIn": {
     "title": "编程引擎登录",
