@@ -652,6 +652,11 @@ export interface TurnStreamOptions {
   question: IChatSessionMessageDocument;
   /** Which rows the final frame carries, as the request asked (`streamFrameOf`). */
   frame: StreamFrame;
+  /**
+   * Whether the final frame counts the records the answer used (`recordsUsed`, beside `meta` and in it), as a
+   * follow-up's does; a new conversation's final frame carries the conversation and `meta` alone.
+   */
+  countRecordsUsed?: boolean;
   /** The saved conversation as the final frame shows it to the caller, given the new answer's id; absent, as saved. */
   finalView?: (
     conversation: Record<string, unknown>,
@@ -1166,7 +1171,10 @@ export class TurnStreamPump {
   private finishedFrame(conversation: Frame, guest?: Frame): string {
     // Python omits `citations` on some agent answers despite the type.
     const citations = this.completeData?.citations;
-    const recordsUsed = Array.isArray(citations) ? citations.length : 0;
+    const counted =
+      this.o.countRecordsUsed === true
+        ? { recordsUsed: Array.isArray(citations) ? citations.length : 0 }
+        : {};
     return frameAGUI(AGUIEventType.RUN_FINISHED, {
       result: {
         conversation: Array.isArray(conversation.messages)
@@ -1180,12 +1188,12 @@ export class TurnStreamPump {
         ...(guest && { respondingAgent: guest }),
         ...(this.completeData &&
           this.o.extension?.finalFrameFields?.(this.completeData)),
-        recordsUsed,
+        ...counted,
         meta: {
           requestId: this.o.requestId,
           timestamp: new Date().toISOString(),
           duration: Date.now() - this.o.startTime,
-          recordsUsed,
+          ...counted,
           ...searchDegradedMeta(this.completeData),
         },
       },

@@ -160,6 +160,7 @@ export const followUpStream = (
         extension: turns.streamFor(req, deps),
         question: turn.userRow,
         frame: streamFrameOf(req),
+        countRecordsUsed: true,
         // An earlier answer that used a record the caller can no longer read is hidden, as a fetch hides it; an agent
         // its label names is checked as the caller, when the request names a person (a scoped token's, once hydrated).
         finalView: (conversation, answerId) =>

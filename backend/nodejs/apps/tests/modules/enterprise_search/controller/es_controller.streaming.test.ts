@@ -89,6 +89,22 @@ describe('es_controller streaming answers', () => {
         if (!flow.regenerate) expect(run.conversation().status).to.equal('Complete')
       })
 
+      it("the final frame of a follow-up or a regenerate counts the records its answer used; a first send's carries the conversation and meta", async () => {
+        const run = await startStream(flow)
+        run.ai.send('RUN_FINISHED', finalAnswer('Three themes.'))
+        run.ai.finish()
+        await run.res.ended
+
+        const result = run.res.eventsOf('RUN_FINISHED')[0]?.data.result as Record<string, unknown> & { meta: Record<string, unknown> }
+        if (run.prepared.existing === undefined) {
+          expect(result).to.have.all.keys('conversation', 'meta')
+          expect(result.meta).to.have.all.keys('requestId', 'timestamp', 'duration')
+        } else {
+          expect(result).to.include({ recordsUsed: 0 })
+          expect(result.meta).to.include({ recordsUsed: 0 })
+        }
+      })
+
       it('shows an error the AI service reports mid-answer exactly once and keeps its reason on the conversation', async () => {
         const run = await startStream(flow)
         const reason = 'This conversation is too long for the selected model. Start a new chat to continue.'
