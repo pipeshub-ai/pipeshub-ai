@@ -782,9 +782,9 @@ def test_the_stamps_r13_revision_adds_one_writer_and_its_downgrade_takes_it_back
     url = cluster.url(name, "pipeshub_migrate")
 
     def state(c) -> tuple:
-        return tuple(c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s", (n,)).fetchone()[0]
-                     for n in ("w_stamps_r13_set", "w_stamps_set", "w_r13_set")) + (
-            c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0],)
+        procs = [c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s", (n,)).fetchone()[0]
+                 for n in ("w_stamps_r13_set", "w_stamps_set", "w_r13_set")]
+        return (*procs, c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0])
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
