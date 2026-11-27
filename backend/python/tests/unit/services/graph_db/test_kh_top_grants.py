@@ -68,9 +68,14 @@ class _KgTx:
         assert sql == kh_listing.LINKED_ACCOUNT and args == ("o", "u1", "app1"), (sql, args)
         return self.linked
 
-    async def fetch(self, sql: str, *args: Any) -> list[dict]:  # noqa: ANN401
+    async def fetchrow(self, sql: str, *args: Any) -> dict:  # noqa: ANN401
+        from app.services.graph_db.postgres.kg import grant_marks
+        assert sql == grant_marks.CANDIDATES, sql
         self.candidates_read = True
-        return [{"node_sk": 1, "node_group": None, "node_parent": None}] if "chain_top_grants" in sql else [{"sk": 1, "id": "a"}]
+        return {"sks": [1], "grps": [None], "pars": [None]}
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict]:  # noqa: ANN401
+        return [{"sk": 1, "id": "a"}]
 
 
 async def _top_grants(monkeypatch: Any, linked: bool) -> tuple[TopGrants, _KgTx]:  # noqa: ANN401
