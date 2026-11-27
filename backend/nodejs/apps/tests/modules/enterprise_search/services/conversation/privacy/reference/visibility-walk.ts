@@ -1,7 +1,8 @@
 // The reader check as it was before answers stored their closures, with the rules added to it since (the switch read
 // per chat, project visibility recorded, files saved before the rules, an asker's own answers given as text, and
-// where others read the chat only the answers from before them that every member could read then), kept
-// whole: it walks every earlier version level by level. The closure property test judges each case with both and asks
+// where others read the chat only the answers from before them that every member could read then; the agents a share
+// stays with, the shares it counts on, shared copies outside their chat or taken out of it, what may be shared of an
+// agent's work, and the people's messages of the room a share reaches), kept whole: it walks every earlier version level by level. The closure property test judges each case with both and asks
 // for the same verdict.
 /**
  * Who may read an answer: the reader check every channel applies to every row it returns.
@@ -93,6 +94,9 @@ export interface RowVerdict {
   cardWithheld?: true;
 }
 
+/** The identity of a read made on someone's behalf: the share check asks what its sharer may use as them. */
+export const ON_BEHALF_OF_READER: unique symbol = Symbol('on behalf of the reader');
+
 /** Who is reading. */
 export interface Reader {
   userId: string;
@@ -128,6 +132,8 @@ export interface ReaderRow {
   sharedFrom?: unknown;
   respondingAgentKey?: unknown;
   removedAt?: unknown;
+  removedFrom?: unknown;
+  again?: unknown;
   replyTo?: unknown;
   inReplyTo?: unknown;
   /** A question that answers a card: the card it was bound to when it was sent. */
@@ -194,13 +200,17 @@ export interface VisibilityDeps {
     reader: Reader,
     conversationId: string,
   ): Promise<boolean | undefined>;
-  /** Whether the reader may read a project; undefined when it cannot be said now. */
+  /** Whether the reader may read a project, or `deleted` when it is gone or deleted; undefined when it cannot be said now. */
   canReadProject(
     reader: Reader,
     projectId: string,
-  ): Promise<boolean | undefined>;
+  ): Promise<boolean | 'deleted' | undefined>;
   /** Whether an agent runs on a service account, bound or not; undefined when it cannot be said now. */
-  isServiceAgent(orgId: string, agentKey: string): Promise<boolean | undefined>;
+  isServiceAgent(reader: Reader, agentKey: string): Promise<boolean | undefined>;
+  /** Whether an agent has a skill now that the reader can't open, by its own record; undefined when it can't be said. */
+  hasClosedSkill(reader: Reader, agentKey: string): Promise<boolean | undefined>;
+  /** Whether the reader owns an agent, by their own grant to it; undefined when it can't be said. */
+  ownsAgent(reader: Reader, agentKey: string): Promise<boolean | undefined>;
   /** An answer's text as a share shows it: no record ids, links, text fragments or images. */
   sharedText(content: string): string;
   /**
@@ -315,6 +325,8 @@ const defaultDeps = (): VisibilityDeps => ({
   canReadConversation: () => Promise.resolve(undefined),
   canReadProject: () => Promise.resolve(undefined),
   isServiceAgent: () => Promise.resolve(undefined),
+  hasClosedSkill: () => Promise.resolve(undefined),
+  ownsAgent: () => Promise.resolve(undefined),
   sharedText: () => '',
   switchAt: () => Promise.resolve(undefined),
   labelRule: () => Promise.resolve(false),
@@ -449,6 +461,21 @@ const withheldCardAnswer = <T extends object>(row: T): T => {
   return view as T;
 };
 
+/**
+ * A person's message every reader of `room` reads in full: a question or a note of that chat, not taken out, opening
+ * with no quoted excerpt, and no answer to a card (bound to one, or opening as the AI backend reads one, after what
+ * Python strips as space).
+ */
+const readByTheRoom = (row: ReaderRow, room: string | undefined): boolean => {
+  if (row.messageType !== 'note' && row.messageType !== 'user_query') return false;
+  if (room === undefined || idOf(row.sessionId) !== room || row.removedAt != null) return false;
+  if (typeof row.content !== 'string' || splitQuotedSelection(row.content).quoted) return false;
+  if (row.messageType === 'note') return true;
+  // eslint-disable-next-line no-control-regex -- Python's `str.lstrip()` strips these too
+  const opening = row.content.replace(/^[\s\x1c-\x1f\x85]+/u, '');
+  return row.answersCard == null && !opening.startsWith('User selections:') && !opening.startsWith('Tool approval:');
+};
+
 const versionOf = (row: ReaderRow): string =>
   typeof row.labelVer === 'string' && row.labelVer !== ''
     ? row.labelVer
@@ -562,7 +589,53 @@ interface ConsentRecord {
   ver?: unknown;
   scope?: unknown;
   by?: unknown;
+  agents?: unknown;
+  on?: unknown;
 }
+
+/** A row's version named by a share as one it counts on; a copy has version ''. */
+interface Counted {
+  row: string;
+  ver: string;
+}
+
+/** The agents and the earlier shares a share asks of a reader beside its consent; undefined when they can't be read. */
+const asksOf = (consent: ConsentRecord | undefined): { agents: string[]; on: Counted[] } | undefined => {
+  if (!consent) return undefined;
+  const agents = consent.agents ?? [];
+  const on = countedIn(consent.on);
+  if (!Array.isArray(agents) || agents.some((a) => typeof a !== 'string' || a === '') || !on) return undefined;
+  return { agents: agents as string[], on };
+};
+
+const countedIn = (value: unknown): Counted[] | undefined => {
+  const list = value ?? [];
+  if (!Array.isArray(list)) return undefined;
+  const out: Counted[] = [];
+  for (const entry of list as unknown[]) {
+    const row = isPlain(entry) ? idOf(entry.row) : undefined;
+    if (!isPlain(entry) || row === undefined || typeof entry.ver !== 'string') return undefined;
+    out.push({ row, ver: entry.ver });
+  }
+  return out;
+};
+
+/** What a copy was made from: live, as it says; taken out, as it kept it. */
+const copiedFrom = (copy: ReaderRow): Counted | undefined => {
+  const from = copy.removedAt == null ? copy.sharedFrom : copy.removedFrom;
+  if (!isPlain(from)) return undefined;
+  const row = idOf(from.messageId);
+  return row === undefined ? undefined : { row, ver: typeof from.ver === 'string' ? from.ver : '' };
+};
+
+const copyCountsOn = (copy: ReaderRow): Counted[] | undefined =>
+  countedIn(isPlain(copy.sharedFrom) ? copy.sharedFrom.on : undefined);
+
+/** The agent thread a message shows its room an answer of: what it counts on may be shared there. */
+const madeInThread = (copy: ReaderRow): string | undefined => {
+  const from = isPlain(copy.sharedFrom) ? copy.sharedFrom : {};
+  return from.fromAgentThread === true ? idOf(from.sessionId) : undefined;
+};
 
 /** The consent recorded for `ver` of a row: on the row for its current version, else archived with that version. */
 const consentAt = (row: ReaderRow, ver: string): ConsentRecord | undefined => {
@@ -817,6 +890,8 @@ interface JudgeOptions {
   labelsLoaded?: boolean;
   /** The chats the read happens in, when not the session's (`VisibleRowsOptions.chatsRead`). */
   chatsRead?: readonly string[];
+  /** A share's check: every original of a copy is read, and these agents are asked about with those that answered. */
+  sharing?: readonly string[];
 }
 
 /**
@@ -830,7 +905,7 @@ class Judge {
   private readable: ReadableAnswer;
   private readonly agentUse = new Map<string, boolean | undefined>();
   private readonly chats = new Map<string, boolean | undefined>();
-  private readonly projects = new Map<string, boolean | undefined>();
+  private readonly projects = new Map<string, boolean | 'deleted' | undefined>();
   /** Rows whose earlier versions were not all read (too deep or too many): they hide. */
   private readonly cut = new Set<string>();
   /** For each run a file parent names, the row versions it wrote in the chats read; empty when none was found. */
@@ -941,6 +1016,9 @@ class Judge {
                 ...(stored.requestedBy !== undefined && {
                   requestedBy: stored.requestedBy,
                 }),
+                ...(stored.respondingAgentKey !== undefined && {
+                  respondingAgentKey: stored.respondingAgentKey,
+                }),
               }
             : { ...given, provenance: undefined, labelHistory: undefined },
         );
@@ -950,7 +1028,7 @@ class Judge {
     let frontier: Array<{ id: string; ver: string; own: boolean }> = [];
     for (const row of rows) {
       const id = idOf(row._id);
-      if (id !== undefined && isLabelledType(row)) {
+      if (id !== undefined && (isLabelledType(row) || row.messageType === SHARED_ANSWER)) {
         frontier.push({
           id,
           ver: versionOf(this.rows.get(id) as ReaderRow),
@@ -970,6 +1048,14 @@ class Judge {
         seen.add(key);
         const row = this.rows.get(id);
         if (!row) continue;
+        // Beside its label: what its share counts on; for a copy, what stands for it and what it was made from.
+        if (depth + 1 < MAX_PARENT_DEPTH && this.rows.size < MAX_JUDGED_ROWS) {
+          for (const ref of this.besides(row, ver)) {
+            next.push({ id: ref.row, ver: ref.ver, own: false });
+            if (!this.rows.has(ref.row)) unread.push(ref.row);
+          }
+        }
+        if (row.messageType === SHARED_ANSWER) continue;
         const { label } = versionAt(row, ver, own);
         if (!label) continue;
         labels.push(label);
@@ -1138,11 +1224,35 @@ class Judge {
   }
 
   /** One access request for every id the labels name, and the agent, chat and project checks they need. */
+  /** The chats the copies read were made in; undefined when they could not be read. */
+  private madeIn: ReadonlyMap<string, ReaderSession> | undefined = new Map();
+
   private async settle(labels: readonly AnswerProvenance[]): Promise<void> {
     const ids = new Set<string>(this.opts.extraIds ?? []);
-    const agents = new Set<string>();
+    const agents = new Set<string>(this.opts.sharing ?? []);
     const chats = new Set<string>();
     const projects = new Set<string>();
+    const madeIn = new Set<string>();
+    for (const row of this.rows.values()) {
+      const from = row.messageType === SHARED_ANSWER ? copiedFrom(row) : undefined;
+      const chat = from && idOf(this.rows.get(from.row)?.sessionId);
+      if (chat !== undefined) madeIn.add(chat);
+    }
+    if (madeIn.size > 0)
+      this.madeIn = await this.deps.chats(this.reader.orgId, [...madeIn]).catch(() => undefined);
+    for (const thread of this.madeIn?.values() ?? []) {
+      const agent = idOf(thread.agentKey);
+      const room = idOf(thread.agentRoomId);
+      if (room === undefined) continue;
+      if (agent !== undefined) agents.add(agent);
+      if (!this.uploadChats.has(room)) chats.add(room);
+    }
+    for (const row of this.rows.values()) {
+      const vers = [versionOf(row), ...listOf<unknown>(row.labelHistory).flatMap((e) => (isPlain(e) && typeof e.ver === 'string' ? [e.ver] : []))];
+      for (const ver of vers) for (const key of asksOf(consentAt(row, ver))?.agents ?? []) agents.add(key);
+      const responder = idOf(row.respondingAgentKey);
+      if (this.opts.sharing && responder !== undefined) agents.add(responder);
+    }
     for (const label of labels) {
       const direct: Plain = isPlain(label.direct) ? label.direct : {};
       for (const id of listOf<string>(direct.records))
@@ -1429,16 +1539,117 @@ class Judge {
     return outcome;
   }
 
+  private readonly deciding = new Set<string>();
+
+  /** Run once at a time for a share: met again on its own way, it does not hold. */
+  private once(key: string, decide: () => boolean): boolean {
+    if (this.deciding.has(key)) return false;
+    this.deciding.add(key);
+    const held = decide();
+    this.deciding.delete(key);
+    return held;
+  }
+
+  /** Whether a share covers the reader: its consent, every agent it stays with, every share it counts on. */
+  covered(row: ReaderRow, ver: string, thread?: string): boolean {
+    const there = thread !== undefined && idOf(row.sessionId) === thread;
+    if (!consentCovers(row, ver, this.reader, there ? undefined : this.chatsRead)) return false;
+    const asks = asksOf(consentAt(row, ver));
+    if (!asks || asks.agents.some((key) => this.agentUse.get(key) !== true)) return false;
+    return this.once(`share ${String(row._id)}@${ver} ${thread ?? ''}`, () => asks.on.every((ref) => this.holds(ref, thread)));
+  }
+
+  mayUse(key: string): boolean {
+    return this.agentUse.get(key) === true;
+  }
+
+  /** The versions whose runs wrote the file a parent names. */
+  wrote(parent: Plain): Counted[] {
+    const runId = writingRunOf(parent);
+    return (runId === undefined ? [] : this.writers.get(runId) ?? []).map(({ id, ver }) => ({ row: id, ver }));
+  }
+
+  private holds(ref: Counted, thread?: string): boolean {
+    const row = this.rows.get(ref.row);
+    if (!row) return false;
+    if (row.messageType === SHARED_ANSWER) return this.copyOutcome(row) === 'pass';
+    return this.covered(row, ref.ver, thread) || this.judge(row, ref.ver, false) === 'pass';
+  }
+
+  /** A live copy shows its text to a member while each share it counts on holds for them. */
+  copyShows(copy: ReaderRow): boolean {
+    const on = copyCountsOn(copy);
+    if (copy.removedAt != null || this.reader.member !== true || !on) return false;
+    return this.once(`copy ${String(copy._id)}`, () => on.every((ref) => this.holds(ref, madeInThread(copy))));
+  }
+
+  /**
+   * The live copy that stands for `copy`: itself, or the end of the copies of the same answer that took its place. Where a
+   * version was shared again, only for a copy of that version (`first`).
+   */
+  standing(copy: ReaderRow, met: readonly string[] = [], first = copiedFrom(copy)?.ver): ReaderRow | undefined {
+    if (copy.removedAt == null) return copy;
+    const again = idOf(copy.again);
+    const next = again === undefined || met.includes(again) ? undefined : this.rows.get(again);
+    if (again === undefined || next?.messageType !== SHARED_ANSWER) return undefined;
+    const same = copiedFrom(copy)?.row;
+    if (same === undefined || copiedFrom(next)?.row !== same || idOf(next.sessionId) !== idOf(copy.sessionId)) return undefined;
+    const ver = copiedFrom(next)?.ver;
+    if (ver === copiedFrom(copy)?.ver && ver !== first) return undefined;
+    return this.standing(next, [...met, again], first);
+  }
+
+  /** A copy as something a later answer was given. */
+  private copyOutcome(copy: ReaderRow): Outcome {
+    const live = this.standing(copy);
+    const where = idOf(live?.sessionId);
+    const here = this.chatsRead === undefined || where === undefined || this.chatsRead.has(where);
+    if (live && here && this.copyShows(live)) return 'pass';
+    const from = copiedFrom(copy);
+    const original = from && this.rows.get(from.row);
+    if (!from || from.ver === '' || !original || original.messageType === SHARED_ANSWER) return 'parent';
+    // Its answer is opened by who reads the thread it is in and all that it used.
+    const both = [this.readsThread(original), this.judge(original, from.ver, false)];
+    if (both.some((o) => o !== 'pass' && o !== 'unchecked')) return 'parent';
+    return both.includes('unchecked') ? 'unchecked' : 'pass';
+  }
+
+  /** Whose thread an answer that was copied is in: a private one is its owner's, an agent's its room's people's who use the agent. */
+  readsThread(original: ReaderRow): Outcome {
+    const chat = idOf(original.sessionId);
+    if (chat === undefined) return 'parent';
+    if (this.uploadChats.has(chat)) return this.reader.member === true ? 'pass' : 'parent';
+    if (!this.madeIn) return 'unchecked';
+    const thread = this.madeIn.get(chat);
+    if (!thread) return 'parent';
+    const room = idOf(thread.agentRoomId);
+    if (room === undefined) return idOf(thread.userId) === this.reader.userId ? 'pass' : 'parent';
+    const agent = idOf(thread.agentKey);
+    const said = [
+      agent === undefined ? false : this.agentUse.get(agent),
+      this.uploadChats.has(room) ? this.reader.member === true : this.chats.get(room),
+    ];
+    if (said.includes(false)) return 'parent';
+    return said.includes(undefined) ? 'unchecked' : 'pass';
+  }
+
+  /** What is read beside a version's label: the shares its share counts on; for a copy, everything it may be judged by. */
+  private besides(row: ReaderRow, ver: string): Counted[] {
+    if (row.messageType !== SHARED_ANSWER) return asksOf(consentAt(row, ver))?.on ?? [];
+    const again = idOf(row.again);
+    const from = copiedFrom(row);
+    return [
+      ...(copyCountsOn(row) ?? []),
+      ...(again !== undefined ? [{ row: again, ver: LEGACY_LABEL_VER }] : []),
+      ...(from ? [{ row: from.row, ver: from.ver === '' ? LEGACY_LABEL_VER : from.ver }] : []),
+    ];
+  }
+
   private judgeVersion(row: ReaderRow, ver: string, own: boolean): Outcome {
     const reader = this.reader;
     const asker = this.askerOf(row);
     const isAsker = asker !== undefined && asker === reader.userId;
-    if (row.messageType === SHARED_ANSWER) {
-      // A copy is shared with the chat: its members read its text. A removed copy no longer is.
-      return reader.member === true && row.removedAt == null
-        ? 'pass'
-        : 'parent';
-    }
+    if (row.messageType === SHARED_ANSWER) return this.copyOutcome(row);
     if (row.messageType === 'user_query' || row.messageType === 'note') {
       // A person's own words, quoted: every member reads them. What they quote of an answer is never sent with them.
       return reader.member === true && row.removedAt == null
@@ -1505,8 +1716,16 @@ class Judge {
     }
     for (const project of listOf<string>(direct.projects)) {
       const read = this.projects.get(project);
+      // The asker keeps an answer whose project was deleted, as one whose sources were; nobody else does.
+      if (read === 'deleted' && isAsker) continue;
       outcomes.push(
-        read === true ? 'pass' : read === false ? 'sources' : 'unchecked',
+        read === true
+          ? 'pass'
+          : read === 'deleted'
+            ? 'deleted'
+            : read === false
+              ? 'sources'
+              : 'unchecked',
       );
     }
     const ids = [
@@ -1576,11 +1795,7 @@ class Judge {
         continue;
       }
       const ver = parent.ver;
-      if (
-        parent.mode === 'text' &&
-        consentCovers(row, ver, this.reader, this.chatsRead)
-      )
-        continue;
+      if (parent.mode === 'text' && this.covered(row, ver)) continue;
       // An answer from before labels, read through the reader's own view of it (`settleLegacyText`).
       const before =
         parent.mode === 'text' && ver === LEGACY_LABEL_VER
@@ -2007,8 +2222,15 @@ async function judgeRows(
     });
     return false;
   });
-  if (toJudge.length > 0 || (opts.extraIds?.length ?? 0) > 0) {
-    await judge.prepare(toJudge);
+  const copyRows = rows.filter((r) => r.messageType === SHARED_ANSWER && idOf(r._id) !== undefined);
+  const storedCopies = copyRows.length === 0 || opts.labelsLoaded === true ? new Map<string, ReaderRow>() : await deps.labels(reader.orgId, copyRows.map((r) => idOf(r._id) as string));
+  const copyOf = (row: ReaderRow): ReaderRow => {
+    const held = storedCopies.get(idOf(row._id) as string);
+    return held ? { ...row, sharedFrom: held.sharedFrom } : row;
+  };
+  const counting = copyRows.map(copyOf).filter((copy) => copyCountsOn(copy)?.length !== 0);
+  if (toJudge.length > 0 || counting.length > 0 || (opts.extraIds?.length ?? 0) > 0) {
+    await judge.prepare([...toJudge, ...counting]);
     const toStore: Array<[string, StoredVerdict]> = [];
     for (const given of toJudge) {
       const id = idOf(given._id) as string;
@@ -2035,10 +2257,7 @@ async function judgeRows(
             };
       }
       // An answer shared with the reader at the version it shows: its text, when they cannot see it whole.
-      if (
-        verdict.verdict === 'hidden' &&
-        consentCovers(row, versionOf(row), reader, judge.chatsRead)
-      ) {
+      if (verdict.verdict === 'hidden' && judge.covered(row, versionOf(row))) {
         verdict = { verdict: 'consented', validUntil: verdict.validUntil };
       }
       if (verdict.verdict === 'visible' && verdict.basis === undefined) {
@@ -2114,7 +2333,7 @@ async function judgeRows(
     if (type === SHARED_ANSWER) {
       out.set(
         id,
-        reader.member === true && row.removedAt == null
+        judge.copyShows(copyOf(row))
           ? { verdict: 'consented', validUntil: forever }
           : { verdict: 'hidden', reason: 'parent', validUntil: forever },
       );
@@ -2227,21 +2446,46 @@ export async function fullOK(
 
 // ---- sharing ----------------------------------------------------------------------------------------------
 
-export type WidenAudience = 'everyone' | { userIds: string[] } | 'outside';
+/** Whether the share of `ver` of `row` covers `viewer` now, read in `session`. */
+export async function shareCovers(
+  viewer: Reader,
+  row: ReaderRow,
+  ver: string,
+  opts: { session: ReaderSession; deps?: Partial<VisibilityDeps> },
+): Promise<boolean> {
+  const reader = asMember({ ...viewer, identity: viewer.identity ?? ON_BEHALF_OF_READER }, opts.session, true);
+  const judge = new Judge(reader, { ...configured, ...opts.deps }, { session: opts.session, labelsLoaded: true });
+  await judge.prepare([row]);
+  return judge.covered(judge.rows.get(idOf(row._id) ?? '') ?? row, ver);
+}
+
+export type WidenAudience = 'everyone' | { userIds: string[] } | 'outside' | { outside: readonly string[] };
 
 export interface WidenResult {
   ok: boolean;
-  code?: 'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT';
+  code?: 'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT' | 'SHARE_NOT_ALLOWED_SIGN_IN';
+  limitedTo?: string[];
+  on?: Array<{ row: string; ver: string }>;
   /** Of the people a share names, those who cannot open what the answer used. */
   cannotOpen?: string[];
 }
 
+const NOT_WIDENABLE: WidenResult = { ok: false, code: 'SHARE_NOT_WIDENABLE' };
+const AGENT_CONTENT: WidenResult = { ok: false, code: 'SHARE_NOT_ALLOWED_AGENT' };
+const SIGN_IN_CONTENT: WidenResult = { ok: false, code: 'SHARE_NOT_ALLOWED_SIGN_IN' };
+
+const listed = (label: AnswerProvenance | undefined, field: string): unknown[] => {
+  const direct: Plain = isPlain(label?.direct) ? label.direct : {};
+  return listOf<unknown>(direct[field]);
+};
+
 /**
- * Whether the asker of `row` may widen `ver` of it to `audience`. Every row in what it
- * built on must have a label this build can rely on, and the asker must be able to open everything every one of
- * them used by their own access; an answer an earlier row shared only with them never counts. A share inside the
- * chat may build on an earlier answer shared with everyone in this same chat. Anything an agent's service account
- * or configuration produced is never shared.
+ * Whether the asker of `row` may widen `ver` of it to `audience`, sharing it in `session`. Outside the chat (a file
+ * grant): every version behind it opened by the asker's own access, a file by the answer that wrote it, no share of any
+ * kind, nothing of a service agent or a shared sign-in, and an agent's work only to people who can use it, or from its
+ * owner when no skill they can't open was given. Inside it: an earlier answer shared with everyone there counts, an
+ * agent stops nothing while it is no service agent and the asker can use it, and a question or a note of the room the
+ * share reaches that every reader there reads stops nothing either.
  */
 export async function widenOK(
   row: ReaderRow,
@@ -2250,121 +2494,310 @@ export async function widenOK(
   opts: { session?: ReaderSession; deps?: Partial<VisibilityDeps> } = {},
 ): Promise<WidenResult> {
   const deps: VisibilityDeps = { ...configured, ...opts.deps };
-  const notWidenable: WidenResult = { ok: false, code: 'SHARE_NOT_WIDENABLE' };
-  const agentContent: WidenResult = {
-    ok: false,
-    code: 'SHARE_NOT_ALLOWED_AGENT',
-  };
   const sharer = idOf(row.requestedBy);
   const orgId = idOf(row.orgId) ?? idOf(opts.session?.orgId);
-  if (sharer === undefined || orgId === undefined) return notWidenable;
-  const reader: Reader = { userId: sharer, orgId };
+  if (sharer === undefined || orgId === undefined) return NOT_WIDENABLE;
+  const to = typeof audience === 'object' && 'outside' in audience ? audience.outside : undefined;
+  const inChat = audience !== 'outside' && to === undefined;
+  const reader: Reader = inChat
+    ? { ...asMember({ userId: sharer, orgId }, opts.session, true), member: true, identity: ON_BEHALF_OF_READER }
+    : { userId: sharer, orgId, identity: ON_BEHALF_OF_READER };
+  const own = idOf(row.sessionId);
+  const readId = idOf(opts.session?._id);
+  if (readId !== undefined && own !== undefined && own !== readId) return NOT_WIDENABLE;
+  const here = new Set(
+    readId === undefined ? [own] : [readId, idOf(opts.session?.parentId), idOf(opts.session?.agentRoomId)],
+  );
+  const keys = [idOf(row.respondingAgentKey), idOf(opts.session?.agentKey)].filter((k): k is string => k !== undefined);
+  // Where the share puts the answer before everyone who reads: the chat, or a thread's room.
+  const room =
+    opts.session === undefined
+      ? undefined
+      : (idOf(opts.session.agentRoomId) ?? idOf(opts.session.parentId) ?? idOf(opts.session._id));
   const judge = new Judge(reader, deps, {
     session: opts.session,
     timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+    sharing: keys,
   });
   await judge.prepare([row]);
   const start = judge.rows.get(idOf(row._id) ?? '') ?? row;
-  const scope = audience === 'outside' ? 'outside' : 'chat';
-  const sessionId = idOf(start.sessionId);
-  // An agent behind the row or its chat, bound to a service account or not, is never shared further.
-  const agentKeys = [
-    idOf(start.respondingAgentKey),
-    idOf(opts.session?.agentKey),
-  ].filter((k): k is string => k !== undefined);
-  for (const key of agentKeys) {
-    const service = await deps
-      .isServiceAgent(orgId, key)
-      .catch(() => undefined);
-    if (service !== false) return agentContent;
+  const result = inChat
+    ? await inChatOK(judge, deps, start, ver, here, room, keys, opts.session)
+    : await outsideOK(judge, deps, start, ver, keys, to);
+  if (!result.ok || typeof audience !== 'object' || !('userIds' in audience)) return result;
+  const cannot: string[] = [];
+  for (const userId of audience.userIds) {
+    const ok = await fullOK(
+      {
+        userId,
+        orgId,
+        member: true,
+        memberSince: opts.session ? memberSinceOf(opts.session, userId) : undefined,
+      },
+      start,
+      ver,
+      { session: opts.session, deps: opts.deps },
+    );
+    if (!ok) cannot.push(userId);
   }
-  // The versions on the path being walked, and what each finished one gave: a version reached again by another path
-  // (an answer and a later one both built on it) is judged once; one met again on its own path is a loop.
-  const visiting = new Set<string>();
-  const finished = new Map<string, WidenResult | undefined>();
-  const walk = (
-    current: ReaderRow,
-    at: string,
-    top: boolean,
-  ): WidenResult | undefined => {
+  return cannot.length > 0 ? { ...result, cannotOpen: cannot } : result;
+}
+
+async function outsideOK(
+  judge: Judge,
+  deps: VisibilityDeps,
+  start: ReaderRow,
+  ver: string,
+  keys: readonly string[],
+  to: readonly string[] | undefined,
+): Promise<WidenResult> {
+  // Every agent met, those whose label says skill text the asker can't open was given, and those of labels too old to say.
+  const met = new Set<string>(keys);
+  const skill = new Set<string>();
+  const older = new Set<string>();
+  const path = new Set<string>();
+  const done = new Map<string, WidenResult | undefined>();
+  const walk = (current: ReaderRow, at: string, own: boolean): WidenResult | undefined => {
     const key = `${idOf(current._id) ?? ''}@${at}`;
-    if (finished.has(key)) return finished.get(key);
-    if (visiting.has(key)) return notWidenable;
-    visiting.add(key);
-    const result = walkOnce(current, at, top);
-    visiting.delete(key);
-    finished.set(key, result);
+    if (done.has(key)) return done.get(key);
+    if (path.has(key)) return NOT_WIDENABLE;
+    path.add(key);
+    const result = step(current, at, own);
+    path.delete(key);
+    done.set(key, result);
     return result;
   };
-  const walkOnce = (
-    current: ReaderRow,
-    at: string,
-    top: boolean,
-  ): WidenResult | undefined => {
-    const { label, state } = versionAt(
-      current,
-      at,
-      top && at === versionOf(current),
-    );
-    if (state !== 'ok' || !label) return notWidenable;
-    const direct: Plain = isPlain(label.direct) ? label.direct : {};
-    if (listOf(direct.saVrids).length > 0) return agentContent;
-    if (
-      listOf<unknown>(direct.agents).some(
-        (a) => isPlain(a) && a.kind === 'service',
-      )
-    )
-      return agentContent;
-    // Who may use an agent's configuration is checked per person, which no share to everyone or outside can do.
-    if (listOf<Plain>(direct.agents).length > 0) return agentContent;
-    if (
-      judge.directOf(current, at, top && at === versionOf(current)) !== 'pass'
-    )
-      return notWidenable;
+  const step = (current: ReaderRow, at: string, own: boolean): WidenResult | undefined => {
+    const { label, state } = versionAt(current, at, own);
+    if (state !== 'ok' || !label) return NOT_WIDENABLE;
+    if (listed(label, 'saVrids').length > 0) return AGENT_CONTENT;
+    const saysNothing = label.tagset < 2;
+    const responder = idOf(current.respondingAgentKey);
+    const named = listed(label, 'agents');
+    if (named.some((a) => !isPlain(a) || idOf(a.key) === undefined || a.kind !== 'config')) return AGENT_CONTENT;
+    for (const a of named as Plain[]) {
+      met.add(String(a.key));
+      if (a.skill === true) skill.add(String(a.key));
+    }
+    if (responder !== undefined) met.add(responder);
+    if (saysNothing) {
+      for (const k of [...keys, ...(named as Plain[]).map((a) => String(a.key)), ...(responder !== undefined ? [responder] : [])])
+        older.add(k);
+    }
+    if (responder !== undefined && !judge.mayUse(responder)) return NOT_WIDENABLE;
+    if (judge.directOf(current, at, own) !== 'pass') return NOT_WIDENABLE;
     for (const parent of listOf<LabelParent>(label.parents)) {
-      if (!isPlain(parent) || typeof parent.id !== 'string' || parent.id === '')
-        return notWidenable;
-      const p = judge.rows.get(parent.id);
-      if (!p) return notWidenable;
-      const pver = parent.ver;
-      if (p.messageType === SHARED_ANSWER) return notWidenable;
-      const deeper = walk(p, pver, false);
-      if (deeper === undefined) continue;
-      if (deeper.code === 'SHARE_NOT_ALLOWED_AGENT') return deeper;
-      const consent = consentAt(p, pver);
-      const sharedHere =
-        scope === 'chat' &&
-        consent !== undefined &&
-        (consent.scope ?? 'everyone') === 'everyone' &&
-        idOf(p.sessionId) === sessionId;
-      if (!sharedHere) return deeper;
+      if (!isPlain(parent) || typeof parent.id !== 'string') return NOT_WIDENABLE;
+      // A file is the version of the answer whose run wrote it; one no answer is found to have written refuses.
+      const behind =
+        parent.id === ''
+          ? judge.wrote(parent)
+          : [{ row: parent.id, ver: parent.ver }];
+      if (behind.length === 0) return NOT_WIDENABLE;
+      for (const ref of behind) {
+        const p = judge.rows.get(ref.row);
+        if (!p || p.messageType === SHARED_ANSWER) return NOT_WIDENABLE;
+        const deeper = walk(p, ref.ver, false);
+        if (deeper) return deeper;
+      }
     }
     return undefined;
   };
-  const refused = walk(start, ver, true);
+  const refused = walk(start, ver, ver === versionOf(start));
   if (refused) return refused;
-  const result: WidenResult = { ok: true };
-  if (typeof audience === 'object') {
-    const cannot: string[] = [];
-    for (const userId of audience.userIds) {
-      const ok = await fullOK(
-        {
-          userId,
-          orgId,
-          member: true,
-          memberSince: opts.session
-            ? memberSinceOf(opts.session, userId)
-            : undefined,
-        },
-        start,
-        ver,
-        { session: opts.session, deps: opts.deps },
-      );
-      if (!ok) cannot.push(userId);
-    }
-    if (cannot.length > 0) result.cannotOpen = cannot;
+  if (met.size === 0) return { ok: true };
+  const all = [...met].sort();
+  const records = await Promise.all(all.map((key) => deps.isServiceAgent(judge.reader, key).catch(() => undefined)));
+  if (records.some((r) => r === true)) return AGENT_CONTENT;
+  if (records.some((r) => r !== false)) return NOT_WIDENABLE;
+  if (keys.some((key) => !judge.mayUse(key))) return NOT_WIDENABLE;
+  if (to !== undefined && to.length === 0) return { ok: true };
+  // Who must be able to use each agent: everyone it goes to, unless the asker owns the agent and no skill was given.
+  const stays: string[] = [];
+  for (const key of all) {
+    const gave =
+      skill.has(key) ||
+      (older.has(key) && (await deps.hasClosedSkill(judge.reader, key).catch(() => undefined)) !== false);
+    const owner = !gave && (await deps.ownsAgent(judge.reader, key).catch(() => undefined)) === true;
+    if (!owner) stays.push(key);
   }
-  return result;
+  if (stays.length === 0) return { ok: true };
+  if (to === undefined) return AGENT_CONTENT;
+  for (const userId of to) {
+    for (const key of stays) {
+      const may = await deps
+        .canUseAgent({ userId, orgId: judge.reader.orgId, identity: ON_BEHALF_OF_READER }, key)
+        .catch(() => undefined);
+      if (may !== true) return AGENT_CONTENT;
+    }
+  }
+  return { ok: true };
+}
+
+async function inChatOK(
+  judge: Judge,
+  deps: VisibilityDeps,
+  start: ReaderRow,
+  startVer: string,
+  here: ReadonlySet<string | undefined>,
+  room: string | undefined,
+  keys: readonly string[],
+  session: ReaderSession | undefined,
+): Promise<WidenResult> {
+  // Every version behind it, below shares too, and through a copy the answer it was made from.
+  const behind = new Map<string, { row: ReaderRow; ver: string; own: boolean; label?: AnswerProvenance }>();
+  let sound = true;
+  const given = (id: string, ver: string): Counted | undefined => {
+    const row = judge.rows.get(id);
+    if (row?.messageType !== SHARED_ANSWER) return row && { row: id, ver };
+    const from = copiedFrom(row);
+    return from && { row: from.row, ver: from.ver === '' ? LEGACY_LABEL_VER : from.ver };
+  };
+  const visit = (row: ReaderRow, ver: string, own: boolean): void => {
+    const key = `${idOf(row._id) ?? ''}@${ver}`;
+    if (behind.has(key)) return;
+    const { label, state } = versionAt(row, ver, own);
+    behind.set(key, { row, ver, own, label });
+    if (state !== 'ok' && state !== 'legacy') sound = false;
+    for (const parent of listOf<LabelParent>(label?.parents)) {
+      if (!isPlain(parent) || typeof parent.id !== 'string') {
+        sound = false;
+        continue;
+      }
+      // A file is what the answer whose run wrote it is: each of them, and one no answer wrote can't be told.
+      const refs = parent.id === '' ? judge.wrote(parent) : [given(parent.id, parent.ver)];
+      if (refs.length === 0) sound = false;
+      for (const ref of refs) {
+        const target = ref && judge.rows.get(ref.row);
+        if (!target || target.messageType === SHARED_ANSWER || typeof ref.ver !== 'string') sound = false;
+        else visit(target, ref.ver, false);
+      }
+    }
+  };
+  visit(start, startVer, startVer === versionOf(start));
+
+  const all = [...behind.values()];
+  const agentsOf = (label: AnswerProvenance | undefined): Plain[] => listed(label, 'agents').filter(isPlain);
+  const signIns = (label: AnswerProvenance | undefined): boolean =>
+    listed(label, 'saVrids').every((v) => typeof v === 'string' && v.startsWith('shared-sign-in:'));
+  if (all.some((v) => agentsOf(v.label).some((a) => a.kind !== 'config') || !signIns(v.label))) return AGENT_CONTENT;
+  const asked = new Set(keys);
+  const staysWith = new Set<string>();
+  for (const { row, label } of all) {
+    for (const agent of agentsOf(label)) {
+      asked.add(String(agent.key));
+      if (agent.skill === true) staysWith.add(String(agent.key));
+    }
+    const responder = idOf(row.respondingAgentKey);
+    if (responder !== undefined) asked.add(responder);
+  }
+  const records = await Promise.all([...asked].map(async (key) => deps.isServiceAgent(judge.reader, key).catch(() => undefined)));
+  if (records.some((r) => r === true)) return AGENT_CONTENT;
+  if (all.some((v) => listed(v.label, 'saVrids').length > 0)) return SIGN_IN_CONTENT;
+  if (!sound || records.some((r) => r === undefined)) return NOT_WIDENABLE;
+  if (keys.some((key) => !judge.mayUse(key))) return NOT_WIDENABLE;
+
+  // Shared with everyone here, the shares it counts on with it; a copy by being in the chat, or the one that stands for it.
+  const decided = new Map<string, boolean>();
+  const sharedHere = (id: string, ver: string, thread?: string): boolean => {
+    const key = `${id}@${ver} ${thread ?? ''}`;
+    if (decided.has(key)) return decided.get(key) === true;
+    decided.set(key, false);
+    const row = judge.rows.get(id);
+    const copy = row?.messageType === SHARED_ANSWER ? judge.standing(row) : undefined;
+    const at = copy ?? (row?.messageType === SHARED_ANSWER ? undefined : row);
+    const inThread = thread !== undefined && idOf(at?.sessionId) === thread;
+    if (!at || !(inThread || here.has(idOf(at.sessionId)))) return false;
+    const on = copy ? copyCountsOn(copy) : asksOf(consentAt(at, ver))?.on;
+    const open = copy ? judge.copyShows(copy) : (consentAt(at, ver)?.scope ?? 'everyone') === 'everyone' && judge.covered(at, ver, thread);
+    const next = copy ? madeInThread(copy) : thread;
+    const shared = open && on !== undefined && on.every((ref) => sharedHere(ref.row, ref.ver, next));
+    decided.set(key, shared);
+    return shared;
+  };
+
+  // What the sharer passes a version by: `undefined` when they don't, else the shares it counts on.
+  const path = new Set<string>();
+  const done = new Map<string, Map<string, Counted> | undefined>();
+  const opens = (key: string): Map<string, Counted> | undefined => {
+    if (done.has(key)) return done.get(key);
+    if (path.has(key)) return undefined;
+    path.add(key);
+    const needs = opening(key);
+    path.delete(key);
+    done.set(key, needs);
+    return needs;
+  };
+  const opening = (key: string): Map<string, Counted> | undefined => {
+    const v = behind.get(key);
+    const responder = idOf(v?.row.respondingAgentKey);
+    if (!v?.label || (responder !== undefined && !judge.mayUse(responder))) return undefined;
+    if (judge.directOf(v.row, v.ver, v.own) !== 'pass') return undefined;
+    const needs = new Map<string, Counted>();
+    for (const parent of listOf<LabelParent>(v.label.parents)) {
+      if (!isPlain(parent) || typeof parent.id !== 'string' || parent.id === '') return undefined;
+      // A person's words as a reply gives them, which everyone the share reaches reads: nothing more to pass or count on.
+      const message = judge.rows.get(parent.id);
+      if (parent.mode === 'text' && parent.ver === LEGACY_LABEL_VER && message && readByTheRoom(message, room)) continue;
+      const ref = given(parent.id, parent.ver);
+      const copied = judge.rows.get(parent.id)?.messageType === SHARED_ANSWER;
+      const made = ref && copied ? judge.rows.get(ref.row) : undefined;
+      const reads = !copied || (made !== undefined && judge.readsThread(made) === 'pass');
+      const through = ref && reads ? opens(`${ref.row}@${ref.ver}`) : undefined;
+      if (through) {
+        for (const [k, n] of through) needs.set(k, n);
+      } else if (sharedHere(parent.id, parent.ver)) {
+        const isCopy = judge.rows.get(parent.id)?.messageType === SHARED_ANSWER;
+        const ver = isCopy ? '' : parent.ver;
+        needs.set(`${parent.id}@${ver}`, { row: parent.id, ver });
+      } else return undefined;
+    }
+    return needs;
+  };
+  const needs = opens(`${idOf(start._id) ?? ''}@${startVer}`);
+  if (!needs) return NOT_WIDENABLE;
+  // A version whose label is from before labels said whether such text was used, or that has none: whose answer it was,
+  // by who it names and by whose chat it is in (one with a label is looked up in the chat read alone). One nobody can
+  // name refuses; of the rest only a record that says there is no such skill clears the agent.
+  const quiet = new Set<string>();
+  let refusal: WidenResult | undefined;
+  const saysNothing = (v: { row: ReaderRow; label?: AnswerProvenance }): boolean =>
+    (v.row.messageType === 'bot_response' || v.row.messageType === 'error') && (v.label === undefined || v.label.tagset < 2);
+  for (const v of all.filter(saysNothing)) {
+    const at = idOf(v.row.sessionId);
+    let chat = at !== undefined && at === idOf(session?._id) ? session : undefined;
+    if (!chat && !v.label && at !== undefined) chat = (await deps.chats(judge.reader.orgId, [at]).catch(() => undefined))?.get(at);
+    const chatAgent = chat?.agentKey;
+    // Only a thread of a room's is an agent's without a key to say which.
+    const unnamed = chat?.agentRoomId !== undefined && idOf(chatAgent) === undefined;
+    if ((!chat && !v.label) || unnamed) return NOT_WIDENABLE;
+    for (const key of [...agentsOf(v.label).map((a) => String(a.key)), idOf(v.row.respondingAgentKey), idOf(chatAgent)])
+      if (key !== undefined) quiet.add(key);
+  }
+  for (const key of quiet) {
+    const service = asked.has(key) ? false : await deps.isServiceAgent(judge.reader, key).catch(() => undefined);
+    if (service === true) refusal = AGENT_CONTENT;
+    else if (service !== false) refusal = refusal ?? NOT_WIDENABLE;
+    else if ((await deps.hasClosedSkill(judge.reader, key).catch(() => undefined)) !== false) staysWith.add(key);
+  }
+  if (refusal) return refusal;
+  const followed = new Set<string>();
+  const stay = (ref: Counted): void => {
+    const key = `${ref.row}@${ref.ver}`;
+    const row = judge.rows.get(ref.row);
+    const at = row?.messageType === SHARED_ANSWER ? judge.standing(row) : row;
+    if (!at || followed.has(key)) return;
+    followed.add(key);
+    const asks = row?.messageType === SHARED_ANSWER ? undefined : asksOf(consentAt(at, ref.ver));
+    for (const agent of asks?.agents ?? []) staysWith.add(agent);
+    for (const earlier of row?.messageType === SHARED_ANSWER ? copyCountsOn(at) ?? [] : asks?.on ?? []) stay(earlier);
+  };
+  for (const ref of needs.values()) stay(ref);
+  return {
+    ok: true,
+    ...(staysWith.size > 0 && { limitedTo: [...staysWith].sort() }),
+    ...(needs.size > 0 && { on: [...needs.keys()].sort().map((key) => needs.get(key) as Counted) }),
+  };
 }
 
 // ---- what a reader is given ------------------------------------------------------------------------------
@@ -2888,10 +3321,7 @@ export async function includableRows<R extends object>(
   const sharedWithSender = (row: ReaderRow): boolean => {
     const id = idOf(row._id);
     const stored = id === undefined ? undefined : tree.rows.get(id);
-    return (
-      stored !== undefined &&
-      consentCovers(stored, versionOf(stored), reader, tree.chatsRead)
-    );
+    return stored !== undefined && tree.covered(stored, versionOf(stored));
   };
   const deps: VisibilityDeps = { ...configured, ...opts.deps };
   // No label rule: the history the sender's own filter built goes as it is, marked.

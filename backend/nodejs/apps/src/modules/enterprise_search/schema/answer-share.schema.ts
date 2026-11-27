@@ -13,6 +13,12 @@ export const SHARE_REQUEST_STATES = [
 ] as const;
 export type ShareRequestState = (typeof SHARE_REQUEST_STATES)[number];
 
+/** One version of an earlier row, by its id; a shared copy has no version of its own: ''. */
+export interface AnswerShareRef {
+  row: string;
+  ver: string;
+}
+
 /** The asker's consent to show one version of an answer to people who can't open what it used. */
 export interface AnswerConsent {
   by: Types.ObjectId;
@@ -22,7 +28,29 @@ export interface AnswerConsent {
   scope: AnswerShareScope;
   /** 'earlier': the owner's one-step consent to answers written before labels. */
   how?: 'earlier';
+  /**
+   * Agents the share stays with: it covers only people who can use every one of them. Set when the answer holds text of
+   * a skill of theirs its asker can't open; absent, the share covers anyone its scope names.
+   */
+  agents?: string[];
+  /**
+   * The earlier shares it counts on, of versions its sharer couldn't open by their own access: it covers a person only
+   * while each of them does, or the person can open that version whole.
+   */
+  on?: AnswerShareRef[];
+  /** A share with everyone: the people it was stopped for one by one. It covers everyone else. */
+  except?: Types.ObjectId[];
 }
+
+/** Stores an `AnswerShareRef`. */
+export const answerShareRefSchema = new Schema(
+  {
+    row: { type: String, required: true },
+    // Not `required`, which refuses the '' of a shared copy.
+    ver: { type: String },
+  },
+  { _id: false },
+);
 
 /** Stores an `AnswerConsent`. */
 export const answerConsentSchema = new Schema(
@@ -34,6 +62,9 @@ export const answerConsentSchema = new Schema(
     scope: { type: String, enum: ANSWER_SHARE_SCOPES, required: true },
     // 'earlier': the owner's one-step consent to answers written before labels.
     how: { type: String, enum: ['earlier'] },
+    agents: { type: [String], default: undefined },
+    on: { type: [answerShareRefSchema], default: undefined },
+    except: { type: [Schema.Types.ObjectId], default: undefined },
   },
   { _id: false },
 );

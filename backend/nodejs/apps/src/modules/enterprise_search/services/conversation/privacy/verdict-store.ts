@@ -13,7 +13,7 @@ import type { ICacheService } from '../../../../../libs/services/cache/cacheServ
  */
 
 /** Bumped whenever the reader rule or one of its leaf checks changes, so no verdict an older rule made is served. */
-export const READER_REV = 3;
+export const READER_REV = 5;
 
 export type StoredVerdictKind =
   'visible' | 'consented' | 'hidden' | 'unchecked';

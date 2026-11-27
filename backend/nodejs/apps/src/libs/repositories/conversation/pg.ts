@@ -32,7 +32,7 @@ import {
 } from '../pg-util';
 import { replaceMembers } from '../members';
 import {
-  archivedLabelHistory,
+  replacedLabelHistory,
   sealAnswerForStorage,
 } from '../../../modules/enterprise_search/services/conversation/privacy/label';
 import type { IChatAttachmentRef } from '../../../modules/enterprise_search/types/conversation.interfaces';
@@ -81,6 +81,7 @@ import type {
   SessionDeletionDto,
   UserSessionDto,
   MessageLabelRow,
+  AnswerConsentDto,
   EndedAnswerShare,
   AnswerClosureDoc,
   ShareMarkRow,
@@ -1657,7 +1658,7 @@ export class PgConversationRepository
       );
       const current = found.rows[0];
       if (!current) return null;
-      const archive = archivedLabelHistory({
+      const archive = replacedLabelHistory({
         messageType: current.message_type,
         labelVer: current.label_ver ?? undefined,
         provenance: current.provenance ?? undefined,
@@ -2047,7 +2048,15 @@ export class PgConversationRepository
     return Promise.reject(answerSharesRefused());
   }
 
+  changeAnswerConsent(): Promise<boolean> {
+    return Promise.reject(answerSharesRefused());
+  }
+
   clearAnswerConsent(): Promise<EndedAnswerShare | null> {
+    return Promise.reject(answerSharesRefused());
+  }
+
+  clearArchivedConsents(): Promise<AnswerConsentDto[]> {
     return Promise.reject(answerSharesRefused());
   }
 

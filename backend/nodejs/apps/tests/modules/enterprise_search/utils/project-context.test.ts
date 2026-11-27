@@ -77,6 +77,20 @@ describe('project-context', () => {
       expect(payload.projectInstructions).to.be.undefined
     })
 
+    it('names the project its instructions came from, so the answer can be labelled with that project', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject({ instructions: 'Be concise.' }))
+      expect(payload.projectInstructions).to.equal('Be concise.')
+      // As text: the stored id may be an ObjectId, and the AI backend reads a string.
+      expect(payload.projectId).to.equal(PROJECT_ID)
+    })
+
+    it('names no project when the project gives the prompt no instructions', () => {
+      const payload: Record<string, unknown> = {}
+      applyProjectScope(payload, makeProject({ instructions: '   ' }))
+      expect(payload).to.not.have.property('projectId')
+    })
+
     it('defaults filters.apps/kb to the whole project knowledgeScope when the request carried none', () => {
       const payload: Record<string, unknown> = {}
       applyProjectScope(

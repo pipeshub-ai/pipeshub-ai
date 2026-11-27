@@ -5,7 +5,8 @@
  * A reader sees the answer only when they can open all of it now: every record and container in the label by
  * the same access check search uses, nobody's personal tool results but their own, the agents it used, the
  * chat uploads and projects it named, and every earlier answer it was given, at the version it was given. An
- * answer its asker shared with them, at the version shared, shows them its text alone.
+ * answer its asker shared with them, at the version shared, shows them its text alone, while they can use the agents the
+ * share stays with and the earlier shares it counts on stand for them.
  *
  * Anything the check cannot settle hides the answer: a label that is missing, incomplete, of an unknown
  * version or no longer matching the stored text leaves it to its asker alone, and a check that cannot answer
@@ -64,6 +65,7 @@ import {
 import {
   ANSWER_LOST,
   ANSWER_UNCONFIRMED,
+  REDACTED,
   beforeDeadline,
   newReadable,
   readableRecordIds,
@@ -145,6 +147,14 @@ export interface RowVerdict {
   cardWithheld?: true;
 }
 
+/**
+ * The identity of a read made for someone who is not the one asking: a service asks whether they may open a file, or a
+ * share's check what its sharer may use. An agent rule is asked as that person, never as whoever made the request.
+ */
+export const ON_BEHALF_OF_READER: unique symbol = Symbol(
+  'on behalf of the reader',
+);
+
 /** Who is reading. */
 export interface Reader {
   userId: string;
@@ -155,7 +165,10 @@ export interface Reader {
   member?: boolean;
   /** When the reader's current membership began, in `memberSinceOf`'s form; a share with them names it. */
   memberSince?: string;
-  /** What the agent check calls out as (the inbound request's identity); without it an agent rule cannot be settled. */
+  /**
+   * What the agent check calls out as: the inbound request's identity, or `ON_BEHALF_OF_READER`; without one an agent
+   * rule cannot be settled.
+   */
   identity?: unknown;
   /**
    * Stands for every member of the chat read at once (`everyMemberOf`), as its weakest one: in it only by its newest
@@ -195,6 +208,9 @@ export interface ReaderRow {
   sharedFrom?: unknown;
   respondingAgentKey?: unknown;
   removedAt?: unknown;
+  /** A shared copy taken out of its chat: what it was made from, and the copy that took its place. */
+  removedFrom?: unknown;
+  again?: unknown;
   replyTo?: unknown;
   inReplyTo?: unknown;
   /** A question that answers a card: the card it was bound to when it was sent. */
@@ -231,6 +247,12 @@ export interface ReadableAnswer {
   validUntil: number;
 }
 
+/**
+ * Whether a reader may read a project a label names: `deleted` when it is gone or deleted, for anyone; undefined when it
+ * cannot be said now.
+ */
+export type ProjectRead = boolean | 'deleted' | undefined;
+
 export interface VisibilityDeps {
   /** One access request per reader for these ids; never throws (a failure is `failed`). */
   readable(
@@ -261,13 +283,32 @@ export interface VisibilityDeps {
     reader: Reader,
     conversationId: string,
   ): Promise<boolean | undefined>;
-  /** Whether the reader may read a project; undefined when it cannot be said now. */
-  canReadProject(
+  /**
+   * Whether the reader may read a project, or `deleted` when it is gone or deleted, whoever asks: only an asker reads
+   * past it, in her own answers, as past a deleted record. Undefined when it cannot be said now.
+   */
+  canReadProject(reader: Reader, projectId: string): Promise<ProjectRead>;
+  /**
+   * Whether an agent runs on a service account now, bound or not, by its own record, asked as the reader; undefined
+   * when it cannot be said now.
+   */
+  isServiceAgent(
     reader: Reader,
-    projectId: string,
+    agentKey: string,
   ): Promise<boolean | undefined>;
-  /** Whether an agent runs on a service account, bound or not; undefined when it cannot be said now. */
-  isServiceAgent(orgId: string, agentKey: string): Promise<boolean | undefined>;
+  /**
+   * Whether an agent has a skill now that the reader can't open by themself, by its own record, asked as the reader;
+   * undefined when it cannot be said now.
+   */
+  hasClosedSkill(
+    reader: Reader,
+    agentKey: string,
+  ): Promise<boolean | undefined>;
+  /**
+   * Whether the reader owns an agent, by their own grant to it, asked as them; undefined when it cannot be said now.
+   * Its owner chose who may use it, so a file its run made may go from them to anyone (`widenOK`, outside the chat).
+   */
+  ownsAgent(reader: Reader, agentKey: string): Promise<boolean | undefined>;
   /** An answer's text as a share shows it: no record ids, links, text fragments or images. */
   sharedText(content: string): string;
   /**
@@ -391,6 +432,8 @@ const defaultDeps = (): VisibilityDeps => ({
   canReadConversation: () => Promise.resolve(undefined),
   canReadProject: () => Promise.resolve(undefined),
   isServiceAgent: () => Promise.resolve(undefined),
+  hasClosedSkill: () => Promise.resolve(undefined),
+  ownsAgent: () => Promise.resolve(undefined),
   sharedText: () => '',
   switchAt: () => Promise.resolve(undefined),
   labelRule: () => Promise.resolve(false),
@@ -604,6 +647,28 @@ const isUnboundCardAnswer = (row: ReaderRow): boolean =>
   typeof row.content === 'string' &&
   row.content.trimStart().startsWith('User selections:');
 
+/**
+ * The words the app answers a card with: a question card's picks (`User selections:`), or an approval card's decision
+ * (`Tool approval:`). Python reads them after `str.lstrip()`, whose whitespace also covers \x1c-\x1f and \x85.
+ */
+const CARD_ANSWER_TEXT =
+  // eslint-disable-next-line no-control-regex -- matching those characters is the point
+  /^[\s\x1c-\x1f\x85]*(?:User selections|Tool approval):/u;
+
+/**
+ * Whether a row answers a card: a question bound to the card it answers, or one in the words the app answers a card
+ * with. Its words are the card's, which only those who may read the card read (a question card's are model text made
+ * from its run's inputs), so nothing quotes them: no reply, which every member reads, and no quote to a model.
+ */
+export const answersACard = (row: {
+  messageType?: unknown;
+  answersCard?: unknown;
+  content?: unknown;
+}): boolean =>
+  row.messageType === 'user_query' &&
+  (row.answersCard != null ||
+    (typeof row.content === 'string' && CARD_ANSWER_TEXT.test(row.content)));
+
 /** What a reader who may not see a card gets of a question that answers it: that it was answered, never with what. */
 export const CARD_ANSWER_WITHHELD = 'Answered a question from the assistant.';
 
@@ -612,10 +677,37 @@ const withheldCardAnswer = <T extends object>(row: T): T => {
   return view as T;
 };
 
+/**
+ * Whether `row` is a person's own words that every reader of the chat `room` reads, so that a share there of an answer
+ * given them shows nobody anything they don't read already: a question or a note of that chat itself (not of one of its
+ * threads), there now, withholding nothing from its readers. So none that answers a card, by its binding or its form
+ * (it holds the card's words, which only who may see the card reads), and none that opens with a quoted excerpt (only
+ * its author reads that). An answer is given such a row only as the words a reply quotes of it, every one of them the
+ * row's own.
+ */
+const readByTheRoom = (row: ReaderRow, room: string | undefined): boolean =>
+  (row.messageType === 'note' || row.messageType === 'user_query') &&
+  room !== undefined &&
+  idOf(row.sessionId) === room &&
+  row.removedAt == null &&
+  typeof row.content === 'string' &&
+  !splitQuotedSelection(row.content).quoted &&
+  !(
+    row.messageType === 'user_query' &&
+    (row.answersCard != null || CARD_ANSWER_TEXT.test(row.content))
+  );
+
 const versionOf = (row: ReaderRow): string =>
   typeof row.labelVer === 'string' && row.labelVer !== ''
     ? row.labelVer
     : LEGACY_LABEL_VER;
+
+/**
+ * An answer its asker stopped before its label came: the text so far is kept at a version of its own, with no label
+ * to say what it was made from. Its status is the row's as its caller read it: the label store does not keep it.
+ */
+const stoppedBeforeLabel = (row: ReaderRow & { status?: unknown }): boolean =>
+  row.status === 'stopped' && labelStateOf(row) === 'missing';
 
 /** The run that wrote the file a parent names, when the parent is a file that names its run. */
 const writingRunOf = (parent: Plain): string | undefined =>
@@ -741,6 +833,11 @@ interface ConsentRecord {
   ver?: unknown;
   scope?: unknown;
   by?: unknown;
+  /** The agents it stays with, and the earlier shares it counts on (`AnswerConsent`). */
+  agents?: unknown;
+  on?: unknown;
+  /** A share with everyone: whom it was stopped for, one by one (`AnswerConsent.except`). */
+  except?: unknown;
 }
 
 /** The consent recorded for `ver` of a row: on the row for its current version, else archived with that version. */
@@ -760,7 +857,7 @@ const consentAt = (row: ReaderRow, ver: string): ConsentRecord | undefined => {
 
 /** Each version of a row that carries a share, with it, as `consentAt` reads them: its current one, and archived ones. */
 const sharesOfRow = (
-  row: ShareMarkRow,
+  row: Pick<ShareMarkRow, 'labelVer' | 'consent' | 'labelHistory'>,
 ): Array<{ ver: string; consent: ConsentRecord }> => {
   const out: Array<{ ver: string; consent: ConsentRecord }> = [];
   const current =
@@ -781,15 +878,96 @@ const sharesOfRow = (
   return out;
 };
 
+/** The agents a share stays with; undefined when what is stored can't be read as that, so it covers nobody. */
+const agentsOfShare = (
+  consent: ConsentRecord,
+): readonly string[] | undefined => {
+  const { agents } = consent;
+  if (agents === undefined || agents === null) return [];
+  return Array.isArray(agents) &&
+    (agents as unknown[]).every((key) => typeof key === 'string' && key !== '')
+    ? (agents as string[])
+    : undefined;
+};
+
 /**
- * Whether `ver` of `row` was shared with `viewer`: shared with everyone in the chat, or with them by name while
- * their membership is the one it was shared under, and they are a member now. A share with people covers only
+ * Whom a share with everyone, or a copy, was stopped for, one by one: none, or ids; undefined when what is stored can't
+ * be read as that, so it covers nobody.
+ */
+const stoppedFor = (ids: unknown): readonly string[] | undefined => {
+  if (ids === undefined || ids === null) return [];
+  if (!Array.isArray(ids)) return undefined;
+  const out = (ids as unknown[]).map(idOf);
+  return out.every((id) => id !== undefined) ? (out as string[]) : undefined;
+};
+
+/** Whether what was stopped for someone leaves `viewer` out: them, or anyone at all for the one standing for every member. */
+const leavesOut = (ids: unknown, viewer: Reader): boolean => {
+  const stopped = stoppedFor(ids);
+  return (
+    stopped === undefined ||
+    stopped.includes(viewer.userId) ||
+    (viewer.everyMember === true && stopped.length > 0)
+  );
+};
+
+/** The earlier rows, each at a version, that `on` of a share names; undefined when it can't be read as that. */
+const countedOn = (on: unknown): readonly VersionRef[] | undefined => {
+  if (on === undefined || on === null) return [];
+  if (!Array.isArray(on)) return undefined;
+  const refs: VersionRef[] = [];
+  for (const entry of on as unknown[]) {
+    const id = isPlain(entry) ? idOf(entry.row) : undefined;
+    if (!isPlain(entry) || id === undefined || typeof entry.ver !== 'string')
+      return undefined;
+    refs.push({ id, ver: entry.ver });
+  }
+  return refs;
+};
+
+/** The earlier shares that the share of `ver` of `row` counts on: none when it has no share, or one no one can read. */
+const sharesCountedOn = (row: ReaderRow, ver: string): readonly VersionRef[] =>
+  countedOn(consentAt(row, ver)?.on) ?? [];
+
+interface SharedCopy extends ReaderRow {
+  messageType: typeof SHARED_ANSWER;
+}
+
+const isCopy = (row: ReaderRow | undefined): row is SharedCopy =>
+  row?.messageType === SHARED_ANSWER;
+
+/**
+ * The answer a shared copy was made from, at the version copied: as the copy names it while it is there, else as it
+ * kept it when it was taken out. The version is '' on a copy from before versions were kept; one taken out before its
+ * answer was kept has none.
+ */
+const copiedFrom = (copy: ReaderRow): VersionRef | undefined => {
+  const from = copy.removedAt == null ? copy.sharedFrom : copy.removedFrom;
+  const id = isPlain(from) ? idOf(from.messageId) : undefined;
+  if (!isPlain(from) || id === undefined) return undefined;
+  return { id, ver: typeof from.ver === 'string' ? from.ver : '' };
+};
+
+/** The earlier shares a copy counts on, as a share in place does; undefined when they can't be read. */
+const copyCountedOn = (copy: ReaderRow): readonly VersionRef[] | undefined =>
+  countedOn(isPlain(copy.sharedFrom) ? copy.sharedFrom.on : undefined);
+
+/** The agent thread whose answer a copy shows its room; none for a private answer's, whose thread holds no share. */
+const threadOfCopy = (copy: ReaderRow): string | undefined =>
+  isPlain(copy.sharedFrom) && copy.sharedFrom.fromAgentThread === true
+    ? idOf(copy.sharedFrom.sessionId)
+    : undefined;
+
+/**
+ * Whether `ver` of `row` was shared with `viewer`: shared with everyone in the chat but whom it was stopped for, or
+ * with them by name while their membership is the one it was shared under, and they are a member now. A share with people covers only
  * the version current when it was made. A share is for the chat it was given in: read in `chats` (the chat read,
  * its room, its agent room), a row of any other chat (an answer a fork was built on) is shared with nobody here. A
  * row read with no chat id is one of the chat read.
  *
  * This is the one place that decides which chats a share covers: the reads, a turn's history and what a fork copies
- * all ask it, with the chats they read in (`Judge.chatsRead`).
+ * all ask it, with the chats they read in (`Judge.chatsRead`). What else a share asks of a reader (the agents it stays
+ * with, the shares it counts on) is `Judge.covered`, which every one of them asks, and `shareCovers` outside a read.
  */
 export function consentCovers(
   row: ReaderRow,
@@ -804,7 +982,7 @@ export function consentCovers(
   const consent = consentAt(row, ver);
   if (!consent) return false;
   const scope = consent.scope ?? 'everyone';
-  if (scope === 'everyone') return true;
+  if (scope === 'everyone') return !leavesOut(consent.except, viewer);
   if (scope !== 'people' || ver !== versionOf(row)) return false;
   const to = Array.isArray(row.consentTo) ? (row.consentTo as unknown[]) : [];
   return to.some(
@@ -1030,6 +1208,8 @@ interface JudgeOptions {
   treeRowsMax?: number;
   /** The chats the read happens in, when not the session's (`VisibleRowsOptions.chatsRead`). */
   chatsRead?: readonly string[];
+  /** The share check's walk: the agents of the chat and the row, asked about beside those the labels name. */
+  sharing?: readonly string[];
 }
 
 /**
@@ -1044,7 +1224,7 @@ class Judge {
   private readable: ReadableAnswer;
   private readonly agentUse = new Map<string, boolean | undefined>();
   private readonly chats = new Map<string, boolean | undefined>();
-  private readonly projects = new Map<string, boolean | undefined>();
+  private readonly projects = new Map<string, ProjectRead>();
   /** Rows whose earlier versions were not all read (too deep or too many): they hide. */
   private readonly cut = new Set<string>();
   /** For each run a file parent names, the row versions it wrote in the chats read; empty when none was found. */
@@ -1063,6 +1243,10 @@ class Judge {
   private readonly legacyText = new Map<string, Outcome>();
   /** Files written before the rules, named with no run, by `legacyFileKey`: how each fares for the reader. */
   private readonly legacyFiles = new Map<string, Outcome>();
+  /** The shares that ask more of a reader than their consent, by `id@ver`: whether each covers the reader (`covered`). */
+  private readonly coverMemo = new Map<string, boolean>();
+  /** The threads copies were made in, by id, read for `readsThreadOf`: null for one that is gone, none when not read. */
+  private readonly threads = new Map<string, ReaderSession | null>();
   /** Judged by closures (`prepare`), or by the walk of every earlier version (`prepareTree`, or a closure missing). */
   private byClosure = false;
   /** Each version's closure this read uses or made, by `id@ver`. */
@@ -1192,6 +1376,14 @@ class Judge {
                 ...(stored.requestedBy !== undefined && {
                   requestedBy: stored.requestedBy,
                 }),
+                ...(stored.respondingAgentKey !== undefined && {
+                  respondingAgentKey: stored.respondingAgentKey,
+                }),
+                // A page's row may name no chat; what is kept of the row (its closure) is looked up by it.
+                ...(given.sessionId === undefined &&
+                  stored.sessionId !== undefined && {
+                    sessionId: stored.sessionId,
+                  }),
               }
             : { ...given, provenance: undefined, labelHistory: undefined },
         );
@@ -1209,7 +1401,7 @@ class Judge {
     let frontier: Array<{ id: string; ver: string; own: boolean }> = [];
     for (const row of rows) {
       const id = idOf(row._id);
-      if (id !== undefined && isLabelledType(row)) {
+      if (id !== undefined && (isLabelledType(row) || isCopy(row))) {
         frontier.push({
           id,
           ver: versionOf(this.rows.get(id) as ReaderRow),
@@ -1229,6 +1421,17 @@ class Judge {
         seen.add(key);
         const row = this.rows.get(id);
         if (!row) continue;
+        // What its share counts on (`covered`), or a copy is judged by (`copyOutcome`): one not read covers nobody.
+        if (depth + 1 < depthMax && this.rows.size < rowsMax) {
+          const named = isCopy(row)
+            ? this.behindCopy(row)
+            : sharesCountedOn(row, ver);
+          for (const ref of named) {
+            next.push({ ...ref, own: false });
+            if (!this.rows.has(ref.id)) unread.push(ref.id);
+          }
+        }
+        if (isCopy(row)) continue;
         const { label } = versionAt(row, ver, own);
         if (!label) continue;
         labels.push(label);
@@ -1354,7 +1557,7 @@ class Judge {
   ): boolean {
     if (this.cut.has(key) || row.consent != null) return false;
     const { state, label } = versionAt(row, ver, own);
-    if (state !== 'ok' || !label || !label.complete) return false;
+    if (state !== 'ok' || !label?.complete) return false;
     if (listOf(label.incomplete).length > 0) return false;
     const direct: Plain = isPlain(label.direct) ? label.direct : {};
     // Marks too: no store says which attestations still hold, so none is taken as valid.
@@ -1403,13 +1606,38 @@ class Judge {
     const chats = new Set<string>();
     const projects = new Set<string>();
     const legacy = new Set<string>();
+    // An agent's thread that a copy was made in is read by its room's people who can use its agent.
+    for (const thread of await this.threadsOfCopies()) {
+      const agent = idOf(thread.agentKey);
+      const room = idOf(thread.agentRoomId);
+      if (room === undefined) continue;
+      if (agent !== undefined) agents.add(agent);
+      if (!this.uploadChats.has(room)) chats.add(room);
+    }
+    // The agents that the shares of the rows read stay with, when a share would cover the reader (`covered`); a share's
+    // own check asks about the agents that answered too.
+    for (const key of this.opts.sharing ?? []) agents.add(key);
+    for (const row of this.rows.values()) {
+      const responder = idOf(row.respondingAgentKey);
+      if (this.opts.sharing !== undefined && responder !== undefined)
+        agents.add(responder);
+      for (const { ver, consent } of sharesOfRow(row)) {
+        const stays = agentsOfShare(consent) ?? [];
+        if (
+          stays.length > 0 &&
+          consentCovers(row, ver, this.reader, this.chatsRead)
+        )
+          for (const key of stays) agents.add(key);
+      }
+    }
     for (const fold of folds) {
-      for (const part of fold.askers.values())
+      for (const part of fold.askers.values()) {
         for (const id of part.ids) ids.add(id);
+        for (const pid of part.projects) projects.add(pid);
+      }
       for (const key of fold.agents) agents.add(key);
       for (const cid of fold.uploads)
         if (cid !== '' && !this.uploadChats.has(cid)) chats.add(cid);
-      for (const pid of fold.projects) projects.add(pid);
       for (const id of fold.legacy) legacy.add(id);
     }
     for (const label of labels) {
@@ -1464,6 +1692,25 @@ class Judge {
       ),
     ]);
     this.readable = readable;
+  }
+
+  /** The threads whose answers the copies this read holds were made from: those an original was read for (`behindCopy`). */
+  private async threadsOfCopies(): Promise<ReaderSession[]> {
+    const ids = new Set<string>();
+    for (const row of this.rows.values()) {
+      const original = isCopy(row) ? copiedFrom(row) : undefined;
+      const id = original && idOf(this.rows.get(original.id)?.sessionId);
+      if (id !== undefined && !this.uploadChats.has(id)) ids.add(id);
+    }
+    const unread = [...ids].filter((id) => !this.threads.has(id));
+    if (unread.length > 0) {
+      const chats = await this.deps
+        .chats(this.reader.orgId, unread)
+        .catch(() => undefined);
+      if (chats)
+        for (const id of unread) this.threads.set(id, chats.get(id) ?? null);
+    }
+    return [...this.threads.values()].filter((thread) => thread !== null);
   }
 
   /**
@@ -1718,7 +1965,202 @@ class Judge {
     return outcome;
   }
 
+  /**
+   * Whether the share of `ver` of `row` covers the reader now: it was shared with them here (`consentCovers`), they can
+   * use every agent it stays with, and every earlier share it counts on holds for them. What cannot be settled, or
+   * read, covers nobody. A share that a message of an agent thread's answer counts on is also here in that `thread`:
+   * shared with everyone there, it is shared with everyone in the room.
+   */
+  covered(row: ReaderRow, ver: string, thread?: string): boolean {
+    const chats =
+      thread === undefined || this.chatsRead === undefined
+        ? this.chatsRead
+        : new Set([...this.chatsRead, thread]);
+    if (!consentCovers(row, ver, this.reader, chats)) return false;
+    const consent = consentAt(row, ver);
+    const agents = consent && agentsOfShare(consent);
+    const on = consent && countedOn(consent.on);
+    if (!agents || !on) return false;
+    if (agents.some((key) => this.agentUse.get(key) !== true)) return false;
+    if (on.length === 0) return true;
+    const key = `${idOf(row._id) ?? ''}@${ver}|${thread ?? ''}`;
+    const known = this.coverMemo.get(key);
+    if (known !== undefined) return known;
+    // Until it is decided, a share met again on its own way counts on itself: it covers nobody.
+    this.coverMemo.set(key, false);
+    const covers = on.every((ref) => this.holds(ref, thread));
+    this.coverMemo.set(key, covers);
+    return covers;
+  }
+
+  /** The row versions that wrote the files of a run named by a parent this read found; none when it found none. */
+  wroteFilesOf(runId: string): ReadonlyArray<{ id: string; ver: string }> {
+    return this.writers.get(runId) ?? [];
+  }
+
+  /** Whether the reader can use an agent this read asked about; what it could not say is no. */
+  mayUse(agentKey: string): boolean {
+    return this.agentUse.get(agentKey) === true;
+  }
+
+  /**
+   * Whether an earlier share that another one counts on holds for the reader: it covers them, or they open it whole. A
+   * shared copy holds as one a later answer was given (`copyOutcome`).
+   */
+  private holds(ref: VersionRef, thread?: string): boolean {
+    const row = this.rows.get(ref.id);
+    return (
+      row !== undefined &&
+      (this.covered(row, ref.ver, thread) ||
+        this.judge(row, ref.ver, false) === 'pass')
+    );
+  }
+
+  /**
+   * Whether a live copy shows the reader its text: they are a member, and each earlier share it counts on (in its chat,
+   * or in the agent thread whose answer it shows) holds for them.
+   */
+  copyShows(copy: ReaderRow): boolean {
+    if (this.reader.member !== true || copy.removedAt != null) return false;
+    if (leavesOut(isPlain(copy.sharedFrom) ? copy.sharedFrom.notTo : undefined, this.reader)) return false;
+    const on = copyCountedOn(copy);
+    if (!on) return false;
+    if (on.length === 0) return true;
+    const key = `${idOf(copy._id) ?? ''}@`;
+    const known = this.coverMemo.get(key);
+    if (known !== undefined) return known;
+    // Until it is decided, a copy met again on its own way counts on itself.
+    this.coverMemo.set(key, false);
+    const thread = threadOfCopy(copy);
+    const shows = on.every((ref) => this.holds(ref, thread));
+    this.coverMemo.set(key, shows);
+    return shows;
+  }
+
+  /** Whether a copy is in a chat this read happens in, as `consentCovers` takes a share's. */
+  private inChatsRead(copy: ReaderRow): boolean {
+    const where = idOf(copy.sessionId);
+    const chats = this.chatsRead;
+    return chats === undefined || where === undefined || chats.has(where);
+  }
+
+  /**
+   * The live copy that stands for `copy`: itself, or for one taken out the copy that took its place, followed to the
+   * end. Only a copy of the same answer in the same chat stands for it, and a version shared again after it was stopped
+   * stands for a copy of that version alone.
+   */
+  standingCopy(copy: ReaderRow): ReaderRow | undefined {
+    const { id: original, ver } = copiedFrom(copy) ?? {};
+    const seen = new Set<string>();
+    let at = copy;
+    while (at.removedAt != null) {
+      const id = idOf(at.again);
+      const next = id === undefined ? undefined : this.rows.get(id);
+      if (
+        id === undefined ||
+        seen.has(id) ||
+        !isCopy(next) ||
+        original === undefined ||
+        copiedFrom(next)?.id !== original ||
+        idOf(next.sessionId) !== idOf(copy.sessionId) ||
+        (copiedFrom(next)?.ver === copiedFrom(at)?.ver &&
+          copiedFrom(next)?.ver !== ver)
+      )
+        return undefined;
+      seen.add(id);
+      at = next;
+    }
+    return at;
+  }
+
+  /**
+   * A shared copy as something a later answer was given. While it is in the chat, or the copy that took its place is,
+   * the members of that chat read its text where they read the chat. Read anywhere else (a fork), or taken out, it is
+   * the answer it was made from at the version copied, judged as any earlier answer is, for someone who reads the thread
+   * that answer is in: its label says what it used, not whose thread it is.
+   */
+  private copyOutcome(copy: ReaderRow): Outcome {
+    const standing = this.standingCopy(copy);
+    if (standing && this.inChatsRead(standing) && this.copyShows(standing))
+      return 'pass';
+    const from = copiedFrom(copy);
+    const original = from && this.rows.get(from.id);
+    if (!from || from.ver === '' || !original || isCopy(original))
+      return 'parent';
+    const reads = this.readsThreadOf(original);
+    if (reads === 'parent') return 'parent';
+    const outcome = this.judge(original, from.ver, false);
+    if (outcome !== 'pass' && outcome !== 'unchecked') return 'parent';
+    return reads === 'unchecked' ? 'unchecked' : outcome;
+  }
+
+  /**
+   * Whether the reader reads the thread an answer that was copied is in: a private thread is its asker's alone, an
+   * agent's thread its room's people's who can use the agent. What cannot be said now leaves it unchecked.
+   */
+  private readsThreadOf(original: ReaderRow): Outcome {
+    const id = idOf(original.sessionId);
+    if (id === undefined) return 'parent';
+    if (this.uploadChats.has(id))
+      return this.reader.member === true ? 'pass' : 'parent';
+    const thread = this.threads.get(id);
+    if (!thread) return thread === null ? 'parent' : 'unchecked';
+    const room = idOf(thread.agentRoomId);
+    if (room === undefined)
+      return idOf(thread.userId) === this.reader.userId ? 'pass' : 'parent';
+    const agent = idOf(thread.agentKey);
+    const uses = agent === undefined ? false : this.agentUse.get(agent);
+    const there = this.uploadChats.has(room)
+      ? this.reader.member === true
+      : this.chats.get(room);
+    if (uses === false || there === false) return 'parent';
+    return uses === true && there === true ? 'pass' : 'unchecked';
+  }
+
+  /** Whether the reader reads the answer a copy was made from where it is; what cannot be said now is no. */
+  readsOriginalOf(copy: ReaderRow): boolean {
+    const from = copiedFrom(copy);
+    const original = from && this.rows.get(from.id);
+    return original !== undefined && this.readsThreadOf(original) === 'pass';
+  }
+
+  /**
+   * What a copy is judged by beside itself: the copy that took its place, the shares it counts on, and the answer it
+   * was made from, which a share's check always reads and a read only where the copy's being there does not decide. A
+   * version of '' or from before labels is a row read as it is.
+   */
+  private behindCopy(copy: ReaderRow): VersionRef[] {
+    const on = copyCountedOn(copy) ?? [];
+    const refs: VersionRef[] = [...on];
+    const again = copy.removedAt == null ? undefined : idOf(copy.again);
+    if (again !== undefined) refs.push({ id: again, ver: LEGACY_LABEL_VER });
+    const shown =
+      copy.removedAt == null &&
+      on.length === 0 &&
+      this.reader.member === true &&
+      this.inChatsRead(copy);
+    const original = originalOf(copy);
+    if (original && (!shown || this.opts.sharing !== undefined))
+      refs.push(original);
+    return refs;
+  }
+
+  /**
+   * `covered` for a row given with its label fields that this judge has not read: what its share asks about is read
+   * first, when it asks anything.
+   */
+  async coveredAlone(row: ReaderRow, ver: string): Promise<boolean> {
+    if (!consentCovers(row, ver, this.reader, this.chatsRead)) return false;
+    const consent = consentAt(row, ver);
+    if (consent?.agents == null && consent?.on == null) return true;
+    const id = idOf(row._id);
+    if (id === undefined) return false;
+    await this.prepare([row], [{ id, ver }]);
+    return this.covered(this.rows.get(id) ?? row, ver);
+  }
+
   private judgeVersion(row: ReaderRow, ver: string, own: boolean): Outcome {
+    if (isCopy(row)) return this.copyOutcome(row);
     if (this.byClosure && !own) {
       // As an earlier answer, a version is what its closure holds: also once its label has left the row's archive. A
       // version with none (from before labels, given as text) is judged as it is.
@@ -1732,12 +2174,6 @@ class Judge {
     const reader = this.reader;
     const asker = this.askerOf(row);
     const isAsker = asker !== undefined && asker === reader.userId;
-    if (row.messageType === SHARED_ANSWER) {
-      // A copy is shared with the chat: its members read its text. A removed copy no longer is.
-      return reader.member === true && row.removedAt == null
-        ? 'pass'
-        : 'parent';
-    }
     if (row.messageType === 'user_query' || row.messageType === 'note') {
       // A person's own words, quoted: every member reads them. What they quote of an answer is never sent with them.
       return reader.member === true && row.removedAt == null
@@ -1824,8 +2260,16 @@ class Judge {
     }
     for (const project of listOf<string>(direct.projects)) {
       const read = this.projects.get(project);
+      // The asker keeps an answer whose project was deleted, as one whose sources were; nobody else does.
+      if (read === 'deleted' && isAsker) continue;
       outcomes.push(
-        read === true ? 'pass' : read === false ? 'sources' : 'unchecked',
+        read === true
+          ? 'pass'
+          : read === 'deleted'
+            ? 'deleted'
+            : read === false
+              ? 'sources'
+              : 'unchecked',
       );
     }
     const ids = [
@@ -1870,11 +2314,7 @@ class Judge {
         continue;
       }
       const ver = parent.ver;
-      if (
-        parent.mode === 'text' &&
-        consentCovers(row, ver, this.reader, this.chatsRead)
-      )
-        continue;
+      if (parent.mode === 'text' && this.covered(row, ver)) continue;
       // An answer from before labels, read through the reader's own view of it (`settleLegacyText`).
       const before =
         parent.mode === 'text' && ver === LEGACY_LABEL_VER
@@ -1971,6 +2411,14 @@ class Judge {
         !(isAsker && denied.every((id) => this.readable.deleted.has(id)))
       )
         return 'parent';
+      for (const pid of part.projects) {
+        const read = this.projects.get(pid);
+        // And one whose project was deleted.
+        if (read === 'deleted' && isAsker) continue;
+        const outcome =
+          read === true ? 'pass' : read === undefined ? 'unchecked' : 'parent';
+        if (!add(outcome)) return 'parent';
+      }
     }
     for (const key of fold.agents) {
       const use = this.agentUse.get(key);
@@ -1986,19 +2434,16 @@ class Judge {
       )
         return 'parent';
     }
-    for (const pid of fold.projects) {
-      const read = this.projects.get(pid);
-      if (
-        !add(read === true ? 'pass' : read === false ? 'parent' : 'unchecked')
-      )
-        return 'parent';
-    }
     for (const ref of fold.rows.values()) {
       const row = this.rows.get(ref.id);
       if (!row) return 'parent';
+      if (isCopy(row)) {
+        if (!add(this.copyOutcome(row))) return 'parent';
+        continue;
+      }
       const type = row.messageType;
-      if (type === SHARED_ANSWER || type === 'user_query' || type === 'note') {
-        // A copy, a question or a note: its members read it while it is there.
+      if (type === 'user_query' || type === 'note') {
+        // A question or a note: its members read it while it is there.
         if (reader.member !== true || row.removedAt != null) return 'parent';
         continue;
       }
@@ -2021,14 +2466,13 @@ class Judge {
       const row = this.rows.get(ref.id);
       if (!row) return 'parent';
       // Shared with the reader at the version given: its text is theirs, and nothing it was built on counts.
-      if (consentCovers(row, ref.ver, reader, this.chatsRead)) continue;
+      if (this.covered(row, ref.ver)) continue;
       if (!add(this.judge(row, ref.ver, false))) return 'parent';
     }
     for (const id of fold.legacy) {
       const row = this.rows.get(id);
       if (!row) return 'parent';
-      if (consentCovers(row, LEGACY_LABEL_VER, reader, this.chatsRead))
-        continue;
+      if (this.covered(row, LEGACY_LABEL_VER)) continue;
       const before = this.legacyText.get(id);
       if (!add(before ?? this.judge(row, LEGACY_LABEL_VER, false)))
         return 'parent';
@@ -2058,11 +2502,16 @@ class Judge {
     wanted.push(...versions);
     const reached = new Set(wanted.map((r) => closureKey(r.id, r.ver)));
     const folds: Fold[] = [];
-    for (let round = 0; wanted.length > 0; round += 1) {
+    // Rows read as they are, whose copies and shares from before labels were followed.
+    const looked = new Set<string>();
+    const given = rows.filter(isCopy).map((row) => idOf(row._id));
+    for (let round = 0; wanted.length > 0 || round === 0; round += 1) {
       if (round >= CLOSURE_ROUNDS_MAX) return undefined;
       if (!(await this.makeClosures(wanted))) return undefined;
       const next: VersionRef[] = [];
       const unread = new Set<string>();
+      if (round === 0)
+        for (const id of given) if (id !== undefined) unread.add(id);
       const runIds = new Set<string>();
       const reach = (ref: VersionRef): void => {
         const key = closureKey(ref.id, ref.ver);
@@ -2093,10 +2542,30 @@ class Judge {
           }
         }
       }
-      const toRead = [...unread].filter((id) => !this.rows.has(id));
-      if (toRead.length > 0) {
-        for (const [id, row] of await this.load(orgId, toRead))
-          if (!this.rows.has(id)) this.rows.set(id, row);
+      // What a share counts on, and what a copy is judged by, is read as it is and judged as an earlier version
+      // (`covered`, `copyOutcome`).
+      const named = (ref: VersionRef): void => {
+        unread.add(ref.id);
+        if (ref.ver !== '' && ref.ver !== LEGACY_LABEL_VER) reach(ref);
+      };
+      await this.readAsTheyAre(unread);
+      for (const ref of wanted) {
+        const row = this.rows.get(ref.id);
+        if (row) for (const on of sharesCountedOn(row, ref.ver)) named(on);
+      }
+      for (let hop = 0; hop < CLOSURE_ROUNDS_MAX; hop += 1) {
+        await this.readAsTheyAre(unread);
+        const others = [...unread].filter((id) => !looked.has(id));
+        if (others.length === 0) break;
+        for (const id of others) {
+          looked.add(id);
+          const row = this.rows.get(id);
+          if (!row) continue;
+          const refs = isCopy(row)
+            ? this.behindCopy(row)
+            : sharesCountedOn(row, LEGACY_LABEL_VER);
+          for (const ref of refs) named(ref);
+        }
       }
       if (runIds.size > 0) {
         for (const writer of await this.loadWriters(
@@ -2118,6 +2587,14 @@ class Judge {
       if (!(await this.loadShares(store, [...chats]))) return undefined;
     }
     return folds;
+  }
+
+  /** Reads the rows of `ids` not read yet, as they are stored. */
+  private async readAsTheyAre(ids: Iterable<string>): Promise<void> {
+    const toRead = [...ids].filter((id) => !this.rows.has(id));
+    if (toRead.length === 0) return;
+    for (const [id, row] of await this.load(this.reader.orgId, toRead))
+      if (!this.rows.has(id)) this.rows.set(id, row);
   }
 
   /**
@@ -2545,6 +3022,8 @@ class Judge {
       self.addRow(ref);
       return { ...closure, weight: self.size };
     }
+    const responder = idOf(row.respondingAgentKey);
+    if (responder !== undefined) self.responders.add(responder);
     const { label, state } = versionAt(row, ref.ver, false);
     const asker = askerKey(idOf(row.requestedBy), sessionId);
     if (state !== 'ok' || !label) {
@@ -2567,7 +3046,7 @@ class Judge {
       if (isPlain(c) && typeof c.conversationId === 'string')
         self.uploads.add(c.conversationId);
     for (const p of listOf<unknown>(direct.projects))
-      if (typeof p === 'string') self.projects.add(p);
+      if (typeof p === 'string') part.projects.add(p);
     if (listOf(direct.saVrids).length > 0) self.service = true;
     const parents = listOf<unknown>(label.parents);
     const candidates: Closure[] = [];
@@ -2739,84 +3218,111 @@ class Judge {
 
   /**
    * The share check (`widenOK`) of `ver` of `row` by its asker, from its closure, as the walk of every version behind it
-   * answers it: undefined when it may be shared, the refusal otherwise; 'walk' when only the walk's order says which
-   * refusal (an agent's work below the answer, or a version given in full that the share check would stop at, being
-   * shared in this chat).
+   * answers it: undefined when it may be shared, the refusal otherwise; 'walk' when only the labels say. A share in its
+   * chat comes here only past `needsWalk`; `room` is the chat it reaches whoever reads (`roomSharedIn`).
    */
   widenByClosures(
     row: ReaderRow,
     ver: string,
     scope: 'chat' | 'outside',
+    room?: string,
   ): WidenResult | undefined | 'walk' {
     if (!this.byClosure) return 'walk';
     const { label, state } = versionAt(row, ver, ver === versionOf(row));
     if (state !== 'ok' || !label) return NOT_WIDENABLE;
     const direct: Plain = isPlain(label.direct) ? label.direct : {};
-    if (listOf(direct.saVrids).length > 0) return AGENT_CONTENT;
-    if (listOf<unknown>(direct.agents).length > 0) return AGENT_CONTENT;
+    // Outside the chat an agent's work is the walk's to judge: its record, and who may use it (`walkOutside`).
+    if (
+      scope === 'outside' &&
+      (listOf(direct.saVrids).length > 0 ||
+        listOf<unknown>(direct.agents).length > 0)
+    )
+      return 'walk';
     const closure = this.closures.get(closureKey(idOf(row._id) ?? '', ver));
     if (!closure) return 'walk';
-    if (!this.opensWhole(closure.self)) return NOT_WIDENABLE;
-    const sessionId = idOf(row.sessionId);
-    // Where the walk stops: a version shared with everyone in this chat, for a share inside it.
-    const stopsAt = (ref: VersionRef): boolean => {
-      if (scope !== 'chat') return false;
-      const shared = this.rows.get(ref.id);
-      const consent = shared ? consentAt(shared, ref.ver) : undefined;
+    const folds = [closure.self, closure.rest];
+    if (scope === 'outside') {
+      const seen = new Set<string>([closureKey(closure.id, closure.ver)]);
+      for (let i = 0; i < folds.length; i += 1) {
+        for (const alt of folds[i]?.alts.values() ?? []) {
+          const key = closureKey(alt.id, alt.ver);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const altClosure = this.closures.get(key);
+          if (!altClosure || !this.rows.has(alt.id)) return 'walk';
+          folds.push(altClosure.self, altClosure.rest);
+        }
+      }
+      // So is a file a run read: by the answer that wrote it.
+      if (
+        folds.some(
+          (f) =>
+            f.agents.size > 0 ||
+            f.service ||
+            f.responders.size > 0 ||
+            f.files.size > 0,
+        )
+      )
+        return 'walk';
+      if (!this.opensWhole(closure.self)) return NOT_WIDENABLE;
+    }
+    // A question or a note given as text, which a closure keeps by id with the answers from before labels, is read as it
+    // is now: in the chat, one every reader of its room reads stops nothing, the walk passing it alike (`walkInChat`).
+    const roomReads = (id: string): boolean => {
+      const given = this.rows.get(id);
       return (
-        consent !== undefined &&
-        (consent.scope ?? 'everyone') === 'everyone' &&
-        idOf(shared?.sessionId) === sessionId
+        scope === 'chat' && given !== undefined && readByTheRoom(given, room)
       );
     };
-    const checked: Fold[] = [closure.self, closure.rest];
-    const below: Fold[] = [];
-    const seen = new Set<string>([closureKey(closure.id, closure.ver)]);
-    const visited: Closure[] = [closure];
-    for (let i = 0; i < checked.length + below.length; i += 1) {
-      const fold = i < checked.length ? checked[i] : below[i - checked.length];
-      if (!fold) continue;
-      const stopped = i >= checked.length;
-      if (!stopped)
-        for (const held of fold.held.values()) if (stopsAt(held)) return 'walk';
-      for (const alt of fold.alts.values()) {
-        const key = closureKey(alt.id, alt.ver);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const altClosure = this.closures.get(key);
-        if (!altClosure || !this.rows.has(alt.id)) return 'walk';
-        visited.push(altClosure);
-        // Past a share the walk still looks for an agent's work, and nothing else.
-        (stopped || stopsAt(alt) ? below : checked).push(
-          altClosure.self,
-          altClosure.rest,
-        );
-      }
-    }
-    if ([...checked, ...below].some((f) => f.agents.size > 0 || f.service))
-      return 'walk';
-    // Nothing else refuses a share but as not widenable, in any order: a label not relied on, a file, a copy, a
+    // Nothing else refuses a share but as not widenable, in any order: a label not relied on, a file, a copy, any other
     // question or note, an answer from before labels, an earlier row that is gone, or a source its asker cannot open.
-    for (const fold of checked) {
+    for (const fold of folds) {
       if (fold.broken || fold.files.size > 0 || fold.legacyFiles.size > 0)
         return NOT_WIDENABLE;
-      // An answer from before labels, a question or a note refuses unless shared here; a copy refuses always.
-      for (const id of fold.legacy)
-        if (!stopsAt({ id, ver: LEGACY_LABEL_VER })) return NOT_WIDENABLE;
-      for (const ref of fold.rows.values()) {
-        if (
-          this.rows.get(ref.id)?.messageType === SHARED_ANSWER ||
-          !stopsAt(ref)
-        )
-          return NOT_WIDENABLE;
-      }
+      if (fold.rows.size > 0 || [...fold.legacy].some((id) => !roomReads(id)))
+        return NOT_WIDENABLE;
       if ([...fold.askers.values()].some((part) => part.unsure))
-        return scope === 'chat' && this.legacyShareIn(visited)
+        return scope === 'chat' && this.legacyShareIn([closure])
           ? 'walk'
           : NOT_WIDENABLE;
       if (!this.opensWhole(fold)) return NOT_WIDENABLE;
     }
     return undefined;
+  }
+
+  /**
+   * Whether only the labels say how a share of `ver` of `row` in its chat fares: an agent's work, a share or a shared copy
+   * is behind it, of which a closure keeps too little (no agent's kind, no skill mark, not what a share or a copy was of).
+   */
+  needsWalk(row: ReaderRow, ver: string): boolean {
+    const closure = this.closures.get(closureKey(idOf(row._id) ?? '', ver));
+    return (
+      !closure ||
+      this.foldNeedsWalk(closure.self) ||
+      this.foldNeedsWalk(closure.rest)
+    );
+  }
+
+  private foldNeedsWalk(fold: Fold): boolean {
+    if (fold.agents.size > 0 || fold.service || fold.responders.size > 0)
+      return true;
+    // A file refuses either way; only its writer's label says whether as an agent's work.
+    if (fold.alts.size > 0 || fold.held.size > 0 || fold.files.size > 0)
+      return true;
+    const named = (id: string): ReaderRow | undefined => this.rows.get(id);
+    return (
+      [...fold.legacy].some((id) => {
+        const row = named(id);
+        return (
+          row !== undefined &&
+          (row.messageType === SHARED_ANSWER ||
+            consentAt(row, LEGACY_LABEL_VER) !== undefined)
+        );
+      }) ||
+      [...fold.rows.values()].some(
+        (ref) => named(ref.id)?.messageType === SHARED_ANSWER,
+      )
+    );
   }
 
   /**
@@ -2848,14 +3354,14 @@ class Judge {
       if (part.marks) return false;
       for (const id of part.ids)
         if (!this.readable.readable.has(id)) return false;
+      for (const pid of part.projects)
+        if (this.projects.get(pid) !== true) return false;
     }
     for (const cid of fold.uploads) {
       if (cid !== '' && this.uploadChats.has(cid) && reader.member === true)
         continue;
       if (this.chats.get(cid) !== true) return false;
     }
-    for (const pid of fold.projects)
-      if (this.projects.get(pid) !== true) return false;
     return true;
   }
 
@@ -2867,6 +3373,7 @@ class Judge {
       judge.closures.set(key, closure);
     for (const [runId, writers] of this.writers)
       judge.writers.set(runId, writers);
+    for (const [id, thread] of this.threads) judge.threads.set(id, thread);
     judge.given = this.given;
     judge.byClosure = true;
     return judge;
@@ -2889,12 +3396,28 @@ class Judge {
     rows: readonly ReaderRow[],
     versions: readonly VersionRef[] = [],
   ): Promise<void> {
+    if (!(await this.prepareClosures(rows, versions)))
+      await this.walkFrom(rows);
+  }
+
+  /** What `prepareClosures` read, to be asked about by `settleClosures`. */
+  private folds: readonly Fold[] = [];
+
+  /** `rows` and the closures of their versions (and of `versions`), nobody's access asked; false when one can't be had. */
+  async prepareClosures(
+    rows: readonly ReaderRow[],
+    versions: readonly VersionRef[],
+  ): Promise<boolean> {
     await this.loadRows(rows);
-    if (await this.loadClosures(rows, versions)) {
-      this.byClosure = true;
-      return;
-    }
-    await this.walkFrom(rows);
+    const folds = await this.loadClosures(rows, versions);
+    if (!folds) return false;
+    this.folds = folds;
+    this.byClosure = true;
+    return true;
+  }
+
+  async settleClosures(): Promise<void> {
+    await this.settle([], this.folds);
   }
 }
 
@@ -3037,9 +3560,15 @@ const withStoredLabel = (
         labelHistory: stored.labelHistory,
         consent: stored.consent,
         consentTo: stored.consentTo,
+        // A page's row may name no chat; what is kept of the row (its closure) is looked up by it.
+        ...(given.sessionId === undefined &&
+          stored.sessionId !== undefined && {
+            sessionId: stored.sessionId,
+          }),
         ...(stored.requestedBy !== undefined && {
           requestedBy: stored.requestedBy,
         }),
+        ...(isCopy(stored) && { sharedFrom: stored.sharedFrom }),
       }
     : {
         ...given,
@@ -3267,6 +3796,7 @@ const depsFor = (reader: Reader, deps: VisibilityDeps): VisibilityDeps =>
             validUntil: deps.now() + VERDICT_TTL_MS,
           }),
         canUseAgent: () => Promise.resolve(false),
+        ownsAgent: () => Promise.resolve(false),
         canReadConversation: () => Promise.resolve(false),
         canReadProject: () => Promise.resolve(false),
         perRecordView: (each, rows, ownerId, viewOpts) =>
@@ -3304,6 +3834,9 @@ async function judgeRows(
   const passed = rows.filter(
     (r) => idOf(r._id) !== undefined && isLabelledType(r),
   );
+  const passedCopies = rows.filter(
+    (r) => idOf(r._id) !== undefined && isCopy(r) && r.removedAt == null,
+  );
   // Stored verdicts first, under what the check depends on beside its rows, read before anything else. Rows with no
   // answer among them need neither, and the reader that stands for every member is no one's to store a verdict for.
   const digest =
@@ -3311,10 +3844,18 @@ async function judgeRows(
       ? undefined
       : await checkDigestFor(deps, reader, session, passed, opts);
   // Every input of a verdict, and of the key it is stored under, is the stored one.
-  const given =
-    opts.labelsLoaded === true || passed.length === 0
-      ? passed
-      : await storedLabelsOf(deps, reader.orgId, passed);
+  const stores =
+    opts.labelsLoaded === true
+      ? [...passed, ...passedCopies]
+      : await storedLabelsOf(deps, reader.orgId, [...passed, ...passedCopies]);
+  const given = stores.slice(0, passed.length);
+  // A copy that counts on earlier shares is shown while they hold: what it names is read with the answers.
+  const copies = new Map<string, ReaderRow>();
+  for (const copy of stores.slice(passed.length))
+    copies.set(idOf(copy._id) as string, copy);
+  const counting = [...copies.values()].filter(
+    (copy) => copyCountedOn(copy)?.length !== 0,
+  );
   // The answers the rows' cards follow, judged with the rows when the rows do not hold them.
   const cards = await cardContextOf(deps, reader.orgId, session, rows, given);
   const labelled =
@@ -3377,8 +3918,12 @@ async function judgeRows(
     });
     return false;
   });
-  if (toJudge.length > 0 || (opts.extraIds?.length ?? 0) > 0) {
-    await judge.prepare(toJudge);
+  if (
+    toJudge.length > 0 ||
+    counting.length > 0 ||
+    (opts.extraIds?.length ?? 0) > 0
+  ) {
+    await judge.prepare([...toJudge, ...counting]);
     const toStore: Array<[string, StoredVerdict]> = [];
     for (const given of toJudge) {
       const id = idOf(given._id) as string;
@@ -3405,10 +3950,7 @@ async function judgeRows(
             };
       }
       // An answer shared with the reader at the version it shows: its text, when they cannot see it whole.
-      if (
-        verdict.verdict === 'hidden' &&
-        consentCovers(row, versionOf(row), reader, judge.chatsRead)
-      ) {
+      if (verdict.verdict === 'hidden' && judge.covered(row, versionOf(row))) {
         verdict = { verdict: 'consented', validUntil: verdict.validUntil };
       }
       if (verdict.verdict === 'visible' && verdict.basis === undefined) {
@@ -3482,9 +4024,10 @@ async function judgeRows(
     if (id === undefined || isLabelledType(row)) return;
     const type = row.messageType;
     if (type === SHARED_ANSWER) {
+      const copy = copies.get(id);
       out.set(
         id,
-        reader.member === true && row.removedAt == null
+        copy !== undefined && judge.copyShows(copy)
           ? { verdict: 'consented', validUntil: forever }
           : { verdict: 'hidden', reason: 'parent', validUntil: forever },
       );
@@ -3621,9 +4164,6 @@ const readOnce = (deps: VisibilityDeps): VisibilityDeps => {
     audiences: onceEach((orgId: string, chatIds: readonly string[]) =>
       deps.audiences(orgId, chatIds),
     ),
-    isServiceAgent: onceEach((orgId: string, agentKey: string) =>
-      deps.isServiceAgent(orgId, agentKey),
-    ),
     labelRule: onceEach((orgId: string) => deps.labelRule(orgId)),
     switchAt: onceEach((orgId: string) => deps.switchAt(orgId)),
     ...(store && {
@@ -3681,21 +4221,76 @@ export async function fullOK(
 
 // ---- sharing ----------------------------------------------------------------------------------------------
 
-export type WidenAudience = 'everyone' | { userIds: string[] } | 'outside';
+/**
+ * Whether the share of `ver` of `row` (a row with its label fields) covers `viewer` now, read in `session`: its consent
+ * in this chat, the viewer's membership, the agents it stays with and the shares it counts on. An agent is asked on the
+ * viewer's behalf unless they carry an identity of their own.
+ */
+export function shareCovers(
+  viewer: Reader,
+  row: ReaderRow,
+  ver: string,
+  opts: { session: ReaderSession; deps?: Partial<VisibilityDeps> },
+): Promise<boolean> {
+  const { session } = opts;
+  const reader = asMember(
+    { ...viewer, identity: viewer.identity ?? ON_BEHALF_OF_READER },
+    session,
+    true,
+  );
+  const deps = depsFor(reader, { ...configured, ...opts.deps });
+  return new Judge(reader, deps, {
+    session,
+    labelsLoaded: true,
+  }).coveredAlone(row, ver);
+}
+
+/**
+ * Who a share reaches: everyone in the chat, the people of it `userIds` names, or people outside the chat (a file
+ * grant): those `outside` names, or, as `'outside'`, people nobody named.
+ */
+export type WidenAudience =
+  | 'everyone'
+  | { userIds: string[] }
+  | 'outside'
+  | { outside: readonly string[] };
+
+/** The people a grant outside the chat names: undefined for one that names nobody, and for a share in the chat. */
+const grantedTo = (audience: WidenAudience): readonly string[] | undefined =>
+  typeof audience === 'object' && 'outside' in audience
+    ? audience.outside
+    : undefined;
 
 export interface WidenResult {
   ok: boolean;
-  code?: 'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT';
+  code?:
+    | 'SHARE_NOT_WIDENABLE'
+    | 'SHARE_NOT_ALLOWED_AGENT'
+    /** It holds a result read with a sign-in an administrator shares. */
+    | 'SHARE_NOT_ALLOWED_SIGN_IN';
+  /** Agents the share must stay with (`AnswerConsent.agents`); absent for none. */
+  limitedTo?: string[];
+  /** The earlier shares it would count on (`AnswerConsent.on`); absent for none. */
+  on?: Array<{ row: string; ver: string }>;
   /** Of the people a share names, those who cannot open what the answer used. */
   cannotOpen?: string[];
 }
 
 /**
- * Whether the asker of `row` may widen `ver` of it to `audience`. Every row in what it
- * built on must have a label this build can rely on, and the asker must be able to open everything every one of
- * them used by their own access; an answer an earlier row shared only with them never counts. A share inside the
- * chat may build on an earlier answer shared with everyone in this same chat. Anything an agent's service account
- * or configuration produced is never shared.
+ * Whether the asker of `row` may widen `ver` of it to `audience`, sharing it in `session`: the chat it is read in, or for
+ * a thread's row the thread's read session (its room's people, its own id, its room's id). Every row in what it built
+ * on must have a label this build can rely on, and the asker must be able to open everything every one of them used by
+ * their own access; an answer an earlier row shared only with them never counts. A share inside the chat may build on
+ * an earlier answer shared with everyone in this same chat (a thread's: in the thread, or in its room): `on` names
+ * those it needs. An agent stops no share in the chat while its own record says it is no service account and the asker
+ * can use it; text it gave them of a skill they can't open keeps the share with people who can use it (`limitedTo`). A
+ * label too old to say whether it gave any is taken to say so while the agent has such a skill now, or that can't be read.
+ * What a service agent produced, or a sign-in an administrator shares, is never shared. Outside the chat (a file grant)
+ * no share of any kind counts, and an agent's work goes only to people who can use the agent, or from its owner to
+ * anyone when its run was given no text of a skill they can't open (`walkOutside`). A person's message an answer
+ * replied to carries no label: in the chat, a question or a note of the room the share reaches (`roomSharedIn`) that
+ * every reader of it reads (`readByTheRoom`) asks nothing more, and is no earlier share counted on; any other (one taken
+ * out, a thread's, one that answers a card), or one outside it, stops the share.
  */
 export async function widenOK(
   row: ReaderRow,
@@ -3704,52 +4299,84 @@ export async function widenOK(
   opts: { session?: ReaderSession; deps?: Partial<VisibilityDeps> } = {},
 ): Promise<WidenResult> {
   const deps: VisibilityDeps = { ...configured, ...opts.deps };
+  const { session } = opts;
   const sharer = idOf(row.requestedBy);
-  const orgId = idOf(row.orgId) ?? idOf(opts.session?.orgId);
+  const orgId = idOf(row.orgId) ?? idOf(session?.orgId);
   if (sharer === undefined || orgId === undefined) return NOT_WIDENABLE;
-  const reader: Reader = { userId: sharer, orgId };
+  const scope =
+    audience === 'outside' || grantedTo(audience) !== undefined
+      ? 'outside'
+      : 'chat';
+  // In the chat, the sharer shares what they read as its member now. Outside it they are no member of anything; what
+  // they may use is asked on their behalf either way.
+  const reader: Reader =
+    scope === 'outside'
+      ? { userId: sharer, orgId, identity: ON_BEHALF_OF_READER }
+      : {
+          ...asMember({ userId: sharer, orgId }, session, true),
+          member: true,
+          identity: ON_BEHALF_OF_READER,
+        };
   const id = idOf(row._id);
   const judge = new Judge(reader, deps, {
-    session: opts.session,
+    session,
     timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
   });
-  await judge.prepare([row], id === undefined ? [] : [{ id, ver }]);
+  const closures = await judge.prepareClosures(
+    [row],
+    id === undefined ? [] : [{ id, ver }],
+  );
   const start = judge.rows.get(id ?? '') ?? row;
-  const scope = audience === 'outside' ? 'outside' : 'chat';
-  // An agent behind the row or its chat, bound to a service account or not, is never shared further.
+  const here = chatsSharedIn(start, session);
+  if (!here) return NOT_WIDENABLE;
+  const room = scope === 'chat' ? roomSharedIn(session) : undefined;
+  // An agent behind the row or its chat is asked about by its own record, whatever the label says.
   const agentKeys = [
     idOf(start.respondingAgentKey),
-    idOf(opts.session?.agentKey),
+    idOf(session?.agentKey),
   ].filter((k): k is string => k !== undefined);
-  for (const key of agentKeys) {
-    const service = await deps
-      .isServiceAgent(orgId, key)
-      .catch(() => undefined);
-    if (service !== false) return AGENT_CONTENT;
+  let decided: WidenResult | undefined | 'walk' = 'walk';
+  if (
+    closures &&
+    agentKeys.length === 0 &&
+    (scope === 'outside' ||
+      (session?.agentRoomId == null && !judge.needsWalk(start, ver)))
+  ) {
+    await judge.settleClosures();
+    decided = judge.widenByClosures(start, ver, scope, room);
   }
-  let decided = judge.widenByClosures(start, ver, scope);
   let decider = judge;
   if (decided === 'walk') {
-    // Only the walk's order says which refusal comes first: it walks every version behind the answer, up to a budget.
+    // Only the labels say: the walk reads every version behind the answer, up to a budget.
     decider = new Judge(reader, deps, {
-      session: opts.session,
+      session,
       timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
       treeRowsMax: WIDEN_TREE_ROWS_MAX,
+      sharing: agentKeys,
     });
     await decider.prepareTree([row]);
-    decided = walkWiden(decider, decider.rows.get(id ?? '') ?? row, ver, scope);
+    const top = decider.rows.get(id ?? '') ?? row;
+    decided =
+      scope === 'outside'
+        ? await walkOutside(
+            decider,
+            deps,
+            top,
+            ver,
+            agentKeys,
+            grantedTo(audience),
+          )
+        : await walkInChat(decider, deps, top, ver, here, room, agentKeys, session);
   }
-  if (decided) return decided;
-  const result: WidenResult = { ok: true };
-  if (typeof audience === 'object') {
+  if (decided?.ok === false) return decided;
+  const result: WidenResult = decided ?? { ok: true };
+  if (typeof audience === 'object' && 'userIds' in audience) {
     const opens = await decider.openFor(
       audience.userIds.map((userId) => ({
         userId,
         orgId,
         member: true,
-        memberSince: opts.session
-          ? memberSinceOf(opts.session, userId)
-          : undefined,
+        memberSince: session ? memberSinceOf(session, userId) : undefined,
       })),
       start,
       ver,
@@ -3760,26 +4387,171 @@ export async function widenOK(
   return result;
 }
 
+/** Why a share `widenOK` refused as not widenable can't be made (`whyNotWidenable`). */
+export interface WidenReason {
+  ok: false;
+  code:
+    | 'SHARE_NOT_WIDENABLE'
+    | 'SHARE_BUILT_ON_SHARED'
+    | 'SHARE_UNLABELLED'
+    | 'SHARE_STOPPED_UNCHECKED'
+    | 'SHARE_NOT_CHECKED';
+  /** SHARE_BUILT_ON_SHARED: who asked the answer shared with the sharer, whose name the sharer sees on it. */
+  by?: string;
+}
+
+const NOT_CHECKED: WidenReason = { ok: false, code: 'SHARE_NOT_CHECKED' };
+const UNLABELLED: WidenReason = { ok: false, code: 'SHARE_UNLABELLED' };
+const STOPPED_UNCHECKED: WidenReason = {
+  ok: false,
+  code: 'SHARE_STOPPED_UNCHECKED',
+};
+const CANNOT_OPEN: WidenReason = { ok: false, code: 'SHARE_NOT_WIDENABLE' };
+
+/**
+ * Why `widenOK` refused a share in its chat as not widenable, told to its asker alone: the first version behind the
+ * answer, nearest first, that the asker can't pass. One shared with them by someone else (SHARE_BUILT_ON_SHARED, `by`
+ * its asker, whose name they see on it), an answer with no label or one this build can't read (SHARE_UNLABELLED), one
+ * whose label was not completed (SHARE_NOT_CHECKED), or something they can't open or use now (SHARE_NOT_WIDENABLE). The
+ * answer itself stopped before its label came is SHARE_STOPPED_UNCHECKED, not one made before the checks. A question or
+ * a note behind it is none of these: one every reader of the room reads stops no share, and any other (one taken out, a
+ * thread's, one that answers a card) has no reason of its own to tell. It is asked only after the refusal and never
+ * makes a share: what it can't tell is SHARE_NOT_CHECKED.
+ */
+export async function whyNotWidenable(
+  row: ReaderRow,
+  ver: string,
+  opts: { session?: ReaderSession; deps?: Partial<VisibilityDeps> } = {},
+): Promise<WidenReason> {
+  const deps: VisibilityDeps = { ...configured, ...opts.deps };
+  const { session } = opts;
+  const sharer = idOf(row.requestedBy);
+  const orgId = idOf(row.orgId) ?? idOf(session?.orgId);
+  // The previous release wrote no asker on an answer, so an answer without one was made before the checks.
+  if (sharer === undefined) return UNLABELLED;
+  if (orgId === undefined) return NOT_CHECKED;
+  // Stopped before its label came: what it was made from was never recorded, so nothing behind it can say more.
+  if (ver === versionOf(row) && stoppedBeforeLabel(row))
+    return STOPPED_UNCHECKED;
+  const reader: Reader = {
+    ...asMember({ userId: sharer, orgId }, session, true),
+    member: true,
+    identity: ON_BEHALF_OF_READER,
+  };
+  const agentKeys = [idOf(row.respondingAgentKey), idOf(session?.agentKey)].filter(
+    (k): k is string => k !== undefined,
+  );
+  const judge = new Judge(reader, deps, {
+    session,
+    timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+    treeRowsMax: WIDEN_TREE_ROWS_MAX,
+    sharing: agentKeys,
+  });
+  try {
+    await judge.prepareTree([row]);
+  } catch {
+    return NOT_CHECKED;
+  }
+  const start = judge.rows.get(idOf(row._id) ?? '') ?? row;
+  let first = true;
+  for (const { row: behind, ver: at, own } of versionsBehind(judge, start, ver).versions.values()) {
+    const outcome = judge.directOf(behind, at, own);
+    const { state } = versionAt(behind, at, own);
+    const sharedWithThem =
+      !first && consentAt(behind, at)?.scope === 'people' && consentCovers(behind, at, reader);
+    first = false;
+    if (outcome !== 'pass' && sharedWithThem) {
+      const by = idOf(behind.requestedBy);
+      return { ok: false, code: 'SHARE_BUILT_ON_SHARED', ...(by !== undefined && { by }) };
+    }
+    // A question or a note never carries a label (it is a person's words): it is no answer from before the checks, and
+    // the asker can read it. The share passes one that every reader of the room reads; with any other in the way and
+    // nothing else, the reason is what this can't tell (below).
+    if (!isLabelledType(behind)) continue;
+    if (state === 'missing' || state === 'legacy' || state === 'unknown_version') return UNLABELLED;
+    if (state !== 'ok' || outcome === 'unchecked') return NOT_CHECKED;
+    if (outcome !== 'pass') return CANNOT_OPEN;
+  }
+  if (agentKeys.some((key) => !judge.mayUse(key))) return CANNOT_OPEN;
+  return NOT_CHECKED;
+}
+
+/**
+ * The chats a share of `row` in `session` is made in: the row's own, and for a thread's row its room. Undefined when the
+ * session is not the row's: what it says of the people there is not about the row.
+ */
+const chatsSharedIn = (
+  row: ReaderRow,
+  session: ReaderSession | undefined,
+): ReadonlySet<string> | undefined => {
+  const own = idOf(row.sessionId);
+  const read = idOf(session?._id);
+  if (read === undefined) return new Set(own === undefined ? [] : [own]);
+  if (own !== undefined && own !== read) return undefined;
+  return new Set(
+    [read, idOf(session?.parentId), idOf(session?.agentRoomId)].filter(
+      (chat): chat is string => chat !== undefined,
+    ),
+  );
+};
+
+/**
+ * The chat a share of a row read in `session` puts the answer before, whoever reads there: the chat itself, or for a
+ * thread's row its room. A private thread's answer is shared as a copy in its room; an agent thread's share with
+ * everyone puts a message there too, and one with people names people of the room. None without a session.
+ */
+const roomSharedIn = (
+  session: ReaderSession | undefined,
+): string | undefined =>
+  session === undefined
+    ? undefined
+    : (idOf(session.agentRoomId) ??
+      idOf(session.parentId) ??
+      idOf(session._id));
+
 const NOT_WIDENABLE: WidenResult = { ok: false, code: 'SHARE_NOT_WIDENABLE' };
 const AGENT_CONTENT: WidenResult = {
   ok: false,
   code: 'SHARE_NOT_ALLOWED_AGENT',
 };
+const SIGN_IN_CONTENT: WidenResult = {
+  ok: false,
+  code: 'SHARE_NOT_ALLOWED_SIGN_IN',
+};
+
+/**
+ * The first `tagset` whose labels say whether an agent's run was given skill text its asker can't open (`skill`, the AI
+ * backend's `TAGSET`). For an agent's answer labelled before, or not at all, its agents' records say it
+ * (`hasClosedSkill`).
+ */
+const SKILLS_SAID_SINCE = 2;
 
 /** Rows the share check's walk may read when the closures cannot decide it; past it, the share is refused. */
 const WIDEN_TREE_ROWS_MAX = 5_000;
 
 /**
- * The share check's walk of every version behind `start`, read by `judge`'s tree (`prepareTree`): the first refusal
- * met, in the order the labels name the versions, else undefined.
+ * The walk of every version behind `start` for a grant outside its chat (a file shown to `grantees`, or to people nobody
+ * named), read by `judge`'s tree (`prepareTree`): the first refusal met, else undefined. No share of any kind counts:
+ * the granter must open every version by their own access, and a file a run read is the version of the answer whose
+ * run wrote it. What a service agent did, or a sign-in an administrator shares, never goes out. Every other agent
+ * behind it, its asker must still be able to use, by its record no service agent; its work goes only to people who can
+ * use it, as a share in the chat that stays with it does, except from its owner, who chose who uses it,
+ * when its run was given no text of a skill they can't open.
  */
-function walkWiden(
+async function walkOutside(
   judge: Judge,
+  deps: VisibilityDeps,
   start: ReaderRow,
   ver: string,
-  scope: 'chat' | 'outside',
-): WidenResult | undefined {
-  const sessionId = idOf(start.sessionId);
+  /** The agents of the row and of the chat it is read in. */
+  agentKeys: readonly string[],
+  grantees: readonly string[] | undefined,
+): Promise<WidenResult | undefined> {
+  const agents = new Set<string>(agentKeys);
+  /** Agents whose runs, by their labels, were given text of a skill their asker can't open. */
+  const skilled = new Set<string>();
+  /** Agents of versions whose labels are too old to say so: the agent's record says it now. */
+  const unsaid = new Set<string>();
   // The versions on the path being walked, and what each finished one gave: a version reached again by another path
   // (an answer and a later one both built on it) is judged once; one met again on its own path is a loop.
   const visiting = new Set<string>();
@@ -3787,13 +4559,13 @@ function walkWiden(
   const walk = (
     current: ReaderRow,
     at: string,
-    top: boolean,
+    own: boolean,
   ): WidenResult | undefined => {
     const key = `${idOf(current._id) ?? ''}@${at}`;
     if (finished.has(key)) return finished.get(key);
     if (visiting.has(key)) return NOT_WIDENABLE;
     visiting.add(key);
-    const result = walkOnce(current, at, top);
+    const result = walkOnce(current, at, own);
     visiting.delete(key);
     finished.set(key, result);
     return result;
@@ -3801,49 +4573,421 @@ function walkWiden(
   const walkOnce = (
     current: ReaderRow,
     at: string,
-    top: boolean,
+    own: boolean,
   ): WidenResult | undefined => {
-    const { label, state } = versionAt(
-      current,
-      at,
-      top && at === versionOf(current),
-    );
+    const { label, state } = versionAt(current, at, own);
     if (state !== 'ok' || !label) return NOT_WIDENABLE;
     const direct: Plain = isPlain(label.direct) ? label.direct : {};
     if (listOf(direct.saVrids).length > 0) return AGENT_CONTENT;
-    if (
-      listOf<unknown>(direct.agents).some(
-        (a) => isPlain(a) && a.kind === 'service',
-      )
-    )
-      return AGENT_CONTENT;
-    // Who may use an agent's configuration is checked per person, which no share to everyone or outside can do.
-    if (listOf<Plain>(direct.agents).length > 0) return AGENT_CONTENT;
-    if (
-      judge.directOf(current, at, top && at === versionOf(current)) !== 'pass'
-    )
-      return NOT_WIDENABLE;
+    const quiet = label.tagset < SKILLS_SAID_SINCE;
+    if (quiet) for (const key of agentKeys) unsaid.add(key);
+    for (const agent of listOf<unknown>(direct.agents)) {
+      const key = isPlain(agent) ? idOf(agent.key) : undefined;
+      if (!isPlain(agent) || key === undefined || agent.kind !== 'config')
+        return AGENT_CONTENT;
+      agents.add(key);
+      if (agent.skill === true) skilled.add(key);
+      if (quiet) unsaid.add(key);
+    }
+    const responder = idOf(current.respondingAgentKey);
+    if (responder !== undefined) {
+      agents.add(responder);
+      if (quiet) unsaid.add(responder);
+      if (!judge.mayUse(responder)) return NOT_WIDENABLE;
+    }
+    // Its own label, the agents it names included: what they may use is asked on their behalf.
+    if (judge.directOf(current, at, own) !== 'pass') return NOT_WIDENABLE;
     for (const parent of listOf<LabelParent>(label.parents)) {
-      if (!isPlain(parent) || typeof parent.id !== 'string' || parent.id === '')
+      if (!isPlain(parent) || typeof parent.id !== 'string')
         return NOT_WIDENABLE;
+      if (parent.id === '') {
+        // A file the run read holds what the run that wrote it read: each version that run wrote is walked.
+        const runId = writingRunOf(parent);
+        const writers = runId === undefined ? [] : judge.wroteFilesOf(runId);
+        if (writers.length === 0) return NOT_WIDENABLE;
+        for (const writer of writers) {
+          const wrote = judge.rows.get(writer.id);
+          if (!wrote) return NOT_WIDENABLE;
+          const deeper = walk(wrote, writer.ver, false);
+          if (deeper !== undefined) return deeper;
+        }
+        continue;
+      }
       const p = judge.rows.get(parent.id);
-      if (!p) return NOT_WIDENABLE;
-      const pver = parent.ver;
-      if (p.messageType === SHARED_ANSWER) return NOT_WIDENABLE;
-      const deeper = walk(p, pver, false);
-      if (deeper === undefined) continue;
-      if (deeper.code === 'SHARE_NOT_ALLOWED_AGENT') return deeper;
-      const consent = consentAt(p, pver);
-      const sharedHere =
-        scope === 'chat' &&
-        consent !== undefined &&
-        (consent.scope ?? 'everyone') === 'everyone' &&
-        idOf(p.sessionId) === sessionId;
-      if (!sharedHere) return deeper;
+      if (!p || p.messageType === SHARED_ANSWER) return NOT_WIDENABLE;
+      const deeper = walk(p, parent.ver, false);
+      if (deeper !== undefined) return deeper;
     }
     return undefined;
   };
-  return walk(start, ver, true);
+  const walked = walk(start, ver, ver === versionOf(start));
+  if (walked !== undefined || agents.size === 0) return walked;
+
+  const keys = [...agents].sort();
+  const service = await Promise.all(
+    keys.map((key) =>
+      deps.isServiceAgent(judge.reader, key).catch(() => undefined),
+    ),
+  );
+  if (service.includes(true)) return AGENT_CONTENT;
+  if (service.some((answer) => answer !== false)) return NOT_WIDENABLE;
+  // The agent of the chat it is read in: its asker must still be able to use it, whatever the labels name.
+  if (agentKeys.some((key) => !judge.mayUse(key))) return NOT_WIDENABLE;
+  // A grant that names nobody reaches nobody: there is no one to ask about.
+  if (grantees?.length === 0) return undefined;
+  const staysWith: string[] = [];
+  for (const key of keys) {
+    const skill =
+      skilled.has(key) ||
+      (unsaid.has(key) &&
+        (await deps
+          .hasClosedSkill(judge.reader, key)
+          .catch(() => undefined)) !== false);
+    const owns =
+      !skill &&
+      (await deps.ownsAgent(judge.reader, key).catch(() => undefined)) === true;
+    if (!owns) staysWith.push(key);
+  }
+  if (staysWith.length === 0) return undefined;
+  // Who it would reach can't be told: it goes to nobody.
+  if (grantees === undefined) return AGENT_CONTENT;
+  const orgId = judge.reader.orgId;
+  const uses = await eachAtMost(
+    grantees.flatMap((userId) => staysWith.map((key) => ({ userId, key }))),
+    PEOPLE_AT_ONCE,
+    ({ userId, key }) =>
+      deps
+        .canUseAgent({ userId, orgId, identity: ON_BEHALF_OF_READER }, key)
+        .catch(() => undefined),
+  );
+  return uses.every((use) => use === true) ? undefined : AGENT_CONTENT;
+}
+
+/** One version behind an answer being shared in its chat. */
+interface BehindVersion {
+  row: ReaderRow;
+  ver: string;
+  /** The row's current text, checked against its label: the answer being shared itself. */
+  own: boolean;
+  /** Its label; undefined for one from before labels, which only a share in the chat can stand in for. */
+  label?: AnswerProvenance;
+}
+
+/** What the sharer needs to pass a version: nothing more, or the earlier shares it counts on. */
+type Opened = ReadonlyMap<string, VersionRef> | undefined;
+
+/**
+ * The walk for a share in the chat: every version behind `start` is read first, below shares too, for what is never
+ * shared whoever can open it (a service agent's work, a shared sign-in's, a label that can't be relied on) and for the
+ * agents the share must stay with; then whether the sharer passes each version by their own access, or by a share with
+ * everyone in `here`. A question or a note given as text that every reader of `room` reads passes as it is.
+ */
+async function walkInChat(
+  judge: Judge,
+  deps: VisibilityDeps,
+  start: ReaderRow,
+  ver: string,
+  here: ReadonlySet<string>,
+  /** The chat the share reaches whoever reads (`roomSharedIn`). */
+  room: string | undefined,
+  /** The agents of the row and of the chat it is read in. */
+  agentKeys: readonly string[],
+  session: ReaderSession | undefined,
+): Promise<WidenResult> {
+  const behind = versionsBehind(judge, start, ver);
+  const agents = new Set<string>(agentKeys);
+  const staysWith = new Set<string>();
+  let signIn = false;
+  for (const { row, label } of behind.versions.values()) {
+    const direct: Plain = isPlain(label?.direct) ? label.direct : {};
+    const searchedAs = listOf<unknown>(direct.saVrids);
+    if (searchedAs.length > 0) {
+      if (!searchedAs.every(isSharedSignIn)) return AGENT_CONTENT;
+      signIn = true;
+    }
+    for (const agent of listOf<unknown>(direct.agents)) {
+      const key = isPlain(agent) ? idOf(agent.key) : undefined;
+      if (!isPlain(agent) || key === undefined || agent.kind !== 'config')
+        return AGENT_CONTENT;
+      agents.add(key);
+      if (agent.skill === true) staysWith.add(key);
+    }
+    const responder = idOf(row.respondingAgentKey);
+    if (responder !== undefined) agents.add(responder);
+  }
+  const service = await Promise.all(
+    [...agents].map((key) =>
+      deps.isServiceAgent(judge.reader, key).catch(() => undefined),
+    ),
+  );
+  if (service.includes(true)) return AGENT_CONTENT;
+  if (signIn) return SIGN_IN_CONTENT;
+  if (!behind.whole || service.some((answer) => answer !== false))
+    return NOT_WIDENABLE;
+  // The agent of the chat or thread: the sharer must still be able to use it, whatever this label names.
+  if (agentKeys.some((key) => !judge.mayUse(key))) return NOT_WIDENABLE;
+
+  const counted = new Map<string, boolean>();
+  /**
+   * Whether a version is shared with everyone here, whole: the shares it counts on are too. A copy in the chat shares
+   * its text with everyone in it, as the copy that took its place does for one taken out; what it counts on may be
+   * shared in the agent `thread` whose answer it shows.
+   */
+  const sharedHere = (row: ReaderRow, at: string, thread?: string): boolean => {
+    const key = `${idOf(row._id) ?? ''}@${at}|${thread ?? ''}`;
+    const known = counted.get(key);
+    if (known !== undefined) return known;
+    counted.set(key, false);
+    const standing = isCopy(row) ? judge.standingCopy(row) : row;
+    const where = idOf(standing?.sessionId) ?? '';
+    const below = isCopy(standing) ? threadOfCopy(standing) : thread;
+    const shared =
+      standing !== undefined &&
+      (here.has(where) || where === thread) &&
+      (isCopy(standing)
+        ? judge.copyShows(standing)
+        : sharedWithEveryone(standing, at) &&
+          judge.covered(standing, at, thread)) &&
+      (countsOn(standing, at)?.every((ref) => {
+        const earlier = judge.rows.get(ref.id);
+        return earlier !== undefined && sharedHere(earlier, ref.ver, below);
+      }) ??
+        false);
+    counted.set(key, shared);
+    return shared;
+  };
+  /** The agents a share counted on stays with, and those of the shares it counts on in turn. */
+  const stay = (row: ReaderRow, at: string, seen = new Set<string>()): void => {
+    const key = `${idOf(row._id) ?? ''}@${at}`;
+    const standing = isCopy(row) ? judge.standingCopy(row) : row;
+    if (!standing || seen.has(key)) return;
+    seen.add(key);
+    const consent = consentAt(standing, at);
+    for (const agent of (consent && agentsOfShare(consent)) ?? [])
+      staysWith.add(agent);
+    for (const ref of countsOn(standing, at) ?? []) {
+      const earlier = judge.rows.get(ref.id);
+      if (earlier) stay(earlier, ref.ver, seen);
+    }
+  };
+
+  const visiting = new Set<string>();
+  const finished = new Map<string, Opened>();
+  const opens = (key: string): Opened => {
+    if (finished.has(key)) return finished.get(key);
+    // A version met again on its own path is a loop.
+    if (visiting.has(key)) return undefined;
+    visiting.add(key);
+    const needs = opensOnce(key);
+    visiting.delete(key);
+    finished.set(key, needs);
+    return needs;
+  };
+  const opensOnce = (key: string): Opened => {
+    const version = behind.versions.get(key);
+    if (!version?.label) return undefined;
+    const { row, ver: at, own, label } = version;
+    const responder = idOf(row.respondingAgentKey);
+    if (responder !== undefined && !judge.mayUse(responder)) return undefined;
+    if (judge.directOf(row, at, own) !== 'pass') return undefined;
+    const needs = new Map<string, VersionRef>();
+    for (const parent of listOf<LabelParent>(label.parents)) {
+      if (!isPlain(parent) || typeof parent.id !== 'string' || parent.id === '')
+        return undefined;
+      const p = judge.rows.get(parent.id);
+      if (!p) return undefined;
+      // A person's words that every reader of the room reads, as a reply gives them: nothing is behind them, and no
+      // share is counted on for them (`readByTheRoom`).
+      if (
+        parent.mode === 'text' &&
+        parent.ver === LEGACY_LABEL_VER &&
+        readByTheRoom(p, room)
+      )
+        continue;
+      // A copy is the answer it was made from, for someone who reads that where it is and can open it whole.
+      const given = !isCopy(p)
+        ? { id: parent.id, ver: parent.ver }
+        : judge.readsOriginalOf(p)
+          ? originalOf(p)
+          : undefined;
+      const deeper = given && opens(closureKey(given.id, given.ver));
+      if (deeper) {
+        for (const [k, ref] of deeper) needs.set(k, ref);
+        continue;
+      }
+      if (!sharedHere(p, parent.ver)) return undefined;
+      const ref = { id: parent.id, ver: isCopy(p) ? '' : parent.ver };
+      needs.set(closureKey(ref.id, ref.ver), ref);
+    }
+    return needs;
+  };
+  const needs = opens(closureKey(idOf(start._id) ?? '', ver));
+  if (!needs) return NOT_WIDENABLE;
+  for (const ref of needs.values()) {
+    const earlier = judge.rows.get(ref.id);
+    if (earlier) stay(earlier, ref.ver);
+  }
+  const refused = await stayForUnsaid(
+    judge,
+    deps,
+    behind,
+    session,
+    agents,
+    staysWith,
+  );
+  if (refused) return refused;
+  return {
+    ok: true,
+    ...(staysWith.size > 0 && { limitedTo: [...staysWith].sort() }),
+    ...(needs.size > 0 && {
+      on: [...needs.keys()].sort().map((key) => {
+        const ref = needs.get(key) as VersionRef;
+        return { row: ref.id, ver: ref.ver };
+      }),
+    }),
+  };
+}
+
+/** Whether `ver` of a row carries a share with everyone in its chat. */
+const sharedWithEveryone = (row: ReaderRow, ver: string): boolean => {
+  const consent = consentAt(row, ver);
+  return (
+    consent !== undefined &&
+    (consent.scope ?? 'everyone') === 'everyone' &&
+    stoppedFor(consent.except)?.length === 0
+  );
+};
+
+/** The earlier shares that the share of `ver` of a row, or a copy, counts on; undefined when they can't be read. */
+const countsOn = (
+  row: ReaderRow,
+  ver: string,
+): readonly VersionRef[] | undefined =>
+  isCopy(row) ? copyCountedOn(row) : countedOn(consentAt(row, ver)?.on);
+
+/** The answer a copy was made from, for a share's check: one from before versions were kept is read as from before labels. */
+const originalOf = (copy: ReaderRow): VersionRef | undefined => {
+  const from = copiedFrom(copy);
+  return (
+    from && { id: from.id, ver: from.ver === '' ? LEGACY_LABEL_VER : from.ver }
+  );
+};
+
+/** What `saVrids` names for a result read with a sign-in an administrator shares (the AI backend's prefix). */
+const isSharedSignIn = (value: unknown): boolean =>
+  typeof value === 'string' && value.startsWith('shared-sign-in:');
+
+/**
+ * Adds to `staysWith` the agents a share must stay with for what no label says: those of the versions behind it whose
+ * labels are too old to say whether their runs were given skill text their asker can't open, or that have none, while the
+ * agent's own record says it has a skill now that the sharer can't open, or can't be read. Each is asked once. Returns the
+ * refusal when such a version is by an agent nobody can name, or by one, not among the `agents` known to be none, that is
+ * or may be a service agent.
+ */
+async function stayForUnsaid(
+  judge: Judge,
+  deps: VisibilityDeps,
+  behind: ReturnType<typeof versionsBehind>,
+  session: ReaderSession | undefined,
+  agents: ReadonlySet<string>,
+  staysWith: Set<string>,
+): Promise<WidenResult | undefined> {
+  const quiet = [...behind.versions.values()].filter(
+    ({ row, label }) =>
+      isLabelledType(row) && (!label || label.tagset < SKILLS_SAID_SINCE),
+  );
+  // Beside the agents a version names: the one whose chat it sits in, the chat read, or any for one with no label.
+  const readIn = idOf(session?._id);
+  const elsewhere = new Set<string>();
+  for (const { row, label } of quiet) {
+    const at = idOf(row.sessionId);
+    if (!label && at !== undefined && at !== readIn) elsewhere.add(at);
+  }
+  const chats =
+    elsewhere.size === 0
+      ? undefined
+      : await deps
+          .chats(judge.reader.orgId, [...elsewhere])
+          .catch(() => undefined);
+  const unsaid = new Set<string>();
+  for (const { row, label } of quiet) {
+    for (const agent of label?.direct.agents ?? []) unsaid.add(agent.key);
+    const responder = idOf(row.respondingAgentKey);
+    if (responder !== undefined) unsaid.add(responder);
+    const at = idOf(row.sessionId) ?? '';
+    const chat = at === readIn ? session : label ? undefined : chats?.get(at);
+    const chatAgent = idOf(chat?.agentKey);
+    if (chatAgent !== undefined) unsaid.add(chatAgent);
+    // An agent's thread that does not say which agent's, or a chat that can't be read, with no label to say whose it was.
+    else if (chat ? chat.agentRoomId != null : !label) return NOT_WIDENABLE;
+  }
+  const said = await Promise.all(
+    [...unsaid].map(async (key) => {
+      const service = agents.has(key)
+        ? false
+        : await deps.isServiceAgent(judge.reader, key).catch(() => undefined);
+      if (service === false && !staysWith.has(key)) {
+        const closed = await deps
+          .hasClosedSkill(judge.reader, key)
+          .catch(() => undefined);
+        if (closed !== false) staysWith.add(key);
+      }
+      return service;
+    }),
+  );
+  if (said.includes(true)) return AGENT_CONTENT;
+  return said.some((service) => service !== false) ? NOT_WIDENABLE : undefined;
+}
+
+/**
+ * Every version behind `ver` of `start` that `judge`'s tree holds, below shares too, itself first. `whole` is whether
+ * each could be read and has a label to rely on, or is from before labels.
+ */
+function versionsBehind(
+  judge: Judge,
+  start: ReaderRow,
+  ver: string,
+): { versions: ReadonlyMap<string, BehindVersion>; whole: boolean } {
+  const versions = new Map<string, BehindVersion>();
+  let whole = true;
+  const todo: Array<{ row: ReaderRow; ver: string; own: boolean }> = [
+    { row: start, ver, own: ver === versionOf(start) },
+  ];
+  for (let next = todo.shift(); next !== undefined; next = todo.shift()) {
+    const { row, ver: at, own } = next;
+    const key = closureKey(idOf(row._id) ?? '', at);
+    if (versions.has(key)) continue;
+    const { label, state } = versionAt(row, at, own);
+    versions.set(key, { row, ver: at, own, ...(label && { label }) });
+    if (state !== 'ok' && state !== 'legacy') whole = false;
+    const named: VersionRef[] = [];
+    for (const parent of listOf<LabelParent>(label?.parents)) {
+      if (!isPlain(parent) || typeof parent.id !== 'string') {
+        whole = false;
+        continue;
+      }
+      const p = judge.rows.get(parent.id);
+      // Behind a copy is the answer it was made from, whether or not it is still in the chat; behind a file, the answer
+      // whose run wrote it.
+      const runId = parent.id === '' ? writingRunOf(parent) : undefined;
+      const refs =
+        parent.id === ''
+          ? judge.wroteFilesOf(runId ?? '')
+          : [isCopy(p) ? originalOf(p) : parent];
+      if (refs.length === 0) whole = false;
+      for (const ref of refs) {
+        if (ref && typeof ref.ver === 'string') named.push(ref);
+        else whole = false;
+      }
+    }
+    for (const ref of named) {
+      const behind = judge.rows.get(ref.id);
+      if (behind && !isCopy(behind))
+        todo.push({ row: behind, ver: ref.ver, own: false });
+      else whole = false;
+    }
+  }
+  return { versions, whole };
 }
 
 /** People a share's check judges at once. */
@@ -3876,7 +5020,7 @@ async function eachAtMost<T, R>(
 export function hiddenView(row: ReaderRow & Plain): Record<string, unknown> {
   const out: Record<string, unknown> = {
     _id: row._id,
-    // A failed run looks like any other hidden answer; a card stays a card.
+    // A failed run that hides looks like any other hidden answer; a card stays a card.
     messageType: row.messageType === 'tool_call' ? 'tool_call' : 'bot_response',
     content: '',
     contentFormat: 'MARKDOWN',
@@ -3902,28 +5046,114 @@ export function hiddenView(row: ReaderRow & Plain): Record<string, unknown> {
   return out;
 }
 
+/** What anyone but its asker reads of a failed run, past the app, which says it in their language and by name. */
+export const FAILED_FOR_OTHERS =
+  "This question couldn't be answered. Only the person who asked can see why.";
+
+/**
+ * Someone else's failed run as a chat's readers get it: whose question it was and that it failed. Nothing else of it, and
+ * the same whatever it read and whatever they may open, so it says nothing of either.
+ */
+const failedRowFor = (row: ReaderRow & Plain): Record<string, unknown> => ({
+  ...hiddenView(row),
+  messageType: 'error',
+  content: FAILED_FOR_OTHERS,
+  reasonWithheld: true,
+});
+
 const HIDDEN_LOST = 'This answer used content you can no longer access.';
 const HIDDEN_UNCHECKED = "We couldn't confirm your access. Try again.";
 
 /**
+ * What a reader is told of someone else's hidden answer, by the marker's reason: one class, never which source, tool or
+ * earlier answer it was. Every reason with no words of its own here reads as `no_access`.
+ */
+const NOT_THEIRS = {
+  no_access: "You can't see this answer. It used sources you can't open.",
+  // Read with the asker's own sign-in, tools or skills, or by a service agent on them: whose access, never what.
+  personal:
+    "You can't see this answer. It was made with the access of the person who asked.",
+  agent: "You can't see this answer. It used an agent you can't use.",
+  deleted: "You can't see this answer. A source it used was deleted.",
+  stopped: 'The person who asked stopped this answer.',
+} as const;
+type NotTheirs = keyof typeof NOT_THEIRS;
+
+const notTheirsReason = (
+  row: ReaderRow & Plain,
+  reason: HiddenReason | undefined,
+): NotTheirs => {
+  if (reason === 'personal' || reason === 'agent' || reason === 'deleted')
+    return reason;
+  // Stopped before its label came, so nothing says what the kept text was made from: its asker stopped it.
+  if (reason === 'label_missing' && stoppedBeforeLabel(row)) return 'stopped';
+  // An earlier answer hidden from the reader, or a label that can't be relied on, reads as restricted sources: the
+  // note never tells whether it built on something shared only with its asker, or a run failed.
+  return 'no_access';
+};
+
+/**
  * A hidden row as a reader gets it: its fixed fields (`hiddenView`), the fixed text and the marker the app shows a
- * hidden answer by. One reason for everyone (the reader is never told which source, tool or earlier answer it was),
- * except that a check that could not run says so, as it is worth trying again. A card hides the same way.
+ * hidden answer by. An answer's asker, who had what it used when it was written, lost it (`no_longer_accessible`), as
+ * did the readers of a copy its share showed; anyone else is told one class of reason (`NOT_THEIRS`): what they can't
+ * open (`no_access`), its asker's own access (`personal`), an agent they can't use (`agent`), a deleted source
+ * (`deleted`), or its asker's stop (`stopped`); a check that could not run says so, as it is worth trying again. A card
+ * hides the same way. With no reader named, as lost.
  */
 export function hiddenRowFor(
   row: ReaderRow & Plain,
   verdict: Pick<RowVerdict, 'verdict' | 'reason'>,
+  reader?: { userId: string; ownerId?: string },
 ): Record<string, unknown> {
   const unchecked =
     verdict.verdict === 'unchecked' || verdict.reason === 'check_failed';
+  const lost =
+    reader === undefined ||
+    isCopy(row) ||
+    rowAuthorOf(row, reader.ownerId) === reader.userId;
+  const why = notTheirsReason(row, verdict.reason);
   return {
     ...hiddenView(row),
-    content: unchecked ? HIDDEN_UNCHECKED : HIDDEN_LOST,
-    answerHidden: { ...(unchecked ? ANSWER_UNCONFIRMED : ANSWER_LOST) },
+    ...(isCopy(row) && hiddenCopy(row)),
+    content: unchecked
+      ? HIDDEN_UNCHECKED
+      : lost
+        ? HIDDEN_LOST
+        : NOT_THEIRS[why],
+    answerHidden: unchecked
+      ? { ...ANSWER_UNCONFIRMED }
+      : lost
+        ? { ...ANSWER_LOST }
+        : { ...REDACTED, reason: why },
   };
 }
 
-/** An answer shared with the reader: its text alone, never its sources, citations, steps or files. */
+/**
+ * What a shared copy keeps beside its place once a share it counts on ended: that it is one, who shared it and when, as
+ * its readers were told while it showed. Never the question it carried.
+ */
+const hiddenCopy = (copy: ReaderRow & Plain): Record<string, unknown> => {
+  const from: Plain = isPlain(copy.sharedFrom) ? copy.sharedFrom : {};
+  const { sharedBy, sharedAt, fromAgentThread } = from;
+  return {
+    messageType: SHARED_ANSWER,
+    authorUserId: copy.authorUserId,
+    sharedQuestion: '',
+    sharedFrom: {
+      sharedBy,
+      sharedAt,
+      ...(fromAgentThread === true && { fromAgentThread }),
+    },
+  };
+};
+
+/** A file an answer made, as its text marks it: `::artifact[…]`, or the older download marker. */
+export const FILE_MADE = /::(?:artifact|download_conversation_task)\[/;
+
+/**
+ * An answer shared with the reader: its text alone, never its sources, citations, steps or files. That it made a file
+ * is said (`filesKept`), so its words about one point at something, never which file.
+ */
 export function consentedView(
   row: ReaderRow & Plain,
   deps: Pick<VisibilityDeps, 'sharedText'> = configured,
@@ -3935,13 +5165,20 @@ export function consentedView(
       parts: _p,
       tools: _t,
       reasoning: _s,
-      ...copy
+      removedFrom: _f,
+      again: _a,
+      ...rest
     } = row;
-    return copy;
+    const copy = copyInWords(rest);
+    if (!isPlain(copy.sharedFrom)) return copy;
+    // What a copy counts on is for the check alone.
+    const { on: _o, ...sharedFrom } = copy.sharedFrom;
+    return { ...copy, sharedFrom };
   }
   let text: string;
+  const stored = withoutWaitingLine(row);
   try {
-    text = deps.sharedText(typeof row.content === 'string' ? row.content : '');
+    text = deps.sharedText(stored);
   } catch {
     text = '';
   }
@@ -3949,6 +5186,7 @@ export function consentedView(
     ...hiddenView(row),
     content: text,
     sharedWithYou: true,
+    ...(FILE_MADE.test(stored) && { filesKept: true }),
   };
 }
 
@@ -4038,11 +5276,94 @@ const approvalCardStubs = (
       })
     : [];
 
+/** Whether a card of the answer still waits for its asker: not answered, and not past its expiry (`cardStatus`). */
+export const waitsForApproval = (
+  row: object,
+  now: number = Date.now(),
+): boolean => {
+  const { parts, approvalAnswered } = row as Plain;
+  return approvalCardStubs(parts, approvalAnswered, now).some(
+    (card) => card.status === 'awaiting_approval',
+  );
+};
+
+/** Whether a call in `parts` asked on a card, however it went since (a fork settles its copy), a sub-agent's included. */
+const holdsCard = (parts: unknown, depth = 0): boolean =>
+  Array.isArray(parts) &&
+  depth < MAX_CARD_DEPTH &&
+  (parts as unknown[]).some(
+    (part) =>
+      isPlain(part) &&
+      ((part.type === 'tool_call' &&
+        (part.status === 'awaiting_approval' || isPlain(part.approval))) ||
+        holdsCard(part.parts, depth + 1)),
+  );
+
+/** How the line that closes a run stopped on a card starts (the AI backend's `parked_turn.WAITING_PREFIX`). */
+const WAITING_PREFIX = 'Waiting for your approval to run ';
+
+const isWaitingLine = (line: string): boolean => {
+  const words = line.trim();
+  return words.startsWith(WAITING_PREFIX) && words.endsWith('.');
+};
+
+/**
+ * `text` of an answer, by default its own, as anyone but its asker may be given it: without the line that closes a run
+ * stopped on the asker's approval card. It speaks to the asker alone, so anyone else would read that the approval is
+ * theirs, and it names the tool and its server. The asker's page draws the card in its place, and a reader of the whole
+ * answer has the card's stub. Only an answer whose transcript holds a card, or that comes with none to say, has the line.
+ */
+export function withoutWaitingLine(
+  row: object,
+  text: unknown = (row as Plain).content,
+): string {
+  if (typeof text !== 'string') return '';
+  const { parts } = row as Plain;
+  if (
+    !text.includes(WAITING_PREFIX) ||
+    (Array.isArray(parts) && !holdsCard(parts))
+  )
+    return text;
+  const lines = text.split('\n');
+  const kept = lines.filter((line) => !isWaitingLine(line));
+  return kept.length === lines.length ? text : kept.join('\n').trim();
+}
+
+/**
+ * A shared copy without that line, which one made of a waiting run held before such a run had nothing to share. A copy
+ * keeps no transcript to say whether its answer held a card.
+ */
+const copyInWords = <T extends object>(copy: T): T => {
+  const { content } = copy as Plain;
+  return typeof content === 'string'
+    ? { ...copy, content: withoutWaitingLine({ content }) }
+    : copy;
+};
+
+/** A text part of `row` as anyone but its asker is given it (`withoutWaitingLine`); none that held that line alone. */
+const othersTextPart = (row: object, part: unknown): unknown[] => {
+  if (!isPlain(part) || typeof part.content !== 'string') return [part];
+  const content = withoutWaitingLine(row, part.content);
+  if (content === part.content) return [part];
+  return content === '' ? [] : [{ ...part, content }];
+};
+
+/**
+ * The text of a transcript that is its answer: the part the AI backend marked (`isFinal`). What the run said before
+ * and between its steps is a step too. A transcript with no part marked, from before the mark, keeps all its text.
+ */
+export function answerTextParts(parts: readonly unknown[]): unknown[] {
+  const text = parts.filter((p) => isPlain(p) && p.type === 'text');
+  const marked = text.filter((p) => isPlain(p) && p.isFinal === true);
+  return marked.length > 0 ? marked : text;
+}
+
 /**
  * Another person's answer as a reader who may see it gets it: no steps, reasoning or tool output. A call that waited
  * on its asker's approval card stays as a stub (`approvalCardStub`), read from `stored`, the row as it is stored: the
- * per-record view has already cut another person's parts to their text. An answer that loses any of it here says so
- * (`activityWithheld`), as one the per-record view cut already does.
+ * per-record view has already cut another person's parts to their text. The line such a run closes with is its asker's
+ * (`withoutWaitingLine`). An answer that loses any of its steps here says so (`activityWithheld`), as one the per-record
+ * view cut already does.
  */
 export function withoutSteps<T extends object>(
   row: T,
@@ -4062,11 +5383,15 @@ export function withoutSteps<T extends object>(
   if (withheld) view.activityWithheld = true;
   if ('reasoning' in view) view.reasoning = [];
   if ('tools' in view) view.tools = [];
+  const kept = stored as Plain;
+  if (typeof r.content === 'string')
+    view.content = withoutWaitingLine(kept, r.content);
   if (Array.isArray(r.parts)) {
-    const kept = stored as Plain;
     view.parts = [
       ...approvalCardStubs(kept.parts, kept.approvalAnswered, now),
-      ...(r.parts as unknown[]).filter((p) => isPlain(p) && p.type === 'text'),
+      ...answerTextParts(r.parts as unknown[]).flatMap((part) =>
+        othersTextPart(kept, part),
+      ),
     ];
   }
   return view as T;
@@ -4093,6 +5418,13 @@ export interface ReaderViewOptions extends VisibleRowsOptions {
   appConfig?: AppConfig;
 }
 
+/** The verdict of a row the per-record view hid, by the marker it left. */
+const perRecordVerdict = (hidden: Plain): RowVerdict => ({
+  verdict: hidden.reason === ANSWER_UNCONFIRMED.reason ? 'unchecked' : 'hidden',
+  reason: 'sources',
+  validUntil: Date.now() + UNCHECKED_TTL_MS,
+});
+
 /** The answers a label did not decide alone: an asker's own, and those written before labels. */
 export const unlabelledAnswers = (
   row: ReaderRow,
@@ -4101,9 +5433,9 @@ export const unlabelledAnswers = (
   isLabelledType(row) && (verdict === undefined || verdict.basis !== 'label');
 
 /**
- * Rows as `viewer` may be given them: hidden rows as `hiddenRowFor`, answers shared with them as their text, every
- * other row through the per-record view, with another person's steps left out. One access request covers the
- * reader check and the per-record view.
+ * Rows as `viewer` may be given them: hidden rows as `hiddenRowFor`, someone else's failed run as `failedRowFor`, answers
+ * shared with them as their text, every other row through the per-record view, with another person's steps left out. One
+ * access request covers the reader check and the per-record view.
  */
 export async function readerView<M extends object>(
   viewer: Reader,
@@ -4142,12 +5474,7 @@ export async function readerView<M extends object>(
       const id = idOf((rows[i] as unknown as ReaderRow)._id);
       const hidden = (m as unknown as Plain).answerHidden;
       if (id === undefined || !isPlain(hidden)) return;
-      verdicts.set(id, {
-        verdict:
-          hidden.reason === ANSWER_UNCONFIRMED.reason ? 'unchecked' : 'hidden',
-        reason: 'sources',
-        validUntil: Date.now() + UNCHECKED_TTL_MS,
-      });
+      verdicts.set(id, perRecordVerdict(hidden));
     });
     return { rows: shown, verdicts };
   }
@@ -4179,11 +5506,19 @@ export async function readerView<M extends object>(
     known,
   });
   const reader = asMember(viewer, session, opts.member);
+  // Who an answer its label hides is hidden from: its asker, or someone who never had what it used.
+  const hiddenFor = { userId: viewer.userId, ownerId };
+  /** Someone else's failed run in a chat; in an agent's thread it hides as any answer does. */
+  const othersFailure = (row: ReaderRow): boolean =>
+    row.messageType === 'error' &&
+    session?.agentRoomId == null &&
+    rowAuthorOf(row, ownerId) !== viewer.userId;
   /** A row the per-record view let through (or did not need to see), as the reader is given it. */
   const shownView = (shown: M, row: ReaderRow & Plain): M => {
     const view = shown as unknown as Plain;
     if (view.answerHidden !== undefined) {
       const reason = (view.answerHidden as Plain).reason;
+      // The per-record view, of an answer no label decided, says it as it always did.
       return hiddenRowFor(row, {
         verdict: reason === ANSWER_UNCONFIRMED.reason ? 'unchecked' : 'hidden',
         reason: 'sources',
@@ -4197,6 +5532,14 @@ export async function readerView<M extends object>(
     const row = m as unknown as ReaderRow & Plain;
     const id = idOf(row._id);
     const verdict = id === undefined ? undefined : verdicts.get(id);
+    if (othersFailure(row)) {
+      // The row no longer says that the per-record view hid it; the verdict does, for the files its run made.
+      const hidden = (viewed[i] as Plain | undefined)?.answerHidden;
+      if (id !== undefined && isPlain(hidden)) {
+        verdicts.set(id, perRecordVerdict(hidden));
+      }
+      return failedRowFor(row) as M;
+    }
     if (!verdict) {
       if (!isLabelledType(row) && row.messageType !== 'tool_call') {
         return shownView(viewed[i] ?? m, row);
@@ -4211,9 +5554,22 @@ export async function readerView<M extends object>(
       return hiddenRowFor(row, { verdict: 'unchecked' }) as M;
     }
     if (verdict.verdict === 'hidden' || verdict.verdict === 'unchecked') {
-      return hiddenRowFor(row, verdict) as M;
+      return hiddenRowFor(row, verdict, hiddenFor) as M;
     }
-    if (verdict.verdict === 'consented') return consentedView(row) as M;
+    if (verdict.verdict === 'consented') {
+      const shared = consentedView(row);
+      // A share with no text, or of a run that waits on its card, shows nobody anything: as if it were not shared.
+      const nothing = shared.content === '' || waitsForApproval(row, now);
+      return (
+        nothing && rowAuthorOf(row, ownerId) !== viewer.userId
+          ? hiddenRowFor(
+              row,
+              { verdict: 'hidden', reason: 'sources' },
+              hiddenFor,
+            )
+          : shared
+      ) as M;
+    }
     const shown = shownView(viewed[i] ?? m, row);
     return verdict.cardWithheld === true ? withheldCardAnswer(shown) : shown;
   });
@@ -4262,7 +5618,16 @@ interface QuotedAnswer {
   ver: string | undefined;
   /** How many versions it has had: 1 when it was never written again. */
   versions: number;
+  /** For a reply that names the agent behind the answer: whether the reader may use it now. */
+  agentUse?: boolean;
 }
+
+const replyAgentOf = (row: Plain): string | undefined => {
+  const reply = row.replyTo;
+  return isPlain(reply) && typeof reply.agentKey === 'string' && reply.agentKey !== ''
+    ? reply.agentKey
+    : undefined;
+};
 
 /**
  * Every answer the rows quote, for the reader: its verdict (those on the page, then the rest read and judged), with the
@@ -4303,8 +5668,27 @@ async function replyVerdicts(
           ...opts,
           labelsLoaded: true,
         });
+  // An answer of an agent's thread, quoted in its room, is read there only by who may use the agent (the reply names
+  // it): its label need not say so, as the thread's own reads keep it to them.
+  const here = idOf(session?._id);
+  const agentOf = new Map<string, string>();
+  for (const row of rows) {
+    const target = replyTargetOf(row);
+    const agent = replyAgentOf(row);
+    const quoted = target === undefined ? undefined : targets.get(target);
+    if (target === undefined || agent === undefined || quoted === undefined) continue;
+    if (idOf(quoted.sessionId) !== here) agentOf.set(target, agent);
+  }
+  const uses = new Map<string, boolean | undefined>();
+  for (const agent of new Set(agentOf.values())) {
+    uses.set(
+      agent,
+      await deps.canUseAgent(viewer, agent).catch(() => undefined),
+    );
+  }
   for (const id of ids) {
     const target = targets.get(id);
+    const agent = agentOf.get(id);
     out.set(id, {
       verdict: page.get(id) ?? judged.get(id),
       ver: target === undefined ? undefined : versionOf(target),
@@ -4312,6 +5696,7 @@ async function replyVerdicts(
         target === undefined
           ? 0
           : 1 + listOf<unknown>(target.labelHistory).length,
+      ...(agent !== undefined && { agentUse: uses.get(agent) === true }),
     });
   }
   return out;
@@ -4330,10 +5715,16 @@ const withCheckedReply = <M>(
   const reply = r.replyTo;
   // The version the excerpt was copied from is for this check alone.
   const { ver: copiedFrom, ...given } = isPlain(reply) ? reply : {};
-  const withheld = (): M =>
+  // `changed`: the answer is no longer the version quoted, and the reader may see it now, so the line can say so.
+  const withheld = (changed = false, fields: Plain = given): M =>
     ({
       ...r,
-      replyTo: { ...given, excerpt: '', withheld: true },
+      replyTo: {
+        ...fields,
+        excerpt: '',
+        withheld: true,
+        ...(changed && { changed: true }),
+      },
     }) as unknown as M;
   if (
     isPlain(reply) &&
@@ -4351,13 +5742,22 @@ const withCheckedReply = <M>(
       ? row
       : ({ ...r, replyTo: given } as unknown as M);
   const quoted = replies.get(target);
+  // Nor does a reader who may not use its agent learn which agent it was: only that one answered.
+  if (quoted?.agentUse === false) {
+    const { agentKey: _agent, ...unnamed } = given;
+    return withheld(false, { ...unnamed, byAgent: true });
+  }
   // The excerpt is a copy of one version: a verdict on any other says nothing of it, and a share of a later version
   // never brings it back. A copy stored with no version is taken as of the only version there has been.
   const sameVersion =
     typeof copiedFrom === 'string' && copiedFrom !== ''
       ? copiedFrom === quoted?.ver
       : quoted?.versions === 1;
-  if (!sameVersion) return withheld();
+  if (!sameVersion)
+    return withheld(
+      quoted?.verdict?.verdict === 'visible' ||
+        quoted?.verdict?.verdict === 'consented',
+    );
   if (quoted?.verdict?.verdict === 'visible')
     return { ...r, replyTo: given } as unknown as M;
   if (quoted?.verdict?.verdict !== 'consented') return withheld();
@@ -4460,6 +5860,8 @@ const blank = <R extends object>(row: R): R => {
   ]) {
     if (field in out) out[field] = [];
   }
+  // The question a shared copy carries is the answer's, as its text is.
+  if ('sharedQuestion' in out) out.sharedQuestion = '';
   delete out._ref;
   delete out._ver;
   delete out._pub;
@@ -4496,7 +5898,7 @@ export async function includableRows<R extends object>(
   opts: IncludableOptions = {},
 ): Promise<R[]> {
   const reader = asMember(sender, session, opts.member ?? true);
-  const ownerId = idOf(session?.userId);
+  const ownerId = opts.ownerId ?? idOf(session?.userId);
   const asRows = rows as unknown as Array<ReaderRow & Plain>;
   // Judged now, past any stored verdict: the sender's own model reads what they may see at the start of the turn.
   const judged = await judgeRows(reader, session, asRows, {
@@ -4521,10 +5923,7 @@ export async function includableRows<R extends object>(
   const sharedWithSender = (row: ReaderRow): boolean => {
     const id = idOf(row._id);
     const stored = id === undefined ? undefined : tree.rows.get(id);
-    return (
-      stored !== undefined &&
-      consentCovers(stored, versionOf(stored), reader, tree.chatsRead)
-    );
+    return stored !== undefined && tree.covered(stored, versionOf(stored));
   };
   const deps: VisibilityDeps = { ...configured, ...opts.deps };
   // No label rule: the history the sender's own filter built goes as it is, marked.
@@ -4577,7 +5976,7 @@ export async function includableRows<R extends object>(
     if (type === 'system' || type === 'feedback') return m;
     if (type === SHARED_ANSWER) {
       return verdict?.verdict === 'consented' || verdict?.verdict === 'visible'
-        ? sealed(m)
+        ? sealed(copyInWords(m))
         : blank(m);
     }
     if (type === 'tool_call') {
@@ -4611,7 +6010,17 @@ export async function includableRows<R extends object>(
     // per-record view empties an answer whose sources the sender cannot open).
     if (verdict.verdict === 'consented' || sharedWithSender(row)) {
       const stored = id === undefined ? undefined : tree.rows.get(id);
-      return stored
+      // A share of a run that waits on its card shows nothing (`readerView`); the label fields hold no mark of its answer.
+      const waits =
+        stored !== undefined &&
+        waitsForApproval(
+          {
+            parts: stored.parts,
+            approvalAnswered: row.approvalAnswered,
+          },
+          deps.now(),
+        );
+      return stored && !waits
         ? sealed(
             sharedTextOf({ ...m, labelVer: stored.labelVer }, deps, stored),
           )
@@ -4626,10 +6035,10 @@ export async function includableRows<R extends object>(
         !everyMemberSaw.has(row) &&
         !replied
         ? blank(m)
-        : sealed(textOnly(m));
+        : sealed(othersText(m));
     }
     // Another person's answer that restricts nobody, or the one the sender replied to.
-    return replied || pubOf(row) ? sealed(textOnly(m)) : blank(m);
+    return replied || pubOf(row) ? sealed(othersText(m)) : blank(m);
   });
 }
 
@@ -4737,9 +6146,13 @@ function oldRowsEveryMemberSaw(
   return seen;
 }
 
-/** Whether anyone but its owner reads the chat: a share row, its project, or the readers of an agent room. */
+/**
+ * Whether anyone but its owner reads the chat: a share row, its project, or the readers of an agent room. A private
+ * thread is read with its room's people and by its asker alone.
+ */
 const othersRead = (session: ReaderSession | undefined): boolean =>
   session !== undefined &&
+  idOf(session.parentId) === undefined &&
   (shareRowsOf(session).length > 0 ||
     session.projectVisibility === 'project' ||
     idOf(session.agentRoomId) !== undefined);
@@ -4803,9 +6216,7 @@ const sharedTextOf = <R extends object>(
 ): R => {
   let text: string;
   try {
-    text = deps.sharedText(
-      typeof source.content === 'string' ? source.content : '',
-    );
+    text = deps.sharedText(withoutWaitingLine(source));
   } catch {
     // A share's text that cannot be made gives the model none of the answer, as `consentedView` shows a reader none.
     text = '';
@@ -4836,3 +6247,11 @@ const textOnly = <R extends object>(row: R): R => {
   }
   return out as R;
 };
+
+/** Another person's answer as the sender's model is given it: as text, without the line for its asker alone. */
+const othersText = <R extends object>(row: R): R =>
+  textOnly(
+    typeof (row as Plain).content === 'string'
+      ? { ...row, content: withoutWaitingLine(row) }
+      : row,
+  );

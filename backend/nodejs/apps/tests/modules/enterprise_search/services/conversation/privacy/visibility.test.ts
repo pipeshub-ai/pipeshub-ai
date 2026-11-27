@@ -14,6 +14,8 @@ import {
   sealedRef,
   unlabelledAnswers,
   visibleRows,
+  waitsForApproval,
+  whyNotWidenable,
   widenOK,
   withoutSteps,
   type Reader,
@@ -518,6 +520,197 @@ describe('the reader check: who may see an answer', () => {
     })
   })
 
+  describe("an answer given its project's instructions is for those who can open the project", () => {
+    const PROJECT = 'a0000000000000000000000a'
+    // Dana, Carol and Ivy can open the project; Bob is in the chat by name alone.
+    const opensProject = new Set([DANA, CAROL, IVY])
+    const projectWorld = (rows: ReaderRow[]): World => {
+      const w = world(rows)
+      w.deps.canReadProject = async (who, pid) => pid === PROJECT && opensProject.has(who.userId)
+      return w
+    }
+    // As the AI backend labels a run whose request sent the instructions with their project.
+    const given = (): ReaderRow & Record<string, unknown> =>
+      answer('Three short bullets, as the project asks.', {}, { direct: { projects: [PROJECT] } })
+
+    it('a member who can open the project reads it; one who cannot gets the note', async () => {
+      const a = given()
+      const w = projectWorld([a])
+      for (const [who, expected] of [
+        [DANA, 'visible'],
+        [CAROL, 'visible'],
+        [IVY, 'visible'],
+        [BOB, 'hidden'],
+      ] as const) {
+        const v = (await verdictsFor(who, [a], w)).get(String(a._id))
+        expect(v?.verdict, who).to.equal(expected)
+        if (expected === 'hidden') expect(v?.reason).to.equal('sources')
+      }
+    })
+
+    it('a follow-up built on it is judged by the project as well', async () => {
+      const a = given()
+      const t1 = answer('And the next step.', {}, { parents: [{ id: a._id, ver: a.labelVer, mode: 'full' }] })
+      const w = projectWorld([a, t1])
+      expect((await verdictsFor(CAROL, [t1], w)).get(String(t1._id))?.verdict).to.equal('visible')
+      expect((await verdictsFor(BOB, [t1], w)).get(String(t1._id))).to.include({ verdict: 'hidden', reason: 'parent' })
+    })
+
+    it('a project check that cannot run hides it until it can', async () => {
+      const a = given()
+      const w = world([a])
+      expect((await verdictsFor(CAROL, [a], w)).get(String(a._id))?.verdict).to.equal('unchecked')
+    })
+
+    it('its asker can share it, with everyone or with Bob, and Bob then reads its text', async () => {
+      const a = given()
+      const w = projectWorld([a])
+      expect(await widenOK(a, String(a.labelVer), 'everyone', { deps: w.deps, session })).to.deep.equal({ ok: true })
+      expect(await widenOK(a, String(a.labelVer), { userIds: [BOB, CAROL] }, { deps: w.deps, session })).to.deep.equal({
+        ok: true,
+        cannotOpen: [BOB],
+      })
+      a.consent = { by: DANA, at: T1, ver: a.labelVer, scope: 'people' }
+      a.consentTo = [{ userId: BOB, memberSince: memberSinceOf(session, BOB) }]
+      expect((await verdictsFor(BOB, [a], w)).get(String(a._id))?.verdict).to.equal('consented')
+    })
+
+    it('instructions sent with no project still leave the answer to its asker, unshared', async () => {
+      const a = answer('Three short bullets.', {}, {
+        complete: false,
+        incomplete: ['untagged_prompt_part:project_instructions'],
+      })
+      const w = projectWorld([a])
+      expect((await verdictsFor(DANA, [a], w)).get(String(a._id))?.verdict).to.equal('visible')
+      expect((await verdictsFor(CAROL, [a], w)).get(String(a._id))).to.include({ verdict: 'hidden', reason: 'label_incomplete' })
+      expect(await widenOK(a, String(a.labelVer), 'everyone', { deps: w.deps, session })).to.include({ ok: false })
+    })
+  })
+
+  describe("an answer given its project's instructions, once the project is deleted: its asker keeps it, as one whose source was deleted", () => {
+    const PROJECT = 'a0000000000000000000000a'
+    // Dana, Carol and Ivy could open the project; Bob is in the chat by name alone.
+    const opensProject = new Set([DANA, CAROL, IVY])
+    /** The project deleted, for anyone who asks; or still there, with `left` no longer in it. */
+    const projectWorld = (rows: ReaderRow[], project: { deleted: true } | { left: string[] }): World => {
+      const w = world(rows)
+      w.deps.canReadProject = async (who, pid) => {
+        if (pid !== PROJECT) return undefined
+        if ('deleted' in project) return 'deleted'
+        return opensProject.has(who.userId) && !project.left.includes(who.userId)
+      }
+      return w
+    }
+    const DELETED = { deleted: true } as const
+    // As the AI backend labels a run whose request sent the instructions with their project.
+    const given = (over: Record<string, unknown> = {}, requestedBy = DANA): ReaderRow & Record<string, unknown> =>
+      answer('Three short bullets, as the project asks.', {}, { direct: { projects: [PROJECT] }, ...over }, requestedBy)
+    const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
+    const told = async (who: string, row: ReaderRow, w: World) => {
+      const view = (await readerView(reader(who), session, [row], { deps: w.deps, member: true, perRecordView })).rows[0] as Record<string, unknown>
+      return { content: view.content, reason: (view.answerHidden as { reason?: unknown } | undefined)?.reason }
+    }
+    const LOST = { content: 'This answer used content you can no longer access.', reason: 'no_longer_accessible' }
+    const GONE = { content: "You can't see this answer. A source it used was deleted.", reason: 'deleted' }
+
+    it('its asker still reads it, by its label', async () => {
+      const a = given()
+      const w = projectWorld([a], DELETED)
+      // Judged by its label, not let through as a check that could not settle (`basis: 'asker'`).
+      expect((await verdictsFor(DANA, [a], w)).get(String(a._id))).to.include({ verdict: 'visible', basis: 'label' })
+      expect((await told(DANA, a, w)).content).to.equal(a.content)
+    })
+
+    it('its asker who left the project, which is still there, no longer reads it, as one who lost a record it used', async () => {
+      const a = given()
+      const w = projectWorld([a], { left: [DANA] })
+      expect((await verdictsFor(DANA, [a], w)).get(String(a._id))).to.include({ verdict: 'hidden', reason: 'sources' })
+      expect(await told(DANA, a, w)).to.deep.equal(LOST)
+      // The same as an answer whose record she can no longer open.
+      const r = answer('R says.', {}, { direct: { records: [R] } })
+      const lostR = world([r])
+      lostR.deps.readable = async (_who, ids) => ({ readable: new Set(), asked: new Set(ids), deleted: new Set(), failed: false, validUntil: Date.now() + 30_000 })
+      expect(await told(DANA, r, lostR)).to.deep.equal(LOST)
+      // Carol, still in it, reads it.
+      expect((await verdictsFor(CAROL, [a], w)).get(String(a._id))?.verdict).to.equal('visible')
+    })
+
+    it('nobody else reads it, whether they could open the project or not: a source it used was deleted', async () => {
+      const a = given()
+      const w = projectWorld([a], DELETED)
+      for (const who of [CAROL, IVY, BOB]) {
+        expect((await verdictsFor(who, [a], w)).get(String(a._id)), who).to.include({ verdict: 'hidden', reason: 'deleted' })
+        expect(await told(who, a, w), who).to.deep.equal(GONE)
+      }
+    })
+
+    it('with records she can still open, she reads it; with one she lost, or one someone else can not open, it hides', async () => {
+      const a = given({ direct: { projects: [PROJECT], records: [R] } })
+      const b = given({ direct: { projects: [PROJECT], records: [R2] } })
+      const w = projectWorld([a, b], DELETED)
+      expect((await verdictsFor(DANA, [a], w)).get(String(a._id))).to.include({ verdict: 'visible', basis: 'label' })
+      // Ivy can open R and not R2: what she can't open now outweighs the deleted project.
+      expect((await verdictsFor(IVY, [b], w)).get(String(b._id))).to.include({ verdict: 'hidden', reason: 'sources' })
+      const lost = given({ direct: { projects: [PROJECT], records: [R] } })
+      const gone = projectWorld([lost], DELETED)
+      gone.deps.readable = async (_who, ids) => ({ readable: new Set(), asked: new Set(ids), deleted: new Set(), failed: false, validUntil: Date.now() + 30_000 })
+      expect((await verdictsFor(DANA, [lost], gone)).get(String(lost._id))).to.include({ verdict: 'hidden', reason: 'sources' })
+    })
+
+    it('her follow-ups built on it stay hers; what anyone else built on it is no longer theirs', async () => {
+      const a = given()
+      const t1 = given({ parents: [{ id: a._id, ver: a.labelVer, mode: 'text' }] })
+      const t2 = answer('From the table above.', {}, { parents: [{ id: t1._id, ver: t1.labelVer, mode: 'full' }] })
+      // Carol's, in the project chat: it was given the instructions too, and Dana's answer as text.
+      const c1 = given({ parents: [{ id: a._id, ver: a.labelVer, mode: 'text' }] }, CAROL)
+      // Carol's, given only Dana's answer: it names no project of its own.
+      const c2 = answer('Agreed.', {}, { parents: [{ id: a._id, ver: a.labelVer, mode: 'text' }] }, CAROL)
+      const w = projectWorld([a, t1, t2, c1, c2], DELETED)
+      const dana = await verdictsFor(DANA, [a, t1, t2, c1, c2], w)
+      for (const r of [a, t1, t2, c2]) expect(dana.get(String(r._id)), String(r.content)).to.include({ verdict: 'visible', basis: 'label' })
+      expect(dana.get(String(c1._id))).to.include({ verdict: 'hidden', reason: 'deleted' })
+      const carol = await verdictsFor(CAROL, [t1, t2, c1, c2], w)
+      expect(carol.get(String(t1._id))).to.include({ verdict: 'hidden', reason: 'deleted' })
+      expect(carol.get(String(t2._id))).to.include({ verdict: 'hidden', reason: 'parent' })
+      // Her own, as with a record of Dana's that was deleted: she didn't ask what it was built on.
+      expect(carol.get(String(c1._id))).to.include({ verdict: 'hidden', reason: 'parent' })
+      expect(carol.get(String(c2._id))).to.include({ verdict: 'hidden', reason: 'parent' })
+      expect(await told(CAROL, c1, w)).to.deep.equal(LOST)
+    })
+
+    it('reaches her own follow-up questions, and nobody else’s', async () => {
+      const a = given()
+      const w = projectWorld([a], DELETED)
+      const [dana] = (await includableRows(reader(DANA), session, [a], { deps: w.deps })) as Array<Record<string, unknown>>
+      expect(dana).to.include({ content: a.content, _ref: String(a._id) })
+      const [carol] = (await includableRows(reader(CAROL), session, [a], { deps: w.deps })) as Array<Record<string, unknown>>
+      expect(carol).to.include({ content: '' })
+      expect(carol).to.not.have.property('_ref')
+      expect(await fullOK(reader(DANA), a, String(a.labelVer), { deps: w.deps, session })).to.equal(true)
+      expect(await fullOK(reader(CAROL), a, String(a.labelVer), { deps: w.deps, session })).to.equal(false)
+    })
+
+    it('a share of it is refused as one of an answer whose record was deleted is, and a share given before stands as that one does', async () => {
+      const a = given()
+      const r = answer('R says.', {}, { direct: { records: [R] } })
+      const w = world([a, r], { deleted: [R] })
+      w.deps.canReadProject = async (_who, pid) => (pid === PROJECT ? 'deleted' : undefined)
+      for (const row of [r, a]) {
+        const ver = String(row.labelVer)
+        const label = String(row.content)
+        for (const audience of ['everyone' as const, { userIds: [BOB] }]) {
+          expect(await widenOK(row, ver, audience, { deps: w.deps, session }), `${label} ${JSON.stringify(audience)}`).to.deep.equal({ ok: false, code: 'SHARE_NOT_WIDENABLE' })
+        }
+        expect(await whyNotWidenable(row, ver, { deps: w.deps, session }), label).to.deep.equal({ ok: false, code: 'SHARE_NOT_WIDENABLE' })
+        // Shared with Bob before the delete: he still reads its text, as a share shows it.
+        row.consent = { by: DANA, at: T1, ver: row.labelVer, scope: 'people' }
+        row.consentTo = [{ userId: BOB, memberSince: memberSinceOf(session, BOB) }]
+        expect((await verdictsFor(BOB, [row], w)).get(String(row._id))?.verdict, label).to.equal('consented')
+        expect((await verdictsFor(CAROL, [row], w)).get(String(row._id)), label).to.include({ verdict: 'hidden', reason: 'deleted' })
+      }
+    })
+  })
+
   describe('an answer shared with the reader', () => {
     it('a share with everyone shows Bob its text alone, and lets a follow-up that quoted it as text through', async () => {
       const a1 = answer('R says.', {}, { direct: { records: [R] } })
@@ -889,6 +1082,16 @@ describe('the reader check: who may see an answer', () => {
       expect(withoutSteps(question('What does R say?'))).to.not.have.property('activityWithheld')
     })
 
+    it("keeps the answer's words alone: what the run said before and between its steps is a step too", () => {
+      const said = { type: 'text', content: 'I will look in the private plan.' }
+      const step = { type: 'tool_call', toolCallId: 'c1', toolName: 'knowledgegraph__search' }
+      const final = { type: 'text', content: 'R says.', isFinal: true }
+      const partsOf = (parts: unknown[]) => (withoutSteps(answer('R says.', { parts }, null)) as { parts: unknown[] }).parts
+      expect(partsOf([said, step, said, step, final])).to.deep.equal([final])
+      // None marked, from before the mark: its text stays, its steps never do.
+      expect(partsOf([step, { type: 'text', content: 'R says.' }])).to.deep.equal([{ type: 'text', content: 'R says.' }])
+    })
+
     describe("a call waiting on its asker's approval card", () => {
       const ARGUMENT = 'TITLE-FROM-THE-BOARD-DECK'
       const EXPIRES = 1_900_000_000_000
@@ -967,6 +1170,159 @@ describe('the reader check: who may see an answer', () => {
           const seen = withoutSteps(row, row, now) as { parts: Array<Record<string, unknown>> }
           expect(seen.parts[0], status).to.deep.equal({ ...STUB, status })
         }
+      })
+
+      describe('the line its run closes with, which speaks to its asker alone', () => {
+        type Row = ReaderRow & Record<string, unknown>
+        const LINE = 'Waiting for your approval to run create_issue on Jira.'
+        const OWN = 'I will file it.'
+        const at = new Date(EXPIRES - 60_000)
+        /** Dana's answer that stopped on a card, as the stream stores it: its text, then the line. */
+        const stopped = (content = `${OWN}\n\n${LINE}`, over: Row = {}, parts: unknown[] = [waiting()]) => {
+          const all = [{ type: 'text', content: 'Let me look.' }, ...parts, { type: 'text', content, isFinal: true }]
+          const row = answer(content, { parts: all, ...over }, { pub: true })
+          row.provenance = label({ pub: true }, String(row.labelVer), labelContentHash(content, all))
+          return row
+        }
+        const seenBy = (row: Row) => withoutSteps(row) as Row
+        const APPROVED = { approvalAnswered: { decision: 'approved', ran: true, at } }
+
+        it('reaches no reader of the answer, in its text or in its parts; what it said of its own does', () => {
+          const seen = seenBy(stopped())
+          expect(seen.content).to.equal(OWN)
+          expect(seen.parts).to.deep.equal([STUB, { type: 'text', content: OWN, isFinal: true }])
+          const alone = seenBy(stopped(LINE))
+          expect([alone.content, alone.parts]).to.deep.equal(['', [STUB]])
+        })
+
+        it('waiting, answered, expired or a sub-agent’s, and in a fork, whose copy of the card is settled', () => {
+          const sub = { type: 'sub_agent', runId: 'sub-1', parts: [waiting()] }
+          const settled = waiting({ status: 'blocked', approvalAnswer: 'expired' })
+          for (const [name, row] of [
+            ['answered', stopped(LINE, APPROVED)],
+            ['expired', stopped(LINE, {}, [waiting({}, { expiresAt: 1 })])],
+            ['a sub-agent’s', stopped(LINE, {}, [sub])],
+            ['a fork’s', stopped(LINE, {}, [settled])],
+            ['a fork’s, of a sub-agent’s', stopped(LINE, {}, [{ ...sub, parts: [settled] }])],
+            ['with a file after it', stopped(`${LINE}\n\n::artifact[a.csv](held:a)`)],
+            ['with no transcript to say whether there was a card', { ...stopped(LINE), parts: undefined }],
+          ] as const) {
+            expect(JSON.stringify(seenBy(row)), name).to.not.include('Waiting for your approval')
+          }
+          expect(seenBy(stopped(`${OWN}\n\n${LINE}\n\n::artifact[a.csv](held:a)`)).content).to.match(/^I will file it\.\n+::artifact/)
+        })
+
+        it('is left alone in an answer with no card, and in one that only quotes it', () => {
+          const told = `The card says: ${LINE}`
+          for (const row of [stopped(LINE, {}, [{ type: 'tool_call', toolCallId: 'c', status: 'completed' }]), stopped(told), answer(`- ${LINE}`, {}, null)]) {
+            expect(seenBy(row).content).to.equal(row.content)
+          }
+        })
+
+        it('its asker keeps it: the app draws the card in its place, and her own next turn starts from it', async () => {
+          const a = stopped()
+          const w = world([a])
+          const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
+          const dana = await readerView(reader(DANA), session, [a], { deps: w.deps, member: true, perRecordView })
+          expect(dana.rows[0]).to.include({ content: a.content })
+          const carol = await readerView(reader(CAROL), session, [a], { deps: w.deps, member: true, perRecordView })
+          expect(carol.rows[0]).to.include({ content: OWN })
+          const [own] = await includableRows(reader(DANA), session, [a], { deps: w.deps })
+          expect(own).to.include({ content: a.content })
+        })
+
+        it("another person's model is never given it: not of an answer it may have, not of a share, not of a shared copy", async () => {
+          const given = async (row: Row, who = CAROL, extra: Row = {}) =>
+            ((await includableRows(reader(who), session, [row], { deps: world([row]).deps, ...extra })) as Row[])[0]!
+          expect((await given(stopped())).content).to.equal(OWN)
+          const alone = await given(stopped(LINE))
+          expect(alone.content).to.equal('')
+          // Nothing of it was given, so it is no parent of the new answer.
+          expect(formatPreviousConversations([alone] as never)[0]).to.not.have.any.keys('_ref', '_ver', '_pub')
+          const replied = stopped(LINE, {}, [waiting()])
+          expect((await given(replied, CAROL, { replyTargetId: String(replied._id) })).content).to.equal('')
+          const shared = (row: Row): Row => ({ ...row, consent: { by: DANA, at: T1, ver: row.labelVer, scope: 'everyone' } })
+          expect((await given(shared(stopped(`${OWN}\n\n${LINE}`, APPROVED)))).content).to.equal(OWN)
+          const copy = { _id: nextId(), sessionId: ROOM, messageType: 'shared_answer', authorUserId: DANA, content: LINE, sharedFrom: { sharedBy: DANA, sharedAt: T1 } }
+          expect((await given(copy as Row)).content).to.equal('')
+        })
+
+        it('waits while nobody answered the card and it has not expired, whoever asked: a sub-agent too', () => {
+          const sub = { type: 'sub_agent', runId: 'sub-1', parts: [{ type: 'sub_agent', runId: 'sub-2', parts: [waiting()] }] }
+          expect(waitsForApproval(stopped(), EXPIRES - 1)).to.equal(true)
+          expect(waitsForApproval(stopped(LINE, {}, [sub]), EXPIRES - 1)).to.equal(true)
+          expect(waitsForApproval(stopped(), EXPIRES), 'expired').to.equal(false)
+          for (const answered of [{ decision: 'denied', ran: false, at }, { decision: 'approved', ran: false, at }, { decision: 'approved', ran: true, at }]) {
+            expect(waitsForApproval(stopped(LINE, { approvalAnswered: answered }), EXPIRES - 1), JSON.stringify(answered)).to.equal(false)
+          }
+          expect(waitsForApproval(stopped(LINE, {}, [waiting({ approvalAnswer: 'allowed', status: 'completed' })]), EXPIRES - 1), 'settled').to.equal(false)
+          expect(waitsForApproval(answer('R says.')), 'no card').to.equal(false)
+        })
+
+        describe('in a share', () => {
+          const LOST = { redacted: true, reason: 'no_longer_accessible' }
+          /** Dana's answer that stopped on a card, from R, which Bob can't open, and that she shared with everyone. */
+          const sharedRow = (content: string, over: Row = {}, parts: unknown[] = [waiting()]): Row => {
+            const all = [...parts, { type: 'text', content, isFinal: true }]
+            const row = answer(content, { parts: all, ...over }, { direct: { records: [R] } })
+            row.provenance = label({ direct: { records: [R] } }, String(row.labelVer), labelContentHash(content, all))
+            return { ...row, consent: { by: DANA, at: T1, ver: row.labelVer, scope: 'everyone' } }
+          }
+          const bobReads = async (row: Row, now = EXPIRES - 1): Promise<Row> => {
+            configureVisibility({ sharedText: (text: string) => text.replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim() })
+            const w = world([row])
+            return (await readerView(reader(BOB), session, [row], { deps: { ...w.deps, now: () => now }, member: true })).rows[0] as Row
+          }
+
+          it('shows what the answer said of its own once the card was answered or expired, and never the line', async () => {
+            for (const [name, row, now] of [
+              ['allowed', sharedRow(`${OWN}\n\n${LINE}`, APPROVED), EXPIRES - 1],
+              ['denied', sharedRow(`${OWN}\n\n${LINE}`, { approvalAnswered: { decision: 'denied', ran: false, at } }), EXPIRES - 1],
+              ['expired', sharedRow(`${OWN}\n\n${LINE}`), EXPIRES + 1],
+            ] as const) {
+              const seen = await bobReads(row, now)
+              expect([seen.content, seen.sharedWithYou], name).to.deep.equal([OWN, true])
+            }
+          })
+
+          it('of an answer with nothing else to show reads as any answer hidden from them: the line alone, a card that waits, a question card, a picture', async () => {
+            for (const [name, row, now] of [
+              ['the line alone, waiting', sharedRow(LINE), EXPIRES - 1],
+              ['the line alone, expired', sharedRow(LINE), EXPIRES + 1],
+              ['the line alone, allowed', sharedRow(LINE, APPROVED), EXPIRES - 1],
+              ['words of its own while it waits', sharedRow(`${OWN}\n\n${LINE}`), EXPIRES - 1],
+              ['a question card', sharedRow('', {}, [{ type: 'tool_call', toolCallId: 'q', toolName: 'ask_user_question', status: 'completed' }]), EXPIRES - 1],
+              ['a picture alone', sharedRow('![chart](held-image:x)', {}, []), EXPIRES - 1],
+            ] as const) {
+              const seen = await bobReads(row, now)
+              // Not Bob's answer: what it used is not his to open.
+              expect(seen.answerHidden, name).to.deep.equal({ redacted: true, reason: 'no_access' })
+              expect(seen, name).to.not.have.any.keys('sharedWithYou', 'consent')
+              expect(JSON.stringify(seen), name).to.not.include('Waiting for your approval').and.not.include(OWN).and.not.include('create_issue')
+            }
+          })
+
+          it('its model is given nothing of one that waits', async () => {
+            const row = sharedRow(`${OWN}\n\n${LINE}`)
+            const given = async (now: number, over: Row = {}) =>
+              ((await includableRows(reader(BOB), session, [{ ...row, ...over }], { deps: { ...world([row]).deps, now: () => now } })) as Row[])[0]!
+            expect((await given(EXPIRES - 1)).content).to.equal('')
+            expect((await given(EXPIRES + 1)).content).to.equal(OWN)
+            expect((await given(EXPIRES - 1, APPROVED)).content).to.equal(OWN)
+          })
+
+          it('a message made of one before it had nothing to share is hidden from others, and shows its sharer no such line', async () => {
+            const copy = { _id: nextId(), sessionId: ROOM, messageType: 'shared_answer', authorUserId: DANA, requestedBy: DANA, content: LINE, sharedQuestion: 'File it?', sharedFrom: { sharedBy: DANA, sharedAt: T1 } } as Row
+            const w = world([copy])
+            const read = async (who: string) => (await readerView(reader(who), session, [copy], { deps: w.deps, member: true })).rows[0] as Row
+            const bob = await read(BOB)
+            expect(bob.answerHidden).to.deep.equal(LOST)
+            expect(bob.sharedQuestion).to.equal('')
+            const dana = await read(DANA)
+            expect([dana.content, dana.answerHidden]).to.deep.equal(['', undefined])
+            expect(JSON.stringify([bob, dana])).to.not.include('Waiting for your approval')
+          })
+        })
       })
 
       it('a card without a tool, server or expiry, or another call, leaves nothing', () => {
@@ -1183,7 +1539,8 @@ describe('the reader check: who may see an answer', () => {
       const stopped = storeShare(w, a, {}, { audience: true })
       const after = await read(stopped)
       expect(JSON.stringify(after)).to.not.include(CANARY)
-      expect(after).to.deep.include({ content: 'This answer used content you can no longer access.' })
+      // Not his answer: he is told it used what he can't open, as anyone it is not shared with.
+      expect(after).to.deep.include({ content: "You can't see this answer. It used sources you can't open." })
     })
 
     it("a chat audience epoch that cannot be read stores and serves nothing", async () => {
@@ -1518,12 +1875,249 @@ describe('the reader check: who may see an answer', () => {
       expect(view.content).to.equal('')
     })
 
-    it('a failed run looks like any other hidden answer to everyone but its asker', () => {
+    it("a person's own failed run hides from them as an answer does", () => {
       const failed = { ...answer('Error quoting R.'), messageType: 'error', errorCode: 'X' }
       const shown = hiddenRowFor(failed, { verdict: 'hidden', reason: 'sources' })
       expect(shown.messageType).to.equal('bot_response')
       expect(shown.content).to.not.include('R')
       expect(shown).to.not.have.property('errorCode')
+    })
+  })
+
+  describe("someone else's failed run in a chat", () => {
+    const CANARY = 'HELIOTROPE-F-2208'
+    const WORDS = `${CANARY} the model refused 'R plan.xlsx'`
+    const LINE = "This question couldn't be answered. Only the person who asked can see why."
+    /** What a failed run's row may hold beside its words. */
+    const HELD = {
+      errorCode: `code-${CANARY}`,
+      respondingAgentKey: `agent-${CANARY}`,
+      referenceData: [{ name: `source-${CANARY}` }],
+      citations: [{ citationId: `cit-${CANARY}` }],
+      tools: [{ toolName: `tool-${CANARY}` }],
+      reasoning: [{ content: `why-${CANARY}` }],
+      metadata: { reason: CANARY },
+      unavailableTools: [{ displayName: `tool-${CANARY}` }],
+      seq: 7,
+      changeRev: 9,
+    }
+    const failed = (over: Record<string, unknown> = {}, labelOver: Record<string, unknown> | null = null) =>
+      answer(WORDS, { messageType: 'error', ...HELD, ...over }, labelOver)
+    const keepAll = async <M extends object>(rows: M[]): Promise<M[]> => rows
+    const read = async (who: string, row: ReaderRow & Record<string, unknown>, w: World, chat: ReaderSession = session, extra: Record<string, unknown> = {}) => {
+      const q = { ...question('What does R say?'), _id: nextId() }
+      const out = await readerView({ ...reader(who), identity: { userId: who } }, chat, [q, row], { deps: w.deps, member: true, perRecordView: keepAll, ...extra })
+      return { row: out.rows[1] as Record<string, unknown>, verdict: out.verdicts.get(String(row._id)) }
+    }
+    const CASES: Array<[string, () => ReaderRow & Record<string, unknown>, { fail?: boolean }?]> = [
+      // As the stop of a removed asker's run, and the recovery of a run whose server died, store theirs.
+      ['with no label', () => failed()],
+      ['that read what the reader cannot open', () => failed({}, { direct: { records: [R] } })],
+      ["that used its asker's own tools", () => failed({}, { direct: { personal: [DANA] } })],
+      ['whose label is incomplete', () => failed({}, { complete: false, incomplete: ['x'] })],
+      ['whose label is of another text', () => ({ ...failed({}, { pub: true }), content: `${WORDS} later` })],
+      ['whose check cannot run', () => failed({}, { direct: { records: [R] } }), { fail: true }],
+    ]
+
+    for (const [name, make, opts] of CASES) {
+      it(`says that it failed, and nothing else of it: ${name}`, async () => {
+        const row = make()
+        const w = world([row], opts)
+        const bob = await read(BOB, row, w)
+        expect(bob.row).to.deep.equal({
+          ...hiddenView(row),
+          messageType: 'error',
+          content: LINE,
+          reasonWithheld: true,
+        })
+        expect(JSON.stringify(bob.row)).to.not.include(CANARY)
+        // It is not shown to them, whatever it says: what else asks (a file it made) goes by the verdict.
+        expect(bob.verdict?.verdict).to.be.oneOf(['hidden', 'unchecked'])
+      })
+    }
+
+    it('reads alike whatever it read, so it tells nothing of that: the rows differ only in which row they are', async () => {
+      const told = await Promise.all(
+        CASES.map(async ([, make, opts]) => {
+          const row = make()
+          const { _id, ...rest } = (await read(BOB, row, world([row], opts))).row
+          return rest
+        }),
+      )
+      for (const row of told) expect(row).to.deep.equal(told[0])
+    })
+
+    it('its asker reads why, and no reader of another row learns it from theirs', async () => {
+      const row = failed()
+      const w = world([row])
+      expect((await read(DANA, row, w)).row).to.include({ messageType: 'error', content: WORDS, errorCode: HELD.errorCode }).and.not.have.property('reasonWithheld')
+    })
+
+    it("the asker's own, once she can't open what it read, hides from her as an answer does", async () => {
+      const row = failed({ requestedBy: BOB }, { direct: { records: [R] } })
+      const own = (await read(BOB, row, world([row]))).row
+      expect(own).to.include({ messageType: 'bot_response', content: 'This answer used content you can no longer access.' })
+      expect(own.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
+      expect(JSON.stringify(own)).to.not.include(CANARY)
+    })
+
+    it('one from before labels, hidden by its turn, says so too, and counts as not shown', async () => {
+      const row = failed({ labelVer: undefined, createdAt: T0 })
+      const w = world([row])
+      w.deps.switchAt = async () => T2.getTime()
+      const hides = async <M extends object>(rows: M[]): Promise<M[]> => rows.map((m) => ({ ...m, answerHidden: { redacted: true, reason: 'no_longer_accessible' } }))
+      expect((await read(BOB, row, w)).verdict?.verdict, 'the control: read from before the rules').to.equal('visible')
+      const bob = await read(BOB, row, w, session, { perRecordView: hides })
+      expect(bob.row).to.include({ messageType: 'error', content: LINE, reasonWithheld: true })
+      expect(JSON.stringify(bob.row)).to.not.include(CANARY)
+      expect(bob.verdict?.verdict).to.equal('hidden')
+    })
+
+    it('one whose every source the reader can open reads no more than that (6.9); what else asks goes by its verdict', async () => {
+      const row = failed({}, { direct: { records: [R] } })
+      const carol = await read(CAROL, row, world([row]))
+      expect(carol.row).to.deep.equal({ ...hiddenView(row), messageType: 'error', content: LINE, reasonWithheld: true })
+      expect(carol.verdict?.verdict).to.equal('visible')
+    })
+
+    it('a row with no asker on record is the owner\'s: the others read that it failed', async () => {
+      const row = failed({ requestedBy: undefined })
+      const w = world([row])
+      expect((await read(CAROL, row, w)).row).to.include({ messageType: 'error', content: LINE, reasonWithheld: true })
+      expect((await read(DANA, row, w)).row).to.include({ content: WORDS })
+    })
+
+    it('a card or an answer of the same run hides as before', async () => {
+      const card = { _id: nextId(), sessionId: ROOM, messageType: 'tool_call', requestedBy: DANA, content: CANARY, runId: 'run-1' }
+      const a = answer(WORDS, {}, null)
+      const w = world([card, a])
+      expect((await read(BOB, a, w)).row).to.include({ messageType: 'bot_response' }).and.have.property('answerHidden')
+      expect((await read(BOB, card, w)).row).to.include({ messageType: 'tool_call' }).and.have.property('answerHidden')
+    })
+
+    it("in an agent's thread it hides as any answer, as before", async () => {
+      const row = failed()
+      const thread: ReaderSession = { ...session, _id: 'cccccccccccccccccccccccc', agentRoomId: ROOM, agentKey: 'sales' }
+      const bob = (await read(BOB, { ...row, sessionId: thread._id }, world([{ ...row, sessionId: thread._id }]), thread)).row
+      expect(bob).to.include({ messageType: 'bot_response', content: "You can't see this answer. It used sources you can't open." })
+      expect(bob).to.have.property('answerHidden')
+      expect(bob).to.not.have.property('reasonWithheld')
+      expect(JSON.stringify(bob)).to.not.include(CANARY)
+    })
+  })
+
+  describe("what a reader is told of someone else's hidden answer: one class, never which source, tool or answer", () => {
+    const U3 = "You can't see this answer. It used sources you can't open."
+    const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
+    const told = async (who: string, row: ReaderRow, w: World, at: ReaderSession = session) => {
+      const view = (await readerView(reader(who), at, [row], { deps: w.deps, member: true, perRecordView })).rows[0] as Record<string, unknown>
+      return { content: view.content, reason: (view.answerHidden as { reason?: unknown } | undefined)?.reason }
+    }
+
+    it("made with its asker's own access: a tool, server or skill on her sign-in", async () => {
+      const a = answer('From your tracker.', {}, { direct: { records: [R], personal: [DANA] } })
+      expect(await told(CAROL, a, world([a]))).to.deep.equal({
+        content: "You can't see this answer. It was made with the access of the person who asked.",
+        reason: 'personal',
+      })
+    })
+
+    it('an agent the reader cannot use', async () => {
+      const a = answer('As the agent has it.', {}, { direct: { agents: [{ key: 'agent-1', kind: 'config' }] } })
+      const w = world([a], { agents: { 'agent-1': [DANA, CAROL] } })
+      expect(await told(BOB, a, w)).to.deep.equal({ content: "You can't see this answer. It used an agent you can't use.", reason: 'agent' })
+      expect((await verdictsFor(CAROL, [a], w)).get(String(a._id))?.verdict).to.equal('visible')
+    })
+
+    it('a source that was deleted', async () => {
+      const a = answer('R said.', {}, { direct: { records: [R] } })
+      expect(await told(CAROL, a, world([a], { deleted: [R] }))).to.deep.equal({
+        content: "You can't see this answer. A source it used was deleted.",
+        reason: 'deleted',
+      })
+    })
+
+    it('restricted records keep the note they always had', async () => {
+      const a = answer('R says.', {}, { direct: { records: [R] } })
+      expect(await told(BOB, a, world([a]))).to.deep.equal({ content: U3, reason: 'no_access' })
+    })
+
+    it('stopped before its label came', async () => {
+      const a = answer('Two paragraphs so far.', { status: 'stopped' }, null)
+      expect(await told(BOB, a, world([a]))).to.deep.equal({ content: 'The person who asked stopped this answer.', reason: 'stopped' })
+    })
+
+    it("an earlier answer, or a label that can't be relied on, is never told apart from restricted records", async () => {
+      const own = answer('From your tracker.', {}, { direct: { personal: [DANA] } })
+      const followUp = answer('144.', {}, { parents: [{ id: own._id, ver: own.labelVer, mode: 'full' }] })
+      const partial = answer('Partly labelled.', {}, { complete: false, incomplete: ['untagged_prompt_part:tool'] })
+      const unlabelled = answer('No label.', {}, null)
+      const w = world([own, followUp, partial, unlabelled])
+      for (const row of [followUp, partial, unlabelled]) {
+        expect(await told(CAROL, row, w), String(row.content)).to.deep.equal({ content: U3, reason: 'no_access' })
+      }
+    })
+
+    it('says one class only, the first that applies', async () => {
+      const a = answer('Tracker and R.', {}, {
+        direct: { records: [R], personal: [DANA], agents: [{ key: 'agent-1', kind: 'config' }] },
+      })
+      expect((await told(BOB, a, world([a], { agents: { 'agent-1': [DANA] } }))).reason).to.equal('personal')
+    })
+
+    it("a failed run in an agent's thread reads as an answer hidden for the same class", async () => {
+      const thread: ReaderSession = { ...session, _id: 'cccccccccccccccccccccccc', agentRoomId: ROOM, agentKey: 'sales' }
+      const failed = answer('The tracker said no.', { messageType: 'error', sessionId: thread._id }, { direct: { personal: [DANA] } })
+      const answered = answer('From your tracker.', { sessionId: thread._id }, { direct: { personal: [DANA] } })
+      const w = world([failed, answered])
+      expect(await told(CAROL, failed, w, thread)).to.deep.equal(await told(CAROL, answered, w, thread))
+    })
+  })
+
+  describe('an answer its asker stopped before its label came', () => {
+    const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
+    const viewOf = async (who: string, row: ReaderRow, w: World): Promise<Record<string, unknown>> =>
+      (await readerView(reader(who), session, [row], { deps: w.deps, member: true, perRecordView })).rows[0] as Record<string, unknown>
+    // What is saved when the stop comes first: the text so far, and no label.
+    const stoppedEarly = (): ReaderRow & Record<string, unknown> => answer('Two paragraphs so far.', { status: 'stopped' }, null)
+
+    it('anyone else is told only that it was stopped, with nothing of its text; its asker reads it', async () => {
+      const a = stoppedEarly()
+      const w = world([a])
+      for (const who of [BOB, CAROL]) {
+        const view = await viewOf(who, a, w)
+        expect(view, who).to.deep.include({
+          content: 'The person who asked stopped this answer.',
+          answerHidden: { redacted: true, reason: 'stopped' },
+        })
+        expect(JSON.stringify(view)).to.not.include('Two paragraphs')
+        expect(view).to.not.have.property('status')
+      }
+      expect(JSON.stringify(await viewOf(DANA, a, w))).to.include('Two paragraphs so far.')
+    })
+
+    it('one stopped after its label came is judged by that label, as any answer', async () => {
+      const a = answer('R says.', { status: 'stopped' }, { direct: { records: [R] } })
+      const w = world([a])
+      expect(await viewOf(BOB, a, w)).to.deep.include({ answerHidden: { redacted: true, reason: 'no_access' } })
+      expect(JSON.stringify(await viewOf(CAROL, a, w))).to.include('R says.')
+    })
+
+    it('an answer with no label that was not stopped keeps the note of any hidden answer', async () => {
+      const a = answer('No label.', {}, null)
+      const w = world([a])
+      expect(await viewOf(BOB, a, w)).to.deep.include({
+        content: "You can't see this answer. It used sources you can't open.",
+        answerHidden: { redacted: true, reason: 'no_access' },
+      })
+    })
+
+    it('a stopped answer from before labels reads as any answer from then', async () => {
+      const a = answer('Old and stopped.', { status: 'stopped' }, null)
+      delete a.labelVer
+      const w = world([a])
+      // Priya joined after the switch, so she never had the earlier view of it.
+      expect(await viewOf(PRIYA, a, w)).to.deep.include({ answerHidden: { redacted: true, reason: 'no_access' } })
     })
   })
 
@@ -1536,7 +2130,7 @@ describe('the reader check: who may see an answer', () => {
       const w = world([q, a])
       const perRecordView = async <M extends object>(rows: M[]): Promise<M[]> => rows
       const bob = await readerView(reader(BOB), session, [q, a], { deps: w.deps, member: true, perRecordView })
-      expect(bob.rows[1]).to.deep.include({ content: 'This answer used content you can no longer access.' })
+      expect(bob.rows[1]).to.deep.include({ content: "You can't see this answer. It used sources you can't open.", answerHidden: { redacted: true, reason: 'no_access' } })
       expect(JSON.stringify(bob.rows[1])).to.not.include('R-step')
       const carol = await readerView(reader(CAROL), session, [q, a], { deps: w.deps, member: true, perRecordView })
       expect(JSON.stringify(carol.rows[1])).to.include('R says.')

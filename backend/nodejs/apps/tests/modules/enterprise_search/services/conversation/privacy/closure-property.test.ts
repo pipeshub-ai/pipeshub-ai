@@ -2,7 +2,7 @@ import { expect } from 'chai'
 import { labelStateOf } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 import * as closures from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
 import * as walk from './reference/visibility-walk'
-import { BOB, CAROL, IVY, ORG, OTHER, Rng, depsOf, makeWorld, readersOf, type Row, type World } from './closure-world'
+import { BOB, CAROL, IVY, ORG, OTHER, PEOPLE, Rng, depsOf, makeWorld, readersOf, type Row, type World } from './closure-world'
 
 /** A chat that is none of the world's: read as a fork of one reads (`chatsRead`), where no share of them covers anyone. */
 const FORK = 'cccccccccccccccccccccccc'
@@ -34,12 +34,27 @@ const pageOf = (world: World, rng: Rng, sessionId: string | undefined): Row[] =>
   return inChat.slice(start, start + 1 + rng.int(8))
 }
 
-/** The versions a row's label at `ver` names, and the versions that wrote the files it names, by `id@ver`. */
+/**
+ * The versions a row's label at `ver` names, the versions that wrote the files it names, and what its share, or a copy,
+ * counts on or was made from, by `id@ver`.
+ */
 const namedBy = (world: World, row: Row, ver: string): string[] => {
   const current = typeof row.labelVer === 'string' ? row.labelVer : 'legacy'
   const entry = Array.isArray(row.labelHistory) ? (row.labelHistory as Array<Record<string, unknown>>).find((e) => e.ver === ver) : undefined
+  const counted = (on: unknown): string[] =>
+    (Array.isArray(on) ? (on as Array<Record<string, unknown>>) : []).map((ref) => `${String(ref.row)}@${String(ref.ver)}`)
+  if (row.messageType === 'shared_answer') {
+    const from = (row.removedAt === undefined ? row.sharedFrom : row.removedFrom) as Record<'messageId' | 'ver', string> | undefined
+    const again = row.again as string | undefined
+    return [
+      ...counted((row.sharedFrom as Record<string, unknown> | undefined)?.on),
+      ...(from?.messageId !== undefined ? [`${from.messageId}@${from.ver}`] : []),
+      ...(again !== undefined ? [`${again}@legacy`] : []),
+    ]
+  }
+  const consent = (ver === current ? row.consent : entry?.consent) as Record<string, unknown> | undefined
   const label = (ver === current ? row.provenance : entry?.provenance) as { parents?: unknown } | undefined
-  const out: string[] = []
+  const out: string[] = counted(consent?.on)
   for (const parent of Array.isArray(label?.parents) ? (label?.parents as Array<Record<string, unknown>>) : []) {
     if (typeof parent !== 'object' || parent === null) continue
     if (typeof parent.id === 'string' && parent.id !== '') {
@@ -104,9 +119,18 @@ describe('closures give the verdicts of the walk they replace', function () {
     const differences: string[] = []
     let judged = 0
     let pageDecided = 0
+    // What the worlds reach, so no rule is compared only where it never applies.
+    const met = { on: 0, limited: 0, agent: 0, signIn: 0, plain: 0, covered: 0, askedMore: 0, unsaidOpen: 0, unsaidClosed: 0 }
     for (let seed = FIRST_SEED; seed < FIRST_SEED + WORLDS && differences.length < 5; seed += 1) {
       const world = makeWorld(seed)
       const deps = depsOf(world)
+      const { hasClosedSkill } = deps
+      deps.hasClosedSkill = async (who, key) => {
+        const closed = await hasClosedSkill?.(who, key)
+        if (closed === false) met.unsaidOpen += 1
+        else met.unsaidClosed += 1
+        return closed
+      }
       const rng = new Rng(seed * 7919)
       // Drawn apart, so the readers and pages of each seed stay what they were.
       const asChat = new Rng(seed * 104729)
@@ -155,12 +179,27 @@ describe('closures give the verdicts of the walk they replace', function () {
       }
       for (const row of world.rows) {
         if (row.messageType !== 'bot_response' && row.messageType !== 'error') continue
-        const session = world.sessions.get(String(row.sessionId))
-        for (const audience of ['everyone', 'outside', { userIds: [CAROL, BOB, IVY] }] as const) {
+        const session = world.shareSessions.get(String(row.sessionId))
+        for (const audience of ['everyone', 'outside', { outside: [CAROL, BOB, IVY] }, { userIds: [CAROL, BOB, IVY] }] as const) {
           const opts = { deps, ...(session !== undefined && { session }) }
-          const a = JSON.stringify(await closures.widenOK(row, currentOf(row), audience, opts))
+          const widened = await closures.widenOK(row, currentOf(row), audience, opts)
+          const a = JSON.stringify(widened)
           const b = JSON.stringify(await walk.widenOK(row, currentOf(row), audience, opts))
           if (a !== b) differences.push(`seed ${String(seed)} widenOK ${String(row._id)} to ${JSON.stringify(audience)}: closures ${a}, walk ${b}`)
+          if (widened.on) met.on += 1
+          if (widened.limitedTo) met.limited += 1
+          if (widened.ok && !widened.on && !widened.limitedTo) met.plain += 1
+          if (widened.code === 'SHARE_NOT_ALLOWED_AGENT') met.agent += 1
+          if (widened.code === 'SHARE_NOT_ALLOWED_SIGN_IN') met.signIn += 1
+        }
+        // Whether a share covers a person, asked of the row alone.
+        if (row.consent !== undefined && session !== undefined) {
+          const viewer = { userId: rng.pick(PEOPLE), orgId: ORG, member: true, memberSince: closures.memberSinceOf(session, rng.pick(PEOPLE)) }
+          const a = await closures.shareCovers(viewer, row, currentOf(row), { session, deps })
+          const b = await walk.shareCovers(viewer, row, currentOf(row), { session, deps })
+          if (a !== b) differences.push(`seed ${String(seed)} shareCovers ${String(row._id)} for ${viewer.userId}: closures ${String(a)}, walk ${String(b)}`)
+          if (a) met.covered += 1
+          else if (closures.consentCovers(row, currentOf(row), viewer)) met.askedMore += 1
         }
       }
     }
@@ -168,5 +207,6 @@ describe('closures give the verdicts of the walk they replace', function () {
     expect(judged).to.be.greaterThan(WORLDS * 4)
     // Far from every row: the case stays rare.
     expect(pageDecided).to.be.lessThan(judged / 20)
+    for (const [what, times] of Object.entries(met)) expect(times, `${what}: ${JSON.stringify(met)}`).to.be.greaterThan(WORLDS >= 400 ? 15 : -1)
   })
 })

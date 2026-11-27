@@ -11,7 +11,9 @@ import {
 export type ShareAudience = 'everyone' | { userIds: string[] } | 'outside';
 
 export type ShareRefusalCode =
-  'SHARE_NOT_WIDENABLE' | 'SHARE_NOT_ALLOWED_AGENT';
+  | 'SHARE_NOT_WIDENABLE'
+  | 'SHARE_NOT_ALLOWED_AGENT'
+  | 'SHARE_NOT_ALLOWED_SIGN_IN';
 
 export interface WidenResult {
   ok: boolean;

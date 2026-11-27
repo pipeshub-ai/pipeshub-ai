@@ -183,6 +183,34 @@ describe('quoted words a reader is given', () => {
       }
     })
 
+    // The reply's line showed only "PipesHub". A reader who may see the answer now
+    // is told it changed, with no words of either version; anyone else is told no more than before.
+    it('says the answer changed only to a reader who may see it now, and never gives words of either version', async () => {
+      const open = regenerated()
+      const closed = answer('R says the new codeword')
+      closed.labelHistory = [{ ver: 'old-version', runId: 'run-1', retiredAt: T1, provenance: { v: 5, direct: { records: [R] } } }]
+      const reply = (to: ReaderRow & Record<string, unknown>, ver: unknown = 'old-version') =>
+        question('Thanks', CAROL, { replyTo: { messageId: to._id, kind: 'answer', excerpt: 'R says the codeword', authorUserId: DANA, ver } })
+      const toOpen = reply(open)
+      for (const who of [BOB, CAROL, DANA]) {
+        const [row] = await view(who, [toOpen], [open, toOpen])
+        expect(row?.replyTo, who).to.deep.include({ excerpt: '', withheld: true, changed: true })
+      }
+      const toClosed = reply(closed)
+      for (const who of [CAROL, DANA]) {
+        const [row] = await view(who, [toClosed], [closed, toClosed])
+        expect(row?.replyTo, who).to.deep.include({ excerpt: '', withheld: true, changed: true })
+      }
+      const [bob] = await view(BOB, [toClosed], [closed, toClosed])
+      expect(bob?.replyTo).to.deep.include({ excerpt: '', withheld: true })
+      expect(bob?.replyTo).to.not.have.property('changed')
+      // The version quoted, which Bob may not see: as before.
+      const same = answer('R says the codeword')
+      const [hidden] = await view(BOB, [reply(same, same.labelVer)], [same, reply(same, same.labelVer)])
+      expect(hidden?.replyTo).to.deep.include({ excerpt: '', withheld: true })
+      expect(hidden?.replyTo).to.not.have.property('changed')
+    })
+
     it('a copy of the version the reader may see now is given, without the version it records', async () => {
       const a = regenerated()
       const reply = question('Nice', CAROL, { replyTo: { messageId: a._id, kind: 'answer', excerpt: '2 + 2 = 4.', authorUserId: DANA, ver: a.labelVer } })

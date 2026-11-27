@@ -4,6 +4,7 @@ import {
   answerLabelFrom,
   archivedLabelHistory,
   labelContentHash,
+  replacedLabelHistory,
   labelStateOf,
   sealAnswerForStorage,
   withoutLabelFields,
@@ -67,6 +68,16 @@ describe('answer label: what the AI backend sends', () => {
     const label = answerLabelFrom(danasLabel({ parents: [parent] }))
     expect(label?.complete).to.equal(true)
     expect(label?.parents).to.deep.equal([parent])
+  })
+
+  it('an agent\'s entry keeps its mark of skill text the asker can\'t open, also in an archived version', () => {
+    const agents = [{ key: 'agent-x', kind: 'config', skill: true }]
+    const label = answerLabelFrom(danasLabel({ direct: { ...(danasLabel().direct as object), agents } }))
+    expect(label?.complete).to.equal(true)
+    expect(label?.direct.agents).to.deep.equal(agents)
+    const sealed = sealAnswerForStorage(answerRow({ provenance: label }), mint)
+    expect(labelStateOf(sealed)).to.equal('ok')
+    expect(archivedLabelHistory({ ...sealed, runId: 'run-1' })?.[0]?.provenance?.direct.agents).to.deep.equal(agents)
   })
 
   it('an answer without a label stores none, so only its asker sees it', () => {
@@ -222,6 +233,18 @@ describe('answer label: archived versions', () => {
     const history = archivedLabelHistory(old)
     expect(history).to.have.length(1)
     expect(history?.[0]).to.deep.equal({ ver: old.labelVer, runId: 'run-1', provenance: old.provenance })
+  })
+
+  // Try again redoes a failed run in its place; the failure is no version of the answer.
+  it("a failed run's row that an answer replaces is no version of it: only the versions before it are kept", () => {
+    const old = stored()
+    expect(replacedLabelHistory(old)).to.deep.equal(archivedLabelHistory(old))
+    expect(replacedLabelHistory(stored({ messageType: 'error' }))).to.equal(undefined)
+    expect(replacedLabelHistory({ messageType: 'error' })).to.equal(undefined)
+    const earlier = [{ ver: 'v1', runId: 'run-0' }]
+    expect(replacedLabelHistory(stored({ messageType: 'error', labelHistory: earlier }))).to.deep.equal(earlier)
+    // Removing a failed run's row still archives its label, with when it was retired.
+    expect(archivedLabelHistory(stored({ messageType: 'error' }), new Date())).to.have.length(1)
   })
 
   it('a removed answer records when its version was retired', () => {

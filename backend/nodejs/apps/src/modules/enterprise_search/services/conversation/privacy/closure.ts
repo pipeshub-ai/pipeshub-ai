@@ -6,13 +6,15 @@ import { createHash } from 'crypto';
  * time; a closure gathers it once, when the version is written, from its label and its parents' closures.
  *
  * A closure is a fold of the labels it covers. Who asked each of them matters (an asker reads past her own missing
- * label, her own deleted sources and her own marks), so record ids, marks and labels that cannot be relied on are kept
- * apart by asker. Everything else is one union: personal results, agents, chat uploads and projects.
+ * label, her own deleted sources and projects, and her own marks), so record ids, projects, marks and labels that cannot
+ * be relied on are kept apart by asker. Everything else is one union: personal results, agents and chat uploads.
  *
  * What can change after the version was written is not folded in but kept as a reference the read judges:
  * - an earlier answer given as text that was shared then (`alts`): a reader the share covers needs nothing of it;
  * - an answer from before labels given as text (`legacy`): judged by the per-record view of its turn;
- * - a shared copy, a question or a note (`rows`): it reads only while it is not removed;
+ * - a shared copy (`rows`, or `legacy` when given as text): read in its chat while it, or the copy that took its place,
+ *   is there, and otherwise as the answer it was made from;
+ * - a question or a note (`rows`): it reads only while it is not removed;
  * - a file the run read (`files`): its writer is found in the chats the read covers;
  * - a file saved before the rules, which no run wrote (`legacyFiles`): judged by who could read its chat then.
  * An earlier answer given as text that was not shared then is folded in; a share made later is noticed by the read
@@ -29,10 +31,12 @@ export const askerKey = (
 ): AskerKey =>
   requestedBy !== undefined ? `u:${requestedBy}` : `o:${sessionId ?? ''}`;
 
-/** The labels of one asker in a fold: the ids they name, and whether any names a mark or cannot be relied on. */
+/** The labels of one asker in a fold: the ids and projects they name, and whether any names a mark or cannot be relied on. */
 export interface AskerPart {
   /** Record and container ids: a reader must be able to open each. */
   ids: Set<string>;
+  /** Projects whose instructions they were given: a reader must be able to open each; only the asker reads past a deleted one. */
+  projects: Set<string>;
   /** A mark (an administrator's statement about a source): only the asker reads past it. */
   marks: boolean;
   /** A version whose label cannot be relied on, or is missing: only its asker reads past it. */
@@ -54,7 +58,6 @@ export class Fold {
   readonly agents = new Set<string>();
   /** The chats of chat uploads (`direct.chat`), by conversation id. */
   readonly uploads = new Set<string>();
-  readonly projects = new Set<string>();
   /** An earlier row it names that does not exist, or a file it names that no run can be found for. */
   broken = false;
   /** Versions given as text that were shared when the fold was made: a share then can still cover the reader. */
@@ -66,6 +69,11 @@ export class Fold {
   readonly held = new Map<string, VersionRef>();
   /** A label in it was searched for as a service identity: never shared. */
   service = false;
+  /**
+   * The agents that wrote answers in it (`respondingAgentKey`), whatever their labels say. No read asks about them: a
+   * share's check does, and asks each agent's own record.
+   */
+  readonly responders = new Set<string>();
   /** Answers from before labels given as text, by row id. */
   readonly legacy = new Set<string>();
   /** Shared copies, questions and notes it names. */
@@ -80,7 +88,12 @@ export class Fold {
   part(key: AskerKey): AskerPart {
     let part = this.askers.get(key);
     if (!part) {
-      part = { ids: new Set(), marks: false, unsure: false };
+      part = {
+        ids: new Set(),
+        projects: new Set(),
+        marks: false,
+        unsure: false,
+      };
       this.askers.set(key, part);
     }
     return part;
@@ -102,17 +115,18 @@ export class Fold {
     for (const [key, part] of other.askers) {
       const mine = this.part(key);
       for (const id of part.ids) mine.ids.add(id);
+      for (const p of part.projects) mine.projects.add(p);
       mine.marks = mine.marks || part.marks;
       mine.unsure = mine.unsure || part.unsure;
     }
     for (const p of other.personal) this.personal.add(p);
     for (const a of other.agents) this.agents.add(a);
     for (const u of other.uploads) this.uploads.add(u);
-    for (const p of other.projects) this.projects.add(p);
     this.broken = this.broken || other.broken;
     this.service = this.service || other.service;
     for (const [key, ref] of other.alts) this.alts.set(key, ref);
     for (const [key, ref] of other.held) this.held.set(key, ref);
+    for (const key of other.responders) this.responders.add(key);
     for (const id of other.legacy) this.legacy.add(id);
     for (const [key, ref] of other.rows) this.rows.set(key, ref);
     for (const f of other.files) this.files.add(f);
@@ -141,11 +155,22 @@ export class Fold {
       const ids = [...part.ids].filter(
         (id) => !theirs.some((p) => p.ids.has(id)),
       );
+      const projects = [...part.projects].filter(
+        (pid) => !theirs.some((p) => p.projects.has(pid)),
+      );
       const marks = part.marks && !theirs.some((p) => p.marks);
       const unsure = part.unsure && !theirs.some((p) => p.unsure);
-      if (ids.length === 0 && !marks && !unsure && theirs.length > 0) continue;
+      if (
+        ids.length === 0 &&
+        projects.length === 0 &&
+        !marks &&
+        !unsure &&
+        theirs.length > 0
+      )
+        continue;
       const mine = out.part(key);
       for (const id of ids) mine.ids.add(id);
+      for (const pid of projects) mine.projects.add(pid);
       mine.marks = marks;
       mine.unsure = unsure;
     }
@@ -155,14 +180,14 @@ export class Fold {
       if (!inAny((f) => f.agents, a)) out.agents.add(a);
     for (const u of this.uploads)
       if (!inAny((f) => f.uploads, u)) out.uploads.add(u);
-    for (const p of this.projects)
-      if (!inAny((f) => f.projects, p)) out.projects.add(p);
     out.broken = this.broken && !bases.some((b) => b.broken);
     out.service = this.service && !bases.some((b) => b.service);
     for (const [key, ref] of this.alts)
       if (!inAny((f) => f.alts, key)) out.alts.set(key, ref);
     for (const [key, ref] of this.held)
       if (!inAny((f) => f.held, key)) out.held.set(key, ref);
+    for (const key of this.responders)
+      if (!inAny((f) => f.responders, key)) out.responders.add(key);
     for (const id of this.legacy)
       if (!inAny((f) => f.legacy, id)) out.legacy.add(id);
     for (const [key, ref] of this.rows)
@@ -187,6 +212,7 @@ export class Fold {
     for (const [key, part] of this.askers) {
       askers[key] = {
         ...(part.ids.size > 0 && { ids: [...part.ids] }),
+        ...(part.projects.size > 0 && { projects: [...part.projects] }),
         ...(part.marks && { marks: true }),
         ...(part.unsure && { unsure: true }),
       };
@@ -195,9 +221,9 @@ export class Fold {
     if (this.personal.size > 0) out.personal = [...this.personal];
     if (this.agents.size > 0) out.agents = [...this.agents];
     if (this.uploads.size > 0) out.uploads = [...this.uploads];
-    if (this.projects.size > 0) out.projects = [...this.projects];
     if (this.broken) out.broken = true;
     if (this.service) out.service = true;
+    if (this.responders.size > 0) out.responders = [...this.responders];
     if (this.alts.size > 0)
       out.alts = [...this.alts.values()].map((r) => [r.id, r.ver]);
     if (this.held.size > 0)
@@ -221,9 +247,11 @@ export class Fold {
       for (const [key, raw] of Object.entries(askers)) {
         if (!isRecord(raw)) return undefined;
         const ids = raw.ids ?? [];
-        if (!isStrings(ids)) return undefined;
+        const projects = raw.projects ?? [];
+        if (!isStrings(ids) || !isStrings(projects)) return undefined;
         const part = out.part(key);
         for (const id of ids) part.ids.add(id);
+        for (const pid of projects) part.projects.add(pid);
         part.marks = raw.marks === true;
         part.unsure = raw.unsure === true;
       }
@@ -232,7 +260,7 @@ export class Fold {
       ['personal', out.personal],
       ['agents', out.agents],
       ['uploads', out.uploads],
-      ['projects', out.projects],
+      ['responders', out.responders],
       ['legacy', out.legacy],
       ['files', out.files],
       ['legacyFiles', out.legacyFiles],
@@ -277,13 +305,16 @@ export class Fold {
 
 /** A fold as a document stores it: only what it holds. */
 export interface StoredFold {
-  askers?: Record<string, { ids?: string[]; marks?: true; unsure?: true }>;
+  askers?: Record<
+    string,
+    { ids?: string[]; projects?: string[]; marks?: true; unsure?: true }
+  >;
   personal?: string[];
   agents?: string[];
   uploads?: string[];
-  projects?: string[];
   broken?: true;
   service?: true;
+  responders?: string[];
   alts?: Array<[string, string]>;
   held?: Array<[string, string]>;
   legacy?: string[];
@@ -339,7 +370,7 @@ export const closureKey = (id: string, ver: string): string => `${id}@${ver}`;
 // ---- stored closures ------------------------------------------------------------------------------------------
 
 /** Bumped whenever what a closure holds, or how it is read, changes: a closure of another rev is made again. */
-export const CLOSURE_REV = 4;
+export const CLOSURE_REV = 7;
 
 /** Closures a stored one is built on, at most, before one is stored whole. */
 export const CHAIN_MAX = 32;

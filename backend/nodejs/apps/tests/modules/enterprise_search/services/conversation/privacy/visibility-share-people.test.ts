@@ -45,7 +45,7 @@ const answer = (records: string[], parents: Array<{ id: string; ver: string; mod
       direct: { ...Object.fromEntries(DIRECT_KEYS.map((k) => [k, []])), records },
       parents,
       complete: true,
-      tagset: 1,
+      tagset: 2,
       pub: false,
     },
   }
@@ -142,9 +142,9 @@ describe('a share with named people', () => {
     const rows = [w, b, sh, a]
     const { deps } = world(rows, (userId, id) => userId !== IVY || id !== 'rec-w')
     deps.runs = async (_org, sessions, runIds) => rows.filter((r) => runIds.includes(String(r.runId)) && sessions.includes(String(r.sessionId)))
-    // The share check stops at S, so it may be shared; each person must still open everything A was built on, the file
-    // included: Carol can, Ivy cannot open what wrote it.
+    // The share check stops at S, so it may be shared, counting on S's share; each person must still open everything A
+    // was built on, the file included: Carol can, Ivy cannot open what wrote it.
     const result = await widenOK(a, String(a.labelVer), { userIds: [CAROL, IVY] }, { deps, session })
-    expect(result).to.deep.equal({ ok: true, cannotOpen: [IVY] })
+    expect(result).to.deep.equal({ ok: true, on: [{ row: String(sh._id), ver: String(sh.labelVer) }], cannotOpen: [IVY] })
   })
 })

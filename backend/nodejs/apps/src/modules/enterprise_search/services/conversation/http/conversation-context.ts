@@ -42,6 +42,11 @@ export interface ConversationRequestContext {
    */
   readonly kindFilter?: QueryFilter<IChatSession>;
   /**
+   * Set by a guard whose conversation's rows are read as another chat than the grant's session says (a thread's, read
+   * as a part of its room: the room's owner and people, under the thread's own id).
+   */
+  readonly readSession?: ScopedSession;
+  /**
    * Set by `runLease()` under an extended policy: acquired, not heartbeating. The turn handler takes it with
    * `claimLease(req)`, starts the heartbeat, and settles it through `TurnLifecycle`. A lease nobody
    * claims is released when the response closes.
@@ -122,6 +127,12 @@ export function sharedListFilterOf(
     throw new InternalServerError('shared list guard not mounted');
   }
   return sharedListFilter;
+}
+
+/** The chat a guarded request's rows are read as, for the reader check; undefined when no guard granted one. */
+export function readSessionOf(req: object): ScopedSession | undefined {
+  const ctx = contexts.get(req);
+  return ctx?.readSession ?? ctx?.grant?.session;
 }
 
 /** The grant's access view under an extended policy; undefined otherwise, so responses keep their default shape. */

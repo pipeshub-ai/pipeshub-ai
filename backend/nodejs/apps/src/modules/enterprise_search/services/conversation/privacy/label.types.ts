@@ -29,6 +29,8 @@ export type LabelDirectKey = (typeof LABEL_DIRECT_KEYS)[number];
 export interface LabelAgent {
   key: string;
   kind: 'service' | 'config';
+  /** The run was given the text of a skill assigned to this agent that its asker can't open. */
+  skill?: true;
 }
 
 /** A file attached in a chat, by the chat it was attached in. */
@@ -118,6 +120,8 @@ export interface LabelHistoryEntry {
     ver: string;
     scope: 'everyone' | 'people';
     how?: string;
+    agents?: string[];
+    on?: Array<{ row: string; ver: string }>;
   };
   /** Who a share with people of that version covered. */
   consentTo?: Array<{ userId: unknown; memberSince: string }>;
@@ -125,7 +129,8 @@ export interface LabelHistoryEntry {
 
 /**
  * Row fields that hold label data: the label, its archive, and the fields stored beside it about who an answer was
- * shared with, who asked for it and who passed its check. None of them is ever returned to a client.
+ * shared with, who asked for it, who passed its check and, on rows stored while an earlier release's suggestions ran (since
+ * taken out), whom it suggested its asker mention or share it with. None of them is ever returned to a client.
  */
 export const LABEL_ROW_FIELDS = [
   'provenance',
@@ -133,4 +138,5 @@ export const LABEL_ROW_FIELDS = [
   'audience',
   'consentTo',
   'shareRequests',
+  'suggestions',
 ] as const;

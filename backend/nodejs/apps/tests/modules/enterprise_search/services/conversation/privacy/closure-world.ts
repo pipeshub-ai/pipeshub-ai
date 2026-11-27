@@ -2,8 +2,11 @@
  * Random chats for the closure property tests: rows of every kind the reader check judges, with labels that name
  * records, containers, people, agents, uploads, projects and marks, earlier answers in every mode, files by the run
  * that wrote them, versions archived by a regenerate or a removal, shares of current and archived versions, answers
- * from before labels, copies and questions (some removed), and labels that cannot be relied on. Every parent is an
- * earlier version, as the AI backend names them; a world is the same for a seed.
+ * from before labels, copies and questions (some removed), and labels that cannot be relied on. Agents answer (some on a
+ * service account by their record, some whose record can't be read; some with skills not everyone opens, which an older
+ * label says nothing of), in a thread of their own too; shares stay with
+ * agents and count on earlier shares and copies; a copy says what it was made from, and one taken out what took its place.
+ * Every parent is an earlier version, as the AI backend names them; a world is the same for a seed.
  */
 import { archivedLabelHistory, labelContentHash } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 import type { Reader, ReaderRow, ReaderSession, VisibilityDeps } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
@@ -13,6 +16,8 @@ export const ORG = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 export const ROOM = 'bbbbbbbbbbbbbbbbbbbbbbbb'
 export const THREAD = 'dddddddddddddddddddddddd'
 export const OTHER = 'eeeeeeeeeeeeeeeeeeeeeeee'
+/** An agent's thread of the room. */
+export const AGENT_THREAD = 'abababababababababababab'
 
 export const DANA = 'd00000000000000000000001'
 export const CAROL = 'c00000000000000000000002'
@@ -29,7 +34,13 @@ export const T2 = new Date('2026-10-03T10:00:00Z')
 const RECORDS = ['rec-a', 'rec-b', 'rec-c', 'rec-d', 'rec-e']
 const NODES = ['kb-1', 'kb-2']
 const AGENTS = ['agent-open', 'agent-closed', 'agent-unknown']
-const PROJECTS = ['proj-open', 'proj-closed', 'proj-unknown']
+/** Who can't open a skill each agent has now; of `agent-lost`'s nothing can be said, and one left out has none. */
+const CLOSED_SKILLS: Record<string, string[] | undefined> = { 'agent-open': [CAROL, IVY], 'agent-closed': [DANA, BOB], 'agent-lost': undefined }
+/** Who owns each agent: some own it, some don't; of `agent-lost` nothing can be said. */
+const AGENT_OWNERS: Record<string, string[] | undefined> = { 'agent-open': [DANA, CAROL], 'agent-closed': [BOB], 'agent-lost': undefined }
+/** What each agent's own record says of a service account: some run on one, whatever their labels say; some can't be read. */
+const SERVICE_RECORDS: Record<string, boolean | undefined> = { 'agent-open': false, 'agent-closed': false, 'agent-service': true, 'agent-lost': undefined }
+const PROJECTS = ['proj-open', 'proj-closed', 'proj-unknown', 'proj-deleted']
 const DIRECT_KEYS = ['records', 'vrids', 'nodes', 'saVrids', 'personal', 'agents', 'chat', 'projects', 'marks']
 
 /** A small seeded generator (mulberry32): the same world for the same seed. */
@@ -65,11 +76,13 @@ export interface World {
   rows: Row[]
   store: Map<string, Row>
   sessions: Map<string, ReaderSession>
+  /** The session a share of a row of each chat is read in: a thread's has its room's people. */
+  shareSessions: Map<string, ReaderSession>
   opens: Map<string, Set<string>>
   deleted: Set<string>
   agents: Map<string, Set<string> | undefined>
   chatsRead: Map<string, Map<string, boolean | undefined>>
-  projectsRead: Map<string, Map<string, boolean | undefined>>
+  projectsRead: Map<string, Map<string, boolean | 'deleted' | undefined>>
   /** The access check fails for these readers. */
   failing: Set<string>
   switchAt: number | undefined | 'fails'
@@ -96,6 +109,10 @@ interface Named {
 export function makeWorld(seed: number): World {
   counter = 0
   const rng = new Rng(seed)
+  // Agents, shares that ask more, and what copies were made from: drawn apart, so the rest of a seed's world stays as it was.
+  const extra = new Rng(seed * 6700417)
+  // Labels from before they said whether a run was given skill text its asker can't open, drawn apart too.
+  const older = new Rng(seed * 15485863)
   const room: ReaderSession = {
     _id: ROOM,
     orgId: ORG,
@@ -110,11 +127,24 @@ export function makeWorld(seed: number): World {
   }
   const thread: ReaderSession = { _id: THREAD, orgId: ORG, userId: CAROL, parentId: ROOM }
   const other: ReaderSession = { _id: OTHER, orgId: ORG, userId: BOB, sharedWith: [{ userId: DANA, accessLevel: 'write', addedAt: T0 }] }
+  // The room's agent thread, as it is read: the room's people, its own id, its room's id, its agent.
+  const threadAgent = extra.pick(['agent-open', 'agent-open', 'agent-closed', 'agent-unknown', 'agent-service'])
+  const agentThread: ReaderSession = { ...room, _id: AGENT_THREAD, agentRoomId: ROOM, agentKey: threadAgent }
   const sessions = new Map<string, ReaderSession>([
     [ROOM, room],
     [THREAD, thread],
     [OTHER, other],
+    [AGENT_THREAD, agentThread],
   ])
+  const shareSessions = new Map<string, ReaderSession>([
+    [ROOM, extra.chance(0.1) ? { ...room, agentKey: extra.pick(['agent-open', 'agent-service', 'agent-lost']) } : room],
+    [THREAD, { ...room, _id: THREAD, parentId: ROOM }],
+    [OTHER, other],
+    [AGENT_THREAD, agentThread],
+  ])
+  // An agent's thread that does not say which agent's, and a chat that is nobody's.
+  if (older.chance(0.04)) shareSessions.set(ROOM, { ...room, agentKey: '' })
+  if (older.chance(0.04)) shareSessions.set(AGENT_THREAD, { ...agentThread, agentKey: '' })
   const opens = new Map<string, Set<string>>()
   for (const who of PEOPLE) opens.set(who, new Set(rng.some([...RECORDS, ...NODES], 0.75)))
   opens.set(DANA, new Set(rng.some([...RECORDS, ...NODES], 0.9)))
@@ -123,17 +153,21 @@ export function makeWorld(seed: number): World {
     ['agent-open', new Set(PEOPLE)],
     ['agent-closed', new Set(rng.some(PEOPLE, 0.4))],
     ['agent-unknown', undefined],
+    ['agent-service', new Set(PEOPLE)],
+    ['agent-lost', new Set(PEOPLE)],
   ])
   const chatsRead = new Map<string, Map<string, boolean | undefined>>()
-  const projectsRead = new Map<string, Map<string, boolean | undefined>>()
+  const projectsRead = new Map<string, Map<string, boolean | 'deleted' | undefined>>()
   for (const who of PEOPLE) {
     chatsRead.set(who, new Map([[OTHER, rng.chance(0.5)], [ROOM, rng.chance(0.7) ? true : undefined]]))
     projectsRead.set(
       who,
-      new Map<string, boolean | undefined>([
+      new Map<string, boolean | 'deleted' | undefined>([
         ['proj-open', true],
         ['proj-closed', rng.chance(0.3)],
         ['proj-unknown', undefined],
+        // Deleted for everyone who asks: only the askers of answers that named it keep them.
+        ['proj-deleted', 'deleted'],
       ]),
     )
   }
@@ -153,9 +187,57 @@ export function makeWorld(seed: number): World {
     clock += 60_000
     return new Date(clock)
   }
-  const chatOf = (): string => (rng.chance(0.8) ? ROOM : rng.chance(0.6) ? THREAD : OTHER)
+  const chatOf = (): string => {
+    const chat = rng.chance(0.8) ? ROOM : rng.chance(0.6) ? THREAD : OTHER
+    return extra.chance(0.2) ? AGENT_THREAD : chat
+  }
+  /**
+   * What a share of a version made at `before` asks beside its consent, sometimes: agents it stays with, and earlier
+   * versions it counts on (a version counts on what its run was given, so only on earlier ones).
+   */
+  const asksMore = (before: string, inChat?: string): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
+    if (extra.chance(0.15)) out.agents = extra.chance(0.95) ? [extra.pick(AGENTS)] : 'agent-open'
+    const earlier = named.filter((n) => inChat === undefined || n.row.sessionId === inChat).flatMap((n) =>
+      n.row.messageType === 'shared_answer'
+        ? String(n.row._id) < before ? [{ row: String(n.row._id), ver: '' }] : []
+        : n.vers.filter((ver) => (ver === 'legacy' ? String(n.row._id) : ver) < before).map((ver) => ({ row: String(n.row._id), ver })),
+    )
+    if (extra.chance(inChat === undefined ? 0.3 : 0.8) && earlier.length > 0) {
+      out.on = extra.chance(0.97) ? Array.from({ length: 1 + extra.int(2) }, () => extra.pick(earlier)) : [{ row: 7 }]
+    }
+    return out
+  }
+  /** What a copy was made from: an answer of any chat at one of its versions, or nothing it can be read from. */
+  const copiedFromSome = (sharedBy: string): Record<string, unknown> => {
+    const base = { sharedBy, sharedAt: new Date(clock) }
+    const originals = named.filter((n) => n.row.messageType === 'bot_response')
+    if (originals.length === 0 || extra.chance(0.08)) return base
+    const original = extra.pick(originals)
+    const ver = extra.pick(original.vers)
+    // The message of an agent thread's answer counts on shares of that thread more often than not.
+    const inThread = original.row.sessionId === AGENT_THREAD && extra.chance(0.7) ? AGENT_THREAD : undefined
+    const { on } = asksMore(ver === 'legacy' ? String(original.row._id) : ver, inThread)
+    return {
+      ...base,
+      sessionId: original.row.sessionId,
+      messageId: original.row._id,
+      ...(original.row.sessionId === AGENT_THREAD && extra.chance(0.9) && { fromAgentThread: true }),
+      ...(extra.chance(0.9) && { ver }),
+      ...(on !== undefined && { on }),
+    }
+  }
   const askerOf = (chat: string): string =>
     chat === THREAD ? (rng.chance(0.8) ? CAROL : DANA) : chat === OTHER ? rng.pick([BOB, DANA]) : rng.pick([DANA, CAROL, BOB, IVY, PRIYA])
+
+  /** Takes a copy out of its chat as a removal does: what it was made from is kept apart, or lost on an old one. */
+  const takeOut = (copy: Row, at: Date): void => {
+    const from = copy.sharedFrom as Record<string, unknown>
+    copy.removedAt = at
+    copy.sharedFrom = { sharedBy: from.sharedBy, sharedAt: from.sharedAt }
+    if (from.messageId !== undefined && extra.chance(0.85)) copy.removedFrom = { sessionId: from.sessionId, messageId: from.messageId, ver: from.ver }
+    record('change', copy)
+  }
 
   const parentsFor = (): unknown[] => {
     const out: unknown[] = []
@@ -197,6 +279,9 @@ export function makeWorld(seed: number): World {
     if (rng.chance(0.1)) direct.chat = [{ conversationId: rng.pick([chat, OTHER, ROOM, '']), recordId: 'up-1' }]
     if (rng.chance(0.08)) direct.projects = [rng.pick(PROJECTS)]
     if (rng.chance(0.06)) direct.marks = [{ source: 'searx', ver: 1 }]
+    if (extra.chance(0.08)) direct.agents = [{ key: 'agent-open', kind: 'config' }, ...(extra.chance(0.6) ? [{ key: extra.pick(['agent-open', 'agent-open', 'agent-closed', 'agent-lost']), kind: 'config', skill: true }] : [])]
+    if (extra.chance(0.015)) direct.agents = [{ key: 'agent-service', kind: extra.chance(0.5) ? 'service' : 'config' }]
+    if (extra.chance(0.015)) direct.saVrids = extra.chance(0.6) ? ['shared-sign-in:srv'] : ['vr-1', 'shared-sign-in:srv']
     const complete = !rng.chance(0.08)
     const label: Record<string, unknown> = {
       v: rng.chance(0.03) ? 6 : 5,
@@ -205,7 +290,7 @@ export function makeWorld(seed: number): World {
       direct,
       parents: parentsFor(),
       complete,
-      tagset: 1,
+      tagset: older.chance(0.3) ? older.int(2) : 2,
       pub: rng.chance(0.35),
       ...(!complete && { incomplete: ['untagged_prompt_part:tool'] }),
     }
@@ -253,13 +338,10 @@ export function makeWorld(seed: number): World {
       continue
     }
     if (roll < 0.32 && named.length > 0) {
-      const copy: Row = { _id: nextId(at), sessionId: chat, orgId: ORG, seq: ++seq, messageType: 'shared_answer', authorUserId: asker, requestedBy: asker, content: `Copy ${t}`, createdAt: at }
+      const copy: Row = { _id: nextId(at), sessionId: chat, orgId: ORG, seq: ++seq, messageType: 'shared_answer', authorUserId: asker, requestedBy: asker, content: `Copy ${t}`, createdAt: at, sharedFrom: copiedFromSome(asker) }
       rows.push(copy)
       record('change', copy)
-      if (rng.chance(0.2)) {
-        copy.removedAt = tick()
-        record('change', copy)
-      }
+      if (rng.chance(0.2)) takeOut(copy, tick())
       named.push({ row: copy, vers: ['legacy'] })
       continue
     }
@@ -288,12 +370,13 @@ export function makeWorld(seed: number): World {
       createdAt: at,
     }
     if (!rng.chance(0.05)) row.provenance = labelFor(asker, chat, labelVer, content, parts)
+    if (extra.chance(0.06)) row.respondingAgentKey = extra.pick(['agent-open', 'agent-open', ...AGENTS, 'agent-service', 'agent-lost'])
     rows.push(row)
     record('write', row)
     named.push({ row, vers: [labelVer] })
     // Shared at once, sometimes: later answers are made knowing it.
     if (rng.chance(0.08)) {
-      row.consent = { by: row.requestedBy ?? DANA, at: new Date(clock), ver: labelVer, scope: 'everyone' }
+      row.consent = { by: row.requestedBy ?? DANA, at: new Date(clock), ver: labelVer, scope: 'everyone', ...asksMore(labelVer) }
       record('change', row)
     }
   }
@@ -342,7 +425,7 @@ export function makeWorld(seed: number): World {
     const vers = (named.find((n) => n.row === row) as Named).vers
     const ver = rng.pick(vers)
     const scope = rng.chance(0.6) ? 'everyone' : 'people'
-    const consent = { by: row.requestedBy ?? DANA, at: T2, ver, scope }
+    const consent = { by: row.requestedBy ?? DANA, at: T2, ver, scope, ...asksMore(ver) }
     const people = rng.some([CAROL, BOB, IVY, PRIYA], 0.5)
     const consentTo = people.map((userId) => ({ userId, memberSince: rng.chance(0.85) ? `direct:${T0.toISOString()}` : 'owner' }))
     if (ver === row.labelVer) {
@@ -371,8 +454,42 @@ export function makeWorld(seed: number): World {
       record('change', row)
     }
   }
+  // Some copies taken out are shared again, at their version or a newer one; some of those are taken out in turn, and
+  // some name a copy that does not stand for them.
+  for (const copy of rows.filter((r) => r.messageType === 'shared_answer' && r.removedAt !== undefined)) {
+    if (!extra.chance(0.6)) continue
+    const at = tick()
+    const from = copy.removedFrom as Record<string, unknown> | undefined
+    const same = from !== undefined && extra.chance(0.9)
+    const original = same ? named.find((n) => n.row._id === from.messageId) : undefined
+    const again: Row = {
+      _id: nextId(at),
+      sessionId: extra.chance(0.95) ? copy.sessionId : OTHER,
+      orgId: ORG,
+      seq: ++seq,
+      messageType: 'shared_answer',
+      authorUserId: copy.authorUserId,
+      requestedBy: copy.requestedBy,
+      content: 'Copy again',
+      createdAt: at,
+      sharedFrom: same
+        ? { sharedBy: copy.authorUserId, sharedAt: at, sessionId: from.sessionId, messageId: from.messageId, ...(from.sessionId === AGENT_THREAD && { fromAgentThread: true }), ver: original && extra.chance(0.3) ? extra.pick(original.vers) : from.ver, ...(extra.chance(0.3) && { on: asksMore(String(from.messageId)).on }) }
+        : copiedFromSome(String(copy.authorUserId)),
+    }
+    rows.push(again)
+    record('change', again)
+    copy.again = again._id
+    record('change', copy)
+    if (extra.chance(0.3)) {
+      takeOut(again, tick())
+      if (extra.chance(0.3)) {
+        again.again = copy._id
+        record('change', again)
+      }
+    }
+  }
   const store = new Map(rows.map((r) => [String(r._id), r]))
-  return { rows, store, sessions, opens, deleted, agents, chatsRead, projectsRead, failing, switchAt, timeline }
+  return { rows, store, sessions, shareSessions, opens, deleted, agents, chatsRead, projectsRead, failing, switchAt, timeline }
 }
 
 /** The shares of a store's rows, as the repository's `listShareMarks` reads them. */
@@ -455,7 +572,9 @@ export function depsOf(world: World): Partial<VisibilityDeps> {
     },
     canReadConversation: async (who, cid) => world.chatsRead.get(who.userId)?.get(cid),
     canReadProject: async (who, pid) => world.projectsRead.get(who.userId)?.get(pid),
-    isServiceAgent: async () => false,
+    isServiceAgent: async (_who, key) => (key in SERVICE_RECORDS ? SERVICE_RECORDS[key] : false),
+    hasClosedSkill: async (who, key) => (key in CLOSED_SKILLS ? CLOSED_SKILLS[key]?.includes(who.userId) : false),
+    ownsAgent: async (who, key) => (key in AGENT_OWNERS ? AGENT_OWNERS[key]?.includes(who.userId) : false),
     sharedText: (text) => text,
     switchAt: async () => {
       if (world.switchAt === 'fails') throw new Error('down')
@@ -485,8 +604,11 @@ export function depsOf(world: World): Partial<VisibilityDeps> {
 /** The readers a world is judged for: each person, a member or not, in each chat they may read. */
 export function readersOf(world: World, rng: Rng): Array<{ reader: Reader; session: ReaderSession | undefined; member: boolean | undefined }> {
   const out: Array<{ reader: Reader; session: ReaderSession | undefined; member: boolean | undefined }> = []
+  const extra = new Rng(world.rows.length * 2654435761 + world.timeline.length)
   for (const userId of PEOPLE) {
-    const sessionId = rng.chance(0.75) ? ROOM : rng.chance(0.6) ? THREAD : rng.chance(0.5) ? OTHER : undefined
+    const drawn = rng.chance(0.75) ? ROOM : rng.chance(0.6) ? THREAD : rng.chance(0.5) ? OTHER : undefined
+    // The agent's thread is read by some of those drawn for the room: drawn apart, as its rows are.
+    const sessionId = drawn === ROOM && extra.chance(0.15) ? AGENT_THREAD : drawn
     const session = sessionId === undefined ? undefined : world.sessions.get(sessionId)
     const member = userId === ZED ? rng.chance(0.3) : rng.chance(0.85) ? true : rng.chance(0.5) ? undefined : false
     out.push({ reader: { userId, orgId: ORG }, session, member })

@@ -189,10 +189,15 @@ export interface MessageLabelRow {
   runId?: string;
   respondingAgentKey?: string;
   sharedFrom?: unknown;
+  /** A shared copy taken out of its chat: what it was made from, and the copy that took its place. */
+  removedFrom?: unknown;
+  again?: unknown;
   consent?: unknown;
   consentTo?: unknown;
   createdAt?: Date;
   removedAt?: Date;
+  /** A question that answers a card: the card it was bound to when it was sent. A store that binds none leaves it out. */
+  answersCard?: string;
 }
 
 /**
@@ -251,8 +256,8 @@ export interface ShareRequestDto {
   memberSince?: string;
 }
 
-/** How an ask is closed in place: answered by a share is `setAnswerConsent`'s. */
-export type ClosedShareRequestState = 'dismissed';
+/** How an ask is closed in place: answered by a share is `setAnswerConsent`'s. `void`: its sender is no longer that member. */
+export type ClosedShareRequestState = 'dismissed' | 'void';
 
 /** The asker's consent to show one version of an answer to more people than can open what it used. */
 export interface AnswerConsentDto {
@@ -261,6 +266,10 @@ export interface AnswerConsentDto {
   ver: string;
   scope: 'everyone' | 'people';
   how?: 'earlier';
+  /** Agents the share stays with (`AnswerConsent.agents`). */
+  agents?: string[];
+  /** The earlier shares it counts on (`AnswerConsent.on`). */
+  on?: Array<{ row: string; ver: string }>;
 }
 
 /** One person a share with people covers, in the membership they had when it was made. */
@@ -279,6 +288,17 @@ export interface NewAnswerShare {
   consentTo?: AnswerConsentEntryDto[];
   /** Whose open asks for `consent.ver` this share answers. */
   covers: 'everyone' | readonly string[];
+}
+
+/** A share changed for some people alone, while it is still the one read. */
+export interface AnswerConsentChange {
+  /** The answer's version as read; absent for a row from before labels. */
+  labelVer: string | undefined;
+  /** The share as read: changed only while it is still that one. */
+  expected: AnswerConsentDto;
+  /** Stop: a share with people names them no more, one with everyone leaves them out. Else one with everyone covers them again. */
+  stop: boolean;
+  people: readonly string[];
 }
 
 /** A share that was ended, with whom it covered. */
@@ -902,12 +922,12 @@ export interface ConversationRepository {
   // ---- answer shares: one atomic write each, guarded by what must still hold, so concurrent asks never refuse each
   // other or the asker's own share, dismiss or stop; each gives the row a fresh change stamp
   /**
-   * Adds a member's ask while the answer is still at `labelVer`: one ask per person per version, and one more after each
-   * share that answered theirs stops covering them. The write holds the rule: no ask of theirs for the version may be
-   * open, dismissed or void, and if they asked before, the answer's share must still be `share`, the one the caller read
-   * and found no longer covers them (the reader check's `consentCovers` decides that, so this store does not). False
-   * when the answer moved on, the row is gone or the rule no longer holds: asks arriving together, a double click
-   * included, add one.
+   * Adds a member's ask while the answer is still at `labelVer`: one waiting ask per person per version. A dismissed,
+   * answered or void ask of theirs leaves them free to ask again. The write holds the rule: no ask of theirs for the
+   * version may be open, and if they asked before, the answer's share must still be `share`, the one the caller read
+   * and found does not cover them (none, or one that no longer does: the reader check's `consentCovers` decides that,
+   * so this store does not). False when the answer moved on, the row is gone or the rule no longer holds: asks
+   * arriving together, a double click included, add one.
    */
   addShareRequest(
     row: AnswerRowRef,
@@ -917,8 +937,9 @@ export interface ConversationRepository {
     tx?: Tx,
   ): Promise<boolean>;
   /**
-   * Closes the open asks for version `ver` (only those of `by`, when given) where they are. Whose asks it closed; none
-   * when no such ask was open, and then nothing is written.
+   * Closes the open asks for version `ver` (only those of `by`, when given, and only those made in another membership
+   * than `notSince`, when that is) where they are. Whose asks it closed; none when no such ask was open, and then
+   * nothing is written.
    */
   closeShareRequests(
     row: AnswerRowRef,
@@ -926,6 +947,8 @@ export interface ConversationRepository {
       ver: string;
       state: ClosedShareRequestState;
       by?: readonly string[];
+      /** A membership (`ShareRequestDto.memberSince`), or null for one no row dates: an ask with no membership stays. */
+      notSince?: string | null;
     },
     tx?: Tx,
   ): Promise<string[]>;
@@ -938,6 +961,12 @@ export interface ConversationRepository {
     share: NewAnswerShare,
     tx?: Tx,
   ): Promise<string[] | null>;
+  /** Stops the answer's share for some people alone, or covers them again (`AnswerConsentChange`); false when it changed since. */
+  changeAnswerConsent(
+    row: AnswerRowRef,
+    change: AnswerConsentChange,
+    tx?: Tx,
+  ): Promise<boolean>;
   /**
    * Ends the answer's share, whatever version it was for (only one `onlyBy` made, when given): the share it ended,
    * with whom it covered; null when there was none.
@@ -947,6 +976,15 @@ export interface ConversationRepository {
     onlyBy?: string,
     tx?: Tx,
   ): Promise<EndedAnswerShare | null>;
+  /**
+   * Ends the shares of the answer's earlier versions, which its archived labels keep (only one `onlyBy` made, or of
+   * version `ver`, when given): those it ended.
+   */
+  clearArchivedConsents(
+    row: AnswerRowRef,
+    only?: { by?: string; ver?: string },
+    tx?: Tx,
+  ): Promise<AnswerConsentDto[]>;
 
   // ---- citations
   createCitations(cs: NewCitation[], tx?: Tx): Promise<CitationDto[]>;

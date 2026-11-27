@@ -1417,7 +1417,13 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
   appConfig: AppConfig,
   viewer: Viewer,
   conversation: C,
-  opts: { known?: Readable; freshIds?: unknown[]; identity?: unknown } = {},
+  opts: {
+    known?: Readable;
+    freshIds?: unknown[];
+    identity?: unknown;
+    /** The chat its rows are read as, as the guard says (`readSessionOf`); the conversation itself when not given. */
+    session?: ReaderSession;
+  } = {},
 ): Promise<C> => {
   if (!Array.isArray(conversation.messages)) return conversation;
   const fresh = new Set((opts.freshIds ?? []).map(String));
@@ -1438,7 +1444,7 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
       member: true,
       ...(opts.identity !== undefined && { identity: opts.identity }),
     },
-    chat,
+    opts.session ?? chat,
     conversation.messages as object[],
     {
       member: true,

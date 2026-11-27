@@ -351,6 +351,20 @@ export function archivedLabelHistory(
   return [...earlier, entry].slice(-LABEL_HISTORY_MAX);
 }
 
+/**
+ * The `labelHistory` a row keeps when new content takes its place (a regenerate): its current version archived. A failed
+ * run's row is no version of the answer that replaces it, so only the versions before it are kept.
+ */
+export function replacedLabelHistory(
+  existing: StoredLabelFields,
+): LabelHistoryEntry[] | undefined {
+  if (existing.messageType !== 'error') return archivedLabelHistory(existing);
+  const earlier = Array.isArray(existing.labelHistory)
+    ? (existing.labelHistory as LabelHistoryEntry[])
+    : [];
+  return earlier.length > 0 ? earlier : undefined;
+}
+
 /** A row without its label fields, for anything that leaves the server; the same object when it has none. */
 export function withoutLabelFields<T>(row: T): T {
   if (row === null || typeof row !== 'object') return row;

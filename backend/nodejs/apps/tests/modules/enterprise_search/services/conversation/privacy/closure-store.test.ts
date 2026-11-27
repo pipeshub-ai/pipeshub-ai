@@ -2,6 +2,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import {
   configureVisibility,
+  memberSinceOf,
   rememberAnswerClosures,
   resetVisibility,
   visibleRows,
@@ -284,8 +285,63 @@ describe('closures kept beside the rows', () => {
     // The consent comes after Ivy's closure was kept: the share check stops at a version shared with everyone here.
     legacy.consent = { by: DANA, at: T0, ver: 'legacy', scope: 'everyone', how: 'earlier' }
     const expected = await walk.widenOK(ivys, String(ivys.labelVer), 'everyone', { deps: w.deps, session })
-    expect(expected).to.deep.equal({ ok: true })
+    // Ivy cannot open a version from before labels by her own access: her share counts on the consent to it.
+    expect(expected).to.deep.equal({ ok: true, on: [{ row: String(legacy._id), ver: 'legacy' }] })
     expect(await widenOK(ivys, String(ivys.labelVer), 'everyone', { session })).to.deep.equal(expected)
+  })
+
+  describe('rows read for a page name no chat: the closures a read makes of them still know theirs', () => {
+    const paged = (row: Row): Row => {
+      const { sessionId: _chat, ...rest } = row
+      return rest as Row
+    }
+    const shareWith = (row: Row, scope: 'people' | 'everyone', to: string): void => {
+      row.consent = { by: DANA, at: new Date(), ver: row.labelVer, scope }
+      if (scope === 'people') row.consentTo = [{ userId: to, memberSince: memberSinceOf(session, to) }]
+    }
+    const read = async (who: string, row: Row) =>
+      (await visibleRows(reader(who), session, [paged(row)], { member: true })).get(String(row._id))
+
+    for (const scope of ['people', 'everyone'] as const) {
+      it(`a follow-up on an answer shared with ${scope === 'people' ? 'its asker alone' : 'everyone'} is its asker's to read, the share read on a page first`, async () => {
+        const w = world({ [DANA]: everything })
+        // Dana's answer follows one of hers: a share in its chat makes what is kept of it again.
+        const first = answer(DANA, ['rec-r'])
+        await w.write(first)
+        const shared = answer(DANA, ['rec-r'], [parentOf(first, 'full')])
+        await w.write(shared)
+        shareWith(shared, scope, BOB)
+        // The page is opened after the share: what is kept of Dana's answer is made again, from the page's row.
+        expect((await read(BOB, shared))?.verdict).to.equal('consented')
+        const followUp = answer(BOB, [], [parentOf(shared)])
+        await w.write(followUp)
+        for (let i = 0; i < 2; i += 1) {
+          expect((await read(BOB, followUp))?.verdict).to.equal('visible')
+          expect((await read(DANA, followUp))?.verdict).to.equal('visible')
+          // Carol opens nothing Dana's answer read: only a share with everyone covers her.
+          expect((await read(CAROL, followUp))?.verdict).to.equal(scope === 'everyone' ? 'visible' : 'hidden')
+          resetVisibility()
+          configureVisibility(w.deps)
+        }
+      })
+    }
+
+    it('once the share with its asker ends, the follow-up built on it hides from them, and stays the first asker\'s', async () => {
+      const w = world({ [DANA]: everything })
+      const first = answer(DANA, ['rec-r'])
+      await w.write(first)
+      const shared = answer(DANA, ['rec-r'], [parentOf(first, 'full')])
+      await w.write(shared)
+      shareWith(shared, 'people', BOB)
+      await read(BOB, shared)
+      const followUp = answer(BOB, [], [parentOf(shared)])
+      await w.write(followUp)
+      expect((await read(BOB, followUp))?.verdict).to.equal('visible')
+      delete shared.consent
+      delete shared.consentTo
+      expect(await read(BOB, followUp)).to.include({ verdict: 'hidden', reason: 'parent' })
+      expect((await read(DANA, followUp))?.verdict).to.equal('visible')
+    })
   })
 
   describe('a share is for the chat it was given in, decided from kept closures too', () => {

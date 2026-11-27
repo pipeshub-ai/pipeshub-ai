@@ -165,6 +165,18 @@ const liveCopy: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType:
 const removedCopy: Row = { ...liveCopy, _id: nextId(), content: 'A removed copy.', removedAt: T2 }
 const onLiveCopy = answer('Built on a copy.', { parents: [liveCopy] })
 const onRemovedCopy = answer('Built on a removed copy.', { parents: [removedCopy] })
+// Copies of Carol's private answer from R: one taken out, one taken out and shared again (the second stands for it), and
+// a live one that counts on a share of Dana's.
+const THREAD = 'dddddddddddddddddddddddd'
+const carolsPrivate = answer("Carol's private answer from R.", { requestedBy: CAROL, direct: { records: [R] }, sessionId: THREAD })
+const madeFrom = { sessionId: THREAD, messageId: carolsPrivate._id, ver: carolsPrivate.labelVer }
+const copied: Row = { ...liveCopy, _id: nextId(), content: 'A copy of a private answer.', sharedFrom: { ...madeFrom, sharedBy: CAROL, sharedAt: T1 } }
+const takenOut: Row = { ...liveCopy, _id: nextId(), content: '', removedAt: T2, sharedFrom: { sharedBy: CAROL, sharedAt: T1 }, removedFrom: madeFrom }
+const takenOutAgain: Row = { ...takenOut, _id: nextId(), again: copied._id }
+const onTakenOut = answer('Built on a copy taken out.', { parents: [takenOut] })
+const onAgain = answer('Built on a copy taken out and shared again.', { parents: [takenOutAgain] })
+const counting: Row = { ...copied, _id: nextId(), content: 'A copy that counts on a share.', sharedFrom: { ...madeFrom, sharedBy: CAROL, sharedAt: T1, on: [{ row: sharedR2._id, ver: sharedR2.labelVer }] } }
+const onCounting = answer('Built on a copy that counts on a share.', { parents: [counting] })
 const copy: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'shared_answer', authorUserId: BOB, requestedBy: BOB, content: 'A copy.', createdAt: T1 }
 const question: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'user_query', authorUserId: DANA, content: 'What changed?', createdAt: T1 }
 const reply: Row = {
@@ -178,12 +190,29 @@ const reply: Row = {
   replyTo: { kind: 'answer', messageId: fromR._id, excerpt: 'Revenue from R.' },
 }
 
+// Messages answers replied to, given as the words a reply quotes of them: a note, and a question that answers a card,
+// bound to it, in words of its own.
+const note: Row = { _id: nextId(), sessionId: ROOM, orgId: ORG, messageType: 'note', authorUserId: CAROL, content: 'Look at R.', createdAt: T1 }
+const cardAnswer: Row = { ...note, _id: nextId(), messageType: 'user_query', content: 'The board deck, please.', answersCard: nextId() }
+const replyingTo = (content: string, to: Row): Row => {
+  const row = answer(content)
+  ;(row.provenance as Record<string, unknown>).parents = [{ id: to._id, ver: 'legacy', mode: 'text' }]
+  return row
+}
+const onNote = replyingTo('Replied to the note.', note)
+const onCardAnswer = replyingTo('Replied to the answer of a card.', cardAnswer)
+
 const STORED = [
   question, pub, fromR, ownMail, edited, builtOnR, beforeLabels, sharedR2, sharedWithBob, carols, failed, carolsUnchecked,
   onCarols, elsewhere, onElsewhere, regenerated, onOldVersion, liveCopy, removedCopy, onLiveCopy, onRemovedCopy, copy, reply,
+  carolsPrivate, copied, takenOut, takenOutAgain, onTakenOut, onAgain, counting, onCounting, note, cardAnswer, onNote,
+  onCardAnswer,
 ]
 /** Earlier rows the check reads for itself; the page a read shows is the rest. */
-const READ_FOR_ITSELF = [fromR, carolsUnchecked, elsewhere, regenerated, liveCopy, removedCopy]
+const READ_FOR_ITSELF = [
+  fromR, carolsUnchecked, elsewhere, regenerated, liveCopy, removedCopy, carolsPrivate, copied, takenOut, takenOutAgain,
+  counting, note, cardAnswer,
+]
 const PAGE = STORED.filter((r) => !READ_FOR_ITSELF.includes(r))
 
 /** A row as a page read gets it: the fields stored apart from the row's text stay in the store. */
@@ -218,6 +247,8 @@ const depsReading = (shape: (row: Row) => Row): Partial<VisibilityDeps> => {
     canUseAgent: async () => false,
     canReadConversation: async () => undefined,
     canReadProject: async () => undefined,
+    // Carol's private thread of the room.
+    chats: async () => new Map([[THREAD, { _id: THREAD, orgId: ORG, userId: CAROL, parentId: ROOM }]]),
     isServiceAgent: async () => false,
     sharedText: (text) => text,
     // The privacy rules started (this build first served) after Bob, Carol and Ivy joined and before Priya did.
@@ -244,7 +275,7 @@ describe('rows the reader check reads with only the fields it reads (MESSAGE_LAB
     for (const unread of ['citations', 'referenceData', 'attachments', 'tools', 'reasoning', 'feedback', 'followUpQuestions', 'modelInfo', 'mentions', 'shareRequests']) {
       expect(MESSAGE_LABEL_FIELDS as readonly string[], unread).to.not.include(unread)
     }
-    expect(MESSAGE_LABEL_FIELDS).to.include.members(['content', 'parts', 'labelVer', 'provenance', 'labelHistory', 'requestedBy', 'authorUserId', 'sessionId', 'messageType', 'consent', 'consentTo', 'removedAt'])
+    expect(MESSAGE_LABEL_FIELDS).to.include.members(['content', 'parts', 'labelVer', 'provenance', 'labelHistory', 'requestedBy', 'authorUserId', 'sessionId', 'messageType', 'consent', 'consentTo', 'removedAt', 'answersCard'])
     const read = onlyReadFields(fromR)
     expect(read).to.not.have.any.keys('citations', 'referenceData', 'attachments', 'tools', 'reasoning', 'feedback', 'shareRequests')
   })
@@ -285,6 +316,11 @@ describe('rows the reader check reads with only the fields it reads (MESSAGE_LAB
     expect((bob[String(onOldVersion._id)] as { verdict: string }).verdict).to.equal('visible')
     expect((bob[String(onLiveCopy._id)] as { verdict: string }).verdict).to.equal('visible')
     expect((bob[String(onRemovedCopy._id)] as { verdict: string }).verdict).to.equal('hidden')
+    // A copy taken out is the answer it was made from, for who can open that; one shared again is there again.
+    expect((bob[String(onTakenOut._id)] as { verdict: string }).verdict).to.equal('hidden')
+    expect((carol[String(onTakenOut._id)] as { verdict: string }).verdict).to.equal('visible')
+    expect((bob[String(onAgain._id)] as { verdict: string }).verdict).to.equal('visible')
+    expect((bob[String(onCounting._id)] as { verdict: string }).verdict).to.equal('visible')
   })
 
   it('every reader is given the same rows, a reply keeping the words it quotes only where the answer it quotes is shown', async () => {
@@ -310,12 +346,18 @@ describe('rows the reader check reads with only the fields it reads (MESSAGE_LAB
 
   it('every share of the asker gets the same answer', async () => {
     const audiences: WidenAudience[] = ['everyone', 'outside', { userIds: [CAROL, BOB] }]
-    for (const row of [pub, fromR, ownMail, edited, builtOnR, sharedR2, carols]) {
+    for (const row of [pub, fromR, ownMail, edited, builtOnR, sharedR2, carols, onTakenOut, onAgain, onCounting, onNote, onCardAnswer]) {
       for (const audience of audiences) {
         const a = await widenOK(asPaged(row), String(row.labelVer), audience, { session, deps: whole() })
         const b = await widenOK(asPaged(row), String(row.labelVer), audience, { session, deps: trimmed() })
         expect(b, `${String(row.content)} to ${JSON.stringify(audience)}`).to.deep.equal(a)
       }
     }
+  })
+
+  it('a share reads which card a question it built on answers: a note of the chat stops nothing, the answer of a card stops it', async () => {
+    const of = (row: Row) => widenOK(asPaged(row), String(row.labelVer), 'everyone', { session, deps: trimmed() })
+    expect(await of(onNote)).to.deep.equal({ ok: true })
+    expect(await of(onCardAnswer)).to.deep.equal({ ok: false, code: 'SHARE_NOT_WIDENABLE' })
   })
 })

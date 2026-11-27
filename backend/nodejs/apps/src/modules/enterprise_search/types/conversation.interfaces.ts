@@ -267,6 +267,8 @@ export interface IUnavailableTool {
   sharedCredential: boolean;
   /** The requester can connect it themselves. */
   userCanConnect: boolean;
+  /** The answer called the tool's stub: it needed the tool. A list saved before stubs has none. */
+  needed?: boolean;
 }
 
 export interface IMessage {

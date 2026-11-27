@@ -17,7 +17,7 @@ import { Logger } from '../../services/logger.service';
 import { toPlain } from '../plain';
 import { sessionOf } from '../mongo';
 import {
-  archivedLabelHistory,
+  replacedLabelHistory,
   sealAnswerForStorage,
   withoutLabelFields,
   type StoredLabelFields,
@@ -43,6 +43,7 @@ import type {
   CitationDto,
   ClosedShareRequestState,
   ConversationRepository,
+  AnswerConsentChange,
   EndedAnswerShare,
   NewAnswerShare,
   ShareRequestDto,
@@ -1419,7 +1420,7 @@ export class MongoConversationRepository implements ConversationRepository {
           })
         | null;
       if (!existing) return null;
-      const labelHistory = archivedLabelHistory(existing);
+      const labelHistory = replacedLabelHistory(existing);
       const sameVersion =
         typeof existing.labelVer === 'string'
           ? { labelVer: existing.labelVer }
@@ -1865,6 +1866,7 @@ export class MongoConversationRepository implements ConversationRepository {
       ver: string;
       state: ClosedShareRequestState;
       by?: readonly string[];
+      notSince?: string | null;
     },
     tx?: Tx,
   ): Promise<string[]> {
@@ -1879,12 +1881,28 @@ export class MongoConversationRepository implements ConversationRepository {
     return answerShares.setAnswerConsent(row, share, tx);
   }
 
+  changeAnswerConsent(
+    row: AnswerRowRef,
+    change: AnswerConsentChange,
+    tx?: Tx,
+  ): Promise<boolean> {
+    return answerShares.changeAnswerConsent(row, change, tx);
+  }
+
   clearAnswerConsent(
     row: AnswerRowRef,
     onlyBy?: string,
     tx?: Tx,
   ): Promise<EndedAnswerShare | null> {
     return answerShares.clearAnswerConsent(row, onlyBy, tx);
+  }
+
+  clearArchivedConsents(
+    row: AnswerRowRef,
+    only?: { by?: string; ver?: string },
+    tx?: Tx,
+  ): Promise<AnswerConsentDto[]> {
+    return answerShares.clearArchivedConsents(row, only, tx);
   }
 
   // ---- citations
