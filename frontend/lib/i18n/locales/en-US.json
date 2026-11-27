@@ -2340,6 +2340,7 @@
           "notIncluded": "Not included",
           "communityHas": {
             "scim": "Manual user management",
+            "collaborativeChat": "Share a chat to read",
             "groups": "Teams",
             "sso": "Password, email one-time code, Google and Microsoft"
           }
@@ -2373,6 +2374,10 @@
           "scim": {
             "name": "SCIM provisioning",
             "description": "Automate user provisioning and deprovisioning from Okta or Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Collaborative chat",
+            "description": "Chat together in one conversation, and share it with teams and groups."
           },
           "groups": {
             "name": "Group permissions",

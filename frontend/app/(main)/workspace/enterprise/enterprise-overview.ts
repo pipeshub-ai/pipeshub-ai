@@ -39,6 +39,7 @@ export const ENTERPRISE_OVERVIEW_GROUPS: EnterpriseOverviewGroup[] = [
     items: [
       fromFeature('tenants', 'tenants', { highlight: true }),
       fromFeature('scim', 'scim', { highlight: true, inCommunity: true }),
+      { key: 'collaborativeChat', icon: 'forum', inCommunity: true },
     ],
   },
   {

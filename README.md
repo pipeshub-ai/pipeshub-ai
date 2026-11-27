@@ -184,6 +184,7 @@ PipesHub is open source and complete on its own. Enterprise Edition adds what la
 - **Multi-tenancy:** a separate organization for each team, region or customer, on one deployment. You choose which settings each tenant inherits.
 - **Single sign-on (SSO):** sign in through Okta, OneLogin or any SAML 2.0 or OpenID Connect (OIDC) provider.
 - **SCIM provisioning:** automate user provisioning and deprovisioning from Okta or Microsoft Entra ID over SCIM 2.0.
+- **Collaborative chat:** chat together in one conversation, and share it with teams and groups.
 - **Group permissions:** group-based access control, so you grant access to a whole group at once.
 - **Audit logs:** track every action by actor, time, IP address, target and outcome. Filter, alert and export.
 - **Usage & billing:** see and control AI spend. Track it by user, agent, connector and model, set how much each user can spend, and manage credits, invoices and spending alerts.
@@ -428,7 +429,7 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 
 ### Is there an Enterprise Edition?
 
-Yes. It adds multi-tenancy, single sign-on (SSO), SCIM provisioning, group permissions, audit logs, usage & billing, and agent and app governance. See [Enterprise Edition](#enterprise-edition).
+Yes. It adds multi-tenancy, single sign-on (SSO), SCIM provisioning, collaborative chat, group permissions, audit logs, usage & billing, and agent and app governance. See [Enterprise Edition](#enterprise-edition).
 
 ### Where can I get help?
 

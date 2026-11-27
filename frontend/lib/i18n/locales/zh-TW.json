@@ -2317,6 +2317,7 @@
           "notIncluded": "不包含",
           "communityHas": {
             "scim": "手動管理使用者",
+            "collaborativeChat": "共用聊天供閱讀",
             "groups": "團隊",
             "sso": "密碼、電子郵件一次性驗證碼、Google 和 Microsoft"
           }
@@ -2350,6 +2351,10 @@
           "scim": {
             "name": "SCIM 佈建",
             "description": "透過 Okta 或 Microsoft Entra ID 自動佈建和取消佈建使用者。"
+          },
+          "collaborativeChat": {
+            "name": "協作聊天",
+            "description": "在同一個對話中一起聊天，並與團隊和群組共用。"
           },
           "groups": {
             "name": "群組權限",

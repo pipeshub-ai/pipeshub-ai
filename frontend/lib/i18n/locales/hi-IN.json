@@ -2250,6 +2250,7 @@
           "notIncluded": "शामिल नहीं",
           "communityHas": {
             "scim": "मैनुअल उपयोगकर्ता प्रबंधन",
+            "collaborativeChat": "पढ़ने के लिए चैट साझा करें",
             "groups": "टीमें",
             "sso": "पासवर्ड, ईमेल वन-टाइम कोड, Google और Microsoft"
           }
@@ -2283,6 +2284,10 @@
           "scim": {
             "name": "SCIM प्रोविज़निंग",
             "description": "Okta या Microsoft Entra ID से उपयोगकर्ताओं की प्रोविज़निंग और डीप्रोविज़निंग अपने-आप करें।"
+          },
+          "collaborativeChat": {
+            "name": "साझा चैट",
+            "description": "एक ही बातचीत में साथ मिलकर चैट करें, और उसे टीमों और समूहों के साथ साझा करें।"
           },
           "groups": {
             "name": "समूह अनुमतियाँ",

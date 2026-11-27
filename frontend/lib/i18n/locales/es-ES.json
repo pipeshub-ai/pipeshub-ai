@@ -2296,6 +2296,7 @@
           "notIncluded": "No incluido",
           "communityHas": {
             "scim": "Gestión manual de usuarios",
+            "collaborativeChat": "Compartir un chat para leer",
             "groups": "Equipos",
             "sso": "Contraseña, código de un solo uso por correo, Google y Microsoft"
           }
@@ -2329,6 +2330,10 @@
           "scim": {
             "name": "Aprovisionamiento SCIM",
             "description": "Automatice el aprovisionamiento y desaprovisionamiento de usuarios desde Okta o Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Chat colaborativo",
+            "description": "Chateen juntos en una misma conversación y compártanla con equipos y grupos."
           },
           "groups": {
             "name": "Permisos de grupo",

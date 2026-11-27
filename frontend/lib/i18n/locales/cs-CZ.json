@@ -2454,6 +2454,7 @@
           "notIncluded": "Není součástí",
           "communityHas": {
             "scim": "Ruční správa uživatelů",
+            "collaborativeChat": "Sdílení chatu ke čtení",
             "groups": "Týmy",
             "sso": "Heslo, jednorázový kód e-mailem, Google a Microsoft"
           }
@@ -2487,6 +2488,10 @@
           "scim": {
             "name": "Zřizování SCIM",
             "description": "Automatické zřizování a rušení uživatelů z Okta nebo Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Společný chat",
+            "description": "Chatujte společně v jedné konverzaci a sdílejte ji s týmy a skupinami."
           },
           "groups": {
             "name": "Oprávnění skupin",
