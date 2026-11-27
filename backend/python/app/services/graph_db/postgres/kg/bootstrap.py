@@ -78,9 +78,13 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
         if not await bf.principals_copied(db, org):
             return 1                                               # unfinished: the next pass goes on, and the other orgs get their turn
     # The log is the org's: drained here once, as one turn would, so that the turns' own drains do not find a page another turn has in flight and wait out RETRY_S for it.
-    for _ in range(DRAIN_ROUNDS if apps else 0):
-        if not (await bf.drain_org(db, org, page=PAGE, max_rows=PAGE, stop=stop)).rows:
-            break
+    # A failure here holds up no turn: each turn drains again and backs off on its own failure, as it did before this drain.
+    try:
+        for _ in range(DRAIN_ROUNDS if apps else 0):
+            if not (await bf.drain_org(db, org, page=PAGE, max_rows=PAGE, stop=stop)).rows:
+                break
+    except Exception:
+        logger.exception("kg: the change log could not be drained before the connectors' turns; each turn drains it itself")
     gate = asyncio.Semaphore(CONNECTORS_AT_ONCE)
 
     async def one(app: str) -> int:
