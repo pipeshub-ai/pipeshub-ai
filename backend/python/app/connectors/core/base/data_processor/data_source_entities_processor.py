@@ -42,6 +42,7 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_store.graph_data_store import (
     ends_explicit_transaction,
     is_transient_conflict,
+    is_retryable,
     is_write_conflict,
     retry_on_deadlock,
     will_retry,
@@ -2695,8 +2696,15 @@ class DataSourceEntitiesProcessor:
             return (user.id, CollectionNames.USERS.value)
 
         person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
-        if person:
+        if person and not create_if_missing:
             return (person.id, CollectionNames.PEOPLE.value)
+        if person:
+            # A grant writer takes the person's lock (the upsert's, held to its commit): the external-collaborator reaper deletes a person left with
+            # no edge only under that lock, so it sees this grant, or this upsert finds the person gone and creates it again.
+            kept = await tx_store.upsert_person_by_email(
+                Person(email=person.email or email.lower(), org_id=self.org_id), raise_on_error=True
+            )
+            return ((kept or person.id), CollectionNames.PEOPLE.value)
 
         if not create_if_missing:
             return None
@@ -6054,6 +6062,9 @@ class DataSourceEntitiesProcessor:
         Connectors call this at the end of a sync, once every permission the run touched
         is committed - judging an edge against half-written permissions would reap
         someone whose share is merely still being processed.
+
+        It is cleanup: a race lost to concurrent writers on the last attempt reaps nothing and returns 0 with one
+        warning, so the sync that called it carries on, and the next sync reaps. Any other failure raises.
         """
         try:
             async with self.data_store_provider.transaction() as tx_store:
@@ -6067,6 +6078,10 @@ class DataSourceEntitiesProcessor:
                 )
             return reaped
         except Exception as e:
+            if is_retryable(self, e) and not will_retry(self, e):
+                self.logger.warning("External app users of connector %s not reaped: lost to concurrent writers (%s); the next sync reaps them",
+                                    connector_id, type(e).__name__)
+                return 0
             self._log_failure(f"Transaction reap_external_app_users failed: {str(e)}", e)
             raise e
 
