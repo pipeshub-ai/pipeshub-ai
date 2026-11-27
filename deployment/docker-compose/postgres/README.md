@@ -28,11 +28,35 @@ Start order: `postgres` healthy, `pgbouncer` healthy, `pipeshub-migrate` exits 0
 
 ## Metrics (profile `postgres-metrics`)
 
-Two Prometheus exporters, opt-in: `postgres-exporter` ([prometheus-community/postgres_exporter](https://github.com/prometheus-community/postgres_exporter) v0.20.1, port 9187) for the server (connections by state, locks, transactions open longer than a while, replication and WAL, dead rows and the last vacuum and analyze of each table, running autovacuums, transaction-id wraparound) and `pgbouncer-exporter` ([prometheus-community/pgbouncer_exporter](https://github.com/prometheus-community/pgbouncer_exporter) v0.12.1, port 9127) for the pooler (clients waiting for a server connection, the oldest wait, server connections in use per pool). Both images are pinned by digest. They log in as `pipeshub_monitor`, a login whose only membership is the predefined role `pg_monitor` and which holds no privilege on any table of ours: it reads the server's statistics, never an organisation's rows. In PgBouncer it is the only `stats_users` entry, so it may run the console's `SHOW` commands and nothing else.
+Two Prometheus exporters, opt-in: `postgres-exporter` ([prometheus-community/postgres_exporter](https://github.com/prometheus-community/postgres_exporter) v0.20.1, port 9187) for the server (connections by state, locks, transactions open longer than a while, replication and WAL, a replica's WAL receiver, dead rows and the last vacuum and analyze of each table, running autovacuums, transaction-id wraparound) and `pgbouncer-exporter` ([prometheus-community/pgbouncer_exporter](https://github.com/prometheus-community/pgbouncer_exporter) v0.12.1, port 9127) for the pooler (clients waiting for a server connection, the oldest wait, server connections in use per pool). Both images are pinned by digest. They log in as `pipeshub_monitor`, a login whose only membership is the predefined role `pg_monitor` and which holds no privilege on any table of ours: it reads the server's statistics, never an organisation's rows. In PgBouncer it is the only `stats_users` entry, so it may run the console's `SHOW` commands and nothing else.
 
 1. Set `PG_MONITOR_PASSWORD` in `.env` (the same character rule as the other passwords) and rebuild and restart the server and the pooler: `pg-roles.sh` creates the login with `pg_monitor` on the server's start (only when it is missing; a later password change needs `ALTER ROLE`, as for the other logins) and adds it to PgBouncer's verifier file.
 2. Add `postgres-metrics` to `COMPOSE_PROFILES` (next to `postgres`) and `up -d`.
 3. Scrape `http://<host>:9187/metrics` and `http://<host>:9127/metrics`. The ports are published on `127.0.0.1` (`PG_METRICS_BIND` changes the address, `PG_EXPORTER_PORT` and `PGBOUNCER_EXPORTER_PORT` the ports); they are unauthenticated plain HTTP, so expose them only to your Prometheus.
+
+### Alerts
+
+`deployment/monitoring/prometheus/postgres.rules.yml` holds alert rules on these two exporters. With the monitoring overlay, add `docker-compose.monitoring-postgres.yml` after `docker-compose.monitoring.yml`: its Prometheus then scrapes both exporters (jobs `postgres-exporter` and `pgbouncer-exporter`) and loads the rules. It is a separate file because without the `postgres-metrics` profile the exporter-down alert would never clear. With your own Prometheus, scrape the two ports and load the file. Each rule has a `severity` label (`warning` or `critical`); the thresholds are starting points, explained beside each rule.
+
+| Alert | Fires when |
+| --- | --- |
+| `PostgresExporterDown` (critical) | an exporter has not answered a scrape for 5 minutes |
+| `PostgresDown`, `PgBouncerDown` (critical) | an exporter cannot connect to the server or the pooler for 1 minute |
+| `PostgresConnectionsNearMax` (warning), `PostgresConnectionsExhausted` (critical) | client connections use more than 80% / 95% of what `max_connections` leaves after the reserved slots (`reserved_connections` counts as 0 before PostgreSQL 16) |
+| `PgBouncerClientsWaiting` (warning) | a client has waited 2 s or more for a server connection for 2 minutes (PgBouncer drops it at `query_wait_timeout`, 5 s) |
+| `PgBouncerServerPoolSaturated`, `PgBouncerClientConnectionsNearMax` (warning) | 90% of `max_db_connections`, or 80% of `max_client_conn`, is in use |
+| `PostgresWalArchiveFailing` (warning) | `archive_command` keeps failing (`pg_stat_archiver.failed_count` rising for 10 minutes) |
+| `PostgresWalArchiveStalled` (critical) | no WAL segment was archived for an hour while archiving fails |
+| `PostgresWalPilingUp` (warning) | `pg_wal` holds more than twice `max_wal_size` for 15 minutes |
+| `PostgresReplicaLagging` (warning) | a replica is more than 5 minutes behind |
+| `PostgresReplicaNotStreaming` (warning) | a replica has had no streaming WAL receiver for 5 minutes (its lag can read 0 while it is cut off); the exporter sees a receiver only when it uses a replication slot, so a replica without `primary_slot_name`, or fed only by `restore_command`, fires too |
+| `PostgresLongRunningTransaction`, `PostgresIdleInTransaction` (warning) | a transaction has been open for over an hour, or a session is idle inside a transaction open for over 5 minutes |
+| `PostgresDeadlocksRising` (warning) | more than 5 deadlocks in 15 minutes |
+| `PostgresTxidWraparoundNear` (warning), `PostgresTxidWraparoundImminent` (critical) | a database is 1e9 / 1.5e9 transaction ids (or multixacts) past its oldest unfrozen one |
+| `PostgresDeadTuplesHigh`, `PostgresAutovacuumRunningLong`, `PostgresAutovacuumOff` (warning) | a table keeps over 30% dead rows for an hour, an autovacuum runs over 6 hours, or autovacuum is off |
+| `PostgresDatabaseGrowingFast` (warning) | a database over 1 GiB grew by more than half in a day |
+
+Two signals have no alert because neither exporter can see them: the age of the last pgBackRest backup (the `pg-backup` service turns unhealthy when a backup fails or WAL was dropped, see its healthcheck) and statement timeouts (PostgreSQL counts no cancels by cause; they appear only in the server log). `tests/postgres_alert_rules_test.sh` checks the rules with `promtool` and runs their unit tests (`deployment/monitoring/prometheus/tests/`).
 
 The migration job accepts the login (`kernel_0019`, see `backend/db/README.md`); a database without it is unchanged. Statement statistics (`--collector.stat_statements`) are not available with this file: the server loads `pg_stat_statements`, but the extension is not installed in the database, and installing it changes the security surface the migration job compares, so the next `pipeshub-migrate` run would stop with exit 4. This file gives that job no way to accept the extra lines; on a server of your own, the migrate job reads them from the files named in `PG_MIGRATE_SURFACE_FILES` (`backend/db/README.md`). The application's own statement and search latencies (`pipeshub_pg_query_seconds`, `pipeshub_db_query_seconds`, `pipeshub_pgvector_leg_seconds` by search tier) are histograms of the services' telemetry registry, not of these exporters.
 
