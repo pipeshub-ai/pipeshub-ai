@@ -431,7 +431,10 @@ export class ChatScheduleService {
         'Schedule not found',
       );
     }
-    if (current.lastChangedFrom?.interactionId === request.interactionId) {
+    if (
+      current.lastChangedFrom?.interactionId === request.interactionId &&
+      current.lastChangedFrom.runId === runId
+    ) {
       return {
         schedule: await this.options.schedules.get(caller, scheduleId),
         changed: false,
@@ -442,6 +445,7 @@ export class ChatScheduleService {
       agentKey: run.agentKey ?? null,
       at: Date.now(),
       interactionId: request.interactionId,
+      runId,
     };
     const schedules = this.options.schedules;
     let schedule: ScheduleView;
@@ -468,7 +472,7 @@ export class ChatScheduleService {
         await schedules.runNow(
           caller,
           scheduleId,
-          `chat:${request.interactionId}`,
+          `chat:${runId}:${request.interactionId}`,
         );
         schedule = await schedules.get(caller, scheduleId);
         break;

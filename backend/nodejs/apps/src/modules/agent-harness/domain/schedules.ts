@@ -164,8 +164,13 @@ export interface ScheduleChangedFrom {
   conversationId: string;
   agentKey: string | null;
   at: number;
-  /** The approved call that changed it, when a harness run did: a repeat of that call changes nothing again. */
+  /**
+   * The approved call that changed it, when a harness run did: a repeat of that call changes nothing again. An
+   * interaction id is unique only within its run (the loop's first approval is `ix.approve.t1.0` in every run), so
+   * a repeat is the same run and the same interaction.
+   */
   interactionId?: string;
+  runId?: string;
 }
 
 /** A firing its owner asked to skip (ADR-SCH-03 D4). */

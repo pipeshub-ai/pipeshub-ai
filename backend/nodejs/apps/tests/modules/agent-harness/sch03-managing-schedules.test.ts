@@ -319,45 +319,58 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
   describe('D6: a harness change acts only on the person’s approval of that call', () => {
     const RUN = 'run-chat-3';
     const ixOf = (args: unknown) => `ix.approve.${canonicalDigest(args).slice(7, 23)}`;
-    const requested = (interactionId: string, toolId: string, args: unknown): JournalEvent =>
+    const requested = (interactionId: string, toolId: string, args: unknown, runId = RUN): JournalEvent =>
       ({
         type: 'interaction.requested',
-        runId: RUN,
+        runId,
         data: {
           interactionId,
           kind: 'approval',
           bindingDigest: canonicalDigest({ interactionId, kind: 'approval', subject: toolId, argsDigest: canonicalDigest(args) }),
         },
       }) as unknown as JournalEvent;
-    const resolved = (interactionId: string, decision: 'approved' | 'denied'): JournalEvent =>
+    const resolved = (interactionId: string, decision: 'approved' | 'denied', runId = RUN): JournalEvent =>
       ({
         type: 'interaction.resolved',
-        runId: RUN,
+        runId,
         data: resolvedData({ interactionId, decision, channel: 'web' }, `p_${ALICE}`),
       }) as unknown as JournalEvent;
 
-    function chatWorld() {
+    function chatWorld(runIds: readonly string[] = [RUN]) {
       const w = world();
       const events: JournalEvent[] = [];
-      const run = {
-        orgId: ORG,
-        runId: RUN,
-        sessionId: 'ses-chat',
-        actorId: ALICE,
-        agentKey: 'helper',
-        input: { query: 'make it an animal joke', recordIds: [], filters: {}, attachments: [], model: { chatMode: 'quick' } },
-      } as unknown as HarnessRun;
+      const runs = new Map(
+        runIds.map((runId) => [
+          runId,
+          {
+            orgId: ORG,
+            runId,
+            sessionId: runId === RUN ? 'ses-chat' : `ses-${runId}`,
+            actorId: ALICE,
+            agentKey: 'helper',
+            input: { query: 'make it an animal joke', recordIds: [], filters: {}, attachments: [], model: { chatMode: 'quick' } },
+          } as unknown as HarnessRun,
+        ]),
+      );
       const chat = new ChatScheduleService({
-        runs: { get: async (o, r) => (o === ORG && r === RUN ? run : null), runEvents: async () => events },
+        runs: {
+          get: async (o, r) => (o === ORG ? (runs.get(r) ?? null) : null),
+          runEvents: async (_o, r) => events.filter((e) => (e as { runId?: string }).runId === r),
+        },
         vias: { via: async () => 'session' },
         schedules: w.service,
         store: w.store,
         actors: w.actors,
         marks: { record: async () => undefined },
       });
-      const approve = (toolId: string, args: unknown, decision: 'approved' | 'denied' = 'approved') => {
-        const ix = ixOf(args);
-        events.push(requested(ix, toolId, args), resolved(ix, decision));
+      const approve = (
+        toolId: string,
+        args: unknown,
+        decision: 'approved' | 'denied' = 'approved',
+        runId = RUN,
+        ix = ixOf(args),
+      ) => {
+        events.push(requested(ix, toolId, args, runId), resolved(ix, decision, runId));
         return ix;
       };
       return { ...w, chat, events, approve };
@@ -374,6 +387,39 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
       expect(first.schedule?.lastChangedFrom).to.deep.include({ conversationId: 'ses-chat', agentKey: 'helper' });
       const again = await w.chat.update(ORG, RUN, made.id, { interactionId: ix, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: args });
       expect([again.changed, again.schedule?.revision]).to.deep.equal([false, 1]);
+    });
+
+    // The loop's first approval is ix.approve.t1.0 in every run: a repeat is the same run AND the same interaction.
+    const LOOP_FIRST = 'ix.approve.t1.0';
+
+    it('the next chat\'s change at the same loop interaction id is applied, not taken for a repeat', async () => {
+      const w = chatWorld(['run-a', 'run-b']);
+      const made = (await w.service.create(alice, CRON)).schedule;
+      const a = { id: made.id, revision: 0, ask: 'Tell me a joke' };
+      w.approve(SCHEDULE_UPDATE_TOOL_ID, a, 'approved', 'run-a', LOOP_FIRST);
+      const first = await w.chat.update(ORG, 'run-a', made.id, { interactionId: LOOP_FIRST, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: a });
+      expect(first.changed).to.equal(true);
+      const b = { id: made.id, revision: 1, ask: 'Tell me an animal joke' };
+      w.approve(SCHEDULE_UPDATE_TOOL_ID, b, 'approved', 'run-b', LOOP_FIRST);
+      const second = await w.chat.update(ORG, 'run-b', made.id, { interactionId: LOOP_FIRST, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: b });
+      expect([second.changed, second.schedule?.input?.query, second.schedule?.revision]).to.deep.equal([
+        true,
+        'Tell me an animal joke',
+        2,
+      ]);
+      const again = await w.chat.update(ORG, 'run-b', made.id, { interactionId: LOOP_FIRST, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: b });
+      expect(again.changed).to.equal(false);
+    });
+
+    it('run now at the same loop interaction id in two chats runs twice', async () => {
+      const w = chatWorld(['run-a', 'run-b']);
+      const made = (await w.service.create(alice, CRON)).schedule;
+      const now = { id: made.id, revision: 0, action: 'run_now' as const };
+      for (const runId of ['run-a', 'run-b']) {
+        w.approve(SCHEDULE_UPDATE_TOOL_ID, now, 'approved', runId, LOOP_FIRST);
+        await w.chat.update(ORG, runId, made.id, { interactionId: LOOP_FIRST, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: now });
+      }
+      expect(w.admission.admitted).to.equal(2);
     });
 
     it('refused without the person’s own approval, for another schedule, other arguments or a mixed call', async () => {
