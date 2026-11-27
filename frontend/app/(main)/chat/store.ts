@@ -742,7 +742,7 @@ interface ChatState {
   appendSharedConversations: (convs: Conversation[]) => void;
   /**
    * Puts the chat first in every rail list it is in. For a new message in it, pass `activity`: the chat then also takes
-   * the message's time, in those lists and in an open More list, so Pinned (ordered by time) puts it first too. That
+   * the message's time, in those lists and in an open More list, so a pinned chat (pins go by time) goes first too. That
    * time is `activity.lastActivityAt`, the server's; when the server sent none, now or 1 ms past every other row's,
    * whichever is later. Without `activity` (opening a chat) the row only moves, and an open More list only takes a newer
    * time the rail already has.
@@ -965,8 +965,8 @@ interface ChatState {
 
 // ── Initial state ───────────────────────────────────────────────────
 
-/** The rail section a More chats panel lists: every pinned chat, or the rest of Shared chats or Your chats. */
-export type MoreChatsSection = 'pinned' | 'shared' | 'your';
+/** The rail section a More chats panel lists the rest of: Shared chats or Your chats. */
+export type MoreChatsSection = 'shared' | 'your';
 
 /** The rows of the More chats panel and where its paging stands. */
 export interface MoreChatsList {
@@ -1770,7 +1770,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!own) return state;
       let at = own.lastActivityAt;
       if (activity) {
-        // The server's time keeps Pinned in the server's order whatever this tab's clock says. Copied raw: a
+        // The server's time keeps the pins in the server's order whatever this tab's clock says. Copied raw: a
         // `lastActivityAt` under 1e12 is read as seconds.
         const sent = activity.lastActivityAt;
         const others = [...listed, ...state.moreChats.rows].filter((c) => c.id !== conversationId);
@@ -1843,6 +1843,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ...(forgetUnread ? { unreadConversationIds: withoutId(state.unreadConversationIds, conversationId) } : {}),
     }));
     if (forgetUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
+    chatExtension.conversationRemoved(conversationId);
   },
 
   snapshotRailRows: (conversationId) => {
@@ -2005,7 +2006,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const before = get();
     const unpinnedId = pinned ? undefined : conversationId;
     set((state) => {
-      // A chat pinned from More that the rail's page does not list joins the rail's list it belongs to, so Pinned
+      // A chat pinned from More that the rail's page does not list joins the rail's list it belongs to, so the rail
       // shows it now, as the server's next read would.
       const fromMore = pinned ? moreRowMissingFromRail(state, conversationId) : null;
       const updated = withPinned(

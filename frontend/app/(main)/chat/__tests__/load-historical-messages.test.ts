@@ -67,6 +67,50 @@ describe('loadHistoricalMessages, an answered approval card', () => {
     });
   });
 
+  describe('who may see the answer is the reply\'s own', () => {
+    const HIDDEN = { content: 'Hidden.', parts: [], answerHidden: { redacted: true, reason: 'no_longer_accessible' } } as Partial<ConversationMessage>;
+    const joined = (card: Partial<ConversationMessage>, reply: Partial<ConversationMessage>) => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'how does sync work?' }),
+        message({ _id: 'a1', messageType: 'bot_response', content: WAITING, ...card }),
+        message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+        message({ _id: 'a2', messageType: 'bot_response', content: 'It syncs hourly.', ...reply }),
+      ]);
+      expect(messages).toHaveLength(2);
+      return messages[1];
+    };
+
+    it('shows a reply the reader may see (shared with them) though the card before it is hidden', () => {
+      const row = joined(HIDDEN, {});
+      expect(row.content).toEqual([{ type: 'text', text: 'It syncs hourly.' }]);
+      expect(row.metadata?.custom?.messageId).toBe('a2');
+      expect(row.metadata?.custom?.answerHidden).toBeUndefined();
+    });
+
+    it('marks a hidden reply hidden though the card before it is shown', () => {
+      expect(joined({}, HIDDEN).metadata?.custom?.answerHidden).toEqual(HIDDEN.answerHidden);
+    });
+
+    it('marks the row hidden when both are, and not when neither is', () => {
+      expect(joined(HIDDEN, HIDDEN).metadata?.custom?.answerHidden).toEqual(HIDDEN.answerHidden);
+      expect(joined({}, {}).metadata?.custom?.answerHidden).toBeUndefined();
+    });
+  });
+
+  it('carries on the newest reply in a conversation of one person, whatever came before it', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q0', messageType: 'user_query', content: 'hello' }),
+      message({ _id: 'a0', messageType: 'bot_response', content: 'Hi.' }),
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: WAITING }),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.' }),
+    ]);
+    expect(messages.map((m) => [m.id, (m.content as Array<{ text: string }>)[0].text])).toEqual([
+      ['q0', 'hello'], ['a0', 'Hi.'], ['q', 'file a bug'], ['a1', 'Filed JIRA-7.'],
+    ]);
+  });
+
   it('keeps the next question\'s reply on its own row after an answer that failed', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
@@ -84,6 +128,19 @@ describe('loadHistoricalMessages, an answered approval card', () => {
       ['user', 'q'], ['assistant', 'a1'], ['user', 'q2'], ['assistant', 'a2'],
     ]);
     expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+
+  it('leaves the card as it was when the run its answer started was stopped with nothing saved', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: WAITING }),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: '', status: 'stopped' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1']]);
+    expect(messages[1].content).toEqual([{ type: 'text', text: WAITING }]);
+    expect(messages[1].metadata?.custom?.messageId).toBe('a1');
   });
 
   it('hides the error row of an answer whose run failed, leaving the card to answer again', () => {

@@ -1101,7 +1101,6 @@
     "recents": "최근 항목",
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
-    "agentChat": "에이전트 채팅",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -1197,8 +1196,6 @@
     "deleteChat": "삭제",
     "pin": "고정",
     "unpin": "고정 해제",
-    "pinned": "고정된 채팅",
-    "pinnedChatsEmpty": "고정한 채팅이 여기에 표시됩니다",
     "pinnedRowSuffix": ", 고정됨",
     "sidebarRunning": "백그라운드에서 처리 중",
     "sidebarRunningOpen": "처리 중",
@@ -1299,6 +1296,8 @@
       "allSignedIn": "로그인되었습니다. 요청을 다시 시도하세요.",
       "retryMessage": "{{servers}}에 다시 로그인했습니다. 다시 시도해 주세요."
     },
+    "loadFailedTitle": "이 채팅을 불러오지 못했습니다",
+    "loadFailedDescription": "연결을 확인한 후 다시 시도하세요.",
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
@@ -1725,8 +1724,12 @@
     "stopListening": "듣기 중지",
     "voiceInput": "음성 입력",
     "regenerateResponse": "응답 다시 생성",
-    "quoteSelection": "인용",
-    "quoteSelectionHint": "이 내용에 대해 묻기",
+    "selectionActions": {
+      "label": "선택한 텍스트",
+      "reply": "답장",
+      "ask": "{{productName}}에게 질문",
+      "copied": "복사됨"
+    },
     "quotedExcerpt": "인용됨",
     "quotedExcerptTruncated": "인용됨 (잘림)",
     "dismissQuote": "인용 제거",
@@ -1835,12 +1838,25 @@
       "notice": {
         "expired": "{{server}}의 {{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다. 아직 필요하면 다시 요청하세요.",
         "passed": "{{server}}의 {{tool}}이(가) 승인되지 않아 실행되지 않았습니다.",
+        "askedElse": "다른 질문을 하셔서 {{server}}의 {{tool}}이(가) 실행되지 않았습니다.",
         "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다.",
         "waitingFor": "{{server}}의 {{tool}}이(가) {{name}} 님의 승인을 기다리고 있습니다.",
         "approvedBy": "{{name}} 님이 승인하여 실행되었습니다.",
         "approvedNotRun": "{{name}} 님이 승인했지만 실행되지 않았습니다.",
         "declinedBy": "{{name}} 님이 거부했습니다.",
         "requestExpired": "이 요청은 만료되었습니다."
+      },
+      "noticeAlone": {
+        "expired": "{{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다. 아직 필요하면 다시 요청하세요.",
+        "passed": "{{tool}}이(가) 승인되지 않아 실행되지 않았습니다.",
+        "askedElse": "다른 질문을 하셔서 {{tool}}이(가) 실행되지 않았습니다.",
+        "waiting": "{{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다.",
+        "waitingFor": "{{tool}}이(가) {{name}} 님의 승인을 기다리고 있습니다."
+      },
+      "builtIn": {
+        "openWebPage": "웹 페이지 열기",
+        "runCode": "코드 실행",
+        "installPackages": "코드 패키지 설치"
       },
       "receipt": {
         "allowed": "{{tool}}을(를) 허용했습니다",
@@ -1851,10 +1867,15 @@
       },
       "restricted": {
         "notice": "모든 사람이 열 수 있는 것은 아닌 출처의 콘텐츠가 포함될 수 있습니다. {{destination}}을(를) 읽을 수 있는 사람은 누구나 이 내용을 보게 됩니다.",
-        "goesTo": "전송 대상"
+        "goesTo": "전송 대상",
+        "noticeAnywhere": "모든 사람이 열 수 있는 것은 아닌 출처의 콘텐츠가 포함될 수 있으며, {{productName}} 외부로 전송될 수 있습니다."
       }
     },
     "selectedAlone": "{{name}} (이 항목만)",
+    "withheldSource": {
+      "label": "비공개 소스",
+      "tooltip": "이 소스를 열 수 없습니다."
+    },
     "noConnectorsFound": "커넥터를 찾을 수 없습니다",
     "treeSearching": "검색 중…",
     "treeSearchFailed": "검색하지 못했습니다. 다시 시도하세요.",
@@ -1931,6 +1952,7 @@
     },
     "answerFailedTitle": "이 답변을 생성하지 못했습니다",
     "answerFailedRetry": "다시 시도",
+    "answerFailedAskAgain": "다시 질문하기",
     "cannotOpenSource": "이 문서를 열 수 없습니다. 삭제되었거나 액세스 권한이 없을 수 있습니다.",
     "queue": {
       "title": "대기 중 · {{count}}",

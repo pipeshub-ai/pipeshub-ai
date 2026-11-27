@@ -256,6 +256,100 @@ describe('a reload: Your chats is read once, after the flags', () => {
   });
 });
 
+/** A list the server pages as it does: pins first, then newest activity; `limit` rows a page. */
+function pagedList(pinned: number, others: number) {
+  const rows = [
+    ...Array.from({ length: pinned }, (_, i) => ({ ...(row(`p${i + 1}`) as object), isPinned: true })),
+    ...Array.from({ length: others }, (_, i) => row(`r${i + 1}`) as object),
+  ];
+  return (page: number, limit: number) =>
+    Promise.resolve({
+      conversations: rows.slice((page - 1) * limit, page * limit),
+      pagination: { ...PAGINATION, page, limit, hasNextPage: page * limit < rows.length },
+    });
+}
+
+describe('every pin of a list reaches the rail, with five unpinned chats under them', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
+    useServicesHealthStore.setState({ apiServerReachable: true });
+    useFeatureFlagsStore.setState({ flags: {} } as never);
+  });
+
+  const pagesRead = (source: string) =>
+    fetchConversations.mock.calls.filter(([, , opts]) => (opts as { source: string }).source === source).map(([n]) => n);
+  const ids = (list: Array<{ id: string; isPinned?: boolean }>) => list.map((c) => `${c.id}${c.isPinned ? '*' : ''}`);
+
+  it('12 pinned over a page of 10: reads on until five unpinned are in, so all 12 pins and the others reach the rail', async () => {
+    const shared = pagedList(12, 8);
+    fetchConversations.mockImplementation((n: number, limit: number, opts: { source: string }) =>
+      opts.source === 'shared' ? shared(n, limit) : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+
+    await loadSidebarConversations();
+
+    expect(pagesRead('shared')).toEqual([1, 2]);
+    expect(pagesRead('owned')).toEqual([1]);
+    const { sharedConversations, sharedPagination } = useChatStore.getState();
+    expect(ids(sharedConversations).filter((id) => id.endsWith('*'))).toHaveLength(12);
+    expect(ids(sharedConversations).slice(12)).toEqual(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8']);
+    expect(sharedPagination?.hasNextPage).toBe(false);
+  });
+
+  it('a first page with five unpinned chats is read alone, its next page left to More', async () => {
+    const owned = pagedList(5, 20);
+    fetchConversations.mockImplementation((n: number, limit: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned(n, limit) : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+
+    await loadSidebarConversations();
+
+    expect(pagesRead('owned')).toEqual([1]);
+    expect(useChatStore.getState().conversations).toHaveLength(10);
+    expect(useChatStore.getState().pagination?.hasNextPage).toBe(true);
+  });
+
+  it('a list that is all pins reads to its end', async () => {
+    const owned = pagedList(23, 0);
+    fetchConversations.mockImplementation((n: number, limit: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned(n, limit) : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+
+    await loadSidebarConversations();
+
+    expect(pagesRead('owned')).toEqual([1, 2, 3]);
+    expect(useChatStore.getState().conversations).toHaveLength(23);
+  });
+
+  it('a refresh of one list reads on the same way', async () => {
+    useChatStore.setState({ conversationsLoadedAt: Date.now() });
+    const shared = pagedList(12, 8);
+    fetchConversations.mockImplementation((n: number, limit: number) => shared(n, limit));
+
+    await refreshSidebarList('shared');
+
+    expect(pagesRead('shared')).toEqual([1, 2]);
+    expect(useChatStore.getState().sharedConversations).toHaveLength(20);
+  });
+
+  it('a chat that moves up between two pages is listed once', async () => {
+    // r1 had a new message between the two reads, so page 2 brings it again, on top.
+    const first = pagedList(9, 6);
+    fetchConversations.mockImplementation((n: number, limit: number, opts: { source: string }) => {
+      if (opts.source !== 'owned') return Promise.resolve({ conversations: [], pagination: PAGINATION });
+      return n === 1 ? first(1, limit) : first(2, limit).then((r) => ({ ...r, conversations: [row('r1'), ...r.conversations] }));
+    });
+
+    await loadSidebarConversations();
+
+    const listed = ids(useChatStore.getState().conversations);
+    expect(new Set(listed).size).toBe(listed.length);
+    expect(listed.filter((id) => id === 'r1')).toHaveLength(1);
+  });
+});
+
 describe('refreshSidebarList: one list, when only it can have changed', () => {
   beforeEach(async () => {
     vi.clearAllMocks();

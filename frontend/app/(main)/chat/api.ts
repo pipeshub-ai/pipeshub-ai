@@ -2,8 +2,8 @@ import { apiClient, sharedGet, streamSSERequest, type SSEEvent } from '@/lib/api
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { OrgApi, type OrgResponse } from '@/app/(main)/workspace/general/api';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
-import { CHAT_STREAM_ERROR_MESSAGES, StreamError } from '@/lib/api/stream-errors';
-import { isGoneError } from '@/lib/api/api-error';
+import { CHAT_STREAM_ERROR_MESSAGES, StreamDroppedError, StreamError } from '@/lib/api/stream-errors';
+import { detailToast } from '@/lib/api/api-error';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
@@ -238,7 +238,7 @@ async function runTurnStream(
   // A connection that closes cleanly without a terminal frame would otherwise
   // leave the turn "streaming" forever, with Stop showing and no answer.
   if (!tracking.receivedComplete && !tracking.receivedError) {
-    callbacks.onError?.(new Error(CHAT_STREAM_ERROR_MESSAGES.interrupted));
+    callbacks.onError?.(new StreamDroppedError(CHAT_STREAM_ERROR_MESSAGES.interrupted, true));
   }
 }
 
@@ -983,7 +983,8 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
-    options?: { quietWhenGone?: boolean },
+    /** `quiet`: no toast for any failure (a background check); the others as `detailToast` has them. */
+    options?: { quietWhenGone?: boolean; quietWhenTransient?: boolean; quiet?: boolean },
   ): Promise<{
     conversation: {
       id: string;
@@ -1038,7 +1039,7 @@ export const ChatApi = {
       meta: Record<string, unknown>;
     }>(`${chatExtension.conversationPath(conversationId)}/`, {
       params: { page, limit },
-      ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
+      ...(options?.quiet ? { suppressErrorToast: true } : detailToast(options)),
     });
 
     const pagination = data.conversation.pagination ?? {

@@ -272,6 +272,22 @@ describe('@ menu — keyboard', () => {
     expect(used).toBe(false);
     expect(enter.preventDefault).not.toHaveBeenCalled();
   });
+
+  it('leaves Enter to the composer while it still searches with nothing to pick, as after a paste', async () => {
+    api.searchNodes.mockReturnValue(deferred<ReturnType<typeof page>>().promise);
+    const people: MentionGroupView = { key: 'people', label: 'People', items: [], limit: 5, status: 'loading' };
+    const handle = React.createRef<MentionMenuHandle>();
+    render(<Menu handle={handle} query="zz-nobody see you" groups={[people]} />);
+    await screen.findByTestId('mention-group-loading-people', undefined, WAIT);
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    const enter = key('Enter');
+    let used: boolean | undefined;
+    act(() => {
+      used = handle.current?.keyDown(enter, true);
+    });
+    expect(used).toBe(false);
+    expect(enter.preventDefault).not.toHaveBeenCalled();
+  });
 });
 
 describe('@ menu — the host’s groups', () => {

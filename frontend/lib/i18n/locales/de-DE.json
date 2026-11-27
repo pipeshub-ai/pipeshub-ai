@@ -1014,7 +1014,6 @@
     "recents": "Kürzlich",
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
-    "agentChat": "Agent-Chat",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -1172,6 +1171,8 @@
     },
     "fullTableView": "Vollständige Tabellenansicht",
     "downloadCsv": "Als CSV herunterladen",
+    "loadFailedTitle": "Dieser Chat konnte nicht geladen werden",
+    "loadFailedDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
     "toasts": {
       "stopStreamTitle": "Wird gestoppt…",
       "stopStreamDescription": "Die Antwort wird in Kürze gestoppt. Eine bereits erzeugte Teilantwort bleibt erhalten.",
@@ -1321,8 +1322,6 @@
     "deleteChat": "Löschen",
     "pin": "Anheften",
     "unpin": "Lösen",
-    "pinned": "Angepinnte Chats",
-    "pinnedChatsEmpty": "Hier werden Chats angezeigt, die Sie anheften",
     "pinnedRowSuffix": ", angepinnt",
     "sidebarRunning": "Wird im Hintergrund verarbeitet",
     "sidebarRunningOpen": "Wird verarbeitet",
@@ -1597,8 +1596,12 @@
     "stopListening": "Sprachaufnahme stoppen",
     "voiceInput": "Spracheingabe",
     "regenerateResponse": "Antwort neu generieren",
-    "quoteSelection": "Zitieren",
-    "quoteSelectionHint": "Dazu fragen",
+    "selectionActions": {
+      "label": "Ausgewählter Text",
+      "reply": "Antworten",
+      "ask": "{{productName}} fragen",
+      "copied": "Kopiert"
+    },
     "quotedExcerpt": "Zitat",
     "quotedExcerptTruncated": "Zitat (gekürzt)",
     "dismissQuote": "Zitat entfernen",
@@ -1751,12 +1754,25 @@
       "notice": {
         "expired": "{{tool}} auf {{server}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen. Fragen Sie erneut, falls es noch nötig ist.",
         "passed": "{{tool}} auf {{server}} wurde nicht freigegeben und daher nicht ausgeführt.",
+        "askedElse": "Sie haben etwas anderes gefragt, daher wurde {{tool}} auf {{server}} nicht ausgeführt.",
         "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung.",
         "waitingFor": "{{tool}} auf {{server}} wartet auf die Freigabe durch {{name}}.",
         "approvedBy": "{{name}} hat es freigegeben, daher wurde es ausgeführt.",
         "approvedNotRun": "{{name}} hat es freigegeben, es wurde aber nicht ausgeführt.",
         "declinedBy": "{{name}} hat es abgelehnt.",
         "requestExpired": "Diese Anfrage ist abgelaufen."
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen. Fragen Sie erneut, falls es noch nötig ist.",
+        "passed": "{{tool}} wurde nicht freigegeben und daher nicht ausgeführt.",
+        "askedElse": "Sie haben etwas anderes gefragt, daher wurde {{tool}} nicht ausgeführt.",
+        "waiting": "{{tool}} wartet auf die Freigabe durch den Besitzer der Unterhaltung.",
+        "waitingFor": "{{tool}} wartet auf die Freigabe durch {{name}}."
+      },
+      "builtIn": {
+        "openWebPage": "Webseite öffnen",
+        "runCode": "Code ausführen",
+        "installPackages": "Codepakete installieren"
       },
       "receipt": {
         "allowed": "Sie haben {{tool}} zugelassen",
@@ -1767,10 +1783,15 @@
       },
       "restricted": {
         "notice": "Dies kann Inhalte aus Quellen enthalten, die nicht alle öffnen können. Alle, die {{destination}} lesen können, werden es sehen.",
-        "goesTo": "Geht an"
+        "goesTo": "Geht an",
+        "noticeAnywhere": "Dies kann Inhalte aus Quellen enthalten, die nicht alle öffnen können, und es wird möglicherweise außerhalb von {{productName}} gesendet."
       }
     },
     "selectedAlone": "{{name}} (nur dieses Element)",
+    "withheldSource": {
+      "label": "Private Quelle",
+      "tooltip": "Sie können diese Quelle nicht öffnen."
+    },
     "noConnectorsFound": "Keine Konnektoren gefunden",
     "treeSearching": "Suche läuft…",
     "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
@@ -1848,6 +1869,7 @@
     },
     "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
     "answerFailedRetry": "Erneut versuchen",
+    "answerFailedAskAgain": "Erneut fragen",
     "cannotOpenSource": "Sie können dieses Dokument nicht öffnen. Es wurde möglicherweise entfernt, oder Sie haben keinen Zugriff darauf.",
     "queue": {
       "title": "In der Warteschlange · {{count}}",

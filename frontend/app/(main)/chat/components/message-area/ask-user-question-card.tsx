@@ -16,11 +16,14 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useInteractionFocus } from '../../hooks/use-interaction-focus';
 import { cardWords, groundingCardOf } from './grounding-card';
+import { isAskUserQuestionTool } from '../../utils/tool-display';
+import { useMinutesLeft } from './use-minutes-left';
 import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
   AskUserQuestionOption,
   AskUserQuestionPayload,
+  MessagePart,
   PendingAskUserQuestion,
 } from '../../types';
 
@@ -496,16 +499,44 @@ export function askUserQuestionOwnsRow(
  *  That is a card row with no answer text, or one closed by chatting
  *  (`repliedInChat`), whose answer went to a new row. A stopped resume merges
  *  its partial answer onto the card row (`loadHistoricalMessages`), so a card
- *  row with answer text keeps the marker. */
+ *  row with answer text keeps the marker, and so does one whose card's answer
+ *  was stopped before its first word (`answerStopped`). */
 export function showsStoppedMarker(row: {
   status: string | undefined;
   isStreaming: boolean;
   hasQuestionCard: boolean;
   hasAnswerText: boolean;
   repliedInChat: boolean;
+  answerStopped?: boolean;
 }): boolean {
   if (row.isStreaming || row.status !== 'stopped') return false;
+  if (row.answerStopped) return true;
   return !(row.hasQuestionCard && (!row.hasAnswerText || row.repliedInChat));
+}
+
+/** Whether a stopped card row was stopped by the run that took its card's
+ *  answer, not by the one that asked the card. That run's reply is merged onto
+ *  the card row, whose `messageId` is then the reply's, and the card the row
+ *  asked last had answers when it ran: a reply that itself stopped on a new
+ *  card has none for that one yet. */
+export function stoppedOnCardAnswer(row: {
+  rowId: string | undefined;
+  messageId: string | undefined;
+  /** The card on this row, while it is live. */
+  pending: Pick<PendingAskUserQuestion, 'status' | 'answers' | 'sentAnswers'> | null;
+  parts: MessagePart[] | undefined;
+  payload: AskUserQuestionPayload | undefined;
+  answers: Record<string, AskUserQuestionAnswer> | undefined;
+}): boolean {
+  if (!row.rowId || !row.messageId || row.rowId === row.messageId) return false;
+  const some = (answers: Record<string, AskUserQuestionAnswer> | undefined) => Object.keys(answers ?? {}).length > 0;
+  if (row.pending) return some(row.pending.status === 'submitted' ? row.pending.answers : row.pending.sentAnswers);
+  const asked = (row.parts ?? []).filter(
+    (part) => part.type === 'tool_call' && isAskUserQuestionTool(part.toolName) && part.status === 'completed',
+  );
+  if (asked.length > 0) return some(asked[asked.length - 1].question?.answers);
+  // A row saved before its steps were: its card holds every question asked on it.
+  return some(row.answers) && row.payload !== undefined && !hasUnansweredQuestions(row.payload, row.answers ?? {});
 }
 
 function hasVisibleSelections(
@@ -541,6 +572,8 @@ export interface AskUserQuestionCardProps {
   readOnlyFor?: { name: string | null };
   /** Answers can be picked but not sent yet; the text says why (someone else's turn is running). */
   submitHeld?: string;
+  /** Someone else's message in the chat closed it: the words that say so, in place of "You replied in the chat." */
+  repliedByOther?: string;
 }
 
 export function AskUserQuestionCard({
@@ -555,6 +588,7 @@ export function AskUserQuestionCard({
   sending = false,
   readOnlyFor,
   submitHeld,
+  repliedByOther,
 }: AskUserQuestionCardProps) {
   const { t, i18n } = useTranslation();
   const ids = useId().replace(/:/g, '');
@@ -572,6 +606,9 @@ export function AskUserQuestionCard({
     initialStep ?? firstUnansweredStep(questions, initialAnswers),
   );
   const settled = status === 'submitted' || status === 'persisted';
+  // Nothing else draws a waiting card again when its time runs out: the approval card's clock does, so it turns
+  // read-only then.
+  useMinutesLeft(status === 'pending' ? Date.parse(normalized.expiresAt ?? '') : NaN);
   // A card closed by a typed reply has no selections to wait for, so it is finished too.
   const allAnswered =
     settled && (Boolean(normalized.repliedInChat) || !hasUnansweredQuestions(normalized, answers));
@@ -759,7 +796,7 @@ export function AskUserQuestionCard({
 
   const expired = status === 'pending' && isAskUserQuestionExpired(normalized);
   const closedNote = normalized.repliedInChat
-    ? t('askUserQuestion.repliedInChat')
+    ? repliedByOther ?? t('askUserQuestion.repliedInChat')
     : expired
       ? t('askUserQuestion.expired')
       : null;

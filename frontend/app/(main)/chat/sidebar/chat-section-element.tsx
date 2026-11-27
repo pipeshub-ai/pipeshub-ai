@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { Box, Flex, TextField, Tooltip, VisuallyHidden } from '@radix-ui/themes';
+import { Box, Flex, TextField, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
@@ -81,8 +81,8 @@ function MarkedTitleLabel({ title, mark }: { title: ReactNode; mark: ReactNode }
 }
 
 /**
- * A pinned chat's mark after its title: the pin, filled and tilted the way a pin goes into a board (upright it reads
- * as a location marker), and ", pinned" for the row's name, since the glyph itself is hidden.
+ * A pinned chat's mark after its title: the pin, filled, in the brand's green and tilted the way a pin goes into a
+ * board (upright it reads as a location marker), and ", pinned" for the row's name, since the glyph itself is hidden.
  */
 function PinnedMark() {
   const { t } = useTranslation();
@@ -93,7 +93,7 @@ function PinnedMark() {
         data-pinned-mark=""
         style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0, transform: 'rotate(45deg)' }}
       >
-        <MaterialIcon name="keep" variant="filled" size={ICON_SIZE_DEFAULT} color="var(--text-secondary)" />
+        <MaterialIcon name="keep" variant="filled" size={ICON_SIZE_DEFAULT} color="var(--accent-a11)" />
       </span>
       <VisuallyHidden>{t('chat.pinnedRowSuffix')}</VisuallyHidden>
     </>
@@ -512,29 +512,6 @@ export function ChatSectionElement({
     }
   };
 
-  const sharedByName = conversation.sharedBy?.name?.trim();
-  const sharedByText =
-    conversation.isOwner === false && sharedByName ? t('chat.sharedBy', { name: sharedByName }) : undefined;
-  // In the global list an agent chat looks like any other shared chat, so the agent symbol follows the sharer's name.
-  const isAgentChatInGlobalList = Boolean(conversation.agentKey) && !sectionAgentId;
-  const sharedBySubtitle =
-    sharedByText && isAgentChatInGlobalList ? (
-      <>
-        {sharedByText}
-        <Tooltip content={t('chat.agentChat')}>
-          <span
-            aria-label={t('chat.agentChat')}
-            role="img"
-            style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: 4 }}
-          >
-            <MaterialIcon name="smart_toy" size={13} color="var(--accent-11)" />
-          </span>
-        </Tooltip>
-      </>
-    ) : (
-      sharedByText
-    );
-
   // Agent chats have no pin API, and project rows come from a list that does not carry the pin, so only the main
   // list offers it.
   const onTogglePin = agentId || projectId ? undefined : () => void handleTogglePin();
@@ -652,7 +629,6 @@ export function ChatSectionElement({
         href={conversationHref}
         onClick={onClick}
         textColor="var(--text-primary)"
-        subtitle={sharedBySubtitle}
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
         rightSlot={row.rightSlot}

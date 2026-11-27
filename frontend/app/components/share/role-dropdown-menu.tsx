@@ -91,9 +91,9 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
       <DropdownMenu.Content
         align="end"
         size="1"
-        // Soft highlight: olive-12 text (13.1:1) and olive-11 descriptions (4.8:1) on jade-a4, where the
-        // solid accent gave white on jade-9 at 3.15:1. Radix labels the menu by its trigger, whose text
-        // includes the icon ligature, so name it explicitly.
+        // The highlight is the app's (globals.css): in light, olive-12 text 14.4:1 and olive-11 descriptions
+        // 5.3:1 on it. Radix labels the menu by its trigger, whose text includes the icon ligature, so name
+        // it explicitly.
         variant="soft"
         aria-labelledby={undefined}
         aria-label={triggerLabel}

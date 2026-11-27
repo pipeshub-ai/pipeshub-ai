@@ -32,6 +32,7 @@ const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { CHAT_STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText, loadHistoricalMessages } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
+const { ErrorType } = await import('@/lib/api/api-error');
 const { useToastStore } = await import('@/lib/store/toast-store');
 const { clearSessionCache } = await import('@/lib/api/session-cache');
 const { chatExtension } = await import('@/config');
@@ -1524,6 +1525,48 @@ describe('answering an approval card', () => {
     expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)).toolApproval).toEqual({ approvalId: 'ap-1', decision: 'allow' });
   });
 
+  it("never writes over another turn's reply when this tab no longer has the card's row", async () => {
+    const slotId = await stoppedOnTheCard();
+    const other = [
+      { id: 'q2', role: 'user' as const, content: [{ type: 'text' as const, text: 'Something else' }] },
+      { id: 'a9', role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Another answer.' }] },
+    ];
+    useChatStore.getState().updateSlot(slotId, { messages: [slot(slotId).messages[0], ...other] });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Filed JIRA-7.' }), frame('RUN_FINISHED', { result: { conversation: finishedConversation('Filed JIRA-7.') } })]);
+    const streaming = streamMessageForSlot(slotId, 'Tool approval: allow', answer('allow'), { reuseRowId: 'gone' });
+    // A row of its own, under no bubble: the answer to a card is none.
+    expect(texts(slotId).slice(0, 3)).toEqual([['user', Q], ['user', 'Something else'], ['assistant', 'Another answer.']]);
+    expect(slot(slotId).messages).toHaveLength(4);
+    expect(slot(slotId).messages[3].role).toBe('assistant');
+    await streaming;
+  });
+
+  it("carries on its own reply when someone else's turn came after it", async () => {
+    const slotId = await stoppedOnTheCard();
+    const other = [
+      { id: 'q2', role: 'user' as const, content: [{ type: 'text' as const, text: 'Something else' }] },
+      { id: 'a9', role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Another answer.' }] },
+    ];
+    useChatStore.getState().updateSlot(slotId, { messages: [...slot(slotId).messages, ...other] });
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Filed JIRA-7.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation('Filed JIRA-7.'),
+            messages: [...parked(), storedMessage({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }), storedMessage({ _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.' })],
+          },
+        },
+      }),
+    ]);
+    const streaming = streamMessageForSlot(slotId, 'Tool approval: allow', answer('allow'), { reuseRowId: 'a1' });
+    expect(texts(slotId)).toEqual([['user', Q], ['assistant', WAITING], ['user', 'Something else'], ['assistant', 'Another answer.']]);
+    expect(slot(slotId).streamingQuestion).toBe(Q);
+    await streaming;
+    expect(texts(slotId)[1]).toEqual(['assistant', 'Filed JIRA-7.']);
+  });
+
   it('leaves the card as it was and says so when the answer fails to send', async () => {
     const slotId = await stoppedOnTheCard();
     const before = slot(slotId).messages;
@@ -1732,22 +1775,32 @@ describe('regenerating an answer', () => {
       expect(degradedRows(slotId)).toEqual(['a1']);
     });
 
-    it('an edited question whose stream drops mid-way (the server may still finish it) keeps the old answer\'s note', async () => {
+    it('an edited question whose stream drops mid-way keeps the old answer\'s note while the server runs it, and after it has nothing of it', async () => {
+      vi.useFakeTimers();
       const slotId = degradedSlot();
       failingBody();
-      await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { conversation: { ...finishedConversation('old answer'), id: 'conv-1', status: 'Inprogress' } } });
+      const run = streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(slot(slotId)).toMatchObject({ isStreaming: true, regenerateMessageId: 'a1' });
+      expect(degradedRows(slotId)).toEqual(['a1']);
+      get.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await run;
+      vi.useRealTimers();
       expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
       expect(degradedRows(slotId)).toEqual(['a1']);
-      expect(slot(slotId).remoteRunInProgress).toBe(true);
+      expect(slot(slotId).isStreaming).toBe(false);
     });
 
-    it('an edited question whose request fails outright (the server may still run it) keeps the old answer\'s note', async () => {
+    it('an edited question whose request fails outright, and of which the server has nothing, keeps the old answer\'s note', async () => {
       const slotId = degradedSlot();
       fetchMock.mockRejectedValueOnce(new Error('network down'));
+      vi.spyOn(apiClient, 'get').mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
       await streamRegenerateForSlot(slotId, 'a1', regenOptions, undefined, { query: 'Q2' });
       expect(texts(slotId)[1]).toEqual(['assistant', 'old answer']);
       expect(degradedRows(slotId)).toEqual(['a1']);
-      expect(slot(slotId).remoteRunInProgress).toBe(true);
+      expect(slot(slotId).isStreaming).toBe(false);
     });
 
     it('an answered question card regenerated and refused keeps the answer\'s note', async () => {
@@ -1760,6 +1813,7 @@ describe('regenerating an answer', () => {
     it('an answered question card whose regenerate stream drops keeps the answer\'s note (the card goes, the note stays)', async () => {
       const slotId = answeredCardSlot();
       failingBody();
+      vi.spyOn(apiClient, 'get').mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
       await streamRegenerateForSlot(slotId, 'a1', regenOptions);
       expect(degradedRows(slotId)).toEqual(['a1']);
     });
@@ -2586,7 +2640,8 @@ describe('an answer that finishes while another chat is open', () => {
     await streamMessageForSlot(slotId, Q, request());
 
     expect(toasts().map((t) => ({ variant: t.variant, title: t.title, description: t.description, href: t.action?.href }))).toEqual([
-      { variant: 'info', title: 'Answer ready', description: 'Quarterly revenue', href: '/chat/?conversationId=conv-real' },
+      // It opens the chat at the answer that finished.
+      { variant: 'info', title: 'Answer ready', description: 'Quarterly revenue', href: '/chat/?conversationId=conv-real&messageId=a1' },
     ]);
     expect(unread()).toEqual(['conv-real']);
   });

@@ -1,43 +1,42 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Checkbox, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
-import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
+import {
+  approvalArgumentLines,
+  approvalToolLabel,
+  builtInToolKey,
+  toolApprovalResumeQuery,
+  type SettledToolApproval,
+} from '../../tool-approval';
 import type { ApprovalStubStatus, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 import { answerSlotIdNow, useAnswerSlotId, useScopedSlotId } from './answer-slot-scope';
-
-/** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
-function useMinutesLeft(expiresAt: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const left = expiresAt - now;
-    if (left <= 0) return;
-    const timer = setTimeout(() => setNow(Date.now()), Math.min(left, 30_000));
-    return () => clearTimeout(timer);
-  }, [now, expiresAt]);
-  return Math.max(0, Math.ceil((expiresAt - now) / 60_000));
-}
+import { useMinutesLeft } from './use-minutes-left';
 
 interface ToolApprovalCardProps {
   approval: ToolApprovalDetails;
-  /** The latest reply: an older card was already answered or passed over. */
+  /** It still waits (the latest reply, in a conversation of one's own): any other was already answered or passed over. */
   isLatest: boolean;
   /** The reply's row: the answer carries it on. */
   rowId?: string;
   /** Who answers it instead of the conversation's owner: this person, or the viewer when `null`. */
   readOnlyFor?: { name: string | null } | null;
+  /** It can't be answered yet; the text says why (someone else's turn is running). */
+  held?: string;
+  /** When its asker's next question passed it over (epoch ms), if known. */
+  closedAt?: number;
 }
 
 /** Asks the person whether a tool call may run. The call itself is saved on the server; the
  * answer carries on this same reply, sending only the approval id and the choice. Where it can't
  * be answered (expired, an older reply, a conversation shared with the viewer, someone else's to
  * answer) it is one line. */
-export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: ToolApprovalCardProps) {
+export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor, held, closedAt }: ToolApprovalCardProps) {
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const [remember, setRemember] = useState(false);
@@ -48,19 +47,24 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
   const ownerRule = useChatStore((s) => (answerSlotId ? s.slots[answerSlotId]?.isOwner ?? null : null)) !== false;
   const canSend = readOnlyFor === undefined ? ownerRule : readOnlyFor === null;
 
-  const tool = approvalToolLabel(approval);
-  const server = approval.serverName;
-  const expired = minutesLeft === 0;
+  const builtIn = builtInToolKey(approval.toolName, approval.serverName);
+  const tool = builtIn ? t(builtIn) : approvalToolLabel(approval);
+  const server = builtIn ? null : approval.serverName;
+  // Its asker asked something else before it expired: that is why it didn't run, for good.
+  const askedElse = !isLatest && closedAt !== undefined && closedAt < approval.expiresAt;
+  const expired = minutesLeft === 0 && !askedElse;
 
   if (expired || !isLatest || !canSend) {
     // Someone else's card: "Ask again" is its asker's to do.
     const expiredNotice = readOnlyFor ? 'requestExpired' : 'expired';
-    const notice = expired ? expiredNotice : readOnlyFor ? (isLatest ? 'waitingFor' : 'passed') : canSend ? 'passed' : 'waiting';
+    const passed = askedElse && !readOnlyFor ? 'askedElse' : 'passed';
+    const notice = expired ? expiredNotice : readOnlyFor ? (isLatest ? 'waitingFor' : passed) : canSend ? passed : 'waiting';
     const name = readOnlyFor?.name || t('askUserQuestion.unknownPerson');
+    const group = server === null && notice !== 'requestExpired' ? 'noticeAlone' : 'notice';
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--text-secondary)' }}>
         <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--text-secondary)" style={{ marginTop: 3 }} />
-        <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server, name })}</Text>
+        <Text size="2">{t(`chat.toolApproval.${group}.${notice}`, { tool, server, name })}</Text>
       </Flex>
     );
   }
@@ -72,6 +76,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
   // Where it goes as it reads and as it is reached, so a look-alike name can't pass for another.
   const hostLabel = (h: { host: string; unicode: string }) => (h.unicode === h.host ? h.host : `${h.unicode} (${h.host})`);
   const destination = approval.hosts?.length ? approval.hosts.map(hostLabel).join(', ') : server;
+  const notice = destination === null ? 'noticeAnywhere' : 'notice';
 
   const answer = (decision: ToolApprovalDecision) => {
     const slotId = answerSlotIdNow(scopedSlotId);
@@ -108,10 +113,15 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
         </Flex>
         <Box style={{ flex: 1, minWidth: 0 }}>
           <Flex align="center" gap="2" wrap="wrap">
-            <Text size="3" weight="medium" title={approval.toolName} style={{ color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
+            <Text
+              size="3"
+              weight="medium"
+              title={builtIn ? undefined : approval.toolName}
+              style={{ color: 'var(--text-primary)', overflowWrap: 'anywhere' }}
+            >
               {tool}
             </Text>
-            <Badge size="1" variant="soft" color="gray">{server}</Badge>
+            {server !== null && <Badge size="1" variant="soft" color="gray">{server}</Badge>}
             {approval.kind === 'destructive' && (
               <Badge size="1" variant="soft" color="red">
                 {t('chat.toolApproval.cantBeUndone')}
@@ -129,7 +139,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
       {restricted && (
         <Box mt="3" data-testid="tool-approval-restricted">
           <Text as="p" size="2" style={{ color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
-            {t('chat.toolApproval.restricted.notice', { destination })}
+            {t(`chat.toolApproval.restricted.${notice}`, { destination })}
           </Text>
           {approval.hosts && approval.hosts.length > 0 && (
             <Flex mt="1" gap="2" align="baseline" wrap="wrap">
@@ -193,10 +203,15 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
 
       <Flex mt="3" align="center" gap="4" wrap="wrap">
         <Flex gap="2">
-          <Button size="2" color={approval.kind === 'destructive' ? 'red' : undefined} onClick={() => answer('allow')}>
+          <Button
+            size="2"
+            color={approval.kind === 'destructive' ? 'red' : undefined}
+            disabled={Boolean(held)}
+            onClick={() => answer('allow')}
+          >
             {t('chat.toolApproval.allow')}
           </Button>
-          <Button size="2" variant="soft" color="gray" onClick={() => answer('deny')}>
+          <Button size="2" variant="soft" color="gray" disabled={Boolean(held)} onClick={() => answer('deny')}>
             {t('chat.toolApproval.deny')}
           </Button>
         </Flex>
@@ -209,6 +224,11 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
           </Text>
         )}
       </Flex>
+      {held && (
+        <Text as="p" size="1" mt="2" role="status" data-testid="tool-approval-held" style={{ color: 'var(--text-secondary)' }}>
+          {held}
+        </Text>
+      )}
     </Box>
   );
 }
@@ -229,8 +249,23 @@ const STUB_NOTICE: Record<ApprovalStubStatus, { key: string; icon: string }> = {
 };
 
 /** Someone else's approval card once it no longer waits, from the server's stub of it: one line, as their waiting card is. */
-export function ToolApprovalStubNotice({ status, name }: { status: ApprovalStubStatus; name: string | null }) {
+export function ToolApprovalStubNotice({
+  status,
+  name,
+  approval,
+  closedAt,
+}: {
+  status: ApprovalStubStatus;
+  name: string | null;
+  approval?: ToolApprovalDetails;
+  /** When its asker's next question passed it over (epoch ms), if known. */
+  closedAt?: number;
+}) {
   const { t } = useTranslation();
+  // The server reads "expired" once the time is up; the card knows whether its asker's next question closed it first.
+  if (status === 'expired' && approval && closedAt !== undefined) {
+    return <ToolApprovalCard approval={approval} isLatest={false} closedAt={closedAt} readOnlyFor={{ name }} />;
+  }
   const notice = STUB_NOTICE[status];
   return (
     <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--text-secondary)' }}>
@@ -250,7 +285,7 @@ export function ToolApprovalReceipts({ items }: { items: SettledToolApproval[] }
         <Flex key={item.key} align="center" gap="2">
           <MaterialIcon name={RECEIPT_ICON[item.answer].name} size={16} color={RECEIPT_ICON[item.answer].color} />
           <Text size="2" style={{ color: 'var(--text-secondary)' }}>
-            {t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.tool })}
+            {t(`chat.toolApproval.receipt.${item.answer}`, { tool: item.toolKey ? t(item.toolKey) : item.tool })}
           </Text>
           {item.server && <Badge size="1" variant="soft" color="gray">{item.server}</Badge>}
         </Flex>

@@ -16,8 +16,7 @@ import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature
 import { debugLog } from '@/chat/debug-logger';
 import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
-import type { Conversation, ConversationSource } from '@/chat/types';
-import { splitPinned } from '@/chat/utils/pinned-conversations';
+import type { Conversation } from '@/chat/types';
 import { startListRead, withHeldTitles } from '@/chat/utils/held-titles';
 import { chatSlots } from '@/config';
 import { MORE_CHATS_PAGE_SIZE, SIDEBAR_LISTS_STALE_MS } from '../constants';
@@ -36,26 +35,8 @@ const ROW_HEIGHT = 36;
 /** Skeleton rows shown when the list's height is not known yet. */
 const MIN_SKELETON_ROWS = 3;
 
-/** The rail's lists as the other panels read them: not at all. */
-const NO_ROWS: Conversation[] = [];
-
 /** Skeleton rows that fill a list of this height. */
 const skeletonRowsFor = (listHeight: number) => Math.max(MIN_SKELETON_ROWS, Math.ceil(listHeight / ROW_HEIGHT));
-
-/** Every pinned chat of one list. The server lists pins first, so it reads pages until one holds another chat. */
-async function fetchPinned(source: ConversationSource, search: string | undefined, excludeProjectChats: boolean) {
-  const pinned: Conversation[] = [];
-  for (let page = 1; ; page += 1) {
-    const { conversations, pagination } = await ChatApi.fetchConversations(page, MORE_CHATS_PAGE_SIZE, {
-      source,
-      search,
-      excludeProjectChats,
-    });
-    const pins = conversations.filter((c) => c.isPinned === true);
-    pinned.push(...pins);
-    if (pins.length < conversations.length || !pagination.hasNextPage) return pinned;
-  }
-}
 
 /**
  * The list this panel last started and what it asked for. The store starts a new list (a new key) for every open,
@@ -69,8 +50,8 @@ const startedList = { key: -1, query: '' };
  *
  * Fetches conversations from page 1 (page size 20), so the panel shows the complete list including chats
  * already visible in the main sidebar. The rows live in the chat store, so a change made from any row
- * (here or in the rail) shows in both at once. Pinned lists every pinned chat of both lists at once; Shared chats
- * and Your chats list only their unpinned ones, so a pin or an unpin moves a row out of the panel it is in.
+ * (here or in the rail) shows in both at once. Shared chats and Your chats list only their unpinned ones, since every
+ * pin leads its list in the rail, so a pin or an unpin moves a row out of the panel or back into it.
  *
  * Wrapped in React.memo to prevent parent-cascade re-renders.
  */
@@ -102,18 +83,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
   const { rows, isLoading, isLoadingMore, hasNextPage, page } = moreChats;
 
   const searching = debouncedSearch.trim().length > 0;
-  const isPinnedList = sectionType === 'pinned';
-  const railConversations = useChatStore((s) => (isPinnedList ? s.conversations : NO_ROWS));
-  const railSharedConversations = useChatStore((s) => (isPinnedList ? s.sharedConversations : NO_ROWS));
-  const listedRows = useMemo(() => {
-    if (!isPinnedList) return rows.filter((c) => c.isPinned !== true);
-    // A chat pinned in the rail while the list is open joins it; a search shows only what the server matched.
-    const listed = new Set(rows.map((c) => c.id));
-    const pinnedInRail = searching
-      ? []
-      : [...railConversations, ...railSharedConversations].filter((c) => c.isPinned === true && !listed.has(c.id));
-    return splitPinned([...rows, ...pinnedInRail]).pinned;
-  }, [isPinnedList, rows, searching, railConversations, railSharedConversations]);
+  const listedRows = useMemo(() => rows.filter((c) => c.isPinned !== true), [rows]);
   const visibleRows = chatSlots.useVisibleConversations(listedRows);
   // Nothing shows for a load faster than the show delay; past it, the skeleton fills the list.
   const listSkeleton = useDeferredLoading(isLoading);
@@ -140,7 +110,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
 
   // Fetch page 1 on mount AND when search query changes
   useEffect(() => {
-    // Projects decides what Your chats and Pinned leave out, so it is part of what the list asked for.
+    // Projects decides what Your chats leaves out, so it is part of what the list asked for.
     const listQuery = [sectionType, projectsEnabled, debouncedSearch.trim()].join('|');
     const listed = useChatStore.getState().moreChats;
     // Shown again with this query's rows still listed (or its first page still loading): they stay, and page 1 loads
@@ -158,15 +128,6 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
 
     (async () => {
       try {
-        if (isPinnedList) {
-          // Pinned chats are few, so both lists' pins load at once and the list has no next page.
-          const [own, shared] = await Promise.all([
-            fetchPinned('owned', search, projectsEnabled),
-            fetchPinned('shared', search, false),
-          ]);
-          setMoreChatsPage(key, withHeldTitles(splitPinned([...own, ...shared]).pinned, read), 1, false);
-          return;
-        }
         const result = await ChatApi.fetchConversations(1, MORE_CHATS_PAGE_SIZE, {
           source,
           search,
@@ -179,7 +140,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
         else setMoreChatsPage(key, [], 1, false);
       }
     })();
-  }, [debouncedSearch, isPinnedList, projectsEnabled, source, excludeProjectChats, startMoreChatsList, setMoreChatsPage]);
+  }, [debouncedSearch, projectsEnabled, source, excludeProjectChats, startMoreChatsList, setMoreChatsPage]);
 
   const handleSelect = (id: string) => {
     if (sectionType === 'your') {
@@ -223,7 +184,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     />
   );
 
-  const title = isPinnedList ? t('chat.pinned') : sectionType === 'shared' ? t('chat.sharedChats') : t('chat.yourChats');
+  const title = sectionType === 'shared' ? t('chat.sharedChats') : t('chat.yourChats');
   const showFirstSkeleton = listSkeleton.visible;
   // The next page's skeleton sits under the last row, and goes the moment that page's rows arrive.
   const showMoreSkeleton = isLoadingMore && moreSkeleton.visible && !showFirstSkeleton;
@@ -306,7 +267,7 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
               style={{ padding: 'var(--space-4) var(--space-3)' }}
             >
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                {searching ? t('message.noResults') : isPinnedList ? t('chat.pinnedChatsEmpty') : t('chat.noChatsYet')}
+                {searching ? t('message.noResults') : t('chat.noChatsYet')}
               </Text>
             </Flex>
           )}

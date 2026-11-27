@@ -19,9 +19,11 @@ import type {
   ChatSlot,
   Conversation,
   ConversationMessage,
+  MessagePart,
   PendingAskUserQuestion,
   QueuedSend,
   ResponseTab,
+  SSEChunkCitation,
   SSEConnectedEvent,
   StreamChatRequest,
   UploadedFile,
@@ -68,6 +70,11 @@ export interface ChatStreamSession {
   startFields?: Partial<ChatSlot>;
   /** The run id the server sends (header or first frame) replaces the client's. */
   adoptServerRunId?: boolean;
+  /**
+   * The stored row is what this send stored (its question, or its answer to a card). Unset: the text it sent, on a row
+   * the chat did not have before.
+   */
+  isOwnRow?(row: ConversationMessage): boolean;
   /** Messages to show once the run completed; `null` keeps the server's list. */
   completeMessages?(
     slotBefore: ChatSlot | undefined,
@@ -84,6 +91,13 @@ export interface ChatStreamSession {
   onResumeFailed?(slotId: string, error: unknown): void;
   /** The run completed in `convId`. */
   onCompleted?(convId: string): void;
+}
+
+/** What a running answer shows: its text so far, its steps, and what its numbered citations point at. */
+export interface LiveRunDraw {
+  text: string;
+  parts: MessagePart[];
+  citations?: SSEChunkCitation[];
 }
 
 export interface ChatSendContext {
@@ -131,6 +145,8 @@ export interface ChatExtension {
   agentStreamBodyFields(request: StreamChatRequest): Record<string, unknown>;
   /** Base path of a conversation's routes; its detail, stream, regenerate and cancel calls build on it. */
   conversationPath(conversationId: string, agentId?: string | null): string;
+  /** A chat left this person's lists (archived, left, deleted, removed, moved into a project): forget what is kept of it beside them. */
+  conversationRemoved(conversationId: string): void;
   slot: {
     /** Fields of a fresh slot. */
     defaults(isNew: boolean): Partial<ChatSlot>;
@@ -157,8 +173,8 @@ export interface ChatExtension {
   history: {
     /** Options for the detail fetch. */
     loadOptions(): { quietWhenGone?: boolean };
-    /** Slot fields from a loaded detail response. */
-    detailFields(conversation: ConversationSummaryInput): Partial<ChatSlot>;
+    /** Slot fields from a loaded detail response; `slot` as it was before it. */
+    detailFields(conversation: ConversationSummaryInput, slot?: ChatSlot): Partial<ChatSlot>;
     /** Slot fields after a failed load; `null` when the failure is an ordinary error. */
     loadFailureFields(error: unknown): Partial<ChatSlot> | null;
     /** Rows before they are mapped. */
@@ -183,6 +199,8 @@ export interface ChatExtension {
     cardIsAnswerable(card: Partial<PendingAskUserQuestion>): boolean;
     /** A card answer row (`User selections:`) answers this card; it closes only the card it answers. */
     answersCard(answer: ConversationMessage, card: Partial<PendingAskUserQuestion>): boolean;
+    /** An approval card's answer (`Tool approval:`) carries on the reply in this row, given by its `rowCustom` fields. */
+    approvalCarriesOn(answer: ConversationMessage, row: RowCustom): boolean;
     /** A new question closes this open card: its person asked something else instead of answering it. */
     questionClosesCard(question: ConversationMessage, card: Partial<PendingAskUserQuestion>): boolean;
     /** A question typed while this card is still open answered it, so it shows as replied in the chat. */
@@ -206,12 +224,23 @@ export interface ChatExtension {
     finalizeMessages(messages: ThreadMessageLike[], request: StreamChatRequest, convKey: string): void;
     /** Any run completed. */
     onCompleted(request: StreamChatRequest): void;
+    /**
+     * This tab lost the stream of a run the server goes on with: `draw` gets what the row shows each time more of the
+     * run comes another way, until the returned function is called. `shown` is what the row shows now, `runId` the id
+     * the server has the run under, as far as it is known. Unset: nothing more of it comes until it ends.
+     */
+    followLive?(runId: () => string | null, shown: () => LiveRunDraw, draw: (next: LiveRunDraw) => void): () => void;
     /** Toast text for a failed answer to a question card; `null` for the default text. */
     resumeFailedMessage(error: unknown): string | null;
     /** Whether a refused card answer closes the card instead of leaving it to send again. */
     resumeClosesCard(error: unknown): boolean;
     /** A refusal code whose text may stay on a failed row. */
     knowsErrorCode(code: string | undefined): boolean;
+    /**
+     * The words for a refusal the extension knows better than the shared text, on a failed row and in the toast of a
+     * refused regenerate or edit. Unset or `null`: the shared words.
+     */
+    refusalText?(error: unknown): string | null;
   };
   queue: ChatQueueExtension;
   pairs: {
@@ -254,6 +283,7 @@ export const defaultChatExtension: ChatExtension = {
   agentStreamBodyFields: () => NO_FIELDS,
   conversationPath: (conversationId, agentId) =>
     agentId ? `/api/v1/agents/${agentId}/conversations/${conversationId}` : `/api/v1/conversations/${conversationId}`,
+  conversationRemoved: () => undefined,
   slot: {
     defaults: () => NO_FIELDS,
     ownerFields: () => NO_FIELDS,
@@ -278,6 +308,7 @@ export const defaultChatExtension: ChatExtension = {
     askCardFields: () => NO_FIELDS,
     cardIsAnswerable: () => true,
     answersCard: () => true,
+    approvalCarriesOn: () => true,
     questionClosesCard: () => false,
     typedReplyClosesCard: () => true,
     restoresFiltersOf: () => true,
@@ -487,6 +518,8 @@ export interface ChatResponseParts {
   onEditQuery(): void;
   /** Knowledge nodes the question names with `@`, drawn as chips in it. */
   questionMentions: AppliedFilterNode[];
+  /** Where in the question the server wrote the word for a source the reader can't open. */
+  questionWithheld?: readonly number[];
 }
 
 export interface ChatResponseExtension {
@@ -506,6 +539,8 @@ export interface ChatResponseExtension {
   allowFork?: boolean;
   /** Show the applied-filter chips under the question when the chat has no right column. Defaults to true. */
   showAppliedFilters?: boolean;
+  /** The list draws its own bar over text selected in its rows, so the answer draws none over its own. */
+  ownSelectionBar?: boolean;
   /** Replaces the time line under the question. */
   questionMeta?: ReactNode;
   /** Above the tabs. */
@@ -527,11 +562,24 @@ export interface ChatResponseExtension {
   toolsConnectReadOnlyFor?: { agentName: string | null };
   /** Who answers the approval card instead of the conversation's owner: this person, or the viewer when `null`. */
   approvalCardReadOnlyFor?: { name: string | null } | null;
+  /** The approval card in this reply still waits, or was passed over. Unset: it waits on the latest reply alone. */
+  approvalCardWaits?: boolean;
+  /** When the asker's next question passed the approval card over (epoch ms). Unset: not known. */
+  approvalCardClosedAt?: number;
+  /** The approval card can be read but not answered yet; the text says why. */
+  approvalCardHeld?: string;
+  /** Someone else answered their approval card and their run goes on: no line about it, and no actions, until it ends. */
+  approvalCardAnswered?: boolean;
   /**
    * Someone else asked this question and stopped its answer: the stopped card's words, naming them. Unset, the viewer
    * stopped it ("You stopped this response").
    */
   stoppedByOther?: { title: string; partialBody: string };
+  /**
+   * Someone else's message in the chat closed this row's question card: the words that say so, naming them. Unset, the
+   * viewer's did ("You replied in the chat.").
+   */
+  repliedByOther?: string;
   /** Adjusts the request that answers a live question card. */
   decorateResumeRequest?(request: StreamChatRequest, pending: PendingAskUserQuestion): void;
   /** A whole row layout; `null` draws the default one. */

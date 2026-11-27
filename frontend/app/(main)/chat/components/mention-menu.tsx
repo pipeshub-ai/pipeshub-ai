@@ -1067,11 +1067,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
               else activate(row);
               return true;
             }
-            // Nothing to pick yet; once nothing matches, the key does what it does in the text (Enter sends).
-            if (loading) {
-              event.preventDefault();
-              return true;
-            }
+            // Nothing to pick, even while a search still runs: the key does what it does in the text (Enter sends).
             return false;
           }
           default:
@@ -1079,7 +1075,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
         }
       },
     }),
-    [rows, clampedIndex, hasMore, loadMore, open, back, stack.length, query, sections, searching, activate, loading, checkable]
+    [rows, clampedIndex, hasMore, loadMore, open, back, stack.length, query, sections, searching, activate, checkable]
   );
 
   const empty =

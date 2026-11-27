@@ -57,6 +57,10 @@ function renderSections(sharedConversations: Conversation[], conversations: Conv
 
 const HEADINGS = new Set(['Pinned chats', 'Shared chats', 'Your chats']);
 
+const sharedPins = (n: number) => Array.from({ length: n }, (_, i) => shared(`p${String(i + 1)}`, (i + 1) * HOUR, { isPinned: true }));
+const sharedOthers = (n: number) => Array.from({ length: n }, (_, i) => shared(`s${String(i + 21)}`, (i + 21) * HOUR));
+const titles = (prefix: string, from: number, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${String(from + i)}`);
+
 /** Section headings (`#…`), row titles and More, top to bottom. */
 function railOrder(): string[] {
   const out: string[] = [];
@@ -84,63 +88,65 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('shared chats you pinned join your own pins in the one Pinned section', () => {
-  it('with nothing pinned: Shared chats and Your chats as they are, no Pinned section', () => {
+describe('a shared chat you pinned leads Shared chats, as yours lead Your chats: no section of their own', () => {
+  it('with nothing pinned: Shared chats and Your chats as they are', () => {
     renderSections([shared('s1', HOUR), shared('s2', 2 * HOUR)], [own('o1', HOUR)]);
 
     expect(railOrder()).toEqual(['#Shared chats', 's1', 's2', '#Your chats', 'o1']);
   });
 
-  it('lists your pins of both lists together, newest activity first, above Shared chats and Your chats', () => {
+  it('each pin stays in its own list, at the top, newest activity first; there is no Pinned chats heading', () => {
     renderSections(
       [shared('s1', HOUR), shared('s2', 2 * HOUR, { isPinned: true }), shared('s3', 4 * HOUR)],
       [own('o1', 3 * HOUR, { isPinned: true }), own('o2', HOUR / 2, { isPinned: true }), own('o3', 5 * HOUR)],
     );
 
-    expect(railOrder()).toEqual(['#Pinned chats', 'o2', 's2', 'o1', '#Shared chats', 's1', 's3', '#Your chats', 'o3']);
-    // Pinned and Shared chats have no labels inside; Your chats files o3 under its day.
+    expect(railOrder()).toEqual(['#Shared chats', 's2', 's1', 's3', '#Your chats', 'o2', 'o1', 'o3']);
+    expect(screen.queryByText('Pinned chats')).toBeNull();
+    // Shared chats has no labels inside; Your chats files only o3 under its day, under the pins.
     const labels = Array.from(document.querySelectorAll('[data-sidebar-sub-label]'));
     expect(labels.map((el) => el.textContent)).toEqual(['Today']);
-    expect(labels[0].compareDocumentPosition(screen.getByText('Your chats')) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(screen.getByText('o1').compareDocumentPosition(labels[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(labels[0].compareDocumentPosition(screen.getByText('o3')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('keeps a shared chat’s “Shared by” line in Pinned, so it still reads as shared', () => {
-    renderSections([shared('s1', HOUR, { isPinned: true, sharedBy: { userId: 'u9', name: 'Maya Chen' } })]);
+  it('lists several shared pins newest activity first, however long ago they were active', () => {
+    renderSections([shared('s1', HOUR), shared('p1', 40 * HOUR, { isPinned: true }), shared('p2', 2 * HOUR, { isPinned: true })]);
 
-    expect(railOrder()).toEqual(['#Pinned chats', 's1Shared by Maya Chen', '#Your chats']);
-    expect(screen.getByText('Shared by Maya Chen')).toBeTruthy();
+    expect(railOrder()).toEqual(['#Shared chats', 'p2', 'p1', 's1', '#Your chats']);
   });
 
-  it('hides Shared chats when every shared chat is pinned, and shows it with only More when the server has others', () => {
+  it('every shared chat pinned: Shared chats lists them, with More after them when the server has others', () => {
     renderSections([shared('s1', HOUR, { isPinned: true })], [own('o1', HOUR)]);
-    expect(railOrder()).toEqual(['#Pinned chats', 's1', '#Your chats', 'o1']);
+    expect(railOrder()).toEqual(['#Shared chats', 's1', '#Your chats', 'o1']);
     expect(screen.queryByText('No shared chats')).toBeNull();
     cleanup();
 
     renderSections([shared('s1', HOUR, { isPinned: true })], [own('o1', HOUR)], true);
-    expect(railOrder()).toEqual(['#Pinned chats', 's1', '#Shared chats', 'More', '#Your chats', 'o1']);
+    expect(railOrder()).toEqual(['#Shared chats', 's1', 'More', '#Your chats', 'o1']);
     expect(screen.queryByText('No shared chats')).toBeNull();
   });
 
-  it('6 shared pins and 6 others: Pinned shows 5 and More, Shared chats its own 5 and More', () => {
-    const pins = Array.from({ length: 6 }, (_, i) => shared(`p${String(i + 1)}`, (i + 1) * HOUR, { isPinned: true }));
-    const rest = Array.from({ length: 6 }, (_, i) => shared(`s${String(i + 11)}`, (i + 11) * HOUR));
-    renderSections([...pins, ...rest]);
+  it('pins do not use up the three: 8 shared pins and 6 others show all 8, the 3 newest others, then More', () => {
+    renderSections([...sharedOthers(6), ...sharedPins(8)]);
 
-    expect(railOrder()).toEqual([
-      '#Pinned chats', 'p1', 'p2', 'p3', 'p4', 'p5', 'More',
-      '#Shared chats', 's11', 's12', 's13', 's14', 's15', 'More',
-      '#Your chats',
-    ]);
+    expect(railOrder()).toEqual(['#Shared chats', ...titles('p', 1, 8), ...titles('s', 21, 3), 'More', '#Your chats']);
   });
 
-  it('a pin moves a shared chat into Pinned and an unpin back to Shared chats in its place, with no reload', () => {
+  it('many pins: 12 shared pins and 8 others show all 12, the 3 newest others, then More', () => {
+    renderSections([...sharedOthers(8), ...sharedPins(12)]);
+
+    expect(railOrder()).toEqual(['#Shared chats', ...titles('p', 1, 12), ...titles('s', 21, 3), 'More', '#Your chats']);
+    expect(document.querySelectorAll('[data-pinned-mark]')).toHaveLength(12);
+  });
+
+  it('a pin moves a shared chat to the top of Shared chats and an unpin puts it back in its place, with no reload', () => {
     renderSections([shared('s1', HOUR), shared('s2', 2 * HOUR), shared('s3', 3 * HOUR)]);
 
     act(() => {
       useChatStore.getState().setConversationPinned('s2', true);
     });
-    expect(railOrder()).toEqual(['#Pinned chats', 's2', '#Shared chats', 's1', 's3', '#Your chats']);
+    expect(railOrder()).toEqual(['#Shared chats', 's2', 's1', 's3', '#Your chats']);
 
     act(() => {
       useChatStore.getState().setConversationPinned('s2', false);
@@ -149,36 +155,33 @@ describe('shared chats you pinned join your own pins in the one Pinned section',
     expect(useChatStore.getState().conversationsVersion).toBe(0);
   });
 
-  it('a new message in a pinned chat puts it first in Pinned at once, as Shared chats and Your chats do with theirs', () => {
+  it('a new message in a pinned chat puts it first among its own list’s pins at once', () => {
     renderSections(
       [shared('s1', HOUR / 2, { isPinned: true }), shared('s2', 3 * HOUR, { isPinned: true }), shared('s3', 4 * HOUR), shared('s4', 5 * HOUR)],
       [own('o1', HOUR, { isPinned: true }), own('o2', 2 * HOUR, { isPinned: true }), own('o3', 6 * HOUR), own('o4', 7 * HOUR)],
     );
-    expect(railOrder()).toEqual(['#Pinned chats', 's1', 'o1', 'o2', 's2', '#Shared chats', 's3', 's4', '#Your chats', 'o3', 'o4']);
+    expect(railOrder()).toEqual(['#Shared chats', 's1', 's2', 's3', 's4', '#Your chats', 'o1', 'o2', 'o3', 'o4']);
     // What the end of an answer does: the chat moves up in the list it is in, with the time the server gave it.
     let serverTime = NOW;
     const newMessageIn = (id: string) =>
       act(() => useChatStore.getState().moveConversationToTop(id, { lastActivityAt: (serverTime += 1000) }));
 
     newMessageIn('o2');
-    expect(railOrder()).toEqual(['#Pinned chats', 'o2', 's1', 'o1', 's2', '#Shared chats', 's3', 's4', '#Your chats', 'o3', 'o4']);
-    // s1 is still first in its own list, but no longer in Pinned.
-    newMessageIn('s1');
-    expect(railOrder()).toEqual(['#Pinned chats', 's1', 'o2', 'o1', 's2', '#Shared chats', 's3', 's4', '#Your chats', 'o3', 'o4']);
+    expect(railOrder()).toEqual(['#Shared chats', 's1', 's2', 's3', 's4', '#Your chats', 'o2', 'o1', 'o3', 'o4']);
     newMessageIn('s2');
     newMessageIn('s4');
     newMessageIn('o4');
-    expect(railOrder()).toEqual(['#Pinned chats', 's2', 's1', 'o2', 'o1', '#Shared chats', 's4', 's3', '#Your chats', 'o4', 'o3']);
+    expect(railOrder()).toEqual(['#Shared chats', 's2', 's1', 's4', 's3', '#Your chats', 'o2', 'o1', 'o4', 'o3']);
   });
 
-  it('a shared pin the server refuses goes back to Shared chats, in its place', () => {
+  it('a shared pin the server refuses goes back to its place in Shared chats', () => {
     renderSections([shared('s1', HOUR), shared('s2', 2 * HOUR), shared('s3', 3 * HOUR)]);
 
     let undo: () => void = () => {};
     act(() => {
       undo = useChatStore.getState().setConversationPinned('s3', true);
     });
-    expect(railOrder()).toEqual(['#Pinned chats', 's3', '#Shared chats', 's1', 's2', '#Your chats']);
+    expect(railOrder()).toEqual(['#Shared chats', 's3', 's1', 's2', '#Your chats']);
 
     act(() => undo());
     expect(railOrder()).toEqual(['#Shared chats', 's1', 's2', 's3', '#Your chats']);

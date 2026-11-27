@@ -86,7 +86,7 @@ export function isUsableFollowUpText(text: string | undefined): boolean {
   return t.length > 0 && t !== EMPTY_ANSWER_FALLBACK;
 }
 
-function extractFinalAnswer(
+export function extractFinalAnswer(
   parts: ConversationMessage['parts'],
   fallback: string,
 ): string {
@@ -467,6 +467,11 @@ export function isAskUserQuestionResumeQuery(text: string | undefined | null): b
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
+/** A row that is no part of a turn and breaks none (a note): a card's answer and its reply go on past it. */
+function isStandaloneRow(msg: ConversationMessage): boolean {
+  return chatExtension.history.mapRow(msg, {}) !== undefined;
+}
+
 /** The stored record of a card resume (a question card or an approval card)
  *  whose stream died. The live view reports that with a toast and keeps the
  *  card, so replaying the row as an error bubble would show a failure the user
@@ -477,7 +482,7 @@ function isFailedCardResumeError(
 ): boolean {
   for (let j = errorIndex - 1; j >= 0; j -= 1) {
     const prev = messages[j];
-    if (prev?.messageType === 'tool_call') continue;
+    if (prev?.messageType === 'tool_call' || isStandaloneRow(prev)) continue;
     return (
       prev?.messageType === 'user_query' &&
       (isAskUserQuestionResumeQuery(prev.content) || isToolApprovalResumeQuery(prev.content))
@@ -503,14 +508,14 @@ function findQuestionAssistantRow(
   return undefined;
 }
 
-/** Walk past tool_calls and more User selections after a resume. */
+/** Walk past tool_calls, more User selections and standalone rows after a resume. */
 function firstResumeFollowUp(
   messages: ConversationMessage[],
   resumeIndex: number,
 ): ConversationMessage | null {
   for (let k = resumeIndex + 1; k < messages.length; k++) {
     const next = messages[k];
-    if (next.messageType === 'tool_call') continue;
+    if (next.messageType === 'tool_call' || isStandaloneRow(next)) continue;
     if (next.messageType === 'user_query') {
       if (isAskUserQuestionResumeQuery(next.content)) continue;
       return next;
@@ -528,6 +533,7 @@ function followUpAsksAgain(messages: ConversationMessage[], resumeIndex: number)
       if (askPayloadFromToolCall(next)) return true;
       continue;
     }
+    if (isStandaloneRow(next)) continue;
     return next.messageType === 'bot_response' && Boolean(askPayloadFromParts(next.parts) ?? askPayloadFromToolCall(next));
   }
   return false;
@@ -752,10 +758,13 @@ export function loadHistoricalMessages(
     const msg = messages[i];
 
     if (msg.messageType === 'tool_call') {
+      const last =
+        resumedRowId === undefined
+          ? result[result.length - 1]
+          : result.find((m) => m.role === 'assistant' && m.id === resumedRowId);
       const turnCustom = history.turnCustomFromToolRow(msg);
       if (turnCustom) {
         // Saved before the answer of its turn; a regenerated turn saves it after.
-        const last = result[result.length - 1];
         if (last?.role === 'assistant') mergeRowCustom(last, turnCustom);
         else pendingTurnCustom = turnCustom;
         continue;
@@ -763,10 +772,6 @@ export function loadHistoricalMessages(
       const payload = askPayloadFromToolCall(msg);
       if (payload) {
         const card: AskCardRef = history.askCardFields(msg, { messages, index: i, cardRowId: msg._id });
-        const last =
-          resumedRowId === undefined
-            ? result[result.length - 1]
-            : result.find((m) => m.role === 'assistant' && m.id === resumedRowId);
         if (last?.role === 'assistant' && typeof last.id === 'string') {
           const botIndex = messages.findIndex(
             (m) => String(m._id) === String(last.id),
@@ -959,21 +964,22 @@ export function loadHistoricalMessages(
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
-      // The sign-in part alone isn't something the user saw stream.
+      // The sign-in part alone isn't something the user saw stream. To a
+      // question card's answer it is the reply: the card's row says it was stopped.
       const shownParts = msg.parts?.some((part) => part.type !== 'mcp_sign_in') ?? false;
-      if (
+      const stoppedUnwritten =
         msg.status === 'stopped' &&
         !answerText.trim() &&
         !shownParts &&
         !capturedPayload &&
-        !peekFollowingAskPayload(messages, i)
-      ) {
+        !peekFollowingAskPayload(messages, i);
+      if (stoppedUnwritten && !(mergeNextBotIntoId && cardOfRow.has(mergeNextBotIntoId))) {
         mergeNextBotIntoId = null;
         continue;
       }
 
       if (mergeNextBotIntoId) {
-        if (!answerText.trim() && !msg.parts?.length) {
+        if (!answerText.trim() && !msg.parts?.length && !stoppedUnwritten) {
           mergeNextBotIntoId = null;
           continue;
         }
@@ -986,6 +992,8 @@ export function loadHistoricalMessages(
           // The row shows this reply's answer: its not-found fact is this reply's, never the asking row's.
           delete prevCustomRest.notFound;
           delete prevCustomRest.limits;
+          // Whether this reader may see the answer is the reply's own: a hidden card says nothing of it, nor a shown one.
+          delete prevCustomRest.answerHidden;
           const prevParts = Array.isArray(prevCustomRest.persistedParts)
             ? (prevCustomRest.persistedParts as MessagePart[])
             : [];
@@ -1009,6 +1017,7 @@ export function loadHistoricalMessages(
                 ...(msg.notFound !== undefined ? { notFound: msg.notFound } : {}),
             ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
                 ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
+                ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
                 // The row shows this reply's answer, so its summary, cost and activity are this run's (FU-2).
                 ...(msg.runId ? { durableRunId: msg.runId } : {}),
@@ -1067,9 +1076,13 @@ export function loadHistoricalMessages(
 
     if (isToolApprovalResumeQuery(msg.content)) {
       // An answer to an approval card carried on the reply that stopped on the card: it is no
-      // bubble of its own, and the reply it produced joins that row.
-      const row = [...result].reverse().find((m) => m.role === 'assistant');
-      if (row?.role === 'assistant' && typeof row.id === 'string') mergeNextBotIntoId = row.id;
+      // bubble of its own, and the reply it produced joins that row. Another person's turn may
+      // have come in between.
+      const row = [...result]
+        .reverse()
+        .find((m) => m.role === 'assistant' && history.approvalCarriesOn(msg, (m.metadata?.custom ?? {}) as RowCustom));
+      mergeNextBotIntoId = typeof row?.id === 'string' ? row.id : null;
+      resumedRowId = mergeNextBotIntoId;
       toolPayload = null;
       continue;
     }
@@ -1112,7 +1125,7 @@ export function loadHistoricalMessages(
         // runs it) it is running now. Until then the card stays answerable, so a resume that died can be sent again.
         // Another person's card is never sent again from here: its newest answer is the one their run is taking.
         const resumesOnServer =
-          i === messages.length - 1 &&
+          messages.slice(i + 1).every(isStandaloneRow) &&
           (options.runInProgress === true || !history.cardIsAnswerable(cardOfRow.get(last.id) ?? {}));
         const taken = hasFollowUpAfterResume(messages, i) || followUpAsksAgain(messages, i) || resumesOnServer;
         mergeNextBotIntoId = nextResumeFollowUpIsBot(messages, i) ? last.id : null;
@@ -1208,6 +1221,7 @@ export function loadHistoricalMessages(
         custom: {
           createdAt: msg.createdAt,
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
+          ...(msg.withheldSources?.length ? { withheldSources: msg.withheldSources } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
           ...(sentCommand ? { command: sentCommand } : {}),
           ...history.rowCustom(msg, options),

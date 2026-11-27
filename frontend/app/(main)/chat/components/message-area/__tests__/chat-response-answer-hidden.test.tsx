@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import { useChatStore } from '@/chat/store';
@@ -86,6 +86,17 @@ describe('ChatResponse hidden answer', () => {
     expect(streamMessageForSlot).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?', { query: 'q', filters: { apps: [], kb: [] } });
   });
 
+  it('Ask again is off while an answer is being written in the chat, and on again after it', () => {
+    useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: true, convId: 'conv-1' } } as never });
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
+    const button = screen.getByRole('button', { name: 'Ask again' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(streamMessageForSlot).not.toHaveBeenCalled();
+    act(() => useChatStore.setState({ slots: { 'slot-1': { isStreaming: false, convId: 'conv-1' } } as never }));
+    expect(button.disabled).toBe(false);
+  });
+
   it('Ask again resends the hidden turn\'s own filters and files, not the composer\'s', () => {
     const node = (id: string) => ({ id, name: id, nodeType: '', connector: '' });
     const att = { recordId: 'r1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v1' };
@@ -110,6 +121,41 @@ describe('ChatResponse hidden answer', () => {
 
     expect(request.filters).toEqual({ apps: [], kb: [] });
     expect(request).not.toHaveProperty('appliedFilters');
+  });
+
+  describe('where the list sends its questions itself (a group chat)', () => {
+    const node = (id: string) => ({ id, name: id, nodeType: '', connector: '' });
+    const att = { recordId: 'r1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v1' };
+
+    it('Ask again hands it the turn with its own scope and files, and sends nothing itself', () => {
+      const onAskAgain = vi.fn();
+      const appliedFilters = { apps: [node('app-1')], kb: [] };
+      renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' }, onAskAgain, appliedFilters, attachments: [att] });
+      fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+
+      expect(onAskAgain).toHaveBeenCalledExactlyOnceWith({ question: 'What was Q3 revenue?', attachments: [att], collections: undefined, appliedFilters, exactScope: true });
+      expect(streamMessageForSlot).not.toHaveBeenCalled();
+    });
+
+    it('Ask again waits for the answer being written, as elsewhere', () => {
+      const onAskAgain = vi.fn();
+      useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: true } } as never });
+      renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' }, onAskAgain });
+      fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+
+      expect(onAskAgain).not.toHaveBeenCalled();
+      expect(streamMessageForSlot).not.toHaveBeenCalled();
+    });
+
+    it('is offered to the same people: not to someone the chat was shared with, nor for a check that could not run', () => {
+      const onAskAgain = vi.fn();
+      renderRow({ answerHidden: { redacted: true, reason: 'access_check_unavailable' }, onAskAgain });
+      expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+      cleanup();
+      useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: false, isOwner: false } } as never });
+      renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' }, onAskAgain });
+      expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+    });
   });
 
   it('carries the marker of a hidden failure row (type error) to its row', () => {

@@ -148,7 +148,7 @@ export function AgentIndexRow({ agent, owner, onDeleted }: AgentIndexRowProps) {
                 size="1"
                 variant="ghost"
                 color="gray"
-                className="ghost-box"
+                className="ghost-box touch-hit"
                 aria-label={t('agents.index.rowActions', { name })}
                 style={{ borderRadius: 'var(--radius-2)' }}
               >

@@ -51,7 +51,7 @@ const titles = () =>
     .queryAllByRole('link')
     .map((a) => (a.textContent ?? '').trim());
 
-const renderMore = (sectionType: 'your' | 'pinned' = 'your') =>
+const renderMore = (sectionType: 'your' | 'shared' = 'your') =>
   renderInTheme(
     <div data-testid="more">
       <MoreChatsSidebar sectionType={sectionType} onBack={vi.fn()} />
@@ -125,17 +125,15 @@ describe('More chats shown again', () => {
     expect(titles()).toEqual(['Chat a', 'Chat b']);
   });
 
-  it('Pinned loads again when Projects is turned on, since it then leaves project chats out', async () => {
-    useChatStore.setState({ moreChatsSectionType: 'pinned' });
+  it('Your chats loads again when Projects is turned on, since it then leaves project chats out', async () => {
     api.fetchConversations.mockResolvedValue(page([]));
-    renderMore('pinned');
-    await waitFor(() => expect(api.fetchConversations).toHaveBeenCalledTimes(2));
+    renderMore();
+    await waitFor(() => expect(api.fetchConversations).toHaveBeenCalledTimes(1));
 
     act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never));
 
-    await waitFor(() => expect(api.fetchConversations).toHaveBeenCalledTimes(4));
-    expect(api.fetchConversations).toHaveBeenLastCalledWith(1, expect.any(Number), expect.objectContaining({ excludeProjectChats: false }));
-    expect(api.fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), expect.objectContaining({ source: 'owned', excludeProjectChats: true }));
+    await waitFor(() => expect(api.fetchConversations).toHaveBeenCalledTimes(2));
+    expect(api.fetchConversations).toHaveBeenLastCalledWith(1, expect.any(Number), expect.objectContaining({ source: 'owned', excludeProjectChats: true }));
   });
 
   it('opened again from the rail: a new list, loaded afresh', async () => {

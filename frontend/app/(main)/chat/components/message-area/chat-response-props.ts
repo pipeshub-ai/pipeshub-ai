@@ -30,6 +30,8 @@ export interface ChatResponseContext {
   /** The viewer can send in this chat: a failed last answer offers Retry, and Regenerate shows. */
   canSend: boolean;
   onRetry(turn: RetryTurn): void;
+  /** How Ask again sends its question where an extension's own list does; the chat's own way when absent. */
+  onAskAgain?(turn: RetryTurn): void;
 }
 
 // Stable fallbacks: `?? []` in a selector would make a new array on every call.
@@ -116,6 +118,7 @@ export function chatResponseProps(
     modelInfo: pair.modelInfo,
     collections: pair.collections,
     appliedFilters: pair.appliedFilters,
+    withheldSources: pair.withheldSources,
     attachments: pair.attachments,
     command: pair.command,
     messageId: pair.messageId,
@@ -148,6 +151,7 @@ export function chatResponseProps(
     unavailableTools: pair.unavailableTools,
     failed: pair.failed,
     onRetry: ctx.canSend ? ctx.onRetry : undefined,
+    onAskAgain: ctx.onAskAgain,
     canSend: ctx.canSend,
     unanswered: pair.unanswered,
     pair,

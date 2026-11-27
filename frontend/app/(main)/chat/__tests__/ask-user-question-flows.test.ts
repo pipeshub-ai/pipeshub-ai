@@ -701,8 +701,8 @@ describe('leaving a card unanswered and chatting on', () => {
     ]);
     expect(textOf(loaded, 'hello')).toBe('Hi, Pranjal!');
     expect(custom(loaded, 'hello').status).toBeUndefined();
-    expect(custom(loaded, 'b1').status).toBeUndefined();
-    // The answer was stopped, so the card was open again; "hi" typed then answered it.
+    // The answer was stopped, which its card's row says, so the card was open again; "hi" typed then answered it.
+    expect(custom(loaded, 'b1')).toMatchObject({ status: 'stopped', messageId: 'stop1' });
     expect(loaded.unansweredAskUserQuestion).toBeNull();
     expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
     expect(custom(loaded, 'b1').persistedAskUserQuestion).toMatchObject({ repliedInChat: true });
@@ -829,6 +829,26 @@ describe('a resume that does not go through', () => {
     expect(shape(loaded)).toEqual([['user', 'u1'], ['assistant', 'b1']]);
     expect(textOf(loaded, 'b1')).toBe('Working on EU');
     expect(answersOn(loaded, 'b1')['q-region'].selectedOptionIds).toEqual(['q-region-o0']);
+    expect(noResumeBubble(loaded)).toBe(true);
+  });
+
+  it.each([
+    ['nothing', {}],
+    ['a blank final part', { parts: [{ type: 'text', content: '', isFinal: true }] }],
+  ])("an answer stopped before its first word, saved with %s: the card's row says so, and the card is open with the pick", (_saved, over) => {
+    const loaded = loadHistoricalMessages([
+      user('u1', 'plan the launch'), savedCard('t1', card(region)), bot('b1', 'Let me ask first.'),
+      answerQuery('sel', '"Which region?" → EU'),
+      message({ _id: 'b2', messageType: 'bot_response', content: '', status: 'stopped', ...over } as Partial<ConversationMessage>),
+    ]);
+
+    expect(shape(loaded)).toEqual([['user', 'u1'], ['assistant', 'b1']]);
+    expect(custom(loaded, 'b1')).toMatchObject({ status: 'stopped', messageId: 'b2' });
+    // What the run that asked wrote is no part of the answer that was stopped.
+    expect(textOf(loaded, 'b1')).toBe('');
+    expect(loaded.unansweredAskUserQuestion).toMatchObject({
+      assistantMessageId: 'b1', status: 'pending', sentAnswers: { 'q-region': { selectedOptionIds: ['q-region-o0'] } },
+    });
     expect(noResumeBubble(loaded)).toBe(true);
   });
 

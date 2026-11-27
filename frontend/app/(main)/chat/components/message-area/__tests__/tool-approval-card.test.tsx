@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
-import type { ToolApprovalDetails } from '../../../types';
+import type { MessagePart, ToolApprovalDetails } from '../../../types';
 
 const chat = vi.hoisted(() => ({
   streamMessageForSlot: vi.fn(),
@@ -28,7 +28,8 @@ vi.mock('../../../store', () => ({
   ),
 }));
 
-import { ToolApprovalCard } from '../tool-approval-card';
+import { ToolApprovalCard, ToolApprovalReceipts } from '../tool-approval-card';
+import { settledToolApprovals } from '../../../tool-approval';
 import { ChatResponse } from '../chat-response';
 
 function approval(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDetails {
@@ -156,6 +157,25 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
   });
 
+  it('can be read but not answered while it is held, and says why', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest rowId="row-1" held="You can answer once Dana's question is done." />);
+    expect(screen.getByText('Login fails')).toBeTruthy();
+    for (const name of ['Allow', 'Deny']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    expect(chat.streamMessageForSlot).not.toHaveBeenCalled();
+    const why = screen.getByTestId('tool-approval-held');
+    expect(why.textContent).toBe("You can answer once Dana's question is done.");
+    expect(why.getAttribute('role')).toBe('status');
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest rowId="row-1" />);
+    expect(screen.queryByTestId('tool-approval-held')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Allow' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('says so once the request has expired', () => {
     vi.useFakeTimers();
     renderInTheme(<ToolApprovalCard approval={approval({ expiresAt: Date.now() + 1_000 })} isLatest />);
@@ -167,6 +187,37 @@ describe('ToolApprovalCard', () => {
 
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByText("Create an issue on Jira didn't run: the request expired. Ask again if it's still needed.")).toBeTruthy();
+  });
+
+  // A card its asker's next question closed read "expired" once its time was up.
+  it('closed by its asker\'s next question before it expired, it says so for good and never "expired"', () => {
+    vi.useFakeTimers();
+    const expiresAt = Date.now() + 1_000;
+    renderInTheme(<ToolApprovalCard approval={approval({ expiresAt })} isLatest={false} closedAt={expiresAt - 500} />);
+    const line = () => screen.getByTestId('tool-approval-card').textContent;
+    expect(line()).toBe("You asked something else, so Create an issue on Jira didn't run.");
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(line()).toBe("You asked something else, so Create an issue on Jira didn't run.");
+    cleanup();
+
+    const webPage = { instanceId: '', serverName: 'Open a web page', toolName: 'dynamic__fetch_url', toolTitle: 'Open a web page' };
+    renderInTheme(<ToolApprovalCard approval={approval({ ...webPage, expiresAt })} isLatest={false} closedAt={expiresAt - 500} />);
+    expect(line()).toBe("You asked something else, so Open a web page didn't run.");
+    cleanup();
+
+    // Someone else's card, put to them: not "you".
+    renderInTheme(<ToolApprovalCard approval={approval({ expiresAt })} isLatest={false} closedAt={expiresAt - 500} readOnlyFor={{ name: 'Dana' }} />);
+    expect(line()).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
+  });
+
+  it('asked again only after it had expired: it expired, and says so', () => {
+    const expiresAt = Date.now() - 60_000;
+    renderInTheme(<ToolApprovalCard approval={approval({ expiresAt })} isLatest={false} closedAt={expiresAt + 1_000} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe(
+      "Create an issue on Jira didn't run: the request expired. Ask again if it's still needed.",
+    );
   });
 
   it('shows the start of arguments too large to send, and says so', () => {
@@ -233,6 +284,78 @@ describe('a restricted card: a call that would send what not everyone can open',
   it('an ordinary card says none of it', () => {
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
     expect(screen.queryByTestId('tool-approval-restricted')).toBeNull();
+  });
+});
+
+describe('a built-in tool, which has no server', () => {
+  // As the server sends the card, and as one saved before it had words for the tool.
+  const cards = [
+    { instanceId: '', serverName: 'Open a web page', toolName: 'dynamic__fetch_url', toolTitle: 'Open a web page' },
+    { instanceId: '', serverName: 'dynamic__fetch_url', toolName: 'dynamic__fetch_url', toolTitle: null },
+  ];
+  const page = (card: Partial<ToolApprovalDetails>, overrides: Partial<ToolApprovalDetails> = {}) =>
+    approval({
+      ...card,
+      restricted: true,
+      canRemember: false,
+      hosts: [{ host: 'example.com', unicode: 'example.com' }],
+      arguments: { url: 'https://example.com/' },
+      ...overrides,
+    });
+
+  it.each(cards)('is named in words on the card, with no server and no internal name ($serverName)', (card) => {
+    renderInTheme(<ToolApprovalCard approval={page(card)} isLatest />);
+    const shown = screen.getByTestId('tool-approval-card');
+    expect(screen.getAllByText('Open a web page')).toHaveLength(1);
+    expect(shown.querySelector('.rt-Badge')).toBeNull();
+    expect(shown.innerHTML).not.toContain('fetch_url');
+    expect(shown.innerHTML).not.toContain('Dynamic');
+    expect(shown.textContent).toContain('Anyone who can read example.com will see it.');
+  });
+
+  it.each(cards)('is named in words in the line others read ($serverName)', (card) => {
+    const line = () => screen.getByTestId('tool-approval-card').textContent;
+    renderInTheme(<ToolApprovalCard approval={page(card)} isLatest readOnlyFor={{ name: 'Dana' }} />);
+    expect(line()).toBe("Open a web page is waiting for Dana's approval.");
+    cleanup();
+    renderInTheme(<ToolApprovalCard approval={page(card)} isLatest={false} />);
+    expect(line()).toBe("Open a web page wasn't approved, so it didn't run.");
+    cleanup();
+    renderInTheme(<ToolApprovalCard approval={page(card, { expiresAt: 1 })} isLatest />);
+    expect(line()).toBe("Open a web page didn't run: the request expired. Ask again if it's still needed.");
+    cleanup();
+    renderInTheme(<ToolApprovalCard approval={page(card, { expiresAt: 1 })} isLatest readOnlyFor={{ name: 'Dana' }} />);
+    expect(line()).toBe('This request expired.');
+    cleanup();
+    chat.state.slots['slot-1'].isOwner = false;
+    renderInTheme(<ToolApprovalCard approval={page(card)} isLatest />);
+    expect(line()).toBe("Open a web page is waiting for the conversation owner's approval.");
+  });
+
+  it.each([
+    ['allowed', 'You allowed Open a web page'],
+    ['declined', 'You declined Open a web page'],
+    ['expired', "Open a web page didn't run: the request expired"],
+  ] as const)('is named in words once it was %s', (approvalAnswer, words) => {
+    for (const card of cards) {
+      const part = { type: 'tool_call', toolCallId: 'c1', toolName: 'dynamic__fetch_url', status: 'completed', approvalAnswer, approval: page(card) } as MessagePart;
+      renderInTheme(<ToolApprovalReceipts items={settledToolApprovals([part])} />);
+      expect(screen.getByTestId('tool-approval-receipts').textContent).toBe(words);
+      cleanup();
+    }
+  });
+
+  it('says it may go anywhere when nothing says where', () => {
+    renderInTheme(<ToolApprovalCard approval={page({ instanceId: '', serverName: 'Ran code', toolName: 'run_code', toolTitle: null }, { hosts: [] })} isLatest />);
+    expect(screen.getByText('Run code')).toBeTruthy();
+    expect(screen.getByTestId('tool-approval-restricted').textContent).toBe(
+      'This may include content from sources not everyone can open, and it may be sent outside PipesHub.',
+    );
+  });
+
+  it("a server's tool of the same name keeps its server", () => {
+    renderInTheme(<ToolApprovalCard approval={approval({ serverName: 'E2B', toolName: 'run_code', toolTitle: null })} isLatest readOnlyFor={{ name: 'Dana' }} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Run code on E2B is waiting for Dana's approval.");
   });
 });
 

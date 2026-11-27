@@ -1160,7 +1160,6 @@
     "recents": "Nedávné",
     "sharedChats": "Sdílené chaty",
     "sharedBy": "Sdílí {{name}}",
-    "agentChat": "Chat s agentem",
     "noSharedChats": "Žádné sdílené chaty",
     "yourChats": "Vaše chaty",
     "noChatsFound": "Nebyly nalezeny žádné chaty",
@@ -1258,8 +1257,6 @@
     "deleteChat": "Smazat",
     "pin": "Připnout",
     "unpin": "Odepnout",
-    "pinned": "Připnuté chaty",
-    "pinnedChatsEmpty": "Tady se zobrazí chaty, které připnete",
     "pinnedRowSuffix": ", připnuto",
     "sidebarRunning": "Pracuje se na pozadí",
     "sidebarRunningOpen": "Pracuje se",
@@ -1360,6 +1357,8 @@
       "allSignedIn": "Přihlášeno. Zkuste požadavek znovu.",
       "retryMessage": "Znovu jsem se přihlásil k {{servers}}. Zkuste to prosím znovu."
     },
+    "loadFailedTitle": "Tento chat se nepodařilo načíst",
+    "loadFailedDescription": "Zkontrolujte připojení a zkuste to znovu.",
     "toasts": {
       "stopStreamTitle": "Zastavování…",
       "stopStreamDescription": "Odpověď se za okamžik zastaví. Případná částečná odpověď zůstane zachována.",
@@ -1798,8 +1797,12 @@
     "stopListening": "Zastavit poslech",
     "voiceInput": "Hlasový vstup",
     "regenerateResponse": "Vygenerovat odpověď znovu",
-    "quoteSelection": "Citovat",
-    "quoteSelectionHint": "Zeptat se na toto",
+    "selectionActions": {
+      "label": "Vybraný text",
+      "reply": "Odpovědět",
+      "ask": "Zeptat se {{productName}}",
+      "copied": "Zkopírováno"
+    },
     "quotedExcerpt": "Citace",
     "quotedExcerptTruncated": "Citace (zkráceno)",
     "dismissQuote": "Odebrat citaci",
@@ -1917,12 +1920,25 @@
       "notice": {
         "expired": "{{tool}} na {{server}} se nespustil: platnost požadavku vypršela. Pokud je to stále potřeba, zeptejte se znovu.",
         "passed": "{{tool}} na {{server}} nebyl schválen, takže se nespustil.",
+        "askedElse": "Zeptali jste se na něco jiného, takže se {{tool}} na {{server}} nespustil.",
         "waiting": "{{tool}} na {{server}} čeká na schválení vlastníkem konverzace.",
         "waitingFor": "{{tool}} na {{server}} čeká na schválení uživatelem {{name}}.",
         "approvedBy": "Schváleno uživatelem {{name}}, takže se to spustilo.",
         "approvedNotRun": "Schváleno uživatelem {{name}}, ale nespustilo se to.",
         "declinedBy": "Zamítnuto uživatelem {{name}}.",
         "requestExpired": "Platnost tohoto požadavku vypršela."
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} se nespustilo: platnost požadavku vypršela. Pokud je to stále potřeba, zeptejte se znovu.",
+        "passed": "{{tool}} nebylo schváleno, takže se nespustilo.",
+        "askedElse": "Zeptali jste se na něco jiného, takže se {{tool}} nespustilo.",
+        "waiting": "{{tool}} čeká na schválení vlastníkem konverzace.",
+        "waitingFor": "{{tool}} čeká na schválení uživatelem {{name}}."
+      },
+      "builtIn": {
+        "openWebPage": "Otevření webové stránky",
+        "runCode": "Spuštění kódu",
+        "installPackages": "Nainstalování balíčků kódu"
       },
       "receipt": {
         "allowed": "Povolili jste {{tool}}",
@@ -1933,10 +1949,15 @@
       },
       "restricted": {
         "notice": "Může to obsahovat obsah ze zdrojů, které nemůže otevřít každý. Uvidí to každý, kdo může číst {{destination}}.",
-        "goesTo": "Odešle se na"
+        "goesTo": "Odešle se na",
+        "noticeAnywhere": "Může to obsahovat obsah ze zdrojů, které nemůže otevřít každý, a může se to odeslat mimo {{productName}}."
       }
     },
     "selectedAlone": "{{name}} (pouze tato položka)",
+    "withheldSource": {
+      "label": "Soukromý zdroj",
+      "tooltip": "Tento zdroj nemůžete otevřít."
+    },
     "noConnectorsFound": "Nebyly nalezeny žádné konektory",
     "treeSearching": "Hledání…",
     "treeSearchFailed": "Hledání se nezdařilo. Zkuste to znovu.",
@@ -2016,6 +2037,7 @@
     },
     "answerFailedTitle": "Tato odpověď selhala",
     "answerFailedRetry": "Zkusit znovu",
+    "answerFailedAskAgain": "Zeptat se znovu",
     "cannotOpenSource": "Tento dokument nemůžete otevřít. Mohl být odstraněn, nebo k němu nemáte přístup.",
     "queue": {
       "title": "Ve frontě · {{count}}",

@@ -199,6 +199,12 @@ export const MAX_VISIBLE_CHATS = 10;
 /** Page size for the initial sidebar conversations fetch (page 1). */
 export const SIDEBAR_CONVERSATIONS_PAGE_SIZE = 10;
 
+/** Unpinned chats Your chats shows in the chat rail before More; its pinned chats all show, above them. */
+export const RAIL_UNPINNED_ROWS = 5;
+
+/** Unpinned chats the shared list (Group chats) shows in the chat rail before More; its pinned chats all show, above them. */
+export const RAIL_SHARED_UNPINNED_ROWS = 3;
+
 /** Number of conversations fetched per page in the More Chats infinite scroll panel. */
 export const MORE_CHATS_PAGE_SIZE = 20;
 

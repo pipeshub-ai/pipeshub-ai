@@ -15,6 +15,7 @@ import { ChatResponse } from '../chat-response';
 import { RunErrorCard } from '../run-error-card';
 import { AnswerSlotContext } from '../answer-slot-scope';
 import { useChatStore } from '../../../store';
+import { useCommandStore } from '@/lib/store/command-store';
 
 const MESSAGE = "This agent requires the following MCP servers to be set up — not authenticated: 'GitHub'.";
 const STREAM_ERROR = {
@@ -123,6 +124,54 @@ describe('Try again in place of the failed copy', () => {
     useChatStore.setState({ activeSlotId: active });
     retryIn(null, vi.fn());
     expect(textsOf(active)).toEqual(['Earlier', 'Answered']);
+  });
+
+  // Try again asked again as a new message, and the failed one stayed above it.
+  describe('on the newest answer the server stored as failed or stopped', () => {
+    let regens: Array<Record<string, unknown>> = [];
+    beforeEach(() => {
+      regens = [];
+      useCommandStore.getState().register('showRegenBar', (payload) => {
+        regens.push(payload as Record<string, unknown>);
+      });
+    });
+    afterEach(() => useCommandStore.getState().unregister('showRegenBar'));
+
+    it('asks it again in its place, as Regenerate does, not as a new message', () => {
+      const stored = openSlot('c-stored', {
+        messages: failedTurn('q-stored'),
+        rawMessages: [{ _id: 'q-stored', messageType: 'user_query' }, { _id: 'p1', messageType: 'error' }],
+      });
+      const onRetry = vi.fn();
+      retryIn(stored, onRetry);
+      expect(onRetry).not.toHaveBeenCalled();
+      expect(regens).toEqual([expect.objectContaining({ messageId: 'p1', slotId: stored })]);
+      expect(textsOf(stored), 'the turn stays until the new answer takes its place').toHaveLength(4);
+    });
+
+    it('a stopped answer too', () => {
+      const onRetry = vi.fn();
+      renderInTheme(<ChatResponse question="How many?" answer="" status="stopped" messageId="m-stopped" isLastMessage onRetry={onRetry} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(onRetry).not.toHaveBeenCalled();
+      expect(regens).toEqual([expect.objectContaining({ messageId: 'm-stopped' })]);
+    });
+
+    it('an older failed answer says Ask again, and asks it as a new message', () => {
+      const slotId = openSlot('c-older', { messages: failedTurn('q-stored'), rawMessages: [{ _id: 'p1', messageType: 'error' }] });
+      const onRetry = vi.fn();
+      const onAskAgain = vi.fn();
+      renderInTheme(
+        <AnswerSlotContext.Provider value={slotId}>
+          <ChatResponse question="How many?" answer="The model is not responding." failed rowId="p1" onRetry={onRetry} onAskAgain={onAskAgain} />
+        </AnswerSlotContext.Provider>,
+      );
+      expect(screen.getByTestId('answer-failed-retry').textContent).toBe('Ask again');
+      fireEvent.click(screen.getByTestId('answer-failed-retry'));
+      expect(onAskAgain).toHaveBeenCalledWith(expect.objectContaining({ question: 'How many?' }));
+      expect(onRetry).not.toHaveBeenCalled();
+      expect(regens).toEqual([]);
+    });
   });
 
   it('keeps a question the server stored, and keeps the copy while the chat is busy (the send may not go)', () => {

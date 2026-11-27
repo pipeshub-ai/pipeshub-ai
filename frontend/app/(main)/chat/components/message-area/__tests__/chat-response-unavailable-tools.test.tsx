@@ -13,11 +13,14 @@ vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: {} }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot: vi.fn() }));
 
 import { ChatResponse } from '../chat-response';
+import { UnavailableToolsNotice } from '../unavailable-tools-notice';
 
 const GMAIL: UnavailableTool = {
   kind: 'toolset', instanceId: 'ts-gmail', displayName: 'Gmail', problem: 'not_authenticated',
   sharedCredential: false, userCanConnect: true,
 };
+/** As the AI service saves a tool whose stub the answer called. */
+const NEEDED_GMAIL: UnavailableTool = { ...GMAIL, needed: true };
 
 beforeEach(() => {
   installBrowserShims();
@@ -28,25 +31,59 @@ afterEach(() => {
 });
 
 describe('ChatResponse for an answer that went on without some tools', () => {
-  it('shows a quiet chip under an answer that never needed them', () => {
-    renderInTheme(<ChatResponse question="Do you like coffee?" answer="I do." unavailableTools={[GMAIL]} />);
+  // `unavailableTools` on an answer are the tools whose stub its run called: the ones it needed.
+  it('says nothing under an answer that called no tool it lacks, even one that names a tool', () => {
+    renderInTheme(<ChatResponse question="Do you like coffee?" answer="I do, and so does Gmail." />);
 
-    expect(screen.getByText('I do.')).toBeTruthy();
-    expect(screen.getByTestId('tools-unavailable-chip')).toBeTruthy();
+    expect(screen.getByText('I do, and so does Gmail.')).toBeTruthy();
     expect(screen.queryByTestId('connect-tools')).toBeNull();
+    expect(screen.queryByText(/connected/)).toBeNull();
   });
 
-  it('shows the card when the answer says it needed one', () => {
+  it('shows the card for the tools the answer called, whatever its words call them', () => {
+    renderInTheme(
+      <ChatResponse question="Unread mail?" answer="Your mail isn't connected, so I can't read it." unavailableTools={[NEEDED_GMAIL]} />,
+    );
+
+    expect(screen.getByTestId('connect-tools')).toBeTruthy();
+    expect(screen.getByText('Gmail')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy();
+  });
+
+  it('lists exactly those tools, never one the answer only names', () => {
+    renderInTheme(
+      <ChatResponse question="Issues?" answer="Jira isn't connected, and Gmail isn't either." unavailableTools={[NEEDED_GMAIL]} />,
+    );
+
+    expect(screen.getByText('Gmail')).toBeTruthy();
+    expect(screen.queryByText('Jira')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Connect' })).toHaveLength(1);
+  });
+
+  it('says nothing under an answer saved before the stubs, whose list named every tool left out', () => {
     renderInTheme(
       <ChatResponse question="Unread mail?" answer="Gmail isn't connected, so I can't read it." unavailableTools={[GMAIL]} />,
     );
 
-    expect(screen.getByTestId('connect-tools')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy();
+    expect(screen.queryByTestId('connect-tools')).toBeNull();
+  });
+
+  it('tells nobody but the asker, even when the answer says it needed one', () => {
+    renderInTheme(
+      <UnavailableToolsNotice
+        items={[NEEDED_GMAIL]}
+        question="Unread mail?"
+        readOnlyFor={{ agentName: 'Mail Helper' }}
+      />,
+    );
+
+    expect(screen.queryByTestId('tools-unavailable-line')).toBeNull();
+    expect(screen.queryByTestId('connect-tools')).toBeNull();
+    expect(screen.queryByText(/Gmail/)).toBeNull();
   });
 
   it('shows nothing while the answer streams', () => {
-    renderInTheme(<ChatResponse question="Q" answer="" isStreaming streamingContent="Gmail" unavailableTools={[GMAIL]} />);
+    renderInTheme(<ChatResponse question="Q" answer="" isStreaming streamingContent="Gmail" unavailableTools={[NEEDED_GMAIL]} />);
 
     expect(screen.queryByTestId('tools-unavailable-chip')).toBeNull();
     expect(screen.queryByTestId('connect-tools')).toBeNull();

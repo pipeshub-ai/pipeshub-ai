@@ -7,10 +7,12 @@ interface AnswerFailedProps {
   message: string;
   /** Absent when retry is not offered. */
   onRetry?: () => void;
+  /** An older answer: it is asked again as a new message, so the button says so. */
+  askAgain?: boolean;
 }
 
 /** An answer that never arrived: the server's reason, in the run-error card's error tone. */
-export function AnswerFailed({ message, onRetry }: AnswerFailedProps) {
+export function AnswerFailed({ message, onRetry, askAgain = false }: AnswerFailedProps) {
   const { t } = useTranslation();
   return (
     <RunErrorCard
@@ -19,7 +21,7 @@ export function AnswerFailed({ message, onRetry }: AnswerFailedProps) {
       icon="error"
       title={t('chat.answerFailedTitle')}
       body={message}
-      retryLabel={t('chat.answerFailedRetry')}
+      retryLabel={askAgain ? t('chat.answerFailedAskAgain') : t('chat.answerFailedRetry')}
       onRetry={onRetry}
       testId="answer-failed"
       retryTestId="answer-failed-retry"

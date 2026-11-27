@@ -487,7 +487,9 @@ body {
 
 /* Override Radix DropdownMenu item hover: the design's soft muted fill, and the text
    pinned to primary text because Radix's solid highlight flips it to the accent contrast. */
-.radix-themes [role="menuitem"][data-highlighted] {
+.radix-themes [role="menuitem"][data-highlighted],
+.radix-themes [role="menuitemradio"][data-highlighted],
+.radix-themes [role="menuitemcheckbox"][data-highlighted] {
   background-color: var(--fill-muted) !important;
   color: var(--text-primary) !important;
 }
@@ -2045,6 +2047,29 @@ th code {
 .rt-IconButton.rt-variant-ghost.ghost-box {
   width: var(--base-button-height);
   padding: 0;
+}
+
+/* The selection bar's actions (selection-actions.tsx): Radix ghost buttons with the muted tint on hover and on keyboard
+   focus; the focus ring is Radix's. A rule on the button itself names .rt-BaseButton too: Radix's reset
+   (`.rt-reset:where(button)`, `all: unset`) is one class as well, and a production build loads it after this sheet. */
+.rt-BaseButton.selection-action {
+  transition: background-color var(--motion-micro) var(--motion-ease);
+}
+.selection-action:hover,
+.selection-action:focus-visible {
+  background-color: var(--fill-muted);
+}
+/* On a phone the bar keeps the design's size, and each action takes a 44 px target from a hidden box: 26 px and
+   9 px above and below. Without its own `position` each box would span the whole bar, the last action's on top. */
+@media (max-width: 768px) {
+  .rt-BaseButton.selection-action {
+    position: relative;
+  }
+  .selection-action::after {
+    content: '';
+    position: absolute;
+    inset: -9px 0;
+  }
 }
 
 /* Conversation entrance: a block fades in with a small rise. `.no-rise`

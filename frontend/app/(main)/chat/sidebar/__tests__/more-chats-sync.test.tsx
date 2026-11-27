@@ -70,7 +70,7 @@ function Both() {
 /** A row's title: its link text without the hidden ", pinned" a pinned row's name carries. */
 const rowText = (el: Element) => (el.textContent ?? '').replace(', pinned', '').trim();
 
-const HEADINGS = ['Pinned chats', 'Shared chats', 'Your chats'];
+const HEADINGS = ['Shared chats', 'Your chats'];
 /** Titles of the rail's rows under one section heading. */
 const railSection = (heading: string) => {
   const out: string[] = [];
@@ -225,17 +225,15 @@ describe('the rail and More chats stay in step', () => {
     expect(titlesIn('rail')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']);
   });
 
-  it('pin in the rail moves the chat into Pinned and out of Your chats, in the rail and its open More; unpin puts it back in both', async () => {
+  it('pin in the rail moves the chat to the top of Your chats and out of its open More; unpin puts it back in both', async () => {
     await renderBoth();
     await choose('rail', 'Chat c', 'Pin');
     await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat d']));
-    expect(railSection('Pinned chats')).toEqual(['Chat c']);
-    expect(railSection('Your chats')).toEqual(['Chat a', 'Chat b', 'Chat d']);
+    expect(railSection('Your chats')).toEqual(['Chat c', 'Chat a', 'Chat b', 'Chat d']);
+    expect(within(screen.getByTestId('rail')).queryByText('Pinned chats')).toBeNull();
 
     await choose('rail', 'Chat c', 'Unpin');
     await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']));
-    expect(railSection('Pinned chats')).toEqual([]);
-    expect(within(screen.getByTestId('rail')).queryByText('Pinned chats')).toBeNull();
     expect(railSection('Your chats')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']);
     expect(api.setConversationPinned.mock.calls).toEqual([
       ['c', true],
@@ -243,19 +241,18 @@ describe('the rail and More chats stay in step', () => {
     ]);
   });
 
-  it('pin in More takes the chat out of that panel and into the rail’s Pinned; unpin there puts it back in its place', async () => {
+  it('pin in More takes the chat out of that panel and to the top of the rail’s Your chats; unpin there puts it back in its place', async () => {
     await renderBoth();
     await choose('more', 'Chat d', 'Pin');
     await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat c']));
-    expect(railSection('Pinned chats')).toEqual(['Chat d']);
-    expect(railSection('Your chats')).toEqual(['Chat a', 'Chat b', 'Chat c']);
+    expect(railSection('Your chats')).toEqual(['Chat d', 'Chat a', 'Chat b', 'Chat c']);
 
     await choose('rail', 'Chat d', 'Unpin');
     await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']));
     expect(railSection('Your chats')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']);
   });
 
-  it('Your chats and Shared chats in More leave pinned chats out, with no labels: they are in Pinned', async () => {
+  it('Your chats and Shared chats in More leave pinned chats out, with no labels: they lead the rail’s list', async () => {
     api.fetchConversations.mockResolvedValue({
       conversations: [{ ...ALL[0], isPinned: true }, ...ALL.slice(1)],
       pagination: { page: 1, limit: 20, totalCount: 4, totalPages: 1, hasNextPage: false, hasPrevPage: false },
@@ -269,157 +266,17 @@ describe('the rail and More chats stay in step', () => {
     renderInTheme(<div data-testid="more"><MoreChatsSidebar sectionType="shared" onBack={vi.fn()} /></div>);
     await waitFor(() => expect(titlesIn('more')).toEqual(['Chat b', 'Chat c', 'Chat d']));
   });
-});
 
-describe('More chats: the Pinned panel', () => {
-  const listed = (conversations: Conversation[], hasNextPage = false) => ({
-    conversations,
-    pagination: { page: 1, limit: 20, totalCount: conversations.length, totalPages: 1, hasNextPage, hasPrevPage: false },
-  });
-  const pin = (c: Conversation): Conversation => ({ ...c, isPinned: true });
-  const theirs = (id: string, lastActivityAt: number, pinned = false): Conversation => ({
-    ...chat(id), isShared: true, isOwner: false, lastActivityAt, ...(pinned ? { isPinned: true } : {}),
-  });
-  type Opts = { source: 'owned' | 'shared'; search?: string };
-
-  function Pinned() {
-    return (
-      <>
-        <div data-testid="rail">
-          <ChatSections onOpenMoreChats={vi.fn()} />
-        </div>
-        <div data-testid="more">
-          <MoreChatsSidebar sectionType="pinned" onBack={vi.fn()} />
-        </div>
-      </>
-    );
-  }
-
-  beforeEach(() => {
-    useChatStore.setState({ moreChatsSectionType: 'pinned', sharedConversations: [] });
-  });
-
-  it('lists every pinned chat of both lists, newest activity first, under the title Pinned, with no labels', async () => {
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned'
-        ? listed([pin(ALL[1]), pin(ALL[3]), ALL[0], ALL[2]])
-        : listed([theirs('s1', 3500, true), theirs('s2', 9000)]),
-    );
-    renderInTheme(<Pinned />);
-
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat s1', 'Chat b', 'Chat d']));
-    expect(within(screen.getByTestId('more')).getByText('Pinned chats')).toBeTruthy();
-    expect(screen.getByTestId('more').querySelector('[data-sidebar-sub-label]')).toBeNull();
-    expect(api.fetchConversations.mock.calls.map(([, , opts]) => (opts as Opts).source).sort()).toEqual(['owned', 'shared']);
-  });
-
-  it('reads a list’s next page while every chat on the page is pinned, and stops at the first other one', async () => {
-    const owned = (n: number) =>
-      n === 1 ? listed([pin(ALL[0]), pin(ALL[1])], true) : listed([pin(ALL[2]), ALL[3]], true);
-    api.fetchConversations.mockImplementation(async (n: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? owned(n) : listed([]),
-    );
-    renderInTheme(<Pinned />);
-
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat c']));
-    const ownedPages = api.fetchConversations.mock.calls.filter(([, , opts]) => (opts as Opts).source === 'owned').map(([n]) => n);
-    expect(ownedPages).toEqual([1, 2]);
-  });
-
-  it('searches both lists and shows only their pinned matches', async () => {
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) => {
-      if (opts.search === 'plan') return opts.source === 'owned' ? listed([pin(ALL[2]), ALL[0]]) : listed([theirs('s1', 3500, true)]);
-      return opts.source === 'owned' ? listed([pin(ALL[1]), pin(ALL[2])]) : listed([theirs('s1', 3500, true)]);
+  it('with 12 chats pinned, More holds only the unpinned ones, and no pin', async () => {
+    const pinned = Array.from({ length: 12 }, (_, i) => ({ ...chat(`p${String(i + 1)}`), isPinned: true }) as Conversation);
+    api.fetchConversations.mockResolvedValue({
+      conversations: [...pinned, ...ALL],
+      pagination: { page: 1, limit: 20, totalCount: 16, totalPages: 1, hasNextPage: false, hasPrevPage: false },
     });
-    renderInTheme(<Pinned />);
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat s1', 'Chat b', 'Chat c']));
+    renderInTheme(<div data-testid="more"><MoreChatsSidebar sectionType="your" onBack={vi.fn()} /></div>);
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Search chats' }), { target: { value: 'plan' } });
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat s1', 'Chat c']));
-    expect(api.fetchConversations.mock.calls.filter(([, , opts]) => (opts as Opts).search === 'plan')).toHaveLength(2);
-  });
-
-  it('unpin in the panel takes the chat out of it at once, back to Your chats in the rail', async () => {
-    const rows = [pin(ALL[1]), pin(ALL[3]), ALL[0], ALL[2]];
-    useChatStore.setState({ conversations: rows });
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? listed(rows) : listed([]),
-    );
-    renderInTheme(<Pinned />);
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat b', 'Chat d']));
-    expect(railSection('Pinned chats')).toEqual(['Chat b', 'Chat d']);
-
-    await choose('more', 'Chat b', 'Unpin');
-
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat d']));
-    expect(railSection('Pinned chats')).toEqual(['Chat d']);
-    expect(railSection('Your chats')).toEqual(['Chat a', 'Chat b', 'Chat c']);
-  });
-
-  it('an unpin the server refuses puts the chat back in the panel and in Pinned', async () => {
-    api.setConversationPinned.mockRejectedValue(new Error('500'));
-    const rows = [pin(ALL[1]), pin(ALL[3]), ALL[0], ALL[2]];
-    useChatStore.setState({ conversations: rows });
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? listed(rows) : listed([]),
-    );
-    renderInTheme(<Pinned />);
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat b', 'Chat d']));
-
-    await choose('more', 'Chat b', 'Unpin');
-
-    await waitFor(() => expect(toasts().map((t) => t.title)).toEqual(['Could not unpin the chat']));
-    expect(titlesIn('more')).toEqual(['Chat b', 'Chat d']);
-    expect(railSection('Pinned chats')).toEqual(['Chat b', 'Chat d']);
-  });
-
-  it('a chat pinned in the rail while the panel is open joins it', async () => {
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? listed([pin(ALL[3]), ALL[0], ALL[1], ALL[2]]) : listed([]),
-    );
-    useChatStore.setState({ conversations: [pin(ALL[3]), ALL[0], ALL[1], ALL[2]] });
-    renderInTheme(<Pinned />);
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat d']));
-
-    await choose('rail', 'Chat b', 'Pin');
-
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat b', 'Chat d']));
-    expect(railSection('Pinned chats')).toEqual(['Chat b', 'Chat d']);
-  });
-
-  it('a new message in a pinned chat puts it first in the open panel at once, as in the rail', async () => {
-    const rows = [pin(ALL[1]), pin(ALL[3]), ALL[0], ALL[2]];
-    useChatStore.setState({ conversations: rows, sharedConversations: [theirs('s1', 3500, true)] });
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? listed(rows) : listed([theirs('s1', 3500, true)]),
-    );
-    renderInTheme(<Pinned />);
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat s1', 'Chat b', 'Chat d']));
-
-    // What the end of an answer does: the chat moves up in the list it is in, with the time the server gave it.
-    act(() => useChatStore.getState().moveConversationToTop('d', { lastActivityAt: 9000 }));
-
-    expect(titlesIn('more')).toEqual(['Chat d', 'Chat s1', 'Chat b']);
-    expect(railSection('Pinned chats')).toEqual(['Chat d', 'Chat s1', 'Chat b']);
-  });
-
-  it('its rows wear the pin right after their title, as in the rail', async () => {
-    api.fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Opts) =>
-      opts.source === 'owned' ? listed([pin(ALL[0]), ALL[1]]) : listed([theirs('s1', 3500, true)]),
-    );
-    renderInTheme(<div data-testid="more"><MoreChatsSidebar sectionType="pinned" onBack={vi.fn()} /></div>);
-
-    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat s1']));
-    for (const title of ['Chat a', 'Chat s1']) {
-      expect(within(screen.getByTestId('more')).getByText(title).nextElementSibling?.hasAttribute('data-pinned-mark')).toBe(true);
-    }
-  });
-
-  it('says what fills it when nothing is pinned', async () => {
-    api.fetchConversations.mockResolvedValue(listed(ALL));
-    renderInTheme(<div data-testid="more"><MoreChatsSidebar sectionType="pinned" onBack={vi.fn()} /></div>);
-
-    await waitFor(() => expect(screen.getByText('Chats you pin will appear here')).toBeTruthy());
+    await waitFor(() => expect(titlesIn('more')).toEqual(['Chat a', 'Chat b', 'Chat c', 'Chat d']));
+    expect(screen.getByTestId('more').querySelector('[data-pinned-mark]')).toBeNull();
   });
 });
 

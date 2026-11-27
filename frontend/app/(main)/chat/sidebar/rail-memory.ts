@@ -3,9 +3,9 @@ import { getCurrentUserId } from '@/chat/utils/current-user-id';
 /**
  * What the rail showed last time, per person on this device, so the first paint keeps the same room for it: whether
  * the Projects row showed (1 or 0), whether Shared chats offered to start one (1 or 0, so it stays while empty), and
- * how many rows Pinned and Shared chats showed, their More included. Numbers only, never a title.
+ * how many rows Shared chats showed, its pins and its More included. Numbers only, never a title.
  */
-export type RailMemory = 'projects' | 'sharedStart' | 'pinnedRows' | 'sharedRows';
+export type RailMemory = 'projects' | 'sharedStart' | 'sharedRows';
 
 /** Older than this, what the rail showed has likely changed, so the first paint goes by nothing rather than by it. */
 export const RAIL_MEMORY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;

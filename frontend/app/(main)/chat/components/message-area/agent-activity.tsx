@@ -104,6 +104,8 @@ interface AgentActivityTimelineProps {
   unanchored?: React.ReactNode;
   /** The anchors (`run:<childRunId>`, a tool call's id) with a card open: those rows wait on the person, not work. */
   waiting?: ReadonlySet<string>;
+  /** What a question closed by someone else's message in the chat says (`ChatResponseExtension.repliedByOther`). */
+  repliedByOther?: string;
 }
 
 /** True when the transcript contains any tool call, reasoning block, or
@@ -128,6 +130,36 @@ export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean 
   );
 }
 
+/** Longer than this, text still being written is the answer: what a run says before a step is a sentence or two. */
+const NARRATION_MAX_CHARS = 400;
+/** Opens with a heading, list, table or code block, as an answer does and a sentence said before a step does not. */
+const ANSWER_OPENING_RE = /^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|\||```)/;
+
+/** True once text still being written reads as the answer. More text never makes it false again. */
+export function looksLikeAnswer(text: string | undefined): boolean {
+  if (!text) return false;
+  return ANSWER_OPENING_RE.test(text) || text.trim().length > NARRATION_MAX_CHARS;
+}
+
+/**
+ * True while the run's live text is drawn nowhere: it may yet be narration or the answer, whether or not a step came
+ * before it. Nothing in the stream tells the two apart before the next event, and drawn in the wrong place it would
+ * jump to the other. A step that follows settles it into the trail; the run's end (`isFinal`, or streaming stops), or
+ * text that reads as the answer (`looksLikeAnswer`), draws it as the answer. The run's status shows meanwhile: in the
+ * trail, or under the answer's place while the run has no step yet. So a short answer of a run with no step shows
+ * whole when the run ends, and a long one once it reads as the answer.
+ */
+export function holdsLiveText(parts: MessagePart[] | undefined, isStreaming: boolean): boolean {
+  if (!isStreaming || !parts) return false;
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const part = parts[i];
+    if (part.type !== 'text') continue;
+    if (part.settled || part.isFinal || !part.content?.trim()) return false;
+    return !looksLikeAnswer(part.content);
+  }
+  return false;
+}
+
 /**
  * Root-level text filtering:
  * - The one part marked `isFinal` (the actual answer, mirrors Python's
@@ -137,15 +169,10 @@ export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean 
  *   (`agui-event-handler.ts`'s `LivePartsBuilder.settleLastRootText()`,
  *   called the moment a tool call, reasoning block, or new text turn
  *   proves the text wasn't the final answer).
- * - The still-unsettled trailing text — whether or not the response has
- *   had multi-step activity — stays hidden here and streams live into
- *   `AnswerContent` instead (`ChatResponse` no longer suppresses the
- *   answer for multi-step runs). This is what makes the common case (the
- *   trailing text IS the final answer) render seamlessly in the answer
- *   area as it streams, with no jump when `RUN_FINISHED` lands. If it
- *   later turns out to be narration (a tool call/reasoning block follows),
- *   `settleLastRootText()` moves it here and clears the answer buffer in
- *   the same update.
+ * - Text still being written is never shown here. It waits
+ *   (`holdsLiveText`), before the run's first step as after one, until it
+ *   is known to be narration, and joins the trail, or the answer, and
+ *   streams into `AnswerContent`.
  */
 function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
   return withEngineSteps(parts, !isStreaming).filter((part) => {
@@ -430,7 +457,7 @@ const estimateTimelineRow = (item: RenderItem): number => (item.kind === 'part' 
 const groupPartKey = (part: MessagePart, index: number): string => part.toolCallId ?? `call-${index}`;
 const estimateToolCard = (): number => 40;
 
-export function AgentActivityTimeline({ parts, liftJobs = false, isNested = false, isStreaming = false, currentStatus = null, citationMaps, citationCallbacks, plan = null, anchored, unanchored = null, waiting }: AgentActivityTimelineProps) {
+export function AgentActivityTimeline({ parts, liftJobs = false, isNested = false, isStreaming = false, currentStatus = null, citationMaps, citationCallbacks, plan = null, anchored, unanchored = null, waiting, repliedByOther }: AgentActivityTimelineProps) {
   const checklist = !isNested ? shownPlan(plan) : null;
   const isJob = useIsJobPart();
   const visible = useMemo(() => {
@@ -467,9 +494,10 @@ export function AgentActivityTimeline({ parts, liftJobs = false, isNested = fals
   const drawn = new Set(drawnKeys.split('\n'));
   if (items.length === 0 && !showStatus && !checklist && !unanchored) return null;
   const rowCount = items.length + (unanchored ? 1 : 0) + (showStatus ? 1 : 0);
-  // Narration is left out: its words glide in from where they were read (`useNarrationGlide`), unclipped.
+  // Narration that was read as the answer is left out: its words glide in from there (`useNarrationGlide`), unclipped.
+  // Narration that waited (`holdsLiveText`) was drawn nowhere, so it opens like any other step.
   const opens = (item: (typeof items)[number]) =>
-    isStreaming && !isNested && !(item.kind === 'part' && item.part.type === 'text') && !drawn.has(item.key)
+    isStreaming && !isNested && !(item.kind === 'part' && item.part.type === 'text' && looksLikeAnswer(item.part.content)) && !drawn.has(item.key)
     // A tool call that a second one joins becomes their group: the same step, not a new one.
     && !drawn.has(item.key.replace(/^group-/, 'part-'));
   // The status ("Thinking…", after a quiet moment) opens too when it joins steps already drawn.
@@ -495,6 +523,7 @@ export function AgentActivityTimeline({ parts, liftJobs = false, isNested = fals
                   citationMaps={citationMaps}
                   citationCallbacks={citationCallbacks}
                   waiting={waiting}
+                  repliedByOther={repliedByOther}
                   {...(item.part.type === 'sub_agent' ? { asks: anchoredOn(item, anchored) } : {})}
                   hasAnchored={anchoredOn(item, anchored).length > 0}
                 />
@@ -522,7 +551,7 @@ export function AgentActivityTimeline({ parts, liftJobs = false, isNested = fals
   );
 }
 
-function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks, waiting, asks, hasAnchored = false }: { part: MessagePart; isStreaming?: boolean; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks; waiting?: ReadonlySet<string>; asks?: React.ReactNode[]; hasAnchored?: boolean }) {
+function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks, waiting, asks, hasAnchored = false, repliedByOther }: { part: MessagePart; isStreaming?: boolean; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks; waiting?: ReadonlySet<string>; asks?: React.ReactNode[]; hasAnchored?: boolean; repliedByOther?: string }) {
   const { t } = useTranslation();
   switch (part.type) {
     case 'reasoning':
@@ -530,7 +559,7 @@ function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks,
     case 'tool_call': {
       // An answered question drawn as its row, unless its card or receipt is anchored on this row already.
       const question = hasAnchored ? null : shownQuestionOf(part);
-      if (question) return <QuestionRow question={question} />;
+      if (question) return <QuestionRow question={question} repliedByOther={repliedByOther} />;
       // Top-level rail row — the icon lives on the rail (see
       // `getTimelineIcon`), not duplicated inline on the card itself.
       return <ToolCallCard part={part} showIcon={false} citationMaps={citationMaps} />;
@@ -1058,7 +1087,7 @@ function StatusTimelineEntry({ status }: { status: StatusMessage }) {
 }
 
 /** A card the run asked, where it asked it: its explanation, then each question with what the person answered. */
-function QuestionRow({ question }: { question: NonNullable<MessagePart['question']> }) {
+function QuestionRow({ question, repliedByOther }: { question: NonNullable<MessagePart['question']>; repliedByOther?: string }) {
   const { t } = useTranslation();
   const { payload } = question;
   const skipped = t('askUserQuestion.skipped');
@@ -1102,7 +1131,7 @@ function QuestionRow({ question }: { question: NonNullable<MessagePart['question
       ))}
       {payload.repliedInChat ? (
         <Text as="p" size="1" style={{ ...muted, marginTop: 'var(--space-2)' }}>
-          {t('askUserQuestion.repliedInChat')}
+          {repliedByOther ?? t('askUserQuestion.repliedInChat')}
         </Text>
       ) : null}
     </Box>
@@ -1774,8 +1803,9 @@ function useLiveElapsed(since: string | undefined): number | undefined {
 
 /**
  * Wraps a run's steps in a summary line, as Claude does: open while the run works, folded into the summary when
- * it ends. A person who opened or closed it while it ran keeps their choice. `trailing` sits beside the summary
- * (the answer's "View activity").
+ * it ends. A person who opened or closed it while it ran keeps their choice, and a run that goes on in the row (an
+ * approval card answered) opens it again unless they folded it. `trailing` sits beside the summary (the answer's
+ * "View activity").
  */
 export function CollapsibleActivitySection({
   parts,
@@ -1844,9 +1874,12 @@ export function CollapsibleActivitySection({
   // A run that stops to ask a question, or a card still waiting, has not ended for the person: the trail stays.
   const [wasStreaming, setWasStreaming] = useState(isStreaming);
   const [endFolds, setEndFolds] = useState(0);
+  const [foldedByHand, setFoldedByHand] = useState(false);
   if (wasStreaming !== isStreaming) {
     setWasStreaming(isStreaming);
-    if (!isStreaming && !waitingSummary && !touched && waiting === 0) {
+    if (isStreaming) {
+      if (!foldedByHand) setCollapsed(false);
+    } else if (!waitingSummary && !touched && waiting === 0) {
       setCollapsed(true);
       setEndFolds((n) => n + 1);
     }
@@ -1883,9 +1916,10 @@ export function CollapsibleActivitySection({
 
   const handleToggle = useCallback(() => {
     setTouched(true);
-    setCollapsed((prev) => !prev);
+    setCollapsed(!collapsed);
+    setFoldedByHand(!collapsed);
     setOwesFold(false);
-  }, []);
+  }, [collapsed]);
 
   return (
     <Box ref={rootRef} style={{ marginBottom: 'var(--space-3)' }}>

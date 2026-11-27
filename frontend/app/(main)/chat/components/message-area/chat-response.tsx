@@ -47,6 +47,7 @@ import {
   answerSummary,
   askUserQuestionOwnsRow,
   showsStoppedMarker,
+  stoppedOnCardAnswer,
   buildResumeMessage,
   isAskUserQuestionExpired,
   normalizeAskUserQuestionPayload,
@@ -77,6 +78,7 @@ import {
   answeredToolApproval,
   findApprovalStub,
   findToolApproval,
+  hasApprovalCard,
   hasApprovedCall,
   settledToolApprovals,
   withoutWaitingLine,
@@ -86,7 +88,7 @@ import { cannotRun, toolsBlockedDetails, type ChatStreamErrorInfo } from '../../
 import type { UnavailableTool } from '../../unavailable-tools';
 import { TurnJobs } from './job-card/turn-jobs';
 import { useIsJobPart } from './job-card/job-parts';
-import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity, planFromParts, RunNotices, SteeringMessage } from './agent-activity';
+import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity, holdsLiveText, planFromParts, RunNotices, SteeringMessage } from './agent-activity';
 import { TRAIL_FOLD_EVENT } from './keep-on-screen';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { answerQuestionCard } from '../../question-answer';
@@ -165,6 +167,7 @@ import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 import { useNarrationGlide } from './narration-glide';
+import { useMinutesLeft } from './use-minutes-left';
 
 /** The question's time: the clock today, the date and the clock before today. */
 function formatQuestionTime(isoString: string): string {
@@ -217,6 +220,8 @@ export interface ChatResponseProps {
   /** Collections attached to this message (e.g. KB filters the user selected) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFiltersData;
+  /** Where in the question the server wrote the word for a source the reader can't open. */
+  withheldSources?: readonly number[];
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
   /** Whether this is the last bot message in the conversation */
@@ -278,7 +283,9 @@ export interface ChatResponseProps {
   failed?: boolean;
   /** Resend the turn; offered on a failed last answer to someone who can send in this chat. */
   onRetry?: (turn: RetryTurn) => void;
-  /** The viewer can send in this chat; regenerate is offered only then. */
+  /** Ask again, where an extension's own list sends it as it sends any question of its own. */
+  onAskAgain?: (turn: RetryTurn) => void;
+  /** The viewer can send in this chat; regenerate, and quoting the answer, are offered only then. */
   canSend?: boolean;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
@@ -313,6 +320,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   modelInfo,
   collections,
   appliedFilters,
+  withheldSources,
   attachments,
   command,
   messageId,
@@ -339,6 +347,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   unavailableTools,
   failed = false,
   onRetry,
+  onAskAgain,
   canSend = true,
   unanswered = false,
   runId,
@@ -412,11 +421,18 @@ export const ChatResponse = React.memo(function ChatResponse({
     const convId = answerSlotId ? useChatStore.getState().slots[answerSlotId]?.convId : null;
     if (convId) useChatStore.getState().invalidateConversation(convId);
   }, [answerSlotId]);
+  // Nothing is sent while an answer is being written here, so the button says so.
+  const askAgainWaits = useChatStore((s) => Boolean(answerHidden && answerSlotId && s.slots[answerSlotId]?.isStreaming));
   // Asks the same question again as a new turn of this answer's chat, answered with today's access.
   const askAgain = useCallback(() => {
     const slot = answerSlotId ? useChatStore.getState().slots[answerSlotId] : null;
     // Two answers compete in a Compare column: one is chosen, not asked again.
     if (columnMode || !answerSlotId || !slot || slot.isStreaming) return;
+    // A group chat's question has to name who it asks, and goes the way its own questions go.
+    if (onAskAgain) {
+      onAskAgain({ question, attachments, collections, appliedFilters, exactScope: true });
+      return;
+    }
     const request = buildStreamChatRequestForSlot(answerSlotId, question);
     if (!request) return;
     // The turn's own scope and files, not what the composer holds now. The server's usual
@@ -437,7 +453,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     }
     if (attachments && attachments.length > 0) request.attachments = attachments;
     void streamMessageForSlot(answerSlotId, question, request);
-  }, [answerSlotId, question, appliedFilters, attachments, columnMode]);
+  }, [answerSlotId, question, appliedFilters, attachments, collections, columnMode, onAskAgain]);
   const activeExpandedMessageId = useChatStore((s) =>
     answerSlotId ? s.slots[answerSlotId]?.activeExpandedMessageId ?? null : null
   );
@@ -652,11 +668,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? streamingArtifacts ?? []
     : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
-  // A run stopped on this row's question waits on the person, not the model: no status line says it is still at work.
-  // The saved row has none either, so the card under the trail stays where it is when that row takes over.
-  const streamingStatusToShow = questionPending
-    ? null
-    : currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
 
   // Live transcript while streaming, persisted transcript after reload —
   // same components render either (see AgentActivityTimeline's docstring).
@@ -667,38 +678,44 @@ export const ChatResponse = React.memo(function ChatResponse({
   // WP-89: the run's settled outcome, worded here; an answer saved before it carries its own English words.
   const settledOutcome = runOutcomeOf(undefined, persistedParts);
 
+  // Text being written that may yet be narration or the answer, before the run's first step or after one: drawn nowhere
+  // until it is known which (see `holdsLiveText`). Arriving text clears the status, so the run says it is thinking
+  // meanwhile: in the trail, or (no step yet) on the status line under the answer's place.
+  const textHeld = useMemo(() => holdsLiveText(effectiveParts, isStreaming), [effectiveParts, isStreaming]);
+
+  // A run stopped on this row's question waits on the person, not the model: no status line says it is still at work.
+  // The saved row has none either, so the card under the trail stays where it is when that row takes over.
+  const streamingStatusToShow = questionPending
+    ? null
+    : currentStatusMessage ?? (isStreaming && (!displayContent || textHeld) ? streamingFallbackStatus : null);
+
   // A multi-step (ReAct) response has at least one tool call, reasoning
-  // block, or sub-agent delegation. The trailing (unsettled) text streams
-  // straight into `AnswerContent` for both simple and multi-step responses
-  // — see `filterRootParts` in `agent-activity.tsx`. This keeps the common
-  // case (trailing text IS the final answer) seamless: it grows in the
-  // answer area as it streams and there's no jump when `RUN_FINISHED`
-  // lands. If it later turns out to be narration (a tool call/reasoning
-  // block follows), it's settled into the timeline and cleared from the
-  // answer buffer in the same update, so it never renders in both places.
+  // block, or sub-agent delegation. The answer is never drawn in its trail:
+  // text being written, before the first step or after one, waits
+  // (`textHeld`) until it reads as the answer or the run ends. Text that
+  // turns out to be narration (a tool call/reasoning block follows) is
+  // settled into the timeline and cleared from the answer buffer in the same
+  // update, so it is only ever drawn in one place.
   const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
   // A turn that ended waiting for approval; shown once the reply is settled.
   const toolApproval = useMemo(
-    () => (isStreaming ? null : findToolApproval(effectiveParts)),
-    [effectiveParts, isStreaming],
+    () => (isStreaming || ext.approvalCardAnswered ? null : findToolApproval(effectiveParts)),
+    [effectiveParts, isStreaming, ext.approvalCardAnswered],
   );
   const approvalReceipts = useMemo(() => settledToolApprovals(effectiveParts), [effectiveParts]);
   // Someone else's card once it no longer waits, as the server says it stands.
   const approvalStub = useMemo(
-    () => (isStreaming ? null : findApprovalStub(effectiveParts)),
-    [effectiveParts, isStreaming],
+    () => (isStreaming || ext.approvalCardAnswered ? null : findApprovalStub(effectiveParts)),
+    [effectiveParts, isStreaming, ext.approvalCardAnswered],
   );
   // "Waiting for your approval…" closes a reply that stopped on a card. The card says it while it
   // waits; once answered, the reply carries on in this row, and until its new text streams in the
   // row still holds those words. They are never the answer.
-  const hasApprovalCard = useMemo(
-    () => findToolApproval(effectiveParts) !== null || approvalReceipts.length > 0 || findApprovalStub(effectiveParts) !== null,
-    [effectiveParts, approvalReceipts],
-  );
+  const stoppedOnCard = useMemo(() => hasApprovalCard(effectiveParts), [effectiveParts]);
   // ANSWER-CONTRACT-FU-2: the subject was not found; the chat words that above the answer, which then starts after
   // the English line saved for surfaces with no UI.
   const notFound = isStreaming ? null : notFoundOf(persistedParts, savedNotFound);
-  const answerOwn = hasApprovalCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
+  const answerOwn = stoppedOnCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
   // R32REPO-FU-1: what the run could not do is worded the same way, after the not-found line.
   const couldNotDo = isStreaming ? null : couldNotDoOf(persistedParts, savedLimits);
   const afterNotFound = notFound !== null ? withoutNotFoundLine(answerOwn, notFound) : answerOwn;
@@ -976,7 +993,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     if (rerunCard) return rerunCard;
     if (changingAnswers) return changeAnswersEditor;
     if (questionState !== 'pending' && questionPayload.repliedInChat) {
-      return <InteractionReceipt tone="muted" status="replied" text={t('askUserQuestion.repliedInChat')} />;
+      return <InteractionReceipt tone="muted" status="replied" text={ext.repliedByOther ?? t('askUserQuestion.repliedInChat')} />;
     }
     if (questionState === 'skipped') {
       return <InteractionReceipt tone="muted" status="skipped" text={t('interaction.receipt.skipped')} />;
@@ -995,6 +1012,8 @@ export const ChatResponse = React.memo(function ChatResponse({
     return (
       <Flex direction="column" gap="2">
       <AskUserQuestionCard
+        // An answer sent meanwhile on another page: it opens on that one, as after a reload.
+        key={JSON.stringify(pendingAskUserQuestion?.sentAnswers)}
         payload={questionPayload}
         initialAnswers={questionAnswers}
         status="pending"
@@ -1022,9 +1041,32 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   // Sending again cannot lift a refusal only an admin can: the card's text says who to ask.
   const canRetry = isLastMessage && onRetry !== undefined && ext.allowRegenerate && !ranApprovedCall && !cannotRun(streamError);
+  // While its question card is open again, Submit is what sends the answer: no Try again beside it.
+  const questionWaits =
+    questionPending && !(pendingAskUserQuestion && isAskUserQuestionExpired(pendingAskUserQuestion.payload));
+  // Only the newest answer can be redone in its place: an older failed one of the viewer's is asked again as a new message.
+  const canAskAgain = !isLastMessage && !columnMode && ext.allowRegenerate && !cannotRun(streamError);
   const retry = () => {
     const slotId = answerSlotIdNow(scopedSlotId);
     const slot = slotId ? useChatStore.getState().slots[slotId] : undefined;
+    // The newest answer the server stored as stopped or failed is asked again in its place, as Regenerate does: the
+    // question shows once, for everyone, and the new answer takes the old one's place. A failure only this tab holds
+    // (not stored, or not read back yet) is asked anew.
+    const stored =
+      status === 'stopped'
+        ? messageId
+        : rowId && slot?.rawMessages?.some((m) => m._id === rowId && m.messageType === 'error')
+          ? rowId
+          : undefined;
+    if (canRetry && stored) {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: stored,
+        text: question,
+        appliedFilters,
+        ...(scopedSlotId ? { slotId: scopedSlotId } : {}),
+      });
+      return;
+    }
     // The failed copy gives way to the question asked again, so it shows once. A busy chat may not take the send, so it stays.
     const rows = slot && rowId && !slot.isStreaming && !slot.remoteRunInProgress ? withoutFailedTurn(slot.messages, rowId) : null;
     if (rows && slotId) updateSlot(slotId, { messages: rows });
@@ -1097,6 +1139,14 @@ export const ChatResponse = React.memo(function ChatResponse({
   // A host that draws the answer elsewhere (the answer panel) passes its own padding.
   const renderTabContent = (opts?: { padding?: string }) => {
     const spacing: React.CSSProperties = { padding: opts?.padding ?? 'var(--space-4) 0' };
+    const answerContent = (
+      <AnswerContent
+        content={answerShown}
+        citationMaps={effectiveCitationMaps}
+        citationCallbacks={wrappedCallbacks}
+        isStreaming={isStreaming}
+      />
+    );
     switch (activeTab) {
       case 'answer':
         if (answerFailed) {
@@ -1104,7 +1154,8 @@ export const ChatResponse = React.memo(function ChatResponse({
             <Box style={spacing}>
               <AnswerFailed
                 message={answer}
-                onRetry={canRetry ? retry : undefined}
+                onRetry={canRetry ? retry : canAskAgain ? askAgain : undefined}
+                askAgain={!canRetry && canAskAgain}
               />
             </Box>
           );
@@ -1161,6 +1212,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                   anchored={anchoredInteractions}
                   waiting={waitingAnchors}
                   unanchored={looseInteractions.length > 0 ? looseInteractions : null}
+                  repliedByOther={ext.repliedByOther}
                 />
                 <FilesChanged files={changedFiles} onOpen={openChangedFile} />
                 {!isStreaming ? <RunSummary run={messageRun} /> : null}
@@ -1209,7 +1261,6 @@ export const ChatResponse = React.memo(function ChatResponse({
             {blockedTools && (ext.toolsConnectReadOnlyFor ? (
               <UnavailableToolsNotice
                 items={blockedTools.items}
-                answer=""
                 question={question}
                 readOnlyFor={ext.toolsConnectReadOnlyFor}
               />
@@ -1245,7 +1296,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-            {answerShown && !questionPending && !blockedTools && (
+            {answerShown && !textHeld && !questionPending && !blockedTools && (
               <Box
                 data-testid="chat-answer"
                 style={{
@@ -1255,14 +1306,13 @@ export const ChatResponse = React.memo(function ChatResponse({
                       : 0,
                 }}
               >
-                <QuoteSelectionLayer enabled={!isStreaming && isChatOwner}>
-                  <AnswerContent
-                    content={answerShown}
-                    citationMaps={effectiveCitationMaps}
-                    citationCallbacks={wrappedCallbacks}
-                    isStreaming={isStreaming}
-                  />
-                </QuoteSelectionLayer>
+                {ext.ownSelectionBar ? (
+                  answerContent
+                ) : (
+                  <QuoteSelectionLayer enabled={!isStreaming} canQuote={isChatOwner && canSend}>
+                    {answerContent}
+                  </QuoteSelectionLayer>
+                )}
               </Box>
             )}
 
@@ -1277,11 +1327,10 @@ export const ChatResponse = React.memo(function ChatResponse({
               <ErrorNextStep error={streamError} question={question} />
             )}
 
-            {/* The answer went on without tools the asker hasn't connected: offer to connect them once it is done. */}
+            {/* The answer needed tools the asker hasn't connected (its run called their stubs): offer to connect them once it is done. */}
             {!isStreaming && !answerFailed && !blockedTools && answerShown && unavailableTools && unavailableTools.length > 0 && (
               <UnavailableToolsNotice
                 items={unavailableTools}
-                answer={answerShown}
                 question={question}
                 readOnlyFor={ext.toolsConnectReadOnlyFor}
               />
@@ -1294,15 +1343,22 @@ export const ChatResponse = React.memo(function ChatResponse({
                 <ToolApprovalCard
                   key={toolApproval.approvalId}
                   approval={toolApproval}
-                  isLatest={isLastMessage}
+                  isLatest={ext.approvalCardWaits ?? isLastMessage}
+                  closedAt={ext.approvalCardClosedAt}
                   rowId={rowId}
                   readOnlyFor={ext.approvalCardReadOnlyFor}
+                  held={ext.approvalCardHeld}
                 />
               </Box>
             )}
             {!toolApproval && approvalStub && !questionPending && (
               <Box mt="3">
-                <ToolApprovalStubNotice status={approvalStub.status} name={ext.approvalCardReadOnlyFor?.name ?? null} />
+                <ToolApprovalStubNotice
+                  status={approvalStub.status}
+                  name={ext.approvalCardReadOnlyFor?.name ?? null}
+                  approval={approvalStub.details}
+                  closedAt={ext.approvalCardClosedAt}
+                />
               </Box>
             )}
 
@@ -1323,13 +1379,22 @@ export const ChatResponse = React.memo(function ChatResponse({
               !hasLegacyOutcomeWords(answerShown) && <CutShortNotice reason={cutShort} budgetScope={sharedBudget} />}
 
             {/* A response cut short by Stop says so in the answer's place: what is
-                kept, and Try again where a retry is allowed. Only once settled. */}
+                kept, and Try again where a retry is allowed. Only once settled.
+                While its card is open again, Submit is what sends the answer again. */}
             {showsStoppedMarker({
               status,
               isStreaming,
               hasQuestionCard,
               hasAnswerText: visibleAnswer.trim() !== '',
               repliedInChat: Boolean(persistedAskUserQuestion?.repliedInChat),
+              answerStopped: stoppedOnCardAnswer({
+                rowId,
+                messageId,
+                pending: askQuestionMatchesRow ? pendingAskUserQuestion : null,
+                parts: effectiveParts,
+                payload: persistedAskUserQuestion,
+                answers: persistedAskUserQuestionAnswers,
+              }),
             }) && (
               <Box style={{ marginTop: answerShown.trim() ? 'var(--space-2)' : 0 }}>
                 <RunErrorCard
@@ -1345,7 +1410,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                         : undefined
                   }
                   retryLabel={t('chat.answerFailedRetry')}
-                  onRetry={canRetry ? retry : undefined}
+                  onRetry={canRetry && !questionWaits ? retry : undefined}
                 />
               </Box>
             )}
@@ -1436,6 +1501,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   // With the right column beside the chat, its Context tab lists the question's sources, so none sit under it.
   const filterChips = !panelTakesTabs && hasAnyFilter(appliedFilters);
   const chipsUnderQuestion = Boolean(appliedFilters && ext.showAppliedFilters !== false && filterChips) || Boolean(attachments?.length);
+  // A room row's note drawn between its question and its answer: a shared answer's line about its steps and sources.
+  const noteUnderQuestion = Boolean(ext.headline && ext.beforeTabs && !unanswered);
   const filtersAndAttachments = (
     <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
@@ -1585,6 +1652,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     withRowKey,
     onEditQuery: handleEditQuery,
     questionMentions: appliedNodes,
+    questionWithheld: withheldSources,
   };
   const customRow = ext.renderRow?.(parts);
   if (customRow) return <>{customRow}</>;
@@ -1597,10 +1665,14 @@ export const ChatResponse = React.memo(function ChatResponse({
         style={{
           // On a wide row what follows sets its own 16 px down, so with nothing between them this adds none.
           // A headline is 24 px above what follows: the tabs, or the answer under its own 16 px.
+          // A room's note under the question (`beforeTabs`) sets none of its own: it stands where the answer would,
+          // 24 px down and 16 on a wide row, as a copy's row has it (`copyRow`); its own 24 px is the gap under it.
           marginBottom: wideRow && !chipsUnderQuestion
-            ? 0
+            ? noteUnderQuestion
+              ? 'var(--space-4)'
+              : 0
             : ext.headline
-            ? ext.hideTabs
+            ? ext.hideTabs && !noteUnderQuestion
               ? 'var(--space-2)'
               : 'var(--space-5)'
             : (collections && collections.length > 0) || filterChips
@@ -1620,6 +1692,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           command={command}
           headline={ext.headline}
           mentions={appliedNodes}
+          withheldSources={withheldSources}
         />
         {/* Under the question, when it was sent; an extension may draw its own line instead (a room's byline has it). */}
         {ext.questionMeta !== undefined ? (
@@ -1693,7 +1766,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               )
             : isChatOwner &&
               !columnMode && (
-                <Button size="1" variant="soft" onClick={askAgain}>
+                <Button size="1" variant="soft" disabled={askAgainWaits} onClick={askAgain}>
                   {t('chat.answerHidden.askAgain')}
                 </Button>
               )}
@@ -1704,7 +1777,7 @@ export const ChatResponse = React.memo(function ChatResponse({
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {/* A stopped reply with no text has nothing to rate, copy or read aloud. */}
-      {!unanswered && !answerHidden && !columnMode && activeTab === 'answer' && !(status === 'stopped' && !isStreaming && !visibleAnswer.trim()) && renderActions()}
+      {!unanswered && !answerHidden && !columnMode && !ext.approvalCardAnswered && activeTab === 'answer' && !(status === 'stopped' && !isStreaming && !visibleAnswer.trim()) && renderActions()}
 
       {previewDialog}
     </Box>

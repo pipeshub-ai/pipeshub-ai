@@ -1010,6 +1010,141 @@ describe('Chat page — opening a conversation', () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
+  describe('a load that fails and may pass', () => {
+    const networkError = () => processError(new AxiosError('Network Error') as AxiosError<never>);
+    const FAILED = "Couldn't load this chat";
+    const openSlot = () => useChatStore.getState().slots[useChatStore.getState().activeSlotId as string];
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    it('the first: says so in place of the chat, without a toast, and opens it by itself', async () => {
+      fetchConversation.mockRejectedValueOnce(networkError()).mockResolvedValue(conversationDetail());
+      renderPage('conversationId=conv-1');
+
+      expect(await screen.findByText(FAILED)).toBeTruthy();
+      expect(screen.getByText('Check your connection and try again.')).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+      expect(screen.queryByRole('list', { name: 'Messages' })).toBeNull();
+      expect(fetchConversation).toHaveBeenCalledWith('conv-1', undefined, undefined, expect.objectContaining({ quietWhenTransient: true }));
+
+      expect(await screen.findByText('You get 25 days a year.', {}, { timeout: 3_000 })).toBeTruthy();
+      expect(screen.queryByText(FAILED)).toBeNull();
+      expect(fetchConversation).toHaveBeenCalledTimes(2);
+      expect(toastError).not.toHaveBeenCalled();
+      expect(openSlot().failedLoad ?? null).toBeNull();
+    });
+
+    it('the first of an agent chat, whose loader is the same', async () => {
+      getAgent.mockResolvedValue({ agent: AGENT_WITH_TOOLS, toolFullNames: [] });
+      fetchAgentConversation.mockRejectedValueOnce(networkError()).mockResolvedValue(conversationDetail());
+      renderPage('agentId=agent-a&conversationId=conv-1');
+      expect(await screen.findByText(FAILED)).toBeTruthy();
+      expect(await screen.findByText('You get 25 days a year.', {}, { timeout: 3_000 })).toBeTruthy();
+      expect(fetchAgentConversation).toHaveBeenCalledWith('agent-a', 'conv-1', expect.objectContaining({ quietWhenTransient: true }));
+    });
+
+    it('Try again tries at once, and is busy while it does', async () => {
+      let answer: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+      fetchConversation.mockRejectedValueOnce(networkError()).mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+      renderPage('conversationId=conv-1');
+      const button = (await screen.findByRole('button', { name: 'Try again' })) as HTMLButtonElement;
+      fireEvent.click(button);
+      await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(2));
+      expect((screen.getByRole('button', { name: /Try again/ }) as HTMLButtonElement).disabled).toBe(true);
+      await act(async () => answer(conversationDetail()));
+      expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    });
+
+    it('focus and online together bring one try forward, and no second while it is under way', async () => {
+      let answer: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+      fetchConversation.mockRejectedValueOnce(networkError()).mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+      renderPage('conversationId=conv-1');
+      await screen.findByText(FAILED);
+      act(() => useChatStore.getState().updateSlot(useChatStore.getState().activeSlotId as string, { failedLoad: { count: 5, at: Date.now() - 5_000 } }));
+      act(() => {
+        window.dispatchEvent(new Event('online'));
+        window.dispatchEvent(new Event('focus'));
+      });
+      await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(2));
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fetchConversation).toHaveBeenCalledTimes(2);
+      // A notification about the chat meanwhile: what is under way is thrown away, and read once more after it.
+      fetchConversation.mockResolvedValue(conversationDetail());
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      expect(fetchConversation).toHaveBeenCalledTimes(2);
+      await act(async () => answer(conversationDetail()));
+      expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+      expect(fetchConversation).toHaveBeenCalledTimes(3);
+    });
+
+    it('opens on coming back from another chat, not only on a window focus', async () => {
+      fetchConversation.mockRejectedValueOnce(networkError()).mockImplementation(async () => conversationDetail());
+      const view = renderPage('conversationId=conv-1');
+      await screen.findByText(FAILED);
+      searchParams = new URLSearchParams('');
+      view.rerender(<Theme><ChatPage /></Theme>);
+      expect(await screen.findByText('What do you want to explore today?')).toBeTruthy();
+      await new Promise((r) => setTimeout(r, 1_300));
+      expect(fetchConversation).toHaveBeenCalledTimes(1);
+
+      searchParams = new URLSearchParams('conversationId=conv-1');
+      view.rerender(<Theme><ChatPage /></Theme>);
+      expect(await screen.findByText('You get 25 days a year.', {}, { timeout: 500 })).toBeTruthy();
+      expect(fetchConversation).toHaveBeenCalledTimes(2);
+    });
+
+    it('a later one keeps the chat on screen, without a toast or a loader, and loads it again by itself', async () => {
+      fetchConversation.mockResolvedValueOnce(conversationDetail());
+      renderPage('conversationId=conv-1');
+      expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+
+      let answer: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+      fetchConversation.mockRejectedValueOnce(networkError()).mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+      await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(3), { timeout: 3_000 });
+      // The try under way: what is drawn stays drawn.
+      expect(screen.getByText('You get 25 days a year.')).toBeTruthy();
+      expect(screen.queryByText(FAILED)).toBeNull();
+      expect(screen.queryByText('Loading')).toBeNull();
+
+      await act(async () => answer(conversationDetail({ messages: [apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 30 days a year.' })] })));
+      expect(await screen.findByText('You get 30 days a year.')).toBeTruthy();
+      expect(toastError).not.toHaveBeenCalled();
+    });
+
+    it('one that answers while an answer is written here keeps its rows, and loads once that has ended', async () => {
+      fetchConversation.mockResolvedValueOnce(conversationDetail());
+      renderPage('conversationId=conv-1');
+      await screen.findByText('You get 25 days a year.');
+      let answer: (v: ReturnType<typeof conversationDetail>) => void = () => {};
+      fetchConversation.mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+      await act(async () => useChatStore.getState().invalidateConversation('conv-1'));
+      const id = useChatStore.getState().activeSlotId as string;
+      const sent = [{ id: 'mine', role: 'user' as const, content: [{ type: 'text' as const, text: 'And sick days?' }] }];
+      await act(async () => useChatStore.getState().updateSlot(id, { isStreaming: true, messages: sent }));
+      await act(async () => answer(conversationDetail()));
+      expect(await screen.findByText('And sick days?')).toBeTruthy();
+      expect(openSlot().messages).toBe(sent);
+
+      fetchConversation.mockResolvedValue(conversationDetail());
+      await act(async () => useChatStore.getState().updateSlot(id, { isStreaming: false }));
+      expect(await screen.findByText('You get 25 days a year.', {}, { timeout: 3_000 })).toBeTruthy();
+    });
+
+    it('one the server refused is not tried again, and is told as before', async () => {
+      fetchConversation.mockRejectedValue(httpFailure(404));
+      renderPage('conversationId=conv-1');
+      await waitFor(() => expect(fetchConversation).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setTimeout(r, 1_300));
+      expect(fetchConversation).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(FAILED)).toBeNull();
+      expect(openSlot().failedLoad ?? null).toBeNull();
+    });
+  });
+
   it('reuses the already-loaded thread when the user comes back to it', async () => {
     fetchConversation.mockResolvedValue(conversationDetail());
     const view = renderPage('conversationId=conv-1');

@@ -11,6 +11,7 @@ import {
   AgentActivityTimeline,
   toolActivityLabel,
   hasMultiStepActivity,
+  holdsLiveText,
   getVisibleRootParts,
   buildActivitySummary,
   CollapsibleActivitySection,
@@ -254,14 +255,21 @@ describe('AgentActivityTimeline — a step that joins the trail while it streams
     // A trail's first draw does not open row by row.
     expect(opening(container)).toEqual([]);
     rerender(timeline([think, { type: 'text', content: 'Next I will search.', settled: true, runId: 'r1' }, tool('call-1')]));
-    // The new tool step opens; the narration does not (its words glide in from the answer).
-    expect(opening(container)).toHaveLength(1);
-    expect(opening(container)[0]).toContain('Searched call-1');
-    expect(opening(container)[0]).not.toContain('Next I will search.');
+    // The new tool step opens, and so does the narration that waited to be told from the answer.
+    expect(opening(container)).toHaveLength(2);
+    expect(opening(container)[0]).toContain('Next I will search.');
+    expect(opening(container)[1]).toContain('Searched call-1');
     // Once opening, it stays the same element as the trail goes on.
     const row = container.querySelector('.trail-row-opens');
     rerender(timeline([think, { type: 'text', content: 'Next I will search.', settled: true, runId: 'r1' }, tool('call-1'), think]));
     expect(container.querySelector('.trail-row-opens')).toBe(row);
+  });
+
+  it('does not open narration that was read as the answer: its words glide in from there', () => {
+    const { container, rerender } = render(timeline([think]));
+    rerender(timeline([think, { type: 'text', content: `I will search. ${'x'.repeat(400)}`, settled: true, runId: 'r1' }, tool('call-1')]));
+    expect(opening(container)).toHaveLength(1);
+    expect(opening(container)[0]).toContain('Searched call-1');
   });
 
   it('opens the status that joins steps already drawn after a quiet moment, not one that starts the trail', () => {
@@ -971,6 +979,49 @@ describe('hasMultiStepActivity', () => {
   });
 });
 
+describe('holdsLiveText', () => {
+  const SENTENCE = 'I’ll check whether “multiplayer” refers to something in your organization’s materials.';
+  const step: MessagePart = { type: 'tool_call', toolCallId: 'c1', toolName: 'knowledgegraph__search', status: 'completed' };
+
+  it('holds the run’s first text while it may be narration: no step has to come before it', () => {
+    expect(holdsLiveText([{ type: 'text', content: SENTENCE }], true)).toBe(true);
+    expect(holdsLiveText([{ type: 'text', content: 'Hi.' }], true)).toBe(true);
+  });
+
+  it('holds text written after a step the same way', () => {
+    expect(holdsLiveText([step, { type: 'text', content: SENTENCE }], true)).toBe(true);
+  });
+
+  it('holds text after a stub of someone else’s approval card, which is no step', () => {
+    expect(holdsLiveText([{ type: 'tool_call', toolCallId: 'c0', stub: true, status: 'approved' }, { type: 'text', content: SENTENCE }], true)).toBe(true);
+  });
+
+  it.each([
+    ['a heading', '## Release checklist\n\nThe freeze starts'],
+    ['a list', '- The freeze starts ten days before'],
+    ['a numbered list', '1. The freeze starts'],
+    ['a table', '| Step | Owner |'],
+    ['a code block', '```ts\nconst x = 1;'],
+    ['its length', 'word '.repeat(90)],
+  ])('lets the first text go once %s tells it is the answer', (_why, text) => {
+    expect(holdsLiveText([{ type: 'text', content: text }], true)).toBe(false);
+    expect(holdsLiveText([step, { type: 'text', content: text }], true)).toBe(false);
+  });
+
+  it('holds nothing once the text is settled into the trail, marked the answer, or the run has ended', () => {
+    expect(holdsLiveText([{ type: 'text', content: SENTENCE, settled: true }, step], true)).toBe(false);
+    expect(holdsLiveText([{ type: 'text', content: SENTENCE, isFinal: true }], true)).toBe(false);
+    expect(holdsLiveText([{ type: 'text', content: SENTENCE }], false)).toBe(false);
+  });
+
+  it('holds nothing with no text yet, or only blank text', () => {
+    expect(holdsLiveText(undefined, true)).toBe(false);
+    expect(holdsLiveText([], true)).toBe(false);
+    expect(holdsLiveText([step], true)).toBe(false);
+    expect(holdsLiveText([{ type: 'text', content: '  ' }], true)).toBe(false);
+  });
+});
+
 describe('getVisibleRootParts', () => {
   it("leaves out a stub of someone else's approval card", () => {
     const stub = { type: 'tool_call', toolCallId: 'c1', stub: true, status: 'awaiting_approval' } as never;
@@ -1231,6 +1282,98 @@ describe('CollapsibleActivitySection', () => {
     expect(body.dataset.open).toBe('false');
   });
 
+  describe('when a run goes on in a row it had stopped in (an approval card answered)', () => {
+    const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
+    const section = (isStreaming: boolean, waiting?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', { 'data-testid': 'child' }, 'child content')));
+    const toggle = () => fireEvent.click(screen.getByRole('button'));
+
+    it('opens again, the same section, and folds at its end', () => {
+      const { rerender, container } = renderCollapsible(parts, { isStreaming: true });
+      const body = container.querySelector('.trail-body') as HTMLElement;
+      // It stops on the card: folded, as at any end.
+      rerender(section(false));
+      expect(body.dataset.open).toBe('false');
+      rerender(section(true));
+      expect(container.querySelector('.trail-body')).toBe(body);
+      expect(body.dataset.open).toBe('true');
+      expect(isContentHidden()).toBe(false);
+      rerender(section(false));
+      expect(body.dataset.open).toBe('false');
+      // A second card, the same.
+      rerender(section(true));
+      expect(body.dataset.open).toBe('true');
+    });
+
+    it('opens on a page read again while the card waited, too', () => {
+      const { rerender } = renderCollapsible(parts);
+      expect(isContentHidden()).toBe(true);
+      rerender(section(true));
+      expect(isContentHidden()).toBe(false);
+      rerender(section(false));
+      expect(isContentHidden()).toBe(true);
+    });
+
+    it('stays as the reader folded it: in the run, while the card waited, or on a question card', () => {
+      const { rerender } = renderCollapsible(parts, { isStreaming: true });
+      toggle();
+      rerender(section(false));
+      rerender(section(true));
+      expect(isContentHidden()).toBe(true);
+      cleanup();
+
+      // Opened and folded again while the card waited.
+      const waited = renderCollapsible(parts, { isStreaming: true });
+      waited.rerender(section(false));
+      toggle();
+      toggle();
+      waited.rerender(section(true));
+      expect(isContentHidden()).toBe(true);
+      cleanup();
+
+      const asked = renderCollapsible(parts, { isStreaming: true });
+      asked.rerender(section(false, 'Waiting for your answer'));
+      expect(isContentHidden()).toBe(false);
+      toggle();
+      asked.rerender(section(true));
+      expect(isContentHidden()).toBe(true);
+    });
+
+    // A reader's own choice stands once the run ends (`touched`): the run's end folds only steps nobody opened or shut.
+    it('a reader who opened it themselves has it open, and it stays open at the end', () => {
+      const { rerender } = renderCollapsible(parts, { isStreaming: true });
+      toggle();
+      rerender(section(false));
+      toggle();
+      expect(isContentHidden()).toBe(false);
+      rerender(section(true));
+      expect(isContentHidden()).toBe(false);
+      rerender(section(false));
+      expect(isContentHidden()).toBe(false);
+      cleanup();
+
+      // Folded and opened again in the run: only the run's end has folded it.
+      const again = renderCollapsible(parts, { isStreaming: true });
+      toggle();
+      toggle();
+      again.rerender(section(false));
+      again.rerender(section(true));
+      expect(isContentHidden()).toBe(false);
+    });
+
+    it('tells the scroll box of its folds alone', () => {
+      const folds = vi.fn();
+      const { rerender, container } = renderCollapsible(parts, { isStreaming: true });
+      container.addEventListener(TRAIL_FOLD_EVENT, folds);
+      rerender(section(false));
+      expect(folds).toHaveBeenCalledTimes(1);
+      rerender(section(true));
+      expect(folds).toHaveBeenCalledTimes(1);
+      rerender(section(false));
+      expect(folds).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("tells the scroll box around it when the run's end folds it, and only then", () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
     const section = (isStreaming: boolean, waiting?: string) =>
@@ -1457,6 +1600,19 @@ describe('ToolCallCard — web tools list what they found', () => {
     expand({ ...WEB_SEARCH, status: 'running' });
 
     expect(screen.queryByTestId('tool-result-table')).toBeNull();
+  });
+
+  it('names a waiting call in words, as an earlier server saved it too', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'f',
+      toolName: 'dynamic__fetch_url',
+      status: 'awaiting_approval',
+      resultPreview: 'Waiting for your approval to run dynamic__fetch_url on dynamic__fetch_url.',
+    });
+
+    expect(screen.getByText('Waiting for approval')).toBeTruthy();
+    expect(screen.getByText('Waiting for your approval to run “Open a web page”.')).toBeTruthy();
   });
 
   it('names the page a fetch read', () => {

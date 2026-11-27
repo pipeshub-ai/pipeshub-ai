@@ -93,11 +93,11 @@ describe('ChatSections', () => {
     expect(rows()).toEqual(['Today chat']);
   });
 
-  it('caps each group at five rows, then one More row that opens that group in More', () => {
+  it('caps Shared chats at three rows and Your chats at five, then one More row that opens that group in More', () => {
     const onOpenMoreChats = vi.fn();
     useChatStore.setState({ sharedConversations: many('s', 7), conversations: many('c', 8) });
     render(<ChatSections onOpenMoreChats={onOpenMoreChats} />);
-    expect(rows()).toEqual(['s1', 's2', 's3', 's4', 's5', 'c1', 'c2', 'c3', 'c4', 'c5']);
+    expect(rows()).toEqual(['s1', 's2', 's3', 'c1', 'c2', 'c3', 'c4', 'c5']);
     const more = screen.getAllByText('More');
     expect(more).toHaveLength(2);
     fireEvent.click(more[0]);
@@ -113,10 +113,10 @@ describe('ChatSections', () => {
     expect(screen.getAllByText('More')).toHaveLength(1);
   });
 
-  it('with five or fewer chats and no next page, shows them all and no More', () => {
-    useChatStore.setState({ sharedConversations: many('s', 5), conversations: many('c', 5) });
+  it('with three or fewer shared chats, five or fewer of yours and no next page, shows them all and no More', () => {
+    useChatStore.setState({ sharedConversations: many('s', 3), conversations: many('c', 5) });
     render(<ChatSections onOpenMoreChats={() => {}} />);
-    expect(rows()).toHaveLength(10);
+    expect(rows()).toHaveLength(8);
     expect(screen.queryByText('More')).toBeNull();
   });
 

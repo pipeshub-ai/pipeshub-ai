@@ -140,6 +140,21 @@ describe('no line under the question: the answer starts 16 px under it', () => {
     expect(question().style.marginBottom).toBe('var(--space-2)');
   });
 
+  it('a shared block with a note under its question: the note stands where the answer would, 24 px down', () => {
+    const note = <div data-testid="steps-note">Only Dana can see the steps and sources for this answer.</div>;
+    response.extra = { headline: { compact: true }, hideTabs: true, questionMeta: false, beforeTabs: note };
+    row({}, { column: false });
+    expect(question().style.marginBottom).toBe('var(--space-5)');
+    expect(screen.getByTestId('steps-note')).toBeTruthy();
+  });
+
+  it('the same note at desktop width stands 16 px down, as every question has', () => {
+    const note = <div data-testid="steps-note">Only Dana can see the steps and sources for this answer.</div>;
+    response.extra = { headline: { compact: false }, hideTabs: true, questionMeta: false, beforeTabs: note };
+    row();
+    expect(question().style.marginBottom).toBe('var(--space-4)');
+  });
+
   it('a question with no answer yet has no line either', () => {
     row({ unanswered: true }, { column: true });
     expect(line()).toBeNull();

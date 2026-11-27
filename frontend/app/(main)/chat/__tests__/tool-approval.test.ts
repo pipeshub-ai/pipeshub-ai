@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   answeredToolApproval,
+  answerWords,
   approvalArgumentLines,
+  builtInToolKey,
   findApprovalStub,
   findToolApproval,
+  hasApprovalCard,
   hasApprovedCall,
   isToolApprovalResumeQuery,
   settledToolApprovals,
   toolApprovalDetails,
   toolApprovalResumeQuery,
+  waitingWords,
+  waitsForApproval,
 } from '../tool-approval';
 import type { MessagePart } from '../types';
 
@@ -172,6 +177,67 @@ describe('approvalArgumentLines', () => {
   });
 });
 
+describe('a built-in tool, which has no server', () => {
+  const t = ((key: string) => `<${key}>`) as unknown as Parameters<typeof waitingWords>[1];
+  const OPEN = 'chat.toolApproval.builtIn.openWebPage';
+
+  it.each([
+    ['dynamic__fetch_url', 'Open a web page', OPEN],
+    // As a card saved before the server had words for it: the tool's name, or its label, where a server's name goes.
+    ['dynamic__fetch_url', 'dynamic__fetch_url', OPEN],
+    ['run_code', 'Run code', 'chat.toolApproval.builtIn.runCode'],
+    ['run_code', 'Ran code', 'chat.toolApproval.builtIn.runCode'],
+    ['install_packages', 'Install code packages', 'chat.toolApproval.builtIn.installPackages'],
+    ['install_packages', 'Installed packages', 'chat.toolApproval.builtIn.installPackages'],
+  ])('%s of "%s" has words of its own', (tool, server, key) => {
+    expect(builtInToolKey(tool, server)).toBe(key);
+  });
+
+  it.each([
+    ['run_code', 'E2B'],
+    ['fetch_url', 'fetch_url'],
+    ['fetch', 'fetch'],
+    ['create_issue', 'Jira'],
+    ['constructor', 'constructor'],
+    ['dynamic__web_search', 'dynamic__web_search'],
+  ])('a tool of a server keeps its names: %s of "%s"', (tool, server) => {
+    expect(builtInToolKey(tool, server)).toBeUndefined();
+  });
+
+  it('is in words on a receipt, with no server, whatever its card holds', () => {
+    const allowed = (approval: unknown) =>
+      ({ type: 'tool_call', toolCallId: 'c1', toolName: 'dynamic__fetch_url', status: 'completed', approvalAnswer: 'allowed', approval }) as MessagePart;
+    const old = { ...WIRE, instanceId: '', serverName: 'dynamic__fetch_url', toolName: 'dynamic__fetch_url', toolTitle: null };
+    for (const approval of [old, { ...old, serverName: 'Open a web page', toolTitle: 'Open a web page' }, undefined]) {
+      expect(settledToolApprovals([allowed(approval)])).toMatchObject([{ toolKey: OPEN, server: '', answer: 'allowed' }]);
+    }
+    expect(settledToolApprovals([{ ...allowed(WIRE), toolName: 'mcp_jira_create_issue' }])).toEqual([
+      { key: 'c1', tool: 'Create an issue', server: 'Jira', answer: 'allowed' },
+    ]);
+  });
+
+  it('is in words in the line an earlier server saved, and no other line changes', () => {
+    expect(waitingWords('Waiting for your approval to run dynamic__fetch_url on dynamic__fetch_url.', t)).toBe(
+      `Waiting for your approval to run “<${OPEN}>”.`,
+    );
+    for (const line of [
+      'Waiting for your approval to run “Open a web page”.',
+      'Waiting for your approval to run create_issue on Jira.',
+      'Waiting for your approval to run run_code on E2B.',
+      'Anything else',
+      '',
+    ]) {
+      expect(waitingWords(line, t)).toBe(line);
+    }
+  });
+
+  it("still leaves an answer's own words without the line", () => {
+    const card = waiting({ ...WIRE, serverName: 'Open a web page', toolName: 'dynamic__fetch_url', expiresAt: 1 });
+    const line = 'Waiting for your approval to run “Open a web page”.';
+    expect(answerWords({ answer: `I will open it.\n\n${line}`, persistedParts: [card] })).toBe('I will open it.');
+  });
+});
+
 describe('a card the fork settled as expired', () => {
   const forked = (): MessagePart[] => [
     { type: 'sub_agent', runId: 'child', parts: [waiting(WIRE, { status: 'blocked', approvalAnswer: 'expired', resultPreview: 'The approval request expired.' })] },
@@ -208,5 +274,45 @@ describe('settledToolApprovals, an approved call refused for lost access', () =>
   it('says why it did not run', () => {
     const refused = { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked', approvalAnswer: 'allowed', approvalReason: 'access_lost', approval: WIRE } as MessagePart;
     expect(settledToolApprovals([refused]).map((s) => s.answer)).toEqual(['accessLost']);
+  });
+});
+
+describe("an answer's own words, when its run stopped on a card", () => {
+  const LINE = 'Waiting for your approval to run Create an issue on Jira.';
+  const OWN = 'I will file it under OPS.';
+  const card = (overrides: Partial<MessagePart> = {}) => waiting(WIRE, overrides);
+  const subAgent: MessagePart = { type: 'sub_agent', parts: [card()] } as MessagePart;
+  const expired = waiting({ ...WIRE, expiresAt: 1 });
+  const stub = card({ stub: true, status: 'approved' } as Partial<MessagePart>);
+  const answered = card({ status: 'completed', approvalAnswer: 'allowed' });
+
+  it.each([
+    ['its card', [card()], true, true],
+    ["a sub-agent's card", [subAgent], true, true],
+    ['a card past its expiry', [expired], false, true],
+    ['an answered card', [answered], false, true],
+    ["someone else's card, answered", [stub], false, true],
+    ['a question card', [{ type: 'tool_call', toolCallId: 'q', toolName: 'ask_user_question', status: 'awaiting_answer' } as unknown as MessagePart], false, false],
+    ['no parts', undefined, false, false],
+  ] as const)('%s', (_label, parts, waits, hasCard) => {
+    expect(waitsForApproval(parts as MessagePart[] | undefined)).toBe(waits);
+    expect(hasApprovalCard(parts as MessagePart[] | undefined)).toBe(hasCard);
+  });
+
+  it('has none while it waits, whatever it said before', () => {
+    expect(answerWords({ answer: LINE, persistedParts: [card()] })).toBe('');
+    expect(answerWords({ answer: `${OWN}\n\n${LINE}`, persistedParts: [card()] })).toBe('');
+  });
+
+  it('answered or expired, has what it said, and never the line that speaks to the asker alone', () => {
+    for (const parts of [[answered], [expired], [stub]]) {
+      expect(answerWords({ answer: LINE, persistedParts: parts })).toBe('');
+      expect(answerWords({ answer: `${OWN}\n\n${LINE}`, persistedParts: parts })).toBe(OWN);
+    }
+  });
+
+  it('keeps every word of an answer with no card', () => {
+    expect(answerWords({ answer: `It said: ${LINE}` })).toBe(`It said: ${LINE}`);
+    expect(answerWords({ answer: '' })).toBe('');
   });
 });

@@ -61,6 +61,8 @@ import {
   type StatusMessage,
   type ModelOverride,
   type SSEConnectedEvent,
+  type SSECompleteEvent,
+  type ConversationCompleteData,
   type ChatArtifact,
   type SSEArtifactEvent,
   type SSEAskUserQuestionEvent,
@@ -87,6 +89,7 @@ import {
   failedRowText,
 } from './stream-error';
 import {
+  StreamDroppedError,
   StreamError,
   CHAT_STREAM_ERROR_MESSAGES,
 } from '@/lib/api/stream-errors';
@@ -104,6 +107,18 @@ import {
   type ToolsUnavailableNotice,
 } from './unavailable-tools';
 import { chatExtension } from '@/config';
+import type { LiveRunDraw } from './chat-extension';
+import {
+  followDroppedRun,
+  ownRowIndex,
+  readConversation,
+  regenerationOnServer,
+  sendOnServer,
+  withReadRows,
+  type ConversationRead,
+  type DroppedRun,
+  type RunOnServer,
+} from './utils/follow-dropped-run';
 import {
   holdQueue,
   refusedQueuedSend,
@@ -589,7 +604,7 @@ export function editWasNotTaken(error: unknown): boolean {
  */
 function notifyRegenerateFailed(error: unknown, editLost: boolean): void {
   const refused = error instanceof ChatStreamError || (error instanceof StreamError && error.status !== undefined && error.status < 500);
-  const reason = refused ? error.message : '';
+  const reason = refused ? chatExtension.stream.refusalText?.(error) ?? error.message : '';
   // One toast. The server's own words win, so a refusal only an admin can lift is never told to try again; the fixed
   // line says less than the edit's own does.
   if (editLost && (!reason || reason === CHAT_STREAM_ERROR_MESSAGES.unavailable)) toast.error(i18n.t('chat.editNotSaved'));
@@ -939,6 +954,112 @@ function createStatusDwellScheduler(
   return { applyStatus, scheduleStatus, cancelPendingStatus, armIdleStatus, stopIdleStatus };
 }
 
+/** The connection dropped and the server has not said yet what became of the run. */
+function statusMessageReconnecting(): StatusMessage {
+  return {
+    id: `status-reconnecting-${Date.now()}`,
+    status: 'reconnecting',
+    message: i18n.t('errorToast.reconnecting'),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/** A run's last frame, made of rows read elsewhere: its turn's own (`messages`), and what is known of the conversation. */
+function turnFrame(
+  convId: string,
+  messages: ConversationMessage[],
+  conversation: ConversationRead['conversation'] | Pick<ConversationCompleteData, 'modelInfo'> | undefined,
+): SSECompleteEvent {
+  return {
+    conversation: { ...conversation, _id: convId, messages, frame: 'turn' } as unknown as ConversationCompleteData,
+    meta: { requestId: '', timestamp: messages[messages.length - 1]?.createdAt ?? '', duration: 0 },
+  };
+}
+
+/**
+ * A run that failed on the server: once its stream has ended, the server has stored the question and the failure. A
+ * chat with no feed would show only this tab's copy of the turn until a reload, and Try again asks a turn only this tab
+ * holds anew, as a new message: the rows take the ids the server stored them under and the stored rows join the slot's,
+ * so Try again redoes the failure in its place. What the rows show stays as it is.
+ */
+async function adoptStoredFailure(
+  slotId: string,
+  failed: ThreadMessageLike,
+  isOwnRow: (row: ConversationMessage) => boolean,
+  agentId: string | null,
+): Promise<void> {
+  const convId = useChatStore.getState().slots[slotId]?.convId;
+  if (!convId) return;
+  const read = await readConversation({ convId, agentId });
+  if (!read || read === 'gone') return;
+  const rows = read.messages;
+  const at = ownRowIndex(rows, isOwnRow);
+  const end = rows.findIndex(
+    (m, i) => at >= 0 && i > at && (m.messageType === 'bot_response' || m.messageType === 'error' || m.messageType === 'user_query'),
+  );
+  if (end < 0 || rows[end].messageType !== 'error') return;
+  const slot = useChatStore.getState().slots[slotId];
+  const shown = slot?.convId === convId ? slot.messages.indexOf(failed) : -1;
+  if (!slot || shown < 0) return;
+  let asked = shown - 1;
+  while (asked >= 0 && slot.messages[asked].role === 'system') asked -= 1;
+  const question = slot.messages[asked]?.role === 'user' ? slot.messages[asked] : undefined;
+  useChatStore.getState().updateSlot(slotId, {
+    messages: slot.messages.map((m) =>
+      m === failed ? { ...m, id: rows[end]._id } : m === question ? { ...m, id: rows[at]._id } : m,
+    ),
+    rawMessages: withReadRows(slot.rawMessages ?? [], rows.slice(at, end + 1)),
+  });
+}
+
+/**
+ * The stream of a run dropped. The server goes on with it, so the turn stays as it is on screen, running with what
+ * streamed so far and its Stop, and the run is followed to its end there: what the server sends of it another way is
+ * drawn as the stream's own chunks would be, its stored rows settle it as the last frame would have, and only a server
+ * that has neither run nor answer makes it a failure.
+ */
+async function followLostStream(lost: {
+  slotId: string;
+  error: StreamDroppedError;
+  agentId: string | null;
+  signal: AbortSignal;
+  runId(): string | null;
+  callbacks: StreamMessageCallbacks;
+  applyStatus: StatusDwellScheduler['applyStatus'];
+  shown(): LiveRunDraw;
+  read: DroppedRun['read'];
+  onEnded: DroppedRun['onEnded'];
+}): Promise<void> {
+  const { slotId, callbacks, runId } = lost;
+  const slotNow = () => useChatStore.getState().slots[slotId];
+  const convId = slotNow()?.convId;
+  if (!convId) return;
+  debugLog.flush('stream-dropped', { slotId });
+  const showState = (state: RunOnServer): void => {
+    const reconnecting = slotNow()?.currentStatusMessage?.status === 'reconnecting';
+    if (state === 'running' && reconnecting) lost.applyStatus(statusMessageIdleThinking());
+    else if (state !== 'running' && !reconnecting) lost.applyStatus(statusMessageReconnecting());
+  };
+  showState(null);
+  const stopLive = chatExtension.stream.followLive?.(runId, lost.shown, ({ text, parts, citations }) => {
+    callbacks.onParts?.(parts);
+    callbacks.onChunk?.({ chunk: '', accumulated: text, citations: citations ?? [] });
+  });
+  await followDroppedRun({
+    slotId,
+    convId,
+    agentId: lost.agentId,
+    signal: lost.signal,
+    isCurrent: () => slotIsOnRun(slotId, runId()) && slotNow()?.isStreaming === true,
+    read: lost.read,
+    onChecked: showState,
+    onEnded: lost.onEnded,
+    // The server's word now, so it is the failure it was not before.
+    onNothing: () => callbacks.onError?.(new ChatStreamError(lost.error.message)),
+  });
+  stopLive?.();
+}
+
 /**
  * Stream a message for a specific slot.
  *
@@ -1162,8 +1283,7 @@ export async function streamMessageForSlot(
   // A card id the thread does not carry must not fall through to "newest
   // assistant row": reusing an unrelated turn overwrites the answer already
   // there. Start a fresh turn instead — misplaced at worst, not destructive.
-  // An approval card is only answered on the latest reply, which is the newest row anyway.
-  const cardRowMissing = resumeAskUserQuestion && Boolean(cardAssistantId) && !lastAssistantId;
+  const cardRowMissing = Boolean(cardAssistantId) && !lastAssistantId;
   if (!lastAssistantId && !cardRowMissing) {
     for (let i = baseMessages.length - 1; i >= 0; i -= 1) {
       const row = baseMessages[i];
@@ -1186,7 +1306,12 @@ export async function streamMessageForSlot(
   if (repliedToOpenCard && slot.pendingAskUserQuestion) cancelCardSend(questionSendKey(slot.pendingAskUserQuestion.assistantMessageId));
   const messagesWithPreviousCard = reuseExistingAssistant
     ? baseMessages
-    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion, repliedToOpenCard);
+    : stampPendingCardOnMessages(
+      baseMessages,
+      slot.pendingAskUserQuestion,
+      // Someone else's card is not the sender's to answer, so it does not read as replied to.
+      repliedToOpenCard && chatExtension.history.cardIsAnswerable(slot.pendingAskUserQuestion ?? {}),
+    );
   const pendingAssistantId = reuseExistingAssistant
     ? lastAssistantId!
     : createPendingAssistantId();
@@ -1198,7 +1323,7 @@ export async function streamMessageForSlot(
   })();
   const streamingQuestion = reuseExistingAssistant && lastUserText
     ? lastUserText
-    : resumeAskUserQuestion && lastThreadUserText
+    : (resumeAskUserQuestion || cardRowMissing) && lastThreadUserText
       ? lastThreadUserText
       : query;
 
@@ -1210,7 +1335,7 @@ export async function streamMessageForSlot(
   };
   const resumeMessages = reuseExistingAssistant
     ? baseMessages
-    : resumeAskUserQuestion
+    : resumeAskUserQuestion || cardRowMissing
       ? [...messagesWithPreviousCard, newAssistantRow]
       : [
         ...messagesWithPreviousCard,
@@ -1244,6 +1369,16 @@ export async function streamMessageForSlot(
       ];
   // The rows this send added; a turn-only final frame's stored rows take their place.
   const sentRows = resumeMessages.slice(messagesWithPreviousCard.length);
+  // The row the server stored this send as, were the run to be read back from there.
+  const knownRows = new Set((slot.rawMessages ?? []).map((m) => m._id));
+  const isOwnRow =
+    session?.isOwnRow ??
+    ((row: ConversationMessage) =>
+      row.messageType === 'user_query' && !knownRows.has(row._id) && row.content?.trim() === request.query.trim());
+  /** The connection dropped before the answer ended: what became of the run is asked once the stream has returned. */
+  let lost: StreamDroppedError | undefined;
+  /** The row of a run that failed on the server, which stores it before the stream ends. */
+  let failedRow: ThreadMessageLike | undefined;
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
@@ -1362,7 +1497,7 @@ export async function streamMessageForSlot(
     });
   }
 
-  /** Land the last throttled chunk so the grace timer commits all of it. */
+  /** Land the last throttled chunk: the grace timer commits all of it, and a dropped stream keeps all it showed. */
   function flushPendingForStop() {
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
@@ -1408,7 +1543,7 @@ export async function streamMessageForSlot(
 
   try {
     const route = turnRouteCallbacks(slotId, streamRunId, newChatEngine);
-    await ChatApi.streamMessage(request, {
+    const callbacks: StreamMessageCallbacks = {
       onDurableRunAccepted: (durableRun) => {
         settleSend({ sent: true });
         route.onDurableRunAccepted?.(durableRun);
@@ -1713,7 +1848,10 @@ export async function streamMessageForSlot(
           : historical.messages;
         chatExtension.stream.finalizeMessages(finalMessages, request, newConvId || slot.convId || 'new');
         const liveParts = slotBeforeComplete?.streamingParts ?? [];
-        const liveFollowUp = resumeAskUserQuestion
+        // A resume stopped before its first word has no text: the last text of its live parts is an earlier run's.
+        const stoppedUnwritten =
+          (wasStopped || trailingStoppedReplyId(rows) !== null) && !isUsableFollowUpText(accumulatedContent);
+        const liveFollowUp = resumeAskUserQuestion && !stoppedUnwritten
           ? [
               slotBeforeComplete?.streamingContent,
               textFromLiveParts(liveParts),
@@ -1728,7 +1866,10 @@ export async function streamMessageForSlot(
         const pendingBefore = slotBeforeComplete?.pendingAskUserQuestion;
         let remappedPending: PendingAskUserQuestion | undefined;
         const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
-        if (lastAsst && liveToolsNotice) stampLiveUnavailableTools(lastAsst, liveToolsNotice);
+        // The row a card's answer carried on, which another person's turn may have come after.
+        const reusedRow = reuseExistingAssistant ? finalMessages.find((m) => m.id === pendingAssistantId) : undefined;
+        const noticeRow = reusedRow ?? lastAsst;
+        if (noticeRow && liveToolsNotice) stampLiveUnavailableTools(noticeRow, liveToolsNotice);
         const cardRow = findAskUserQuestionRow(finalMessages, pendingBefore);
         if (
           resumeAskUserQuestion &&
@@ -1864,7 +2005,7 @@ export async function streamMessageForSlot(
                 notices: readAccessNotices(data.meta?.accessNotices),
                 mark: data.meta?.searchDegraded === true || readAccessNotices(data.meta?.accessNotices).length > 0
                   ? (reuseExistingAssistant
-                      ? (cardRow ?? turnReply(finalMessages))
+                      ? (cardRow ?? reusedRow ?? turnReply(finalMessages))
                       : turnReply(finalMessages))
                   : null,
               },
@@ -1944,7 +2085,8 @@ export async function streamMessageForSlot(
           }
         }
 
-        notifyAnswerFinishedInBackground(slotId, wasStopped);
+        const reply = turnReply(finalMessages);
+        notifyAnswerFinishedInBackground(slotId, wasStopped, answerCustom(reply ?? undefined)?.messageId ?? reply?.id);
         const completedConvId = newConvId || slot.convId;
         if (completedConvId) session?.onCompleted?.(completedConvId);
         chatExtension.stream.onCompleted(request);
@@ -1957,6 +2099,12 @@ export async function streamMessageForSlot(
         // answer as stopped; settling here would erase it first.
         if (useChatStore.getState().slots[slotId]?.stopping) {
           flushPendingForStop();
+          return;
+        }
+        // Not a failure yet. With no id for the chat there is nothing to ask the server about.
+        if (error instanceof StreamDroppedError && useChatStore.getState().slots[slotId]?.convId) {
+          flushPendingForStop();
+          lost = error;
           return;
         }
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
@@ -1998,9 +2146,16 @@ export async function streamMessageForSlot(
         const currentMessages = slotNow?.messages ?? [];
         const err =
           refusedTurnText(error as { code?: string }) ??
+          chatExtension.stream.refusalText?.(error) ??
           failedRowText(error, i18n.t('chatStream.errorFallback'), chatExtension.stream.knowsErrorCode);
         // Before the chat reads as free, or what waits would go out at once.
         if (cannotRun(streamErrorInfo(error))) holdQueue(slotId);
+        // A failed answer to a card leaves the card as it was, to answer again.
+        const failedMessages = resumeAskUserQuestion || reuseRowId
+          ? currentMessages
+          : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error) ?? { code: ANSWER_FAILED });
+        // The run's own error frame: the run began, so the server stores its failure. A send refused before it did not.
+        if (failedMessages !== currentMessages && error instanceof ChatStreamError) failedRow = failedMessages[failedMessages.length - 1];
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           streamingContent: '',
@@ -2016,10 +2171,7 @@ export async function streamMessageForSlot(
           routePending: false,
           pendingAskUserQuestion: cardSays ? (pendingNow ?? null) : pendingAfterStreamFailure(pendingNow, error),
           pendingApprovals: [],
-          // A failed answer to a card leaves the card as it was, to answer again.
-          messages: resumeAskUserQuestion || reuseRowId
-            ? currentMessages
-            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error) ?? { code: ANSWER_FAILED }),
+          messages: failedMessages,
         });
         if (cardSays) {
           // The card's own notice says it, and retries.
@@ -2036,7 +2188,30 @@ export async function streamMessageForSlot(
       },
 
       signal: abortController.signal,
-    });
+    };
+    await ChatApi.streamMessage(request, callbacks);
+    if (lost) {
+      await followLostStream({
+        slotId,
+        error: lost,
+        agentId: request.agentId ?? null,
+        signal: abortController.signal,
+        runId: () => streamRunId,
+        callbacks,
+        applyStatus,
+        shown: () => ({ text: accumulatedContent, parts: latestParts }),
+        read: (rows, inProgress) => sendOnServer(rows, isOwnRow, inProgress),
+        onEnded: (rows, read) => {
+          const known = useChatStore.getState().slots[slotId];
+          const turn = rows.slice(Math.max(ownRowIndex(rows, isOwnRow), 0));
+          if (read) useChatStore.getState().updateSlot(slotId, { rawMessages: withReadRows(known?.rawMessages ?? [], turn) });
+          callbacks.onComplete?.(
+            turnFrame(known?.convId ?? '', turn, read?.conversation ?? { modelInfo: known?.conversationModelInfo }),
+          );
+        },
+      });
+    }
+    if (failedRow) void adoptStoredFailure(slotId, failedRow, isOwnRow, request.agentId ?? null);
   } catch (error) {
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
@@ -2083,7 +2258,9 @@ export async function streamMessageForSlot(
     const slotNow = useChatStore.getState().slots[slotId];
     const pendingNow = slotNow?.pendingAskUserQuestion;
     const currentMessages = slotNow?.messages ?? [];
-    const errorMessage = failedRowText(error, i18n.t('chatStream.errorFallback'), chatExtension.stream.knowsErrorCode);
+    const errorMessage =
+      chatExtension.stream.refusalText?.(error) ??
+      failedRowText(error, i18n.t('chatStream.errorFallback'), chatExtension.stream.knowsErrorCode);
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       streamingContent: '',
@@ -2205,6 +2382,12 @@ export async function streamRegenerateForSlot(
   const abortController = new AbortController();
   const runId = generateRunId();
   let streamRunId = runId ?? null;
+  // The answer as stored before the run writes over it, were the run to be read back from the server.
+  const answerBefore = slot.rawMessages?.find((m) => m._id === messageId);
+  /** As in `streamMessageForSlot`: a dropped stream, asked about once it has returned. */
+  let lost: StreamDroppedError | undefined;
+  /** The thread as the server had it when a dropped run was found over: read already, so not read again. */
+  let readBack: ConversationRead | undefined;
   // The run the server holds can carry an id of its own (`X-Run-Id`); Stop has to name that one.
   const adoptServerRunId = (serverRunId: string | undefined) => {
     if (!serverRunId || serverRunId === streamRunId) return;
@@ -2269,7 +2452,7 @@ export async function streamRegenerateForSlot(
     });
   }
 
-  /** Land the last throttled chunk so the grace timer commits all of it. */
+  /** Land the last throttled chunk: the grace timer commits all of it, and a dropped stream keeps all it showed. */
   function flushPendingForStop() {
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
@@ -2435,9 +2618,9 @@ export async function streamRegenerateForSlot(
       cancelPendingStatus();
       latestParts = [];
       try {
-        const detail = reloadViaAgentId
+        const detail = readBack ?? (reloadViaAgentId
           ? await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)
-          : await ChatApi.fetchConversation(slot.convId!);
+          : await ChatApi.fetchConversation(slot.convId!));
         if (!slotIsOnRun(slotId, streamRunId)) return;
         const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
         const historical = loadHistoricalMessages(detail.messages);
@@ -2530,7 +2713,7 @@ export async function streamRegenerateForSlot(
         ) {
           useChatStore.getState().renameConversation(slot.convId!, reloadedTitle);
         }
-        notifyAnswerFinishedInBackground(slotId, wasStopped);
+        notifyAnswerFinishedInBackground(slotId, wasStopped, messageId);
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {
         if (!slotIsOnRun(slotId, streamRunId)) return;
@@ -2558,6 +2741,11 @@ export async function streamRegenerateForSlot(
       // See streamMessageForSlot's onError: the grace timer owns a stopped run.
       if (useChatStore.getState().slots[slotId]?.stopping) {
         flushPendingForStop();
+        return;
+      }
+      if (error instanceof StreamDroppedError) {
+        flushPendingForStop();
+        lost = error;
         return;
       }
       if (flushTimer !== null) {
@@ -2672,6 +2860,35 @@ export async function streamRegenerateForSlot(
         ...(edit ? { query: edit.query } : {}),
         ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
         ...(answers ? { answers } : {}),
+      });
+    }
+    if (lost) {
+      const dropped = lost;
+      await followLostStream({
+        slotId,
+        error: dropped,
+        agentId: reloadViaAgentId,
+        signal: abortController.signal,
+        runId: () => streamRunId,
+        callbacks: regenerateCallbacks,
+        applyStatus,
+        shown: () => ({ text: accumulatedContent, parts: latestParts }),
+        read: (rows, inProgress) =>
+          regenerationOnServer(
+            rows,
+            { messageId, runId: streamRunId, before: answerBefore, started: dropped.started },
+            inProgress,
+          ),
+        onEnded: (rows, read) => {
+          readBack = read;
+          // A run that failed keeps the stored question: the edit's words are nowhere on the server.
+          const asked = edit?.query.trim();
+          if (asked && !rows.some((m) => m.messageType === 'user_query' && m.content?.trim() === asked)) {
+            keepRefusedEdit(new ChatStreamError(dropped.message));
+            toast.error(i18n.t('chat.editNotSaved'));
+          }
+          return regenerateCallbacks.onComplete?.(turnFrame(editConvId, rows, read?.conversation));
+        },
       });
     }
   } catch (error) {

@@ -1,6 +1,6 @@
 /**
  * The rail's first paint keeps the room of what the last session showed, so nothing under it moves when the lists
- * and the flags arrive: the Projects row while the flags load, and Pinned and Shared chats while the first lists load.
+ * and the flags arrive: the Projects row while the flags load, and Shared chats while the first lists load.
  * A remembered boolean or row count each, per person on the device, never a title.
  */
 import React from 'react';
@@ -107,6 +107,14 @@ describe('Shared chats on the first load', () => {
     expect(skeletonRows()).toEqual([6]);
   });
 
+  it('its pins count in its room: 8 pins, five others and More last time keep 14 rows', () => {
+    remember('sharedRows', 14);
+
+    renderSections();
+
+    expect(skeletonRows()).toEqual([14]);
+  });
+
   it('one shared chat last time keeps the room of one row, not of a full section', () => {
     remember('sharedRows', 1);
 
@@ -131,39 +139,14 @@ describe('Shared chats on the first load', () => {
   });
 });
 
-describe('Pinned on the first load', () => {
-  it('keeps the rows it showed last time, its More included, from the first frame', () => {
+describe('no Pinned section on the first load', () => {
+  it('keeps no room for one, whatever an older version remembered', () => {
     remember('pinnedRows', 3);
 
     renderSections();
 
-    expect(screen.getByText('Pinned chats')).toBeTruthy();
-    // Pinned's three. Your chats is under it, so its own skeleton, which comes with the load, moves nothing.
-    expect(skeletonRows()).toEqual([3]);
-  });
-
-  it('keeps no room when nothing was pinned last time, or nothing was remembered', () => {
-    remember('pinnedRows', 0);
-    renderSections();
     expect(screen.queryByText('Pinned chats')).toBeNull();
-  });
-
-  it('once the lists are in, shows only what they hold', () => {
-    remember('pinnedRows', 3);
-    renderSections();
-
-    act(() => useChatStore.setState({ conversations: [chat('a')], sharedConversations: [], conversationsLoadedAt: Date.now() }));
-
-    expect(screen.queryByText('Pinned chats')).toBeNull();
-  });
-
-  it('a first load that failed keeps no room: the error shows instead', () => {
-    remember('pinnedRows', 3);
-    renderSections();
-
-    act(() => useChatStore.setState({ conversationsError: 'Failed' }));
-
-    expect(screen.queryByText('Pinned chats')).toBeNull();
+    expect(skeletonRows()).toEqual([]);
   });
 });
 
@@ -172,32 +155,30 @@ describe('the skeleton that stays a moment after the lists arrive', () => {
     Array.from({ length: n }, (_, i) => ({ ...chat(`${prefix}${i}`), ...extra }) as Conversation);
 
   it('has the rows each section is about to show, so nothing under it moves twice', async () => {
-    remember('pinnedRows', 2);
     remember('sharedRows', 6);
     renderSections();
     act(() => useChatStore.setState({ isConversationsLoading: true }));
     // Past the show delay, the skeletons are on screen.
     await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
-    expect(skeletonRows()).toEqual([2, 6, 3]);
+    expect(skeletonRows()).toEqual([6, 3]);
 
     act(() =>
       useChatStore.setState({
         conversations: [...shown(2, 'p', { isPinned: true }), ...shown(3, 'o')],
-        sharedConversations: shown(8, 's'),
+        sharedConversations: [...shown(2, 'q', { isPinned: true }), ...shown(8, 's')],
         isConversationsLoading: false,
         conversationsLoadedAt: Date.now(),
       }),
     );
 
-    // Still fading out: Pinned's two, Shared chats' five and its More.
-    expect(skeletonRows()).toEqual([2, 6, 3]);
+    // Still fading out: Shared chats' two pins, three others and its More.
+    expect(skeletonRows()).toEqual([6, 3]);
   });
 });
 
 describe('a memory older than a week', () => {
   it('counts for nothing: no room kept, and the Projects row waits for the flags', () => {
     const old = 8 * DAY_MS;
-    remember('pinnedRows', 3, old);
     remember('sharedRows', 6, old);
     remember('projects', 1, old);
     useFeatureFlagsStore.setState({ flags: null } as never);
@@ -209,7 +190,6 @@ describe('a memory older than a week', () => {
       </Theme>,
     );
 
-    expect(screen.queryByText('Pinned chats')).toBeNull();
     expect(screen.queryByText(SHARED())).toBeNull();
     expect(screen.queryByText('Projects')).toBeNull();
   });
@@ -228,44 +208,42 @@ describe('what the next first load goes by', () => {
       .sort()
       .map((k) => [k, stored(k.split('.').pop()!)?.v]);
 
-  it('once the lists are in: the rows Pinned and Shared chats show, their More included; nothing else', () => {
+  it('once the lists are in: the rows Shared chats shows, its pins and its More included; nothing else', () => {
     renderSections();
     expect(railKeys()).toEqual([]);
 
     act(() =>
       useChatStore.setState({
         conversations: [...['p1', 'p2', 'p3', 'p4', 'p5', 'p6'].map(pin), chat('a')],
-        sharedConversations: [chat('s')],
+        sharedConversations: [pin('q1'), pin('q2'), chat('s')],
         conversationsLoadedAt: Date.now(),
       }),
     );
 
-    expect(railKeys()).toEqual([
-      ['pipeshub.rail.user-1.pinnedRows', 6],
-      ['pipeshub.rail.user-1.sharedRows', 1],
-    ]);
+    expect(railKeys()).toEqual([['pipeshub.rail.user-1.sharedRows', 3]]);
     expect(Object.values(window.localStorage).join(' ')).not.toContain('Chat ');
   });
 
-  it('follows a pin made later, with no load in between', () => {
+  it('a pin made later keeps the count: the chat stays in Shared chats', () => {
     renderSections();
-    act(() => useChatStore.setState({ conversations: [chat('a'), chat('b')], sharedConversations: [], conversationsLoadedAt: Date.now() }));
-    expect(stored('pinnedRows')?.v).toBe(0);
+    act(() => useChatStore.setState({ conversations: [], sharedConversations: [chat('a'), chat('b')], conversationsLoadedAt: Date.now() }));
+    expect(stored('sharedRows')?.v).toBe(2);
 
     act(() => {
-      useChatStore.getState().setConversationPinned('a', true);
+      useChatStore.getState().setConversationPinned('b', true);
     });
 
-    expect(stored('pinnedRows')?.v).toBe(1);
+    expect(stored('sharedRows')?.v).toBe(2);
+    expect(stored('pinnedRows')).toBeNull();
   });
 
-  it('a Shared chats section left with only pinned chats keeps no room next time', () => {
+  it('a Shared chats section with only pinned chats keeps their room next time', () => {
     renderSections();
 
     act(() => useChatStore.setState({ conversations: [], sharedConversations: [pin('s')], conversationsLoadedAt: Date.now() }));
 
-    expect(stored('sharedRows')?.v).toBe(0);
-    expect(stored('pinnedRows')?.v).toBe(1);
+    expect(stored('sharedRows')?.v).toBe(1);
+    expect(stored('pinnedRows')).toBeNull();
   });
 
   it('is written again after each load, the same rows too, so a tab left open keeps it from going stale', () => {

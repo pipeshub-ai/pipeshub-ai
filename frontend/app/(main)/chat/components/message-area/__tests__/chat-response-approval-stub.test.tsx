@@ -10,13 +10,19 @@ import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import type { MessagePart } from '../../../types';
 
+const ext = vi.hoisted(() => ({ closedAt: undefined as number | undefined }));
 vi.mock('@/config', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/config')>();
   return {
     ...real,
     chatSlots: {
       ...real.chatSlots,
-      useResponseExtension: () => ({ hideTabs: false, hideConfidence: false, approvalCardReadOnlyFor: { name: 'Maya Chen' } }),
+      useResponseExtension: () => ({
+        hideTabs: false,
+        hideConfidence: false,
+        approvalCardReadOnlyFor: { name: 'Maya Chen' },
+        approvalCardClosedAt: ext.closedAt,
+      }),
     },
   };
 });
@@ -51,7 +57,10 @@ function draw(parts: MessagePart[]) {
   );
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  ext.closedAt = undefined;
+});
 
 describe("someone else's approval card, drawn from the reader view's stub", () => {
   it.each([
@@ -68,6 +77,25 @@ describe("someone else's approval card, drawn from the reader view's stub", () =
     expect(screen.queryByTestId('chat-activity-card')).toBeNull();
     expect(screen.queryByText(/Waiting for your approval/)).toBeNull();
     expect(screen.getByText('I will file it.')).toBeTruthy();
+  });
+
+  // The server says "expired" once the time is up, though Maya's next question
+  // had closed the card long before; the room knows when it came.
+  it('closed by its asker\'s next question before it expired, it says so in their words, not "expired"', () => {
+    const expiresAt = Date.now() - 60_000;
+    ext.closedAt = expiresAt - 10 * 60_000;
+    draw([stub('expired', expiresAt)]);
+
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
+    expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
+  });
+
+  it('asked again only after it had expired: it expired, and says so', () => {
+    const expiresAt = Date.now() - 60_000;
+    ext.closedAt = expiresAt + 1_000;
+    draw([stub('expired', expiresAt)]);
+
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe('This request expired.');
   });
 
   it('a waiting card that expires while the page is open reads as expired to them too', () => {

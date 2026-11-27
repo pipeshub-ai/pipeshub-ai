@@ -56,11 +56,13 @@ import { BackgroundAgentsButton, BackgroundAgentsHost, useBackgroundAgentsOpen }
 import { ChatGrantsButton } from './components/chat-grants';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { EmptyState } from '@/app/components/ui/empty-state';
+import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
-import { isGoneError, isProcessedError } from '@/lib/api/api-error';
+import { isGoneError, isProcessedError, isTransientError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
@@ -81,6 +83,8 @@ import { buildApiActionGroups } from '@/chat/tool-groups';
 import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
+import { useLoadRetry } from '@/chat/hooks/use-load-retry';
+import { loadAgain } from '@/chat/utils/load-retry';
 import { remoteRunIdOf } from '@/chat/utils/remote-run';
 import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 import { engineKinds } from '@/chat/sandbox-commands';
@@ -257,6 +261,16 @@ function ChatContent() {
   const activeSlotIsInitialized = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isInitialized ?? false : false
   );
+  /** Its history is to be loaded: the first time, again (`invalidateConversation`), or again after a load that failed. */
+  const activeSlotToLoad = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return slot !== undefined && (!slot.isInitialized || slot.failedLoad?.trying === true);
+  });
+  /** Its history could not be loaded yet, so there is nothing to draw of it. */
+  const activeSlotLoadFailed = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return Boolean(slot?.failedLoad && slot.isInitialized && !slot.hasLoaded && slot.messages.length === 0 && !slot.isStreaming);
+  });
   const activeSlotIsStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
   );
@@ -724,7 +738,7 @@ function ChatContent() {
   // ── Slot initialization (load history for non-temp slots) ─────────
   useEffect(() => {
     if (!activeSlotId || !hasActiveSlot) return;
-    if (activeSlotIsInitialized) return; // already loaded or new chat
+    if (!activeSlotToLoad) return; // already loaded or new chat
     if (activeSlotIsTemp) return; // temp slots don't have history
 
     const convId = activeSlotConvId;
@@ -750,13 +764,23 @@ function ChatContent() {
     const loadHistory = async (attempt = 0): Promise<void> => {
       const generation = generationOf();
       try {
-        const { quietWhenGone } = chatExtension.history.loadOptions();
+        // A failure that may pass is tried again, and the page says so: no toast for it.
+        const options = { ...chatExtension.history.loadOptions(), quietWhenTransient: true };
         const detail = historyAndShareAgentId
-          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId, { quietWhenGone })
-          : await ChatApi.fetchConversation(convId, undefined, undefined, { quietWhenGone });
+          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId, options)
+          : await ChatApi.fetchConversation(convId, undefined, undefined, options);
         if (cancelled) return;
         if (generationOf() !== generation) {
           return retryStale(attempt);
+        }
+        const slotBefore = useChatStore.getState().slots[activeSlotId];
+        // An answer is being written here by now: its rows stay, and the history loads again once it has ended.
+        if (slotBefore?.isStreaming || slotBefore?.stopping) {
+          useChatStore.getState().updateSlot(activeSlotId, {
+            isInitialized: true,
+            failedLoad: { count: slotBefore.failedLoad?.count ?? 1, at: Date.now() },
+          });
+          return;
         }
 
         const messages = detail.messages;
@@ -789,12 +813,12 @@ function ChatContent() {
           runInProgress: detail.conversation.status === 'Inprogress',
         });
         const remoteRunId = detail.conversation.status === 'Inprogress' && isOwner ? remoteRunIdOf(messages) : null;
-        const slotBefore = useChatStore.getState().slots[activeSlotId];
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
           rawMessages: messages,
           isInitialized: true,
           hasLoaded: true,
+          failedLoad: null,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           remoteRunId,
           // A reload while the Stop already sent is pending keeps it pending, so the same run is not cancelled twice.
@@ -806,7 +830,7 @@ function ChatContent() {
           projectVisibility: detail.conversation.projectVisibility ?? null,
           forkedFrom: detail.conversation.forkedFrom ?? null,
           forks: detail.conversation.forks ?? [],
-          ...chatExtension.history.detailFields(detail.conversation),
+          ...chatExtension.history.detailFields(detail.conversation, slotBefore),
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -832,17 +856,19 @@ function ChatContent() {
           return retryStale(attempt);
         }
         const failureFields = chatExtension.history.loadFailureFields(error);
-        if (!failureFields) console.error('Failed to load conversation history:', error);
+        const failedBefore = useChatStore.getState().slots[activeSlotId]?.failedLoad;
+        if (!failureFields && !failedBefore) console.error('Failed to load conversation history:', error);
         if (!cancelled) {
-          // Mark as initialized to avoid infinite retries, but leave isOwner
-          // untouched: a transient fetch failure shouldn't flip the share
+          // Marked as initialized, and tried again by itself when it may pass (`useLoadRetry`). isOwner is
+          // left untouched: a transient fetch failure shouldn't flip the share
           // button off for an actual owner.
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
+            failedLoad: !failureFields && isTransientError(error) ? { count: (failedBefore?.count ?? 0) + 1, at: Date.now() } : null,
             ...failureFields,
           });
           // The API client already explains HTTP failures in its own toast.
-          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+          if (!failedBefore && !isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
             toast.error(t('chat.toasts.loadConversationFailed'));
           }
         }
@@ -855,7 +881,8 @@ function ChatContent() {
       cancelled = true;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, projectId, t]);
+  }, [activeSlotId, hasActiveSlot, activeSlotToLoad, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, projectId, t]);
+  useLoadRetry(activeSlotId);
 
   // A run that outlived a refresh finishes on the server; reload once it has.
   useRemoteRunPoll(
@@ -1332,10 +1359,12 @@ function ChatContent() {
   useEffect(() => () => { splitResizeCleanupRef.current?.(); }, []);
   // ─────────────────────────────────────────────────────────────────────────
 
+  // Nothing of the chat could be loaded yet: the page says so, with Try again, while it tries again by itself.
+  const showLoadFailed = activeSlotLoadFailed && !showInitialLoading && !showLoading && !showSearchView && !showNewChatView;
   // A chat drawn by an extension's own list keeps that list, the composer docked in it, while it loads again: the
   // list shows its own loader, and the composer stays as it is, with what is typed in it.
-  const keepOwnList = conversationAccess.ownMessageList === true && hasActiveSlot && !showSearchView && !showNewChatView;
-  const showMessageList = keepOwnList || (!(showInitialLoading || showLoading) && !showSearchView && !showNewChatView);
+  const keepOwnList = conversationAccess.ownMessageList === true && hasActiveSlot && !showSearchView && !showNewChatView && !showLoadFailed;
+  const showMessageList = keepOwnList || (!(showInitialLoading || showLoading || showLoadFailed) && !showSearchView && !showNewChatView);
   // The list docks the composer at its foot, its own or an extension's; an extension's empty state stands in for the
   // list, so the composer keeps its own row then.
   const dockComposer = showMessageList && emptyState == null;
@@ -1451,6 +1480,26 @@ function ChatContent() {
             style={{ flex: 1, width: '100%' }}
           >
             <LottieLoader variant="loader" size={48} showLabel />
+          </Flex>
+        ) : showLoadFailed ? (
+          <Flex role="alert" style={{ flex: 1, minHeight: 0, width: '100%' }}>
+            <EmptyState
+              icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-9)" />}
+              title={t('chat.loadFailedTitle')}
+              description={t('chat.loadFailedDescription')}
+              action={
+                <LoadingButton
+                  variant="soft"
+                  color="gray"
+                  loading={activeSlotToLoad}
+                  onClick={() => {
+                    if (activeSlotId) loadAgain(activeSlotId);
+                  }}
+                >
+                  {t('action.tryAgain')}
+                </LoadingButton>
+              }
+            />
           </Flex>
         ) : showSearchView ? (
           <Flex

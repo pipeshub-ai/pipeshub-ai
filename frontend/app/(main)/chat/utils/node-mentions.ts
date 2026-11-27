@@ -156,6 +156,39 @@ export function locateMentionNames(text: string, mentions: readonly MentionNode[
   return locate(text, mentions, (node) => node.name, sentNameStarts, sentNameEnds);
 }
 
+/** What the server writes in place of a source the reader can't open; a row's `withheldSources` says where it did. */
+export const WITHHELD_SOURCE_TEXT = 'a source';
+
+/**
+ * Where in `shown` the server wrote `WITHHELD_SOURCE_TEXT` for a source kept from the reader: `at` are its offsets in
+ * `content`, the row's text, which `shown` is part of or a copy of with pieces taken out. The same words typed stay words.
+ */
+export function withheldSourceSpans(shown: string, content: string, at: readonly number[] | undefined): Array<{ start: number; end: number }> {
+  if (!at?.length) return [];
+  const len = WITHHELD_SOURCE_TEXT.length;
+  const found = (text: string): number[] => {
+    const out: number[] = [];
+    for (let i = text.indexOf(WITHHELD_SOURCE_TEXT); i >= 0; i = text.indexOf(WITHHELD_SOURCE_TEXT, i + len)) out.push(i);
+    return out;
+  };
+  const inContent = found(content);
+  const base = content.indexOf(shown);
+  const starts =
+    base >= 0
+      ? at.filter((o) => inContent.includes(o) && o >= base && o + len <= base + shown.length).map((o) => o - base)
+      : found(shown).filter((_, i) => at.includes(inContent[i] ?? -1));
+  return starts.map((start) => ({ start, end: start + len }));
+}
+
+/** `spans` with each withheld source between them (`node: null`), in order; one inside a named source is not one. */
+export function withWithheldSpans(
+  spans: readonly MentionSpan[],
+  withheld: ReadonlyArray<{ start: number; end: number }>,
+): Array<{ start: number; end: number; node: MentionNode | null }> {
+  const kept = withheld.filter((w) => !spans.some((s) => w.start < s.end && w.end > s.start)).map((w) => ({ ...w, node: null }));
+  return [...spans, ...kept].sort((a, b) => a.start - b.start);
+}
+
 /**
  * The nodes a question named with @, to show as chips in it. A message saved
  * before that was recorded falls back to its folders and records: an app or a

@@ -10,6 +10,7 @@ import {
   MENTION_LABEL_MAX,
   mentionChipRemoval,
   mentionLabel,
+  withheldSourceSpans,
   MENTION_PAD_CLOSE,
   MENTION_PAD_OPEN,
   mergeMentionFilters,
@@ -219,5 +220,23 @@ describe('locateMentionNames: a source the reader cannot open', () => {
 
   it('alone: nothing is found, and nothing throws', () => {
     expect(locateMentionNames('What is in it?', mentionedNodes({ apps: [], kb: [], records: [locked] }) as never)).toEqual([]);
+  });
+});
+
+describe('withheldSourceSpans', () => {
+  const content = '<@assistant:self> a source  and not a source, a source';
+  const at = [content.indexOf('a source'), content.lastIndexOf('a source')];
+  it('finds only where the server wrote the word, in the text or a part of it', () => {
+    expect(withheldSourceSpans(content, content, at).map((s) => s.start)).toEqual(at);
+    const part = content.slice(18);
+    expect(withheldSourceSpans(part, content, at).map((s) => s.start)).toEqual([0, part.lastIndexOf('a source')]);
+  });
+  it('in a copy with pieces taken out, by their order among the same words', () => {
+    const copy = 'a source and not a source, a source';
+    expect(withheldSourceSpans(copy, content, at).map((s) => s.start)).toEqual([0, copy.lastIndexOf('a source')]);
+  });
+  it('nothing without offsets, or at an offset where the word is not', () => {
+    expect(withheldSourceSpans(content, content, undefined)).toEqual([]);
+    expect(withheldSourceSpans(content, content, [3])).toEqual([]);
   });
 });

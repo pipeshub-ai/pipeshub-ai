@@ -1015,7 +1015,6 @@
     "recents": "हाल के",
     "sharedChats": "साझा किए गए चैट",
     "sharedBy": "{{name}} द्वारा साझा किया गया",
-    "agentChat": "एजेंट चैट",
     "noSharedChats": "कोई साझा चैट नहीं",
     "yourChats": "आपके चैट",
     "noChatsFound": "कोई चैट नहीं मिली",
@@ -1173,6 +1172,8 @@
       "allSignedIn": "साइन इन हो गया। अनुरोध फिर से आज़माएँ।",
       "retryMessage": "मैंने {{servers}} में फिर से साइन इन किया है। कृपया फिर से कोशिश करें।"
     },
+    "loadFailedTitle": "यह चैट लोड नहीं हो सकी",
+    "loadFailedDescription": "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
     "toasts": {
       "stopStreamTitle": "रोका जा रहा है…",
       "stopStreamDescription": "प्रतिक्रिया शीघ्र ही रुक जाएगी। अब तक जनरेट किया गया आंशिक उत्तर सुरक्षित रहेगा।",
@@ -1324,8 +1325,6 @@
     "deleteChat": "हटाएं",
     "pin": "पिन करें",
     "unpin": "अनपिन करें",
-    "pinned": "पिन किए गए चैट",
-    "pinnedChatsEmpty": "आप जो चैट पिन करेंगे, वे यहां दिखेंगे",
     "pinnedRowSuffix": ", पिन किया गया",
     "sidebarRunning": "पृष्ठभूमि में काम हो रहा है",
     "sidebarRunningOpen": "काम हो रहा है",
@@ -1640,8 +1639,12 @@
     "stopListening": "सुनना बंद करें",
     "voiceInput": "वॉइस इनपुट",
     "regenerateResponse": "उत्तर पुनः जनरेट करें",
-    "quoteSelection": "उद्धृत करें",
-    "quoteSelectionHint": "इसके बारे में पूछें",
+    "selectionActions": {
+      "label": "चुना गया टेक्स्ट",
+      "reply": "उत्तर दें",
+      "ask": "{{productName}} से पूछें",
+      "copied": "कॉपी किया गया"
+    },
     "quotedExcerpt": "उद्धरण",
     "quotedExcerptTruncated": "उद्धरण (छोटा किया)",
     "dismissQuote": "उद्धरण हटाएँ",
@@ -1751,12 +1754,25 @@
       "notice": {
         "expired": "{{server}} पर {{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई। ज़रूरत हो तो फिर से पूछें।",
         "passed": "{{server}} पर {{tool}} को अनुमति नहीं मिली, इसलिए यह नहीं चला।",
+        "askedElse": "आपने कुछ और पूछा, इसलिए {{server}} पर {{tool}} नहीं चला।",
         "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।",
         "waitingFor": "{{server}} पर {{tool}} {{name}} की अनुमति का इंतज़ार कर रहा है।",
         "approvedBy": "{{name}} ने इसकी अनुमति दी, इसलिए यह चला।",
         "approvedNotRun": "{{name}} ने इसकी अनुमति दी, लेकिन यह नहीं चला।",
         "declinedBy": "{{name}} ने इसे मना कर दिया।",
         "requestExpired": "इस अनुरोध की समय-सीमा खत्म हो गई।"
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई। ज़रूरत हो तो फिर से पूछें।",
+        "passed": "{{tool}} को अनुमति नहीं मिली, इसलिए यह नहीं चला।",
+        "askedElse": "आपने कुछ और पूछा, इसलिए {{tool}} नहीं चला।",
+        "waiting": "{{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।",
+        "waitingFor": "{{tool}} {{name}} की अनुमति का इंतज़ार कर रहा है।"
+      },
+      "builtIn": {
+        "openWebPage": "वेब पेज खोलना",
+        "runCode": "कोड चलाना",
+        "installPackages": "कोड पैकेज इंस्टॉल करना"
       },
       "receipt": {
         "allowed": "आपने {{tool}} की अनुमति दी",
@@ -1767,10 +1783,15 @@
       },
       "restricted": {
         "notice": "इसमें ऐसे स्रोतों की सामग्री हो सकती है जिन्हें हर कोई नहीं खोल सकता। जो भी {{destination}} पढ़ सकता है, वह इसे देखेगा।",
-        "goesTo": "गंतव्य"
+        "goesTo": "गंतव्य",
+        "noticeAnywhere": "इसमें ऐसे स्रोतों की सामग्री हो सकती है जिन्हें हर कोई नहीं खोल सकता, और यह {{productName}} के बाहर भेजी जा सकती है।"
       }
     },
     "selectedAlone": "{{name}} (केवल यह आइटम)",
+    "withheldSource": {
+      "label": "निजी स्रोत",
+      "tooltip": "आप यह स्रोत नहीं खोल सकते।"
+    },
     "noConnectorsFound": "कोई कनेक्टर नहीं मिला",
     "treeSearching": "खोज रहे हैं…",
     "treeSearchFailed": "खोज नहीं हो सकी। फिर से कोशिश करें।",
@@ -1848,6 +1869,7 @@
     },
     "answerFailedTitle": "यह उत्तर विफल रहा",
     "answerFailedRetry": "फिर से कोशिश करें",
+    "answerFailedAskAgain": "फिर से पूछें",
     "cannotOpenSource": "आप यह दस्तावेज़ नहीं खोल सकते। हो सकता है इसे हटा दिया गया हो, या आपके पास इसकी पहुँच न हो।",
     "queue": {
       "title": "कतार में · {{count}}",

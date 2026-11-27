@@ -10,8 +10,9 @@ import {
   normalizeAskUserQuestionPayload,
   parseAnswerMessage,
   showsStoppedMarker,
+  stoppedOnCardAnswer,
 } from '../ask-user-question-card';
-import type { AskUserQuestionPayload, PendingAskUserQuestion } from '../../../types';
+import type { AskUserQuestionPayload, MessagePart, PendingAskUserQuestion } from '../../../types';
 
 describe('normalizeAskUserQuestionPayload', () => {
   it('fills missing question uuids and option ids', () => {
@@ -691,6 +692,14 @@ describe('showsStoppedMarker', () => {
     expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true })).toBe(true);
   });
 
+  it("marks a card's answer stopped before its first word, open again or closed by chatting", () => {
+    const answer = { ...stopped, hasQuestionCard: true, hasAnswerText: false, answerStopped: true };
+    expect(showsStoppedMarker(answer)).toBe(true);
+    expect(showsStoppedMarker({ ...answer, repliedInChat: true })).toBe(true);
+    expect(showsStoppedMarker({ ...answer, isStreaming: true })).toBe(false);
+    expect(showsStoppedMarker({ ...answer, status: 'complete' })).toBe(false);
+  });
+
   it('waits until the reply has settled', () => {
     expect(showsStoppedMarker({ ...stopped, isStreaming: true })).toBe(false);
   });
@@ -698,5 +707,35 @@ describe('showsStoppedMarker', () => {
   it('leaves out a reply that was not stopped', () => {
     expect(showsStoppedMarker({ ...stopped, status: 'complete' })).toBe(false);
     expect(showsStoppedMarker({ ...stopped, status: undefined })).toBe(false);
+  });
+});
+
+describe('stoppedOnCardAnswer', () => {
+  const payload: AskUserQuestionPayload = {
+    name: 'ask_user_question',
+    questions: [{ uuid: 'q1', question: 'Which day?', multiSelect: false, options: [{ id: 'thu', label: 'Thu', isUserInput: false }] }],
+  };
+  const answers = { q1: { selectedOptionIds: ['thu'] } } as never;
+  const step = (own?: unknown): MessagePart =>
+    ({ type: 'tool_call', toolCallId: 'c', toolName: 'ask_user_question', status: 'completed', question: own === undefined ? undefined : { answers: own } }) as unknown as MessagePart;
+  const row = { rowId: 'card', messageId: 'reply', pending: null, parts: undefined, payload, answers: undefined };
+
+  it("is the run that took the card's answer: its reply is merged onto the card's row", () => {
+    expect(stoppedOnCardAnswer({ ...row, parts: [step(answers)] })).toBe(true);
+    expect(stoppedOnCardAnswer({ ...row, answers })).toBe(true);
+    expect(stoppedOnCardAnswer({ ...row, pending: { status: 'submitted', answers } as never })).toBe(true);
+    expect(stoppedOnCardAnswer({ ...row, pending: { status: 'pending', answers: {} as never, sentAnswers: answers } as never })).toBe(true);
+  });
+
+  it('is not the run that asked the card: no reply is merged onto its row', () => {
+    for (const own of [{ messageId: 'card' }, { messageId: undefined }, { rowId: undefined }]) {
+      expect(stoppedOnCardAnswer({ ...row, ...own, answers, parts: [step(answers)] })).toBe(false);
+    }
+  });
+
+  it('is not one that stopped on a new card, which has no answers yet', () => {
+    expect(stoppedOnCardAnswer({ ...row, parts: [step(answers), step({})] })).toBe(false);
+    expect(stoppedOnCardAnswer({ ...row, answers: {} })).toBe(false);
+    expect(stoppedOnCardAnswer({ ...row, pending: { status: 'pending', answers: {} as never } as never })).toBe(false);
   });
 });

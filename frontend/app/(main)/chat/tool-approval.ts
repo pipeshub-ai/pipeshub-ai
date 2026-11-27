@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next';
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
 import type { ApprovalStubStatus, MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
@@ -77,9 +78,26 @@ export function approvalToolLabel(details: Pick<ToolApprovalDetails, 'toolTitle'
   return toolDisplayName(details.toolName, details.toolTitle);
 }
 
+// The built-in tools that can wait on a card, and what their cards hold where others hold a server's name, since these
+// have none: the server's words for the tool, and on a card saved before it had any, its name or its label.
+const BUILT_IN_TOOLS = new Map([
+  ['dynamic__fetch_url', { key: 'chat.toolApproval.builtIn.openWebPage', noServer: ['Open a web page', 'dynamic__fetch_url'] }],
+  ['run_code', { key: 'chat.toolApproval.builtIn.runCode', noServer: ['Run code', 'Ran code'] }],
+  ['install_packages', { key: 'chat.toolApproval.builtIn.installPackages', noServer: ['Install code packages', 'Installed packages'] }],
+]);
+
+/** The words for a built-in tool, which has no server to name; none for a tool of an MCP server or a toolset. */
+export function builtInToolKey(toolName: string | undefined, serverName?: string): string | undefined {
+  const tool = BUILT_IN_TOOLS.get(toolName ?? '');
+  return tool && (serverName === undefined || tool.noServer.includes(serverName)) ? tool.key : undefined;
+}
+
 export interface SettledToolApproval {
   key: string;
   tool: string;
+  /** The words for a built-in tool, in place of `tool`. */
+  toolKey?: string;
+  /** Empty when the tool has none. */
   server: string;
   /**
    * `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). `accessLost`: allowed,
@@ -95,10 +113,12 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
     for (const part of list ?? []) {
       if (part.type === 'tool_call' && part.approvalAnswer) {
         const details = toolApprovalDetails(part.approval);
+        const toolKey = details ? builtInToolKey(details.toolName, details.serverName) : builtInToolKey(part.toolName);
         settled.push({
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
-          server: details?.serverName ?? '',
+          ...(toolKey ? { toolKey } : {}),
+          server: toolKey ? '' : details?.serverName ?? '',
           answer:
             part.approvalReason === 'access_lost'
               ? 'accessLost'
@@ -136,12 +156,39 @@ export function findApprovalStub(
   return null;
 }
 
+/** Whether a reply waits on a card its person can still answer: there is no answer yet. */
+export function waitsForApproval(parts: MessagePart[] | undefined, now: number = Date.now()): boolean {
+  const card = findToolApproval(parts);
+  return card !== null && card.expiresAt > now;
+}
+
+/** Whether a reply stopped on an approval card, or carries on from one: waiting, answered, or someone else's stub. */
+export function hasApprovalCard(parts: MessagePart[] | undefined): boolean {
+  return findToolApproval(parts) !== null || settledToolApprovals(parts).length > 0 || findApprovalStub(parts) !== null;
+}
+
 // The server's closing words for a turn that stopped on a card (Python `tool_approvals._WAITING`).
 const WAITING_LINE = /\s*Waiting for your approval to run [^\n]*\.\s*$/;
+
+// The same words as they were saved before the server had words for a built-in tool.
+const NAMED_WAITING_LINE = /^(Waiting for your approval to run )(.+) on (.+)\.$/;
+
+/** A waiting call's saved words, with a built-in tool in words. */
+export function waitingWords(text: string, t: TFunction): string {
+  const [, start, tool, server] = NAMED_WAITING_LINE.exec(text) ?? [];
+  const key = builtInToolKey(tool, server ?? '');
+  return key ? `${start}“${t(key)}”.` : text;
+}
 
 /** The answer without "Waiting for your approval to run …": the card says it. */
 export function withoutWaitingLine(text: string): string {
   return text.replace(WAITING_LINE, '');
+}
+
+/** An answer's own words: none while its run waits on a card, and never the line that says it does. */
+export function answerWords(pair: { answer: string; persistedParts?: MessagePart[] }): string {
+  if (waitsForApproval(pair.persistedParts)) return '';
+  return hasApprovalCard(pair.persistedParts) ? withoutWaitingLine(pair.answer) : pair.answer;
 }
 
 /** Whether a reply carries on from an answered approval card: the server won't regenerate it. */

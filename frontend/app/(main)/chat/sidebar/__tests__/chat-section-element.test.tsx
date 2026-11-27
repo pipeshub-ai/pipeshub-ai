@@ -1,10 +1,11 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
+import { CHAT_ITEM_HEIGHT } from '@/app/components/sidebar/constants';
 
 installMemoryStorage();
 
@@ -18,7 +19,11 @@ vi.mock('next/navigation', () => ({
   },
   usePathname: () => '/chat/',
 }));
-vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+// Only the pin draws, so its colour, fill and turn can be read.
+vi.mock('@/app/components/ui/MaterialIcon', () => ({
+  MaterialIcon: ({ name, color, variant }: { name: string; color?: string; variant?: string }) =>
+    name === 'keep' ? <i data-icon={name} data-color={color} data-variant={variant} /> : null,
+}));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const { useChatStore } = await import('@/chat/store');
@@ -167,6 +172,15 @@ describe('a pinned chat row', () => {
     expect(screen.getByText('Roadmap').nextElementSibling).toBe(mark());
   });
 
+  it('the pin is the brand green, filled and tilted, not the grey of secondary text', () => {
+    render(row(pinned));
+
+    const icon = mark()!.querySelector('[data-icon="keep"]')!;
+    expect(icon.getAttribute('data-color')).toBe('var(--accent-a11)');
+    expect(icon.getAttribute('data-variant')).toBe('filled');
+    expect((mark() as HTMLElement).style.transform).toBe('rotate(45deg)');
+  });
+
   it('an unpinned row has no pin, and Pin or Unpin shows or drops it at once', () => {
     const { rerender } = render(row({ ...(pinned as object), isPinned: false }));
     expect(mark()).toBeNull();
@@ -244,49 +258,20 @@ describe('where a chat row opens', () => {
   });
 });
 
-describe('who shared a chat, and whether it is an agent chat', () => {
+describe('a chat someone shared', () => {
   const sharedBy = { userId: 'u-1', name: 'Pranjal' };
 
-  it('says "Shared by" for a plain chat someone shared', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
-  });
+  // As the design draws it: the title, and nothing under it.
+  it.each([
+    ['a plain chat', { id: 'c1', title: 'Roadmap', isOwner: false, sharedBy }, undefined],
+    ['an agent chat, in the global list', { id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' }, undefined],
+    ['an agent chat, in that agent’s own sidebar', { id: 'c3', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' }, 'agent-7'],
+  ])('%s is one line, its title, with no "Shared by" under it', (_, conv, agentId) => {
+    renderInTheme(<ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />);
 
-  it('marks an agent chat someone shared with the agent symbol, in the global list', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    const symbol = screen.getByRole('img', { name: 'Agent chat' });
-    const name = screen.getByText('Shared by Pranjal');
-    // The sharer's name comes first and the symbol after it, not the other way round.
-    expect(name.contains(symbol)).toBe(true);
-    expect(name.firstChild?.textContent).toBe('Shared by Pranjal');
-    expect(name.lastElementChild).toBe(symbol);
-  });
-
-  it('names the symbol "Agent chat" in a tooltip on hover', async () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    fireEvent.pointerMove(screen.getByRole('img', { name: 'Agent chat' }));
-    expect((await screen.findAllByText('Agent chat')).length).toBeGreaterThan(0);
-  });
-
-  it('shows no agent symbol on a plain shared chat', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
-    );
-    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
-  });
-
-  it('shows no agent symbol inside that agent’s own sidebar, where every chat is an agent chat', () => {
-    renderInTheme(
-      <ChatSectionElement conversation={{ id: 'c3', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} agentId="agent-7" />,
-    );
-    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
-    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
+    const link = screen.getByRole('link', { name: 'Roadmap' });
+    expect(screen.queryByText(/Shared by/)).toBeNull();
+    expect(link.style.height).toBe(`${CHAT_ITEM_HEIGHT}px`);
   });
 });
 

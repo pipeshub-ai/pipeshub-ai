@@ -1,6 +1,6 @@
 /**
  * The look of the "tools not connected" notice: logos, a type line and one status column on every row, the two kinds
- * grouped, a long list folded, and the chip that opens it. Its states, strings and behaviour are the same as before
+ * grouped, and a long list folded. Its states, strings and behaviour are the same as before
  * (connect-tools-card.test.tsx).
  */
 import React from 'react';
@@ -29,7 +29,6 @@ vi.mock('../../../runtime', () => ({ buildStreamChatRequestForSlot: vi.fn(() => 
 vi.mock('../../../store', () => ({ useChatStore: { getState: () => ({ activeSlotId: 'slot-1' }) } }));
 
 import { ConnectToolsCard } from '../connect-tools-card';
-import { UnavailableToolsNotice } from '../unavailable-tools-notice';
 
 const toolset = (id: string, name: string, over: Partial<UnavailableTool> = {}): UnavailableTool => ({
   kind: 'toolset', instanceId: id, displayName: name, name: name.toLowerCase(), problem: 'not_authenticated',
@@ -144,31 +143,5 @@ describe('the connect card’s rows', () => {
     expect(tryAgain.className).toMatch(/rt-variant-solid/);
     expect(footer.lastElementChild).toBe(tryAgain);
     expect(within(footer).getByText('All connected. Send your message again to continue.')).toBeTruthy();
-  });
-});
-
-describe('the chip and the read-only line', () => {
-  it('the chip keeps its words, leads with up to three of the tools’ logos, and is a bordered quiet button', () => {
-    renderInTheme(
-      <UnavailableToolsNotice items={[JIRA, GMAIL, SLACK, toolset('ts-x', 'Extra')]} answer="Here is your summary." question="Q" />,
-    );
-    const chip = screen.getByTestId('tools-unavailable-chip');
-    expect(chip.textContent).toContain("Some tools aren't connected");
-    expect(chip.textContent).toContain('Connect');
-    expect(chip.querySelectorAll('[data-logo]')).toHaveLength(3);
-    expect(chip.className).toMatch(/rt-variant-outline/);
-    expect(chip.style.height).toBe('calc(var(--space-5) + var(--space-1))');
-    fireEvent.click(chip);
-    expect(screen.getByTestId('connect-tools')).toBeTruthy();
-  });
-
-  it('the read-only line keeps its words, with the tools’ logos in front', () => {
-    renderInTheme(
-      <UnavailableToolsNotice items={[JIRA]} answer="x" question="Q" readOnlyFor={{ agentName: 'Helper' }} />,
-    );
-    const line = screen.getByTestId('tools-unavailable-line');
-    expect(line.textContent).toContain("Helper couldn't use Jira");
-    expect(line.querySelector('[data-logo]')).toBeTruthy();
-    expect(line.querySelector('[data-icon="link_off"]')).toBeNull();
   });
 });

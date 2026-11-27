@@ -420,6 +420,28 @@ export function isGoneError(error: unknown): boolean {
   return isProcessedError(error) && (error.statusCode === 403 || error.statusCode === 404);
 }
 
+/**
+ * The same request may succeed shortly: no answer came, the server was busy or failed, or its answer could not be read.
+ * An answer that refuses (a 4xx) stays a refusal, and a request the app cancelled is not asked again.
+ */
+export function isTransientError(error: unknown): boolean {
+  if (isRequestCancelledError(error)) return false;
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'CanceledError')) return false;
+  if (!isProcessedError(error) || error.statusCode === undefined) return true;
+  return error.statusCode >= 500 || error.statusCode === 408 || error.statusCode === 429;
+}
+
+/**
+ * Which failures of a chat's detail the caller shows by itself, as `suppressErrorToast` takes it: a chat that is gone
+ * (`quietWhenGone`), and a failure after which it tries again (`quietWhenTransient`).
+ */
+export function detailToast({ quietWhenGone, quietWhenTransient }: { quietWhenGone?: boolean; quietWhenTransient?: boolean } = {}): {
+  suppressErrorToast?: (error: unknown) => boolean;
+} {
+  if (!quietWhenTransient) return quietWhenGone ? { suppressErrorToast: isGoneError } : {};
+  return { suppressErrorToast: (error) => isTransientError(error) || (quietWhenGone === true && isGoneError(error)) };
+}
+
 /** Retrieval `Status.ACCESSIBLE_RECORDS_NOT_FOUND` — search ran but no docs in scope. */
 export const SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS = 'accessible_records_not_found';
 

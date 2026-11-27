@@ -11,7 +11,7 @@ import {
   type ForkConversationResult,
   mapArchivedConversation,
 } from '@/chat/api';
-import { isGoneError } from '@/lib/api/api-error';
+import { detailToast, isGoneError } from '@/lib/api/api-error';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
 import { chatExtension } from '@/config';
@@ -678,13 +678,13 @@ export const AgentsApi = {
   async fetchAgentConversation(
     agentId: string,
     conversationId: string,
-    options?: { page?: number; limit?: number; quietWhenGone?: boolean }
+    options?: { page?: number; limit?: number; quietWhenGone?: boolean; quietWhenTransient?: boolean; quiet?: boolean }
   ): Promise<FetchAgentConversationResult> {
     const { data } = await apiClient.get<AgentConversationDetailApiResponse>(
       chatExtension.conversationPath(conversationId, agentId),
       {
         params: { page: options?.page, limit: options?.limit },
-        ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
+          ...(options?.quiet ? { suppressErrorToast: true } : detailToast(options)),
       },
     );
 

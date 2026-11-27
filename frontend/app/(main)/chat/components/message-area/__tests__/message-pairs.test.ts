@@ -234,6 +234,13 @@ describe('retryTurnMessage', () => {
     expect(message.metadata.custom.collections).toBeUndefined();
   });
 
+  it('with an exact scope, an unscoped turn stays unscoped and a scoped one keeps its own', () => {
+    const scope = { apps: [{ id: 'app-1', name: 'Drive', nodeType: 'app', connector: 'DRIVE' }], kb: [] };
+    expect(retryTurnMessage({ question: 'Q', exactScope: true }).metadata.custom.resendFilters).toEqual({ apps: [], kb: [] });
+    expect(retryTurnMessage({ question: 'Q', exactScope: true, appliedFilters: scope }).metadata.custom.resendFilters).toEqual(scope);
+    expect(retryTurnMessage({ question: 'Q' }).metadata.custom.resendFilters).toBeUndefined();
+  });
+
   it('rebuilds collections from the filters a reloaded turn was answered with', () => {
     const message = retryTurnMessage({
       question: 'Q',

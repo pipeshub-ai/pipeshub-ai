@@ -1032,7 +1032,6 @@
     "recents": "Recientes",
     "sharedChats": "Chats compartidos",
     "sharedBy": "Compartido por {{name}}",
-    "agentChat": "Chat de agente",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
@@ -1191,6 +1190,8 @@
       "allSignedIn": "Sesión iniciada. Vuelve a intentar la solicitud.",
       "retryMessage": "He vuelto a iniciar sesión en {{servers}}. Inténtalo de nuevo, por favor."
     },
+    "loadFailedTitle": "No se pudo cargar este chat",
+    "loadFailedDescription": "Comprueba tu conexión e inténtalo de nuevo.",
     "toasts": {
       "stopStreamTitle": "Deteniendo…",
       "stopStreamDescription": "La respuesta se detendrá en breve. Se conservará cualquier respuesta parcial.",
@@ -1342,8 +1343,6 @@
     "deleteChat": "Eliminar",
     "pin": "Fijar",
     "unpin": "Desfijar",
-    "pinned": "Chats fijados",
-    "pinnedChatsEmpty": "Los chats que fijes aparecerán aquí",
     "pinnedRowSuffix": ", fijado",
     "sidebarRunning": "Procesando en segundo plano",
     "sidebarRunningOpen": "Procesando",
@@ -1665,8 +1664,12 @@
     "stopListening": "Dejar de escuchar",
     "voiceInput": "Entrada por voz",
     "regenerateResponse": "Regenerar la respuesta",
-    "quoteSelection": "Citar",
-    "quoteSelectionHint": "Preguntar por esto",
+    "selectionActions": {
+      "label": "Texto seleccionado",
+      "reply": "Responder",
+      "ask": "Preguntar a {{productName}}",
+      "copied": "Copiado"
+    },
     "quotedExcerpt": "Citado",
     "quotedExcerptTruncated": "Citado (recortado)",
     "dismissQuote": "Quitar cita",
@@ -1778,12 +1781,25 @@
       "notice": {
         "expired": "{{tool}} en {{server}} no se ejecutó: la solicitud caducó. Vuelve a pedirlo si aún lo necesitas.",
         "passed": "{{tool}} en {{server}} no se aprobó, así que no se ejecutó.",
+        "askedElse": "Preguntaste otra cosa, así que {{tool}} en {{server}} no se ejecutó.",
         "waiting": "{{tool}} en {{server}} espera la aprobación del propietario de la conversación.",
         "waitingFor": "{{tool}} en {{server}} espera la aprobación de {{name}}.",
         "approvedBy": "{{name}} lo aprobó, así que se ejecutó.",
         "approvedNotRun": "{{name}} lo aprobó, pero no se ejecutó.",
         "declinedBy": "{{name}} lo rechazó.",
         "requestExpired": "Esta solicitud caducó."
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} no se ejecutó: la solicitud caducó. Vuelve a pedirlo si aún lo necesitas.",
+        "passed": "{{tool}} no se aprobó, así que no se ejecutó.",
+        "askedElse": "Preguntaste otra cosa, así que {{tool}} no se ejecutó.",
+        "waiting": "{{tool}} espera la aprobación del propietario de la conversación.",
+        "waitingFor": "{{tool}} espera la aprobación de {{name}}."
+      },
+      "builtIn": {
+        "openWebPage": "Abrir una página web",
+        "runCode": "Ejecutar código",
+        "installPackages": "Instalar paquetes de código"
       },
       "receipt": {
         "allowed": "Permitiste {{tool}}",
@@ -1794,10 +1810,15 @@
       },
       "restricted": {
         "notice": "Esto puede incluir contenido de fuentes que no todos pueden abrir. Cualquiera que pueda leer {{destination}} lo verá.",
-        "goesTo": "Se envía a"
+        "goesTo": "Se envía a",
+        "noticeAnywhere": "Esto puede incluir contenido de fuentes que no todos pueden abrir, y podría enviarse fuera de {{productName}}."
       }
     },
     "selectedAlone": "{{name}} (solo este elemento)",
+    "withheldSource": {
+      "label": "Fuente privada",
+      "tooltip": "No puedes abrir esta fuente."
+    },
     "noConnectorsFound": "No se encontraron conectores",
     "treeSearching": "Buscando…",
     "treeSearchFailed": "No se pudo buscar. Inténtalo de nuevo.",
@@ -1876,6 +1897,7 @@
     },
     "answerFailedTitle": "Esta respuesta ha fallado",
     "answerFailedRetry": "Reintentar",
+    "answerFailedAskAgain": "Preguntar de nuevo",
     "cannotOpenSource": "No puedes abrir este documento. Es posible que se haya eliminado o que no tengas acceso a él.",
     "queue": {
       "title": "En cola · {{count}}",

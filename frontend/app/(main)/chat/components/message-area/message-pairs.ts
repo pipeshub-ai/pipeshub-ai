@@ -37,6 +37,8 @@ export interface MessagePair {
   /** Collections attached to this message (from user message metadata) */
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFilters;
+  /** Where in `question` the server wrote the word for a source the reader can't open (drawn as a locked chip). */
+  withheldSources?: number[];
   /** ISO timestamp of when the user sent this query */
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
@@ -110,6 +112,7 @@ type AssistantCustom = {
 type UserCustom = {
   collections?: Array<{ id: string; name: string }>;
   appliedFilters?: AppliedFilters;
+  withheldSources?: number[];
   createdAt?: string;
   attachments?: AttachmentRef[];
   command?: SentCommand;
@@ -202,6 +205,7 @@ export function buildMessagePairs(
         isStreaming: runsOnServer,
         collections: userCustom?.collections,
         appliedFilters: userCustom?.appliedFilters,
+        withheldSources: userCustom?.withheldSources,
         createdAt: userCustom?.createdAt,
         attachments: userCustom?.attachments,
         command: userCustom?.command,
@@ -268,6 +272,7 @@ export function buildMessagePairs(
           ? (pendingCollections.length > 0 ? pendingCollections : userMsgCustom?.collections)
           : userMsgCustom?.collections,
         appliedFilters: userMsgCustom?.appliedFilters,
+        withheldSources: userMsgCustom?.withheldSources,
         createdAt: userMsgCustom?.createdAt,
         attachments: userMsgCustom?.attachments,
         command: userMsgCustom?.command,
@@ -311,7 +316,10 @@ export function keepUnchangedPairs(
   });
 }
 
-export type RetryTurn = Pick<MessagePair, 'question' | 'attachments' | 'collections' | 'appliedFilters'>;
+export type RetryTurn = Pick<MessagePair, 'question' | 'attachments' | 'collections' | 'appliedFilters'> & {
+  /** The turn's own scope and nothing else: a turn asked with none is not given what the composer has selected. */
+  exactScope?: boolean;
+};
 
 /**
  * The rows without the failed turn whose reply is `key`, when only this tab holds it (its question has no stored id):
@@ -346,7 +354,11 @@ export function retryTurnMessage(turn: RetryTurn) {
       custom: {
         collections: collections.length > 0 ? collections : undefined,
         attachments: turn.attachments?.length ? turn.attachments : undefined,
-        resendFilters: hasAnyFilter(turn.appliedFilters) ? turn.appliedFilters : undefined,
+        resendFilters: turn.exactScope
+          ? turn.appliedFilters ?? { apps: [], kb: [] }
+          : hasAnyFilter(turn.appliedFilters)
+            ? turn.appliedFilters
+            : undefined,
       },
     },
     startRun: true,

@@ -1015,7 +1015,6 @@
     "recents": "Recents",
     "sharedChats": "Shared chats",
     "sharedBy": "Shared by {{name}}",
-    "agentChat": "Agent chat",
     "noSharedChats": "No shared chats",
     "yourChats": "Your chats",
     "noChatsFound": "No chats found",
@@ -1173,6 +1172,8 @@
       "allSignedIn": "Signed in. Try the request again.",
       "retryMessage": "I signed in to {{servers}} again. Please try that again."
     },
+    "loadFailedTitle": "Couldn't load this chat",
+    "loadFailedDescription": "Check your connection and try again.",
     "toasts": {
       "stopStreamTitle": "Stopping…",
       "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
@@ -1363,8 +1364,6 @@
     "deleteChat": "Delete",
     "pin": "Pin",
     "unpin": "Unpin",
-    "pinned": "Pinned chats",
-    "pinnedChatsEmpty": "Chats you pin will appear here",
     "pinnedRowSuffix": ", pinned",
     "sidebarRunning": "Working in the background",
     "sidebarRunningOpen": "Working",
@@ -1640,8 +1639,12 @@
     "stopListening": "Stop listening",
     "voiceInput": "Voice input",
     "regenerateResponse": "Regenerate response",
-    "quoteSelection": "Quote",
-    "quoteSelectionHint": "Ask about this",
+    "selectionActions": {
+      "label": "Selected text",
+      "reply": "Reply",
+      "ask": "Ask {{productName}}",
+      "copied": "Copied"
+    },
     "quotedExcerpt": "Quoted",
     "quotedExcerptTruncated": "Quoted (trimmed)",
     "dismissQuote": "Remove quote",
@@ -1751,12 +1754,25 @@
       "notice": {
         "expired": "{{tool}} on {{server}} didn't run: the request expired. Ask again if it's still needed.",
         "passed": "{{tool}} on {{server}} wasn't approved, so it didn't run.",
+        "askedElse": "You asked something else, so {{tool}} on {{server}} didn't run.",
         "waiting": "{{tool}} on {{server}} is waiting for the conversation owner's approval.",
         "waitingFor": "{{tool}} on {{server}} is waiting for {{name}}'s approval.",
         "approvedBy": "{{name}} approved it, so it ran.",
         "approvedNotRun": "{{name}} approved it, but it didn't run.",
         "declinedBy": "{{name}} declined it.",
         "requestExpired": "This request expired."
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} didn't run: the request expired. Ask again if it's still needed.",
+        "passed": "{{tool}} wasn't approved, so it didn't run.",
+        "askedElse": "You asked something else, so {{tool}} didn't run.",
+        "waiting": "{{tool}} is waiting for the conversation owner's approval.",
+        "waitingFor": "{{tool}} is waiting for {{name}}'s approval."
+      },
+      "builtIn": {
+        "openWebPage": "Open a web page",
+        "runCode": "Run code",
+        "installPackages": "Install code packages"
       },
       "receipt": {
         "allowed": "You allowed {{tool}}",
@@ -1767,10 +1783,15 @@
       },
       "restricted": {
         "notice": "This may include content from sources not everyone can open. Anyone who can read {{destination}} will see it.",
-        "goesTo": "Goes to"
+        "goesTo": "Goes to",
+        "noticeAnywhere": "This may include content from sources not everyone can open, and it may be sent outside {{productName}}."
       }
     },
     "selectedAlone": "{{name}} (this item only)",
+    "withheldSource": {
+      "label": "Private source",
+      "tooltip": "You can't open this source."
+    },
     "noConnectorsFound": "No connectors found",
     "treeSearching": "Searching…",
     "treeSearchFailed": "Couldn't search. Try again.",
@@ -1848,6 +1869,7 @@
     },
     "answerFailedTitle": "This answer failed",
     "answerFailedRetry": "Try again",
+    "answerFailedAskAgain": "Ask again",
     "cannotOpenSource": "You can't open this document. It may have been removed, or you may not have access to it.",
     "queue": {
       "title": "Queued · {{count}}",

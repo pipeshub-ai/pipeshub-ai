@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { AskUserQuestionPayload } from '../../../types';
@@ -109,6 +109,52 @@ describe('AskUserQuestionCard', () => {
     expect(screen.getByText('This question has expired. Reply in the chat to continue.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
     expect(screen.queryByRole('radiogroup')).toBeNull();
+  });
+
+  // Nothing else draws the card again when its time runs out, so it kept a
+  // Submit that could only fail.
+  it('turns read-only by itself the moment its time runs out', () => {
+    vi.useFakeTimers();
+    try {
+      renderInTheme(
+        <AskUserQuestionCard
+          payload={payload({ questions: [project], expiresAt: new Date(Date.now() + 60_000).toISOString() })}
+          initialAnswers={{}}
+          status="pending"
+        />,
+      );
+      // A second at a time, as a page lives it: it draws again after each timer.
+      const pass = (ms: number) => {
+        for (let gone = 0; gone < ms; gone += 1_000) {
+          act(() => {
+            vi.advanceTimersByTime(1_000);
+          });
+        }
+      };
+      pass(59_000);
+      expect(screen.getByRole('button', { name: 'Submit' })).toBeTruthy();
+
+      pass(1_000);
+      expect(screen.getByText('This question has expired. Reply in the chat to continue.')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+      expect(screen.queryByRole('radiogroup')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits for nothing when no time runs out: a card with no time on it, an answered one, or an expired one', () => {
+    vi.useFakeTimers();
+    try {
+      const later = new Date(Date.now() + 60_000).toISOString();
+      const earlier = new Date(Date.now() - 60_000).toISOString();
+      renderInTheme(<AskUserQuestionCard payload={payload()} initialAnswers={{}} status="pending" />);
+      renderInTheme(<AskUserQuestionCard payload={payload({ expiresAt: later })} initialAnswers={{}} status="persisted" />);
+      renderInTheme(<AskUserQuestionCard payload={payload({ expiresAt: earlier })} initialAnswers={{}} status="pending" />);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   const allAnswered = {

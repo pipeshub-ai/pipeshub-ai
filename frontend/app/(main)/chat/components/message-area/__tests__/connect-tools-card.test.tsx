@@ -158,35 +158,45 @@ describe('ConnectToolsCard', () => {
 });
 
 describe('UnavailableToolsNotice', () => {
-  it('stays a chip under an answer that never needed the tools, and opens into the card', () => {
-    renderInTheme(<UnavailableToolsNotice items={[GMAIL]} answer="I like coffee strong." question={QUESTION} />);
+  it('says nothing when the answer called no tool it lacks', () => {
+    renderInTheme(<UnavailableToolsNotice items={[]} question={QUESTION} />);
 
     expect(screen.queryByTestId('connect-tools')).toBeNull();
-    fireEvent.click(screen.getByTestId('tools-unavailable-chip'));
-    expect(screen.getByTestId('connect-tools')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connect' })).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('shows the card at once when the answer says it needed one', () => {
+  it('shows the card at once for each tool the answer called, and for no other', () => {
     renderInTheme(
-      <UnavailableToolsNotice items={[GMAIL]} answer="I can't read your Gmail until you connect it." question={QUESTION} />,
+      <UnavailableToolsNotice items={[{ ...GMAIL, needed: true }, { ...JIRA, needed: true }]} question={QUESTION} />,
     );
 
-    expect(screen.queryByTestId('tools-unavailable-chip')).toBeNull();
     expect(screen.getByTestId('connect-tools')).toBeTruthy();
+    expect(screen.getByText('Gmail')).toBeTruthy();
+    expect(screen.getByText('Jira')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Connect' })).toHaveLength(2);
   });
 
-  it('someone who did not ask reads which tools were missing and can connect nothing', () => {
+  it('leaves out a tool of the list the answer did not call, and a list saved before the stubs', () => {
+    renderInTheme(<UnavailableToolsNotice items={[{ ...GMAIL, needed: true }, JIRA]} question={QUESTION} />);
+    expect(screen.getByText('Gmail')).toBeTruthy();
+    expect(screen.queryByText('Jira')).toBeNull();
+    cleanup();
+
+    renderInTheme(<UnavailableToolsNotice items={[GMAIL, JIRA]} question={QUESTION} />);
+    expect(screen.queryByTestId('connect-tools')).toBeNull();
+  });
+
+  it('someone who did not ask is told nothing of the tools: they are the asker\'s own connections', () => {
     renderInTheme(
       <UnavailableToolsNotice
-        items={[GMAIL, JIRA]}
-        answer="I can't read your Gmail."
+        items={[{ ...GMAIL, needed: true }, { ...JIRA, needed: true }]}
         question={QUESTION}
         readOnlyFor={{ agentName: 'Mail Helper' }}
       />,
     );
 
-    expect(screen.getByTestId('tools-unavailable-line').textContent).toBe("Mail Helper couldn't use Gmail, Jira");
+    expect(screen.queryByTestId('tools-unavailable-line')).toBeNull();
+    expect(screen.queryByText(/Gmail|Jira/)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });
 });

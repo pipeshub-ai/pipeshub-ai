@@ -13,27 +13,24 @@ import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { useLocalDay } from '@/lib/hooks/use-local-day';
 import { ChatSection } from './chat-section';
-import { getNonEmptyGroups, groupConversationsByTime } from './time-group';
+import { groupConversationsWithPinned } from './time-group';
 import { splitPinned } from '@/chat/utils/pinned-conversations';
 import { chatSlots } from '@/config';
+import { RAIL_SHARED_UNPINNED_ROWS, RAIL_UNPINNED_ROWS } from '../constants';
 import type { Conversation } from '@/chat/types';
 import { readRailMemory, writeRailMemory } from './rail-memory';
 
 /**
- * Rows each section shows before a "More" row opens the full list. The store keeps a full
- * page, so the realtime watches still see every chat; only the rail shows fewer.
+ * A section's chats for the rail: every pinned one, newest activity first, then its `limit` newest others,
+ * and whether it needs "More" for the rest of those: past the cap here, or another page on the server. The store keeps
+ * more, so the realtime watches still see every chat; only the rail shows fewer. `hasNextPage` is this section's own
+ * pagination.
  */
-const MAX_VISIBLE_CHATS = 5;
-
-/**
- * A section's unpinned chats for the rail, and whether it needs "More": past the cap here, or another page on the
- * server, whose first page may hold only pinned chats. `hasNextPage` is this section's own pagination.
- */
-function railRows(conversations: Conversation[], hasNextPage: boolean) {
-  const rest = conversations.filter((conversation) => conversation.isPinned !== true);
+function railRows(conversations: Conversation[], hasNextPage: boolean, limit: number) {
+  const { pinned, rest } = splitPinned(conversations);
   return {
-    rows: rest.slice(0, MAX_VISIBLE_CHATS),
-    hasMore: rest.length > MAX_VISIBLE_CHATS || (conversations.length > 0 && hasNextPage),
+    rows: [...pinned, ...rest.slice(0, limit)],
+    hasMore: rest.length > limit || (conversations.length > 0 && hasNextPage),
   };
 }
 
@@ -41,12 +38,12 @@ function railRows(conversations: Conversation[], hasNextPage: boolean) {
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
 /**
- * Chat sections in the rail's own scroller: "Pinned", then "Shared chats", then "Your chats". Pinned holds every chat
- * the viewer pinned from either list, newest activity first, and shows only while one is pinned; a pinned chat is
- * listed there alone. Shared chats shows only when it has a chat, unless the slots offer a way to start one
- * (`useSharedChatsStart`): then it stays, with a + and a line while empty. Your chats files its rows under the day of their
- * last activity (Today, Yesterday, Last 7 days, Older), showing only the days that have one. Each lists at most
- * MAX_VISIBLE_CHATS rows, then "More", which opens that section in full.
+ * Chat sections in the rail's own scroller: "Shared chats", then "Your chats". A chat the viewer pinned leads the list
+ * it is in, so the rail still says who can read it. Shared chats shows only when it has a chat, unless the slots offer
+ * a way to start one (`useSharedChatsStart`): then it stays, with a + and a line while empty. Your chats files its
+ * unpinned rows under the day of their last activity (Today, Yesterday, Last 7 days, Older), showing only the days that
+ * have one, under its pins. Each lists all its pins and at most RAIL_SHARED_UNPINNED_ROWS (Shared chats) or
+ * RAIL_UNPINNED_ROWS (Your chats) others, then "More", which opens the rest of that section.
  *
  * Wrapped in React.memo to prevent parent-cascade re-renders.
  */
@@ -66,12 +63,9 @@ export const ChatSections = React.memo(function ChatSections({
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pagination = useChatStore((s) => s.pagination);
   const sharedPagination = useChatStore((s) => s.sharedPagination);
-  // The first load keeps the room Pinned and Shared chats took last time, so nothing under them moves when the lists
-  // arrive; from the first frame, before the effect that starts the load. A row count each, never a title.
-  const [lastTime] = useState(() => ({
-    pinnedRows: Math.min(readRailMemory('pinnedRows') ?? 0, MAX_VISIBLE_CHATS + 1),
-    sharedRows: Math.min(readRailMemory('sharedRows') ?? 0, MAX_VISIBLE_CHATS + 1),
-  }));
+  // The first load keeps the room Shared chats took last time, its pins included, so nothing under it moves when the
+  // lists arrive; from the first frame, before the effect that starts the load. A row count, never a title.
+  const [lastTime] = useState(() => ({ sharedRows: readRailMemory('sharedRows') ?? 0 }));
   const sharedStart = chatSlots.useSharedChatsStart?.() ?? null;
   const listsLoadedAt = useChatStore((s) => s.conversationsLoadedAt);
   const firstLoadPending = useChatStore((s) => s.conversationsLoadedAt === null && !s.conversationsError);
@@ -108,55 +102,32 @@ export const ChatSections = React.memo(function ChatSections({
 
   // Each section ORs in only its own pagination, and only when it has items.
   const shared = useMemo(
-    () => railRows(sharedConversations, sharedPagination?.hasNextPage ?? false),
+    () => railRows(sharedConversations, sharedPagination?.hasNextPage ?? false, RAIL_SHARED_UNPINNED_ROWS),
     [sharedConversations, sharedPagination],
   );
-  const your = useMemo(() => railRows(conversations, pagination?.hasNextPage ?? false), [conversations, pagination]);
+  const your = useMemo(
+    () => railRows(conversations, pagination?.hasNextPage ?? false, RAIL_UNPINNED_ROWS),
+    [conversations, pagination],
+  );
   // Days from the viewer's local midnight, which moves on by itself: a rail left open overnight regroups at midnight.
+  // The pins come first, with no label of their own.
   const today = useLocalDay();
-  const yourDays = useMemo(() => getNonEmptyGroups(groupConversationsByTime(your.rows, today)), [your.rows, today]);
-  // Both lists' pins in one order, newest activity first; the server lists a chat in one of the two only.
-  const pinned = useMemo(() => {
-    const all = splitPinned([...conversations, ...sharedConversations]).pinned;
-    return { rows: all.slice(0, MAX_VISIBLE_CHATS), hasMore: all.length > MAX_VISIBLE_CHATS };
-  }, [conversations, sharedConversations]);
+  const yourDays = useMemo(() => groupConversationsWithPinned(your.rows, today), [your.rows, today]);
 
-  // Rows each section shows, its More included.
-  const pinnedRowsShown = pinned.rows.length + (pinned.hasMore ? 1 : 0);
+  // Rows Shared chats shows, its More included.
   const sharedRowsShown = shared.rows.length + (shared.hasMore ? 1 : 0);
-  const reservePinned = lastTime.pinnedRows > 0 && firstLoadPending && pinnedRowsShown === 0;
   const reserveShared = lastTime.sharedRows > 0 && firstLoadPending && sharedRowsShown === 0;
-  // What the next first load keeps room for: what the sections show after each load, and as they change.
+  // What the next first load keeps room for: what the section shows after each load, and as it changes.
   useEffect(() => {
     if (listsLoadedAt === null) return;
-    writeRailMemory('pinnedRows', pinnedRowsShown);
     writeRailMemory('sharedRows', sharedRowsShown);
-  }, [listsLoadedAt, pinnedRowsShown, sharedRowsShown]);
+  }, [listsLoadedAt, sharedRowsShown]);
 
   const convIds = useMemo(() => new Set(conversations.map((c) => c.id)), [conversations]);
   const activePendingConversations = usePendingForSidebar(convIds, 'global');
 
   return (
     <Flex direction="column" gap="4">
-      {/* Pinned: earned by a pinned chat, so hidden while nothing is pinned */}
-      {(pinned.rows.length > 0 || reservePinned) && (
-        <ChatSection
-          variant="rail"
-          title={t('chat.pinned')}
-          conversations={pinned.rows}
-          isLoading={isConversationsLoading || reservePinned}
-          hasError={!!conversationsError}
-          currentConversationId={currentConversationId}
-          onSelectConversation={handleSelectConversation}
-          onNewChat={handleNewChat}
-          // Its rows and its More: the ones it showed last time while the first load is out, then the ones it is
-          // about to show while the skeleton fades, so the section keeps one height.
-          skeletonCount={reservePinned ? lastTime.pinnedRows : pinnedRowsShown}
-          hasMore={pinned.hasMore}
-          onMore={() => onOpenMoreChats('pinned')}
-        />
-      )}
-
       {/* Shared chats: earned by a chat being in it, so hidden while empty, unless it can start one */}
       {(sharedRowsShown > 0 || reserveShared || sharedStart) && (
         <ChatSection
@@ -180,7 +151,7 @@ export const ChatSections = React.memo(function ChatSections({
         />
       )}
 
-      {/* Your chats: the unpinned ones, by day, with a + that starts a new chat */}
+      {/* Your chats: the pinned ones, then the rest by day, with a + that starts a new chat */}
       <ChatSection
         variant="rail"
         title={t('chat.yourChats')}
@@ -195,8 +166,7 @@ export const ChatSections = React.memo(function ChatSections({
         hasMore={your.hasMore}
         onMore={() => onOpenMoreChats('your')}
         pendingConversations={activePendingConversations}
-        // Empty only because every chat of yours is pinned: they are right above, so no line says chats will appear.
-        emptyStateText={conversations.length > 0 ? null : t('chat.yourChatsEmpty')}
+        emptyStateText={t('chat.yourChatsEmpty')}
       />
     </Flex>
   );

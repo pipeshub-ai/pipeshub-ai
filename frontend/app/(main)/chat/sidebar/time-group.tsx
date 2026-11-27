@@ -19,12 +19,11 @@ import type { Conversation } from '@/chat/types';
 // Re-export for consumers that still import from here
 export { TIME_GROUP_KEYS, type TimeGroupKey };
 
-/** A time bucket, or the owner's pinned chats shown above all of them. */
+/** A time bucket, or the owner's pinned chats shown above all of them, with no label. */
 export type SidebarGroupKey = TimeGroupKey | 'Pinned';
 
-/** Maps the fixed group keys to their i18n translation key */
-const TIME_GROUP_I18N: Record<SidebarGroupKey, string> = {
-  'Pinned': 'chat.pinned',
+/** Maps the time group keys to their i18n translation key */
+const TIME_GROUP_I18N: Record<TimeGroupKey, string> = {
   'Today': 'timeGroup.today',
   'Yesterday': 'timeGroup.yesterday',
   'Previous 7 Days': 'timeGroup.previous7Days',
@@ -82,7 +81,8 @@ interface TimeGroupProps {
 
 /**
  * TimeGroup — renders a time-period sub-heading ("Today", "Yesterday", …)
- * followed by the list of chat items in that period.
+ * followed by the list of chat items in that period. The pinned chats lead
+ * the list with no sub-heading: their pin marks them.
  */
 export function TimeGroup({
   label,
@@ -100,15 +100,17 @@ export function TimeGroup({
   return (
     <Flex direction="column">
       {/* Sub-heading: a quiet, non-interactive 32px label row over the group's rows */}
-      <Flex
-        align="center"
-        data-sidebar-sub-label=""
-        style={{ height: ELEMENT_HEIGHT, padding: '0 var(--space-3)', flexShrink: 0 }}
-      >
-        <Text size="1" weight="regular" style={{ color: 'var(--text-secondary)' }}>
-          {t(TIME_GROUP_I18N[label])}
-        </Text>
-      </Flex>
+      {label !== 'Pinned' && (
+        <Flex
+          align="center"
+          data-sidebar-sub-label=""
+          style={{ height: ELEMENT_HEIGHT, padding: '0 var(--space-3)', flexShrink: 0 }}
+        >
+          <Text size="1" weight="regular" style={{ color: 'var(--text-secondary)' }}>
+            {t(TIME_GROUP_I18N[label])}
+          </Text>
+        </Flex>
+      )}
 
       {/* Chat items: rows sit flush, one 36px row after another */}
       <Flex direction="column">

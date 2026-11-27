@@ -18,13 +18,13 @@ import {
 } from '@/chat/commands';
 import { ownerLabel, sharedByText } from '@/chat/components/chat-panel/slash-command-menu';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
-import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
+import { locateMentionNames, mentionLabel, withheldSourceSpans, withWithheldSpans, type MentionNode } from '@/chat/utils/node-mentions';
 import { CHAT_LINK_STYLE, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
 import { parseQuotedSelection, readableQuotedSelection } from '@/chat/utils/quoted-selection';
 import { chatExtension, chatSlots } from '@/config';
 import { questionDisplay } from './question-display';
 import { InlinePasteChip } from './sent-paste-chip';
-import { SourceChip } from '../source-chip';
+import { SourceChip, WithheldSourceChip } from '../source-chip';
 
 export interface ExpandableUserQueryProps {
   question: string;
@@ -39,6 +39,8 @@ export interface ExpandableUserQueryProps {
    * applied-filter pill under the question stays: it is the filter, the chip the mention.
    */
   mentions?: readonly MentionNode[];
+  /** Where in `question` the server wrote the word for a source the reader can't open (the row's `withheldSources`). */
+  withheldSources?: readonly number[];
   /** Under a byline: 20 px, 18 px when `compact`. Without it the window width decides. */
   headline?: { compact: boolean };
 }
@@ -57,14 +59,24 @@ const HEADLINE_TRACKING_VARS = Object.fromEntries(
 ) as React.CSSProperties;
 
 /** The heading with each named source as its chip; the text between goes through `withLinks`. */
-function withSources(text: string, mentions: readonly MentionNode[]): React.ReactNode[] {
-  const spans = mentions.length > 0 ? locateMentionNames(text, mentions) : [];
+function withSources(
+  text: string,
+  mentions: readonly MentionNode[],
+  withheld: ReadonlyArray<{ start: number; end: number }>,
+): React.ReactNode[] {
+  const spans = withWithheldSpans(mentions.length > 0 ? locateMentionNames(text, mentions) : [], withheld);
   if (spans.length === 0) return withLinks(text, 't0');
   const out: React.ReactNode[] = [];
   let cursor = 0;
   for (const span of spans) {
     if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
-    out.push(<SourceChip key={`s${span.start}`} source={span.node} label={mentionLabel(span.node)} />);
+    out.push(
+      span.node ? (
+        <SourceChip key={`s${span.start}`} source={span.node} label={mentionLabel(span.node)} />
+      ) : (
+        <WithheldSourceChip key={`w${span.start}`} />
+      )
+    );
     cursor = span.end;
   }
   if (cursor < text.length) out.push(...withLinks(text.slice(cursor), `t${cursor}`));
@@ -356,6 +368,7 @@ export function ExpandableUserQuery({
   command,
   headline,
   mentions = NO_MENTIONS,
+  withheldSources,
 }: ExpandableUserQueryProps) {
   const [hovered, setHovered] = useState(false);
   const catalog = useCommandCatalog((s) => s.commands);
@@ -421,7 +434,7 @@ export function ExpandableUserQuery({
           color: 'var(--text-primary)',
         }}
       >
-        {withSources(display.heading, mentions)}
+        {withSources(display.heading, mentions, withheldSourceSpans(display.heading, question, withheldSources))}
       </h1>
     </Text>
   );

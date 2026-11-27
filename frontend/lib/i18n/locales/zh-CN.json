@@ -1101,7 +1101,6 @@
     "recents": "最近",
     "sharedChats": "共享的聊天",
     "sharedBy": "由 {{name}} 共享",
-    "agentChat": "智能体聊天",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -1197,8 +1196,6 @@
     "deleteChat": "删除",
     "pin": "置顶",
     "unpin": "取消置顶",
-    "pinned": "已置顶的聊天",
-    "pinnedChatsEmpty": "您置顶的聊天将显示在这里",
     "pinnedRowSuffix": "，已置顶",
     "sidebarRunning": "后台处理中",
     "sidebarRunningOpen": "处理中",
@@ -1299,6 +1296,8 @@
       "allSignedIn": "已登录。请重试该请求。",
       "retryMessage": "我已重新登录 {{servers}}。请再试一次。"
     },
+    "loadFailedTitle": "无法加载此聊天",
+    "loadFailedDescription": "请检查网络连接后重试。",
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "响应即将停止，已生成的部分内容将被保留。",
@@ -1725,8 +1724,12 @@
     "stopListening": "停止聆听",
     "voiceInput": "语音输入",
     "regenerateResponse": "重新生成回答",
-    "quoteSelection": "引用",
-    "quoteSelectionHint": "针对这段提问",
+    "selectionActions": {
+      "label": "所选文本",
+      "reply": "回复",
+      "ask": "询问 {{productName}}",
+      "copied": "已复制"
+    },
     "quotedExcerpt": "已引用",
     "quotedExcerptTruncated": "已引用（已截断）",
     "dismissQuote": "移除引用",
@@ -1835,12 +1838,25 @@
       "notice": {
         "expired": "{{server}} 上的 {{tool}} 未运行：请求已过期。如仍需要，请再次提问。",
         "passed": "{{server}} 上的 {{tool}} 未获批准，因此未运行。",
+        "askedElse": "你问了别的问题，因此 {{server}} 上的 {{tool}} 未运行。",
         "waiting": "{{server}} 上的 {{tool}} 正在等待对话所有者批准。",
         "waitingFor": "{{server}} 上的 {{tool}} 正在等待 {{name}} 批准。",
         "approvedBy": "{{name}} 已批准，因此它已运行。",
         "approvedNotRun": "{{name}} 已批准，但它没有运行。",
         "declinedBy": "{{name}} 已拒绝。",
         "requestExpired": "此请求已过期。"
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} 未运行：请求已过期。如仍需要，请再次提问。",
+        "passed": "{{tool}} 未获批准，因此未运行。",
+        "askedElse": "你问了别的问题，因此 {{tool}} 未运行。",
+        "waiting": "{{tool}} 正在等待对话所有者批准。",
+        "waitingFor": "{{tool}} 正在等待 {{name}} 批准。"
+      },
+      "builtIn": {
+        "openWebPage": "打开网页",
+        "runCode": "运行代码",
+        "installPackages": "安装代码包"
       },
       "receipt": {
         "allowed": "你允许了 {{tool}}",
@@ -1851,10 +1867,15 @@
       },
       "restricted": {
         "notice": "其中可能包含并非所有人都能打开的来源中的内容。能阅读 {{destination}} 的任何人都会看到它。",
-        "goesTo": "发送到"
+        "goesTo": "发送到",
+        "noticeAnywhere": "其中可能包含并非所有人都能打开的来源中的内容，并且可能会被发送到 {{productName}} 之外。"
       }
     },
     "selectedAlone": "{{name}}（仅此项目）",
+    "withheldSource": {
+      "label": "私有来源",
+      "tooltip": "你无法打开此来源。"
+    },
     "noConnectorsFound": "未找到连接器",
     "treeSearching": "正在搜索…",
     "treeSearchFailed": "搜索失败，请重试。",
@@ -1931,6 +1952,7 @@
     },
     "answerFailedTitle": "此回答失败",
     "answerFailedRetry": "重试",
+    "answerFailedAskAgain": "重新提问",
     "cannotOpenSource": "无法打开此文档。它可能已被删除，或者您没有访问权限。",
     "queue": {
       "title": "排队中 · {{count}}",

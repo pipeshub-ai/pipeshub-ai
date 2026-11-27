@@ -5,8 +5,8 @@
  * marker in it must never become a card.
  */
 import React from 'react';
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, cleanup, fireEvent, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import type { ChatArtifact } from '../../../types';
@@ -42,6 +42,7 @@ vi.mock('../answer-content', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
+import { useChatStore } from '../../../store';
 import { ChatResponse } from '../chat-response';
 
 afterEach(() => cleanup());
@@ -156,5 +157,63 @@ describe('ChatResponse — the space above the answer', () => {
     const box = status.parentElement!.parentElement as HTMLElement;
     expect(box.style.marginTop).toBe('var(--space-5)');
     expect(box.style.paddingTop).toBe('');
+  });
+});
+
+describe('ChatResponse — text selected in the answer', () => {
+  const initialChat = useChatStore.getState();
+
+  /** Selects the answer's words and lifts the pointer on them: what the bar then offers, or null with no bar. */
+  function offered(): (string | undefined)[] | null {
+    const answer = screen.getByTestId('answer');
+    const range = {
+      commonAncestorContainer: answer,
+      getBoundingClientRect: () => ({ top: 80, left: 40, width: 120, height: 18 }),
+    };
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false, rangeCount: 1, toString: () => 'Leaves change colour', getRangeAt: () => range, removeAllRanges: () => {},
+    } as unknown as Selection);
+    fireEvent.pointerUp(answer);
+    const bar = screen.queryByTestId('quote-selection-toolbar');
+    return bar && within(bar).getAllByRole('button').map((b) => b.querySelector('.rt-Text')?.textContent ?? undefined);
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+  });
+  afterEach(() => {
+    useChatStore.setState({ ...initialChat, slots: {}, activeSlotId: null });
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function open(isOwner: boolean | null, props: Partial<React.ComponentProps<typeof ChatResponse>> = {}) {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    useChatStore.setState({ activeSlotId: slotId });
+    useChatStore.getState().updateSlot(slotId, { isOwner });
+    render(<ChatResponse question="Why?" answer="Leaves change colour in autumn." {...props} />, { wrapper: Theme });
+  }
+
+  it('a chat of your own offers Reply, Ask PipesHub and Copy', () => {
+    open(true);
+    expect(offered()).toEqual(['Reply', 'Ask PipesHub', 'Copy']);
+  });
+
+  it('a viewer of someone else\'s chat gets Copy alone', () => {
+    open(false);
+    expect(offered()).toEqual(['Copy']);
+  });
+
+  it('so does anyone in a chat that takes no message now', () => {
+    open(true, { canSend: false });
+    expect(offered()).toEqual(['Copy']);
+  });
+
+  it('an answer still being written offers nothing', () => {
+    open(true, { answer: '', isStreaming: true, streamingContent: 'Leaves change colour in autumn.' });
+    expect(offered()).toBeNull();
   });
 });

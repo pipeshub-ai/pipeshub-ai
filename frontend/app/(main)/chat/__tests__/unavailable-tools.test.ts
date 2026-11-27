@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
-  connectToolsPresentation,
   connectableHere,
   parseUnavailableTools,
   toolsUnavailableNotice,
@@ -40,6 +39,13 @@ describe('tools_unavailable event', () => {
     });
   });
 
+  it('keeps the mark of a tool the answer called, and nothing but a true one', () => {
+    expect(parseUnavailableTools([{ ...GMAIL, needed: true }, { ...GITHUB, needed: 'yes' }])).toEqual([
+      { ...GMAIL, needed: true },
+      GITHUB,
+    ]);
+  });
+
   it('drops malformed items and repeats, and has nothing when none are left', () => {
     expect(
       parseUnavailableTools([
@@ -65,18 +71,6 @@ describe('connectableHere', () => {
     expect(connectableHere({ ...GITHUB, problem: 'not_found' }, false)).toBe(false);
     expect(connectableHere({ ...GITHUB, authMode: 'none' }, false)).toBe(false);
     expect(connectableHere({ ...GMAIL, userCanConnect: false }, false)).toBe(false);
-  });
-});
-
-describe('connectToolsPresentation', () => {
-  it('opens the card when the answer names a tool it could not use', () => {
-    expect(connectToolsPresentation("I can't read your Gmail until you connect it.", [GMAIL])).toBe('card');
-    expect(connectToolsPresentation('GITHUB is not connected.', [GMAIL, GITHUB])).toBe('card');
-  });
-
-  it('keeps a chip for an answer that never needed them', () => {
-    expect(connectToolsPresentation('Coffee is great, I like it strong.', [GMAIL, GITHUB])).toBe('chip');
-    expect(connectToolsPresentation('', [GMAIL])).toBe('chip');
   });
 });
 

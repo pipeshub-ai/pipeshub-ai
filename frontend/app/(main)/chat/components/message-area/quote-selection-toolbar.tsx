@@ -1,18 +1,21 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useTranslation } from 'react-i18next';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useCommandStore } from '@/lib/store/command-store';
 import { clipQuotedSelection, normalizeQuotedSelection } from '../../utils/quoted-selection';
+import { SelectionActions } from './selection-actions';
 
 interface QuoteSelectionLayerProps {
   enabled: boolean;
+  /** The reader may send here: the bar offers Reply and Ask, not Copy alone. */
+  canQuote: boolean;
   children: React.ReactNode;
 }
 
 interface ToolbarState {
+  /** The words as selected: what Copy copies. */
+  words: string;
+  /** The excerpt the composer takes. */
   text: string;
   truncated: boolean;
   x: number;
@@ -31,6 +34,7 @@ function selectionInRoot(root: HTMLElement): ToolbarState | null {
   const rect = range.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return null;
   return {
+    words: sel.toString().trim(),
     text,
     truncated,
     x: rect.left + rect.width / 2,
@@ -38,15 +42,19 @@ function selectionInRoot(root: HTMLElement): ToolbarState | null {
   };
 }
 
+/** Between the bar and the selection, and between the bar and the window's edges. */
+const GAP_PX = 4;
+const EDGE_PX = 8;
+
 /**
- * ChatGPT-style quote: select prose in a finished answer, then Quote
- * puts the excerpt on the composer as a chip (same thread).
+ * Select prose in a finished answer, then Reply or Ask puts the excerpt on the composer as a chip (same thread).
+ * Someone who may not send can copy it.
  */
-export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerProps) {
-  const { t } = useTranslation();
+export function QuoteSelectionLayer({ enabled, canQuote, children }: QuoteSelectionLayerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<ToolbarState | null>(null);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
 
   const hide = useCallback(() => setToolbar(null), []);
 
@@ -106,9 +114,19 @@ export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerPr
     };
   }, [enabled, hide, showFromSelection]);
 
-  const handleQuote = (event: React.MouseEvent | React.PointerEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
+  // Over the selection and centred on it, but always inside the window: one near a phone's side, or one that starts
+  // above the screen.
+  useLayoutEffect(() => {
+    const bar = toolbarRef.current;
+    if (!toolbar || !bar) return;
+    const half = bar.offsetWidth / 2;
+    setAt({
+      top: Math.max(EDGE_PX, toolbar.y - bar.offsetHeight - GAP_PX),
+      left: Math.max(EDGE_PX + half, Math.min(toolbar.x, window.innerWidth - EDGE_PX - half)),
+    });
+  }, [toolbar]);
+
+  const handleQuote = () => {
     if (!toolbar) return;
     useCommandStore.getState().dispatch('showQuoteBar', {
       text: toolbar.text,
@@ -117,58 +135,27 @@ export function QuoteSelectionLayer({ enabled, children }: QuoteSelectionLayerPr
     window.getSelection()?.removeAllRanges();
     setToolbar(null);
   };
+  const quote = canQuote ? handleQuote : undefined;
 
   return (
     <div ref={rootRef} data-quotable="" data-testid="answer-quotable">
       {children}
       {toolbar && (
-        <Flex
+        <SelectionActions
           ref={toolbarRef}
           data-testid="quote-selection-toolbar"
-          align="center"
-          gap="1"
-          role="toolbar"
-          aria-label={t('chat.quoteSelection', 'Quote')}
-          onMouseDown={(event) => event.preventDefault()}
+          text={toolbar.words}
+          onReply={quote}
+          onAsk={quote}
           style={{
             position: 'fixed',
-            left: toolbar.x,
-            top: Math.max(8, toolbar.y - 8),
-            transform: 'translate(-50%, -100%)',
+            // Placed before the first paint (a layout effect), so it never shows at 0, 0.
+            top: at?.top ?? 0,
+            left: at?.left ?? 0,
+            transform: 'translateX(-50%)',
             zIndex: 50,
-            padding: '4px 8px',
-            minHeight: 44,
-            borderRadius: 'var(--radius-3)',
-            background: 'var(--color-panel-solid)',
-            border: '1px solid var(--olive-6)',
-            boxShadow: 'var(--shadow-3)',
           }}
-        >
-          <button
-            type="button"
-            data-testid="quote-selection-button"
-            onClick={handleQuote}
-            aria-label={t('chat.quoteSelectionHint', 'Ask about this')}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              minHeight: 36,
-              padding: '0 10px',
-              border: 'none',
-              borderRadius: 'var(--radius-2)',
-              background: 'var(--olive-3)',
-              color: 'var(--slate-12)',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            <MaterialIcon name="format_quote" size={18} color="var(--slate-11)" />
-            <Text size="2" weight="medium">
-              {t('chat.quoteSelection', 'Quote')}
-            </Text>
-          </button>
-        </Flex>
+        />
       )}
     </div>
   );

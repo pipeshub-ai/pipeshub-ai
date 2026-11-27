@@ -65,6 +65,16 @@ export class StreamIdleError extends StreamError {
   }
 }
 
+/**
+ * The connection ended before the answer did. Nothing says the answer failed: the server goes on with a run whose
+ * reader is gone. `started` is false when not even the response came, so the request may never have arrived.
+ */
+export class StreamDroppedError extends StreamError {
+  constructor(message: string, readonly started: boolean) {
+    super(message);
+  }
+}
+
 export function busyStreamMessage(retryAfterSeconds?: number): string {
   return retryAfterSeconds
     ? `PipesHub is busy right now. Please try again in ${retryAfterSeconds} second${retryAfterSeconds === 1 ? '' : 's'}.`
@@ -127,5 +137,5 @@ export function streamFailure(
   messages: StreamErrorMessages = STREAM_ERROR_MESSAGES,
 ): StreamError {
   if (error instanceof StreamError) return error;
-  return new StreamError(responseStarted ? messages.interrupted : messages.offline);
+  return new StreamDroppedError(responseStarted ? messages.interrupted : messages.offline, responseStarted);
 }

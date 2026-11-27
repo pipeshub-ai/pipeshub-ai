@@ -17,6 +17,8 @@ export interface UnavailableTool {
   sharedCredential: boolean;
   /** The person asking can connect it themselves. */
   userCanConnect: boolean;
+  /** The answer called the tool's stub, so it needed the tool. A list saved before that named every tool left out. */
+  needed?: boolean;
 }
 
 export interface ToolsUnavailableNotice {
@@ -50,6 +52,7 @@ export function parseUnavailableTool(raw: unknown): UnavailableTool | null {
     ...(authMode ? { authMode } : {}),
     sharedCredential: r.sharedCredential === true,
     userCanConnect: r.userCanConnect === true,
+    ...(r.needed === true ? { needed: true } : {}),
   };
 }
 
@@ -85,21 +88,4 @@ export function connectableHere(item: UnavailableTool, serviceAccount: boolean):
   if (serviceAccount || !item.userCanConnect || item.sharedCredential || item.problem === 'not_found') return false;
   if (item.kind === 'toolset') return true;
   return item.authMode === 'oauth' || item.authMode === 'api_token' || item.authMode === 'headers';
-}
-
-export type ConnectToolsPresentation = 'card' | 'chip';
-
-/**
- * How an answer that went on without some tools offers to connect them. The full card when the answer names one
- * of them (the model said it needed it); otherwise a small chip, so an answer that never needed them stays quiet.
- */
-export function connectToolsPresentation(answer: string, items: readonly UnavailableTool[]): ConnectToolsPresentation {
-  const text = answer.toLocaleLowerCase();
-  const named = items.some((item) =>
-    [item.displayName, item.name].some((label) => {
-      const needle = label?.trim().toLocaleLowerCase();
-      return Boolean(needle && needle.length >= 2 && text.includes(needle));
-    }),
-  );
-  return named ? 'card' : 'chip';
 }

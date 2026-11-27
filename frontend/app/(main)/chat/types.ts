@@ -1729,6 +1729,8 @@ export interface ConversationMessage {
   updatedAt: string;
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
+  /** Where in `content` the server wrote the word for a source the reader can't open: the screen draws it as one. */
+  withheldSources?: number[];
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
   /** `user_query` sent as a /command (SLASH1): what was typed; `content` is the text that was sent. */
@@ -1768,8 +1770,16 @@ export interface ConversationMessage {
   notFound?: unknown;
   /** R32REPO-FU-1: what the run tried and could not do; read by `couldNotDoOf`. */
   limits?: unknown;
-  /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
-  answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
+  /**
+   * The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed.
+   * In a shared chat, someone else's answer says one class of reason: what the reader can't open (`no_access`), its
+   * asker's own access (`personal`), an agent the reader can't use (`agent`), a deleted source (`deleted`), or its
+   * asker's stop before anything recorded what it used (`stopped`).
+   */
+  answerHidden?: {
+    redacted: true;
+    reason: 'no_longer_accessible' | 'access_check_unavailable' | 'no_access' | 'personal' | 'agent' | 'deleted' | 'stopped';
+  };
   /** Tools the person asking had not connected; the answer went on without them. Parsed before use. */
   unavailableTools?: unknown;
 }
@@ -2055,6 +2065,15 @@ export interface DurableAgentRunHandle {
   runId: string;
 }
 
+/** Loads of a chat's history that failed in a row: the next one is tried by itself (`useLoadRetry`). */
+export interface FailedLoad {
+  count: number;
+  /** Epoch ms of the last one. */
+  at: number;
+  /** The next one is under way. `isInitialized` stays as it is, so what is drawn stays drawn. */
+  trying?: boolean;
+}
+
 /**
  * Per-conversation state stored in the slots dictionary.
  *
@@ -2093,6 +2112,8 @@ export interface ChatSlot {
   refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
+  /** Set while loading its history fails; a load that succeeds clears it. */
+  failedLoad?: FailedLoad | null;
   /**
    * The loaded conversation was still `Inprogress` on the server — a run that kept going after this
    * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.

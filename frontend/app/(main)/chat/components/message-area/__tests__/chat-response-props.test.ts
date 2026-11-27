@@ -114,6 +114,13 @@ describe('chatResponseProps', () => {
     expect(props.layout).toBeUndefined();
   });
 
+  it("sends Ask again the chat's own way, unless the list says how: Try again's way is not Ask again's", () => {
+    expect(chatResponseProps(settled, true, context()).onAskAgain).toBeUndefined();
+    const onAskAgain = vi.fn();
+    // Not a last answer's alone, as Try again is, nor only for who may send: a hidden answer says who is offered it.
+    expect(chatResponseProps(settled, false, context({ canSend: false, onAskAgain })).onAskAgain).toBe(onAskAgain);
+  });
+
   it('offers no retry to someone who cannot send', () => {
     const props = chatResponseProps(settled, true, context({ canSend: false }));
 

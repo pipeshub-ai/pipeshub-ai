@@ -1101,7 +1101,6 @@
     "recents": "最近的對話",
     "sharedChats": "共享的對話",
     "sharedBy": "由 {{name}} 分享",
-    "agentChat": "智能體聊天",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
@@ -1197,8 +1196,6 @@
     "deleteChat": "刪除",
     "pin": "置頂",
     "unpin": "取消置頂",
-    "pinned": "已置頂的對話",
-    "pinnedChatsEmpty": "您置頂的對話將顯示在這裡",
     "pinnedRowSuffix": "，已置頂",
     "sidebarRunning": "背景處理中",
     "sidebarRunningOpen": "處理中",
@@ -1299,6 +1296,8 @@
       "allSignedIn": "已登入。請重試該請求。",
       "retryMessage": "我已重新登入 {{servers}}。請再試一次。"
     },
+    "loadFailedTitle": "無法載入此聊天",
+    "loadFailedDescription": "請檢查網路連線後再試一次。",
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "回應即將停止，已產生的部分內容將被保留。",
@@ -1725,8 +1724,12 @@
     "stopListening": "停止聆聽",
     "voiceInput": "語音輸入",
     "regenerateResponse": "重新產生回覆",
-    "quoteSelection": "引用",
-    "quoteSelectionHint": "針對這段提問",
+    "selectionActions": {
+      "label": "所選文字",
+      "reply": "回覆",
+      "ask": "詢問 {{productName}}",
+      "copied": "已複製"
+    },
     "quotedExcerpt": "已引用",
     "quotedExcerptTruncated": "已引用（已截斷）",
     "dismissQuote": "移除引用",
@@ -1835,12 +1838,25 @@
       "notice": {
         "expired": "{{server}} 上的 {{tool}} 未執行：請求已過期。如仍需要，請再次提問。",
         "passed": "{{server}} 上的 {{tool}} 未獲核准，因此未執行。",
+        "askedElse": "你問了別的問題，因此 {{server}} 上的 {{tool}} 未執行。",
         "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。",
         "waitingFor": "{{server}} 上的 {{tool}} 正在等待 {{name}} 核准。",
         "approvedBy": "{{name}} 已核准，因此它已執行。",
         "approvedNotRun": "{{name}} 已核准，但它沒有執行。",
         "declinedBy": "{{name}} 已拒絕。",
         "requestExpired": "此請求已過期。"
+      },
+      "noticeAlone": {
+        "expired": "{{tool}} 未執行：請求已過期。如仍需要，請再次提問。",
+        "passed": "{{tool}} 未獲核准，因此未執行。",
+        "askedElse": "你問了別的問題，因此 {{tool}} 未執行。",
+        "waiting": "{{tool}} 正在等待對話擁有者核准。",
+        "waitingFor": "{{tool}} 正在等待 {{name}} 核准。"
+      },
+      "builtIn": {
+        "openWebPage": "開啟網頁",
+        "runCode": "執行程式碼",
+        "installPackages": "安裝程式碼套件"
       },
       "receipt": {
         "allowed": "你允許了 {{tool}}",
@@ -1851,10 +1867,15 @@
       },
       "restricted": {
         "notice": "其中可能包含並非所有人都能開啟的來源中的內容。能閱讀 {{destination}} 的任何人都會看到它。",
-        "goesTo": "傳送到"
+        "goesTo": "傳送到",
+        "noticeAnywhere": "其中可能包含並非所有人都能開啟的來源中的內容，並且可能會被傳送到 {{productName}} 之外。"
       }
     },
     "selectedAlone": "{{name}}（僅此項目）",
+    "withheldSource": {
+      "label": "私人來源",
+      "tooltip": "你無法開啟此來源。"
+    },
     "noConnectorsFound": "找不到連接器",
     "treeSearching": "正在搜尋…",
     "treeSearchFailed": "搜尋失敗，請重試。",
@@ -1931,6 +1952,7 @@
     },
     "answerFailedTitle": "此回答失敗",
     "answerFailedRetry": "重試",
+    "answerFailedAskAgain": "重新提問",
     "cannotOpenSource": "無法開啟此文件。它可能已被刪除，或者您沒有存取權限。",
     "queue": {
       "title": "排隊中 · {{count}}",

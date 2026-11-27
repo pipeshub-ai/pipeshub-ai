@@ -39,6 +39,8 @@ const { useToastStore } = await import('@/lib/store/toast-store');
 const { getThreadMessagePlainText } = await import('../runtime');
 const { streamMessageForSlot } = await import('../streaming');
 const { CHAT_STREAM_ERROR_MESSAGES } = await import('@/lib/api/stream-errors');
+const { apiClient } = await import('@/lib/api');
+const { ErrorType } = await import('@/lib/api/api-error');
 const { default: i18n } = await import('i18next');
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -129,9 +131,13 @@ describe('the failed row of a refused send', () => {
     expect(getThreadMessagePlainText(await failedRow(chat('conv-1')))).toBe(CHAT_STREAM_ERROR_MESSAGES.forbidden);
   });
 
-  it('a request that never reached the server keeps the line the app wrote', async () => {
+  it.each([
+    ['a new chat', null],
+    ['a chat whose server has nothing of it', 'conv-1'],
+  ])('a request that never reached the server keeps the line the app wrote: %s', async (_name, convId) => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
-    expect(getThreadMessagePlainText(await failedRow(chat('conv-1')))).toBe(CHAT_STREAM_ERROR_MESSAGES.offline);
+    vi.spyOn(apiClient, 'get').mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'Not found', statusCode: 404 });
+    expect(getThreadMessagePlainText(await failedRow(chat(convId)))).toBe(CHAT_STREAM_ERROR_MESSAGES.offline);
   });
 
   it("a run's own error is written for the reader and stays", async () => {
@@ -145,5 +151,55 @@ describe('the failed row of a refused send', () => {
     fetchMock.mockResolvedValueOnce(refusal(409, 'CONVERSATION_CHANGED'));
     await streamMessageForSlot(slotId, QUESTION, request, { resumeAskUserQuestion: true });
     expect(JSON.stringify(useToastStore.getState().toasts)).not.toContain(RAW);
+  });
+});
+
+// In a chat with no feed, a failure seen live kept the rows only this tab
+// held until a reload, so Try again asked the question anew as a new message, though the server had stored the
+// question and its failure: after a reload the question showed twice.
+describe('a failure the server stored', () => {
+  const SAID = 'The model is unavailable. Try again in a moment.';
+  const row = (_id: string, messageType: string, content: string) => ({ _id, messageType, content, createdAt: '2026-11-26T02:00:00.000Z' });
+  const detail = (messages: unknown[]) => ({ data: { conversation: { id: 'conv-1', title: 't', messages, access: { isOwner: true, accessLevel: 'owner' } } } });
+  const failedRun = () => sseResponse([sseFrame('RUN_ERROR', { type: 'RUN_ERROR', message: SAID, code: 'stream_error' })]);
+  const ids = (slotId: string) => useChatStore.getState().slots[slotId].messages.map((m) => m.id);
+
+  it('once its stream has ended, the turn takes the ids it was stored under, and shows what it showed', async () => {
+    fetchMock.mockImplementationOnce(async () => failedRun());
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue(
+      detail([row('m-old', 'user_query', 'earlier?'), row('m-old-a', 'bot_response', 'Earlier.'), row('m-q', 'user_query', QUESTION), row('m-err', 'error', RAW)]) as never,
+    );
+    const slotId = chat('conv-1');
+    const failed = await failedRow(slotId);
+    await vi.waitFor(() => expect(ids(slotId)).toEqual(['m-q', 'm-err']));
+    const { messages, rawMessages } = useChatStore.getState().slots[slotId];
+    expect(getThreadMessagePlainText(messages[1])).toBe(SAID);
+    expect(messages[1].metadata).toEqual(failed.metadata);
+    expect(rawMessages?.map((m) => m._id)).toEqual(['m-q', 'm-err']);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('a question stored with no failure after it (not stored yet, or asked since) leaves the turn as this tab holds it', async () => {
+    for (const stored of [
+      [row('m-err-old', 'error', 'An older failure.'), row('m-q', 'user_query', QUESTION)],
+      [row('m-q', 'user_query', QUESTION), row('m-a', 'bot_response', 'An answer.'), row('m-q2', 'user_query', 'next?'), row('m-err2', 'error', 'x')],
+    ]) {
+      fetchMock.mockImplementationOnce(async () => failedRun());
+      const get = vi.spyOn(apiClient, 'get').mockResolvedValue(detail(stored) as never);
+      const slotId = chat('conv-1');
+      await failedRow(slotId);
+      await vi.waitFor(() => expect(get).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 20));
+      expect(ids(slotId)).toEqual([undefined, expect.not.stringMatching(/^m-/)]);
+      get.mockRestore();
+    }
+  });
+
+  it('a send refused before its run began reads nothing back: the server stored nothing', async () => {
+    fetchMock.mockResolvedValueOnce(refusal(429, 'RATE_LIMITED', 'Too many requests.'));
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue(detail([]) as never);
+    await failedRow(chat('conv-1'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(get).not.toHaveBeenCalled();
   });
 });

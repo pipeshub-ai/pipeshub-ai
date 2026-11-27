@@ -55,6 +55,14 @@ describe('an answer that finishes in a chat the user is not looking at', () => {
     expect(t.action).toEqual({ label: 'Open chat', href: '/chat/?conversationId=conv-1' });
   });
 
+  it('opens the chat at the answer that finished, with its short highlight', () => {
+    const slotId = seed('conv-1');
+
+    notifyAnswerFinishedInBackground(slotId, false, 'answer-7');
+
+    expect(toasts()[0].action?.href).toBe('/chat/?conversationId=conv-1&messageId=answer-7');
+  });
+
   it('marks the chat unread', () => {
     const slotId = seed('conv-1');
 

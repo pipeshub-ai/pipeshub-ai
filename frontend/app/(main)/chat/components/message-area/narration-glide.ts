@@ -41,6 +41,9 @@ function startOf(el: Element): string {
  * arrive. When they move, they glide there from where they were being read, instead of leaving one place and fading
  * in at another. Every streaming commit notes where the answer's text sits; the commit that moves it into the trail
  * animates the trail's newest narration from that spot. With reduced motion it simply moves.
+ *
+ * Text still being written waits until it is known (`holdsLiveText`), so this moves words only when they read as the
+ * answer (`looksLikeAnswer`) and a step followed all the same.
  */
 export function useNarrationGlide(root: RefObject<HTMLElement | null>, isStreaming: boolean): void {
   const spot = useRef<AnswerSpot | null>(null);

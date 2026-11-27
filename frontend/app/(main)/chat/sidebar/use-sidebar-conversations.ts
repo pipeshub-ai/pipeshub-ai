@@ -1,14 +1,14 @@
 'use client';
 
 import { useEffect } from 'react';
-import { ChatApi } from '@/chat/api';
+import { ChatApi, type FetchConversationsOptions } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
 import { getCurrentUserId } from '@/chat/utils/current-user-id';
 import { startListRead, withHeldTitles } from '@/chat/utils/held-titles';
 import { useAuthStore } from '@/config';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
-import { SIDEBAR_CONVERSATIONS_PAGE_SIZE, SIDEBAR_LISTS_STALE_MS } from '../constants';
+import { RAIL_UNPINNED_ROWS, SIDEBAR_CONVERSATIONS_PAGE_SIZE, SIDEBAR_LISTS_STALE_MS } from '../constants';
 import { anyWorking, onJobListsRefresh, useJobListsRefresh } from '@/lib/harness-jobs/swr-keys';
 
 let inFlight: Promise<void> | null = null;
@@ -50,6 +50,27 @@ export function sidebarListsAreFresh(now = Date.now()): boolean {
   );
 }
 
+type SidebarList = 'owned' | 'shared';
+
+/**
+ * Page 1 of one of the rail's lists, and the pages after it while they hold fewer than RAIL_UNPINNED_ROWS unpinned
+ * chats: the server lists pins first, so the rail gets every pin and the newest chats under them, however many are
+ * pinned.
+ */
+async function readRailList(source: SidebarList, options: Omit<FetchConversationsOptions, 'source'>) {
+  let { conversations, pagination } = await ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source, ...options });
+  const listed = new Set(conversations.map((c) => c.id));
+  for (let page = 2; pagination.hasNextPage && conversations.filter((c) => c.isPinned !== true).length < RAIL_UNPINNED_ROWS; page += 1) {
+    const next = await ChatApi.fetchConversations(page, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source, ...options });
+    if (next.conversations.length === 0) break;
+    // A chat that moved up between two reads comes again: it stays where it was first listed.
+    conversations = [...conversations, ...next.conversations.filter((c) => !listed.has(c.id))];
+    next.conversations.forEach((c) => listed.add(c.id));
+    pagination = next.pagination;
+  }
+  return { conversations, pagination };
+}
+
 async function loadListsOnce(): Promise<void> {
   watchSidebarSession();
   const store = useChatStore.getState();
@@ -65,19 +86,12 @@ async function loadListsOnce(): Promise<void> {
     let projectsEnabled = false;
     const readOwned = (enabled: boolean) => {
       projectsEnabled = enabled;
-      return ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, {
-        source: 'owned',
-        excludeProjectChats: enabled,
-        ...quiet,
-      });
+      return readRailList('owned', { excludeProjectChats: enabled, ...quiet });
     };
     const flags = useFeatureFlagsStore.getState();
     const [owned, shared] = await Promise.all([
       flags.flags !== null ? readOwned(selectProjectsEnabled(flags)) : projectsEnabledOnceKnown().then(readOwned),
-      ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, {
-        source: 'shared',
-        ...quiet,
-      }),
+      readRailList('shared', quiet),
     ]);
     // Signed out, or someone else signed in, while this was in flight: these are not their chats.
     if (getCurrentUserId() !== userId) return;
@@ -130,7 +144,6 @@ export function loadSidebarConversations({ again = false }: { again?: boolean } 
   return flight;
 }
 
-type SidebarList = 'owned' | 'shared';
 const listFlights: Record<SidebarList, { promise: Promise<void> | null; again: boolean }> = {
   owned: { promise: null, again: false },
   shared: { promise: null, again: false },
@@ -142,8 +155,7 @@ async function loadOneList(list: SidebarList): Promise<void> {
   const projectsEnabled = selectProjectsEnabled(useFeatureFlagsStore.getState());
   const read = startListRead();
   try {
-    const result = await ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, {
-      source: list,
+    const result = await readRailList(list, {
       ...(list === 'owned' ? { excludeProjectChats: projectsEnabled } : {}),
       suppressErrorToast: true,
     });
