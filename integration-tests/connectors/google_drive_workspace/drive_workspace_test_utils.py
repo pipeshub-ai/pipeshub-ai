@@ -1178,19 +1178,30 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
 async def sync_once_to_its_end(
     pipeshub_client: PipeshubClient, connector_id: str, *, timeout: float | None = None
 ) -> None:
-    """Start a sync and wait until the product records a run as finished after it.
+    """Run one more sync and wait until it is recorded as finished with ``SUCCEEDED``.
 
-    The connector writes a record's permissions during the run that reads it, so once
-    ``lastSyncFinishedAtTimestamp`` moves past its value from before the restart and the
-    connector is IDLE again, no run that started earlier is still writing them. IDLE status
-    and stable record counts alone (``wait_for_sync_completion``) do not show that.
+    Disabling the connector stops a run still going, and a stopped run records a finish time too,
+    so the baseline is read only after no run is active. The connector writes a record's
+    permissions during the run that reads it: once a run started after that baseline has ended
+    successfully, no earlier run is still writing them. IDLE status and stable record counts
+    alone (``wait_for_sync_completion``) do not show that.
     """
-    finished_before = int(pipeshub_client.get_connector(connector_id).get("lastSyncFinishedAtTimestamp") or 0)
-    _restart_sync(pipeshub_client, connector_id)
+    running = {"SYNCING", "FULL_SYNCING", "QUEUED"}
     deadline = time.monotonic() + (_SYNC_TIMEOUT_SEC if timeout is None else timeout)
+    pipeshub_client.toggle_sync(connector_id, enable=False)
+    pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[0])
+    while pipeshub_client.get_connector(connector_id).get("status") in running:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"connector {connector_id} never stopped syncing after it was disabled")
+        await asyncio.sleep(5)
+    finished_before = int(pipeshub_client.get_connector(connector_id).get("lastSyncFinishedAtTimestamp") or 0)
+    pipeshub_client.toggle_sync(connector_id, enable=True)
     while True:
         doc = pipeshub_client.get_connector(connector_id)
         if int(doc.get("lastSyncFinishedAtTimestamp") or 0) > finished_before and doc.get("status") == "IDLE":
+            outcome = doc.get("lastSyncOutcome")
+            if (outcome or "").upper() != "SUCCEEDED":
+                raise AssertionError(f"the sync of connector {connector_id} ended {outcome!r}, not SUCCEEDED")
             return
         if time.monotonic() >= deadline:
             raise TimeoutError(f"no sync of connector {connector_id} was recorded as finished in time")
