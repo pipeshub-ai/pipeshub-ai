@@ -1606,6 +1606,7 @@ class TestReviewFindings:
             'find . -name "*.json" -print0 | xargs -0 cat', cwd=str(tmp_path), timeout=20,
         )
         assert success is True
+        # wall-clock-ok: a hang waits out the 20 s pipeline timeout (and then fails success); the fix takes ms
         assert loop.time() - started < 10
 
 
@@ -2713,6 +2714,43 @@ def test_startup_sweep_continues_past_an_org_it_cannot_read(tmp_path) -> None:
         sweep_orphan_views(str(tmp_path))
 
     assert not (tmp_path / "org-2" / "PipesHub" / _VIEWS_DIR_NAME / "old").exists()
+
+
+async def test_startup_sweep_reads_each_orgs_storage_in_its_own_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.agents.actions.storage_search import storage_search as ss
+    from app.core import org_context
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}, {"_key": "org-2"}, {"_key": "org-3"}])
+    mounts = {"org-1": "shared", "org-2": "shared", "org-3": "own"}
+    config = MagicMock()
+    config.get_config = AsyncMock(side_effect=lambda *_a, **_k: {"mountName": mounts[org_context.current_org_id()]})
+    swept: list[str] = []
+    monkeypatch.setattr(ss, "is_local_storage", lambda _cfg: True)
+    monkeypatch.setattr(ss, "_resolve_mount_root", lambda name: f"/data/{name}")
+    monkeypatch.setattr(ss, "sweep_orphan_views", swept.append)
+
+    await ss.sweep_orphan_views_at_startup(config, graph)
+
+    assert sorted(swept) == ["/data/own", "/data/shared"]  # a mount two orgs share is swept once
+    assert org_context.peek() is None
+
+
+@pytest.mark.parametrize("mount", ["..", "/etc", "a/b", "a\\b", "C:..", "D:x"])
+async def test_startup_sweep_walks_no_mount_that_is_not_a_directory_name(monkeypatch: pytest.MonkeyPatch, mount: str) -> None:
+    from app.agents.actions.storage_search import storage_search as ss
+
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value={"mountName": mount})
+    swept: list[str] = []
+    monkeypatch.setattr(ss, "is_local_storage", lambda _cfg: True)
+    monkeypatch.setattr(ss, "sweep_orphan_views", swept.append)
+
+    await ss.sweep_orphan_views_at_startup(config, graph)
+
+    assert swept == []
 
 
 _needs_grep_and_landlock = pytest.mark.skipif(

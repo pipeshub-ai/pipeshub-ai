@@ -62,7 +62,7 @@ from app.connectors.core.sync.run_context import (
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -918,14 +918,20 @@ class DataSourceEntitiesProcessor:
             )
 
     async def cleanup(self) -> None:
-        """Close the messaging producer initialize() opened. Safe to call twice.
+        """Close the messaging producer initialize() opened, and the HTTP session
+        a storage move opened. Safe to call twice.
 
         Each producer holds its own broker connection, so a processor dropped
         without this leaks one socket for the life of the process.
         """
         producer = getattr(self, "messaging_producer", None)
-        if producer is not None:
-            await producer.cleanup()
+        storage_cleanup = getattr(self, "_storage_cleanup", None)
+        try:
+            if producer is not None:
+                await producer.cleanup()
+        finally:
+            if storage_cleanup is not None:
+                await storage_cleanup.close()
 
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -1099,16 +1105,20 @@ class DataSourceEntitiesProcessor:
             )
 
     @staticmethod
-    def _parent_in_other_group(parent: Record | None, record_group_id: str | None) -> bool:
+    def _parent_in_other_group(
+        parent: Record | None, record_group_id: str | None, external_group_id: str | None = None,
+    ) -> bool:
         """A synced parent of another record group lists the record but lends it
-        no audience; a placeholder, RESTRICTED until it syncs, still hides it."""
-        return (
-            parent is not None
-            and not parent.is_placeholder
-            and bool(record_group_id)
-            and bool(parent.record_group_id)
-            and parent.record_group_id != record_group_id
-        )
+        no audience; a placeholder, RESTRICTED until it syncs, still hides it.
+
+        ``external_group_id``: the source's id of the record's group, for a record
+        whose group is not stored (``_handle_record_group`` could not mint it). Its
+        parent is then of another group unless the source names the same one."""
+        if parent is None or parent.is_placeholder:
+            return False
+        if record_group_id:
+            return bool(parent.record_group_id) and parent.record_group_id != record_group_id
+        return bool(external_group_id) and parent.external_record_group_id != external_group_id
 
     async def _handle_parent_record(
         self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None
@@ -1214,7 +1224,9 @@ class DataSourceEntitiesProcessor:
                 # straight past a restriction part way down the tree. Only a record
                 # its caller links to a group can fall back on that group.
                 in_other_group = self._parent_in_other_group(
-                    parent_record, record.record_group_id if record.external_record_group_id else None
+                    parent_record,
+                    record.record_group_id if record.external_record_group_id else None,
+                    record.external_record_group_id,
                 )
                 # A parent in this group is the permission parent. The flag is for a
                 # caller that must take the audience from the group anyway.
@@ -1629,6 +1641,22 @@ class DataSourceEntitiesProcessor:
                 return best["id"] == record.id
         return True
 
+    @staticmethod
+    def _leaves_for_unstored_group(
+        record: Record, record_group_id: str | None, existing_record: Record | None
+    ) -> bool:
+        """A stored record of a group that now names a group ``_handle_record_group``
+        could not store. It is in no group until its next write, so it leaves the
+        old one now: ``_link_record_to_group`` with no group to join takes away the
+        old group's membership, hierarchy and inherited access."""
+        return (
+            not record_group_id
+            and bool(record.external_record_group_id)
+            and record.origin != OriginTypes.UPLOAD
+            and existing_record is not None
+            and bool(existing_record.record_group_id)
+        )
+
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
         Prepare record group by looking up or creating it, and set record_group_id on the record.
@@ -1655,6 +1683,19 @@ class DataSourceEntitiesProcessor:
             record_group = None
 
         if record_group is None:
+            if record.record_group_type is None:
+                # A group needs a type to be stored, and the record does not say
+                # which. The record goes in without a group; its next write links
+                # it once the connector has synced the group. Until then it holds
+                # none of the group's access, which hides rather than exposes it.
+                self.logger.warning(
+                    "Record %s is not placed in group %s: its group is not stored and the record has no record_group_type",
+                    record.external_record_id, record.external_record_group_id,
+                )
+                # Nor does it keep a group id it came with: that may be the group
+                # it is leaving (see _leaves_for_unstored_group).
+                record.record_group_id = None
+                return None
             # Create a new record group
             record_group = RecordGroup(
                 external_group_id=record.external_record_group_id,
@@ -2003,7 +2044,7 @@ class DataSourceEntitiesProcessor:
         await self._reparent_orphans(tx_store, orphans)
 
     async def _link_record_to_group(
-        self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None,
+        self, record: Record, record_group_id: str | None, tx_store: TransactionStore, existing_record: Record | None = None,
         narrowed_connectors: set[str] | None = None,
         *, parent_in_other_group: bool = False, parent_outside_group: bool = False, stored_under_its_id: bool = False,
     ) -> bool:
@@ -2788,7 +2829,7 @@ class DataSourceEntitiesProcessor:
                         external_id=record.parent_external_record_id,
                     )
                 parent_outside_group = self._parent_in_other_group(
-                    parent_record, record_group.id if record_group else None
+                    parent_record, record_group.id if record_group else None, record.external_record_group_id
                 )
                 parent_in_other_group = parent_outside_group or bool(record.inherit_permissions_from_group)
                 # The group edge belongs to a record with no parent record. A nested
@@ -2869,15 +2910,16 @@ class DataSourceEntitiesProcessor:
         # are the addresses and issue keys in its text (see record_links). An
         # edit can remove one, so they are always cleaned up as well.
         # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
+        # this save (a Slack reindex, a Jira issue stored closed after its build
+        # failed): its link edges are kept as they are.
         if (
             isinstance(
                 record,
                 (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
             )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+            and record.related_external_records is not None
         ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Records that pasted this record's address before it was indexed. On
         # every save: on Neo4j's default auto-commit sessions the record row is
@@ -3356,7 +3398,11 @@ class DataSourceEntitiesProcessor:
             parent_outside_group = placement.parent_outside_group
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id or record.shared_with_me_record_group_ids:
+        if (
+            record_group_id
+            or record.shared_with_me_record_group_ids
+            or self._leaves_for_unstored_group(record, record_group_id, existing_record)
+        ):
             moved = await self._link_record_to_group(
                 record, record_group_id, tx_store, existing_record, narrowed_connectors,
                 parent_in_other_group=parent_in_other_group,
@@ -4246,7 +4292,9 @@ class DataSourceEntitiesProcessor:
                         placement = await self._handle_parent_record(
                             new_record, tx_store, existing_record=None
                         )
-                        if record_group_id:
+                        if record_group_id or self._leaves_for_unstored_group(
+                            new_record, record_group_id, old_record
+                        ):
                             await self._link_record_to_group(
                                 new_record, record_group_id, tx_store, old_record, narrowed_connectors,
                                 parent_in_other_group=placement.permissions_from_group,
@@ -6035,6 +6083,12 @@ class DataSourceEntitiesProcessor:
 
         ``replace_members=False`` only adds the given members and keeps the existing ones,
         for callers that can see just part of a group's membership at a time.
+
+        Each group is written in a transaction of its own. A group's replace locks every one of
+        its members, and groups share members: two syncs that each wrote several groups in one
+        transaction took those locks group by group, in different orders, and deadlocked. A
+        replace is idempotent, so a group written before a failure is just written again when
+        the call is retried.
         """
         rewritten: set[str] = set()
         try:
@@ -6042,34 +6096,11 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
                 return
 
-            refused = False
             try:
-                async with self._sync_transaction() as tx_store:
-                    for user_group, members in user_groups:
-                        if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
-                            rewritten.add(user_group.connector_id)
-            except Exception as e:
-                # A refusal of the combined write: a marked one, or the pool's own error from groups that
-                # are each small and add up. Either way the groups are written apart.
-                if len(user_groups) == 1 or not is_graph_memory_refusal(e):
-                    raise
-                refused = True
-            skipped: list[str] = []
-            if refused:
-                # With explicit transactions the combined write rolled back whole; without them each
-                # statement committed on its own, so groups written before the refusal stand. Either
-                # way, a group the server's memory pool refused must not take the others with it: write
-                # them apart, each group's upsert and its replace in one transaction of their own. The
-                # connectors collected by the combined attempt stay in ``rewritten``: dropping access
-                # for a superset is harmless, missing one leaves a stale access list. Done after the
-                # handler has ended, so the aggregated error below carries no earlier error as its context.
-                try:
-                    skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
-                finally:
-                    # The groups written before another error stay committed, so their access
-                    # lists must drop whatever happens to the rest.
-                    await self._access_changed(rewritten)
-            else:
+                skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
+            finally:
+                # The groups written before an error stay committed, so their access lists
+                # must drop whatever happens to the rest.
                 await self._access_changed(rewritten)
             if skipped:
                 raise GraphMemoryLimitError(

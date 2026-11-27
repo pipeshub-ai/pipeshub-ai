@@ -138,7 +138,7 @@ export function SelectionActionBar({
           }}
           style={{
             borderColor: 'var(--red-7)',
-            color: 'var(--red-9)',
+            color: 'var(--red-11)',
             cursor: deletePermissionDenied ? 'not-allowed' : 'pointer',
             ...touchTarget(isMobile),
           }}

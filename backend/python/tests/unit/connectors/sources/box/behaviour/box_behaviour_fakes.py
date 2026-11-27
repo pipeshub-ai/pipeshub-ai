@@ -110,12 +110,20 @@ class FakeBoxApi(BaseAdapter):
         shared_link_access: str | None = None,
         modified_at: str = "2024-02-01T00:00:00Z",
         etag: str = "0",
+        classification: str | None = None,
     ) -> None:
         self.items[file_id] = {
             "type": "file", "id": file_id, "name": name, "owner": owner, "parent": parent, "size": 1024,
             "sha1": f"sha-{file_id}", "etag": etag, "created_at": "2024-01-01T00:00:00Z", "modified_at": modified_at,
             "shared_link_access": shared_link_access,
         }
+        self.classify(file_id, classification)
+
+    def classify(self, item_id: str, label: str | None) -> None:
+        """Applies (or, with None, removes) a Box Shield classification; it moves neither the etag nor modified_at."""
+        self.items[item_id]["classification"] = (
+            {"name": label, "definition": f"{label} data", "color": "#FF0000"} if label is not None else None
+        )
 
     def collaborate(self, item_id: str, user_id: str, role: str = "viewer", kind: str = "user") -> str:
         self._collab_seq += 1
@@ -251,9 +259,9 @@ class FakeBoxApi(BaseAdapter):
                     ]
                 else:
                     children = [self._render(i, viewer) for i in self.items.values() if i["parent"] == folder_id]
-                return self._json(request, self._offset_page(children, q))
+                return self._json(request, self._offset_page([self._only(c, q) for c in children], q))
             case ["files", file_id]:
-                return self._item_or_404(request, file_id, "file", viewer)
+                return self._item_or_404(request, file_id, "file", viewer, q)
             case ["files", file_id, "content"]:
                 if not self._visible(file_id, viewer):
                     return self._error(request, 404, "not_found")
@@ -331,11 +339,22 @@ class FakeBoxApi(BaseAdapter):
         )
         return out
 
-    def _item_or_404(self, request: requests.PreparedRequest, item_id: str, kind: str, viewer: str) -> requests.Response:
+    def _item_or_404(
+        self, request: requests.PreparedRequest, item_id: str, kind: str, viewer: str, q: dict[str, str] | None = None
+    ) -> requests.Response:
         item = self.items.get(item_id)
         if item is None or item["type"] != kind or not self._visible(item_id, viewer):
             return self._error(request, 404, "not_found")
-        return self._json(request, self._render(item, viewer))
+        return self._json(request, self._only(self._render(item, viewer), q or {}))
+
+    @staticmethod
+    def _only(item: dict[str, Any], q: dict[str, str]) -> dict[str, Any]:
+        """Box's ``fields``: only the fields asked for, plus the mini fields; without it, the standard set, which
+        has no ``classification`` (a full-only field)."""
+        if not q.get("fields"):
+            return {k: v for k, v in item.items() if k != "classification"}
+        wanted = {*q["fields"].split(","), "type", "id", "etag"}
+        return {k: v for k, v in item.items() if k in wanted}
 
     def _offset_page(self, entries: list[dict[str, Any]], q: dict[str, str]) -> dict[str, Any]:
         limit = min(int(q.get("limit", self.default_page)), self._cap)

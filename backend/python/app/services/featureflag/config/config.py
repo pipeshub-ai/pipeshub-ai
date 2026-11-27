@@ -29,6 +29,10 @@ class CONFIG:
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    ENABLE_KNOWLEDGE_PUBLICATIONS = "ENABLE_KNOWLEDGE_PUBLICATIONS"
+    # The org's agent harness (ADR-OPS-08), with the server switch AGENT_HARNESS_WORKER_ENABLED: read only through
+    # ``is_agent_harness_on``. Defaults to disabled; admins turn it on in Labs.
+    ENABLE_AGENT_HARNESS = "ENABLE_AGENT_HARNESS"
     # Serves the knowledge hub's global listing (All records) from per-connector
     # scopes precomputed at each sync, instead of walking every connector's tree
     # on each request. Defaults to disabled; admins opt in from Labs.

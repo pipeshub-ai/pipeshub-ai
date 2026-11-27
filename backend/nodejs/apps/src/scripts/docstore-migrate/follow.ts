@@ -18,18 +18,62 @@ import {
 } from './apply';
 import { Log } from './bulk';
 import type { DocDiff } from './compare';
-import { MAPPINGS } from './mapping';
+import { MAPPINGS, isMapped } from './mapping';
 import type { CollectionMapping } from './mapping/types';
 import { syncAllCredentials, syncCredentials } from './credentials';
+import { SLACK_LINKS, syncSlackLinks } from './slack-links';
 import { repair } from './repair';
 import type { MigrationRuntime } from './runtime';
 import type { JobState } from './state';
 import { VerifyReport, verifyAll } from './verify';
+import { carrierOfCollection, carriersOfFields } from './carry';
+import { applyCarried, resyncCarried } from './carry/run';
+import { carryMongo, carryPg } from './carry/steps';
+import { dropRefusals } from './refusals';
 
 const BY_NAME = new Map(MAPPINGS.map((m) => [m.collection, m]));
+
+/** A carried document's id as its carrier keys it: an ObjectId as lower-case hex, a string id as it is (data key ids are case-sensitive). */
+const carriedId = (id: unknown): string =>
+  typeof id === 'string' ? id : String(id).toLowerCase();
 const USERS = MAPPINGS.find(
   (m) => m.collection === 'users',
 ) as CollectionMapping;
+
+/**
+ * The credential rows of these accounts (all of them after a deleted credential), from the credentials in MongoDB. Nothing when an
+ * edition replaced the credentials' mapping: its carrier follows them, and this would rewrite its rows in this build's shape.
+ */
+export async function syncCredentialRows(
+  rt: MigrationRuntime,
+  accounts: Set<string>,
+  all: boolean,
+): Promise<void> {
+  if (!isMapped('userCredentials')) return;
+  if (all) await syncAllCredentials(rt);
+  else await syncCredentials(rt, accounts);
+}
+
+/** The Slack user links, written again whole from MongoDB. Nothing when an edition replaced their mapping (its carrier follows them). */
+export async function syncSlackLinkRows(
+  rt: MigrationRuntime,
+  js: JobState,
+): Promise<void> {
+  if (isMapped(SLACK_LINKS)) await syncSlackLinks(rt, js);
+}
+
+/**
+ * After the follow lost its place (a resume token gone from the oplog, or a resync that did not finish): every row this build derives
+ * from a whole collection rather than event by event (credentials, Slack user links) is written again from MongoDB. A collection an
+ * edition replaced is its carrier's (resyncCarried) and is not touched here.
+ */
+export async function syncDerivedRows(
+  rt: MigrationRuntime,
+  js: JobState,
+): Promise<void> {
+  await syncCredentialRows(rt, new Set(), true);
+  await syncSlackLinkRows(rt, js);
+}
 
 /** Collection the migrator writes its own markers to (and the fence lives in): not application events. */
 export const MARKER_COLLECTION = 'docstore_migrate_marker';
@@ -188,7 +232,9 @@ export async function resync(
   // the new position is saved before the compare; until the compare ends clean the next run must compare again, not follow on
   if (js.progress.follow) js.progress.follow.needsResync = true;
   await js.checkpoint();
-  await syncAllCredentials(rt);
+  await syncDerivedRows(rt, js);
+  // the carriers' rows are written again from what MongoDB holds now: the events in between, deletes included, are not known
+  await resyncCarried(carryPg(rt, js), carryMongo(rt));
   let last: VerifyReport | undefined;
   for (let pass = 1; pass <= 5; pass++) {
     const diffs = new Map<string, DocDiff[]>();
@@ -220,6 +266,9 @@ export async function resync(
           ...last.collections
             .filter((c) => c.diffCount > 0)
             .map((c) => c.collection),
+          ...last.carried
+            .filter((c) => !c.ok)
+            .map((c) => `${c.carrier}:${c.collection}`),
         ].join(', ') || 'none named'
       }. Read the verify report, fix the cause and run follow again (it compares again first)`,
     );
@@ -310,8 +359,14 @@ export async function follow(
       // one entry per collection in the batch: the last event for a document wins, and a batch is applied in two phases (deletes
       // children first, then writes parents first), so a batch of 500 events is a handful of units, not 500
       const pending = new Map<CollectionMapping, Apply>();
+      // a carried collection (no mapping): the last event for a document wins, as for the mapped ones
+      const carried = new Map<
+        string,
+        { upserts: Map<string, unknown>; deletes: Set<string> }
+      >();
       const credentials: string[] = [];
       let credentialDeleted = false;
+      let slackLinksChanged = false;
       const flush = async (): Promise<void> => {
         const todo = MAPPINGS.filter((m) => pending.has(m));
         const users = pending.get(USERS);
@@ -319,18 +374,40 @@ export async function follow(
           const c = pending.get(m) as Apply;
           if (c.deletes.size) {
             const ids = [...c.deletes];
-            if (m.tableId) {
-              // the event carries only the id: the rows under it that are none of the documents still copied there are the deleted ones
-              const live = await liveEvents(rt, m, ids);
-              await rt.jobs((_tx, k) => deleteUnclaimedRows(k, m, ids, live));
-            } else await rt.jobs((_tx, k) => deleteDocs(k, m, ids));
+            // the event carries only the id: on a folded table the rows under it that are none of the documents still copied there are
+            // the deleted ones (read from MongoDB before the transaction opens)
+            const live = m.tableId ? await liveEvents(rt, m, ids) : null;
+            await rt.jobs(async (_tx, k) => {
+              if (live) await deleteUnclaimedRows(k, m, ids, live);
+              else await deleteDocs(k, m, ids);
+              // a deleted document is no longer one the copy refused
+              await dropRefusals(k, m.collection, ids);
+            });
           }
         }
         for (const m of todo) {
           const c = pending.get(m) as Apply;
           if (c.upserts.size) await replaceDocs(rt, m, [...c.upserts.values()]);
+          // the fields a carrier keeps elsewhere (the coding-engine choices of a user, an org, a chat) follow their document
+          await applyCarried(
+            carryPg(rt),
+            m.collection,
+            [...c.upserts.values()] as never[],
+            [...c.deletes],
+            carriersOfFields(m.collection),
+          );
           o.onApplied?.(m.collection, [...c.upserts.keys(), ...c.deletes]);
         }
+        for (const [coll, c] of carried) {
+          await applyCarried(
+            carryPg(rt),
+            coll,
+            [...c.upserts.values()] as never[],
+            [...c.deletes],
+          );
+          o.onApplied?.(coll, [...c.upserts.keys(), ...c.deletes]);
+        }
+        carried.clear();
         // a credential row hangs on its account: written from the credentials in MongoDB for the users whose credential changed and
         // for the accounts replaced or removed in this batch (the rows of a removed account go with it)
         const accounts = new Set<string>(credentials);
@@ -339,11 +416,12 @@ export async function follow(
           ...(users?.deletes ?? []),
         ])
           accounts.add(id);
-        if (credentialDeleted) await syncAllCredentials(rt);
-        else await syncCredentials(rt, accounts);
+        await syncCredentialRows(rt, accounts, credentialDeleted);
+        if (slackLinksChanged) await syncSlackLinkRows(rt, js);
         pending.clear();
         credentials.length = 0;
         credentialDeleted = false;
+        slackLinksChanged = false;
       };
       let lastTime: Timestamp | undefined;
       for (const e of ready) {
@@ -361,10 +439,11 @@ export async function follow(
         }
         if (!('documentKey' in e)) continue;
         const m = BY_NAME.get(coll);
+        const carrier = m ? undefined : carrierOfCollection(coll);
         if (
           o.watchAfter &&
           coll !== FENCE_COLLECTION &&
-          m &&
+          (m || carrier) &&
           (e.clusterTime as Timestamp).greaterThan(o.watchAfter)
         ) {
           if (
@@ -373,6 +452,24 @@ export async function follow(
           )
             res.stragglers += 1;
           else res.appEventsAfter += 1;
+        }
+        if (carrier) {
+          let cur = carried.get(coll);
+          if (!cur) {
+            cur = { upserts: new Map(), deletes: new Set() };
+            carried.set(coll, cur);
+          }
+          const id = carriedId((e.documentKey as { _id: unknown })._id);
+          const ch = await resolveChange(rt, e);
+          if (ch.op === 'delete') {
+            cur.upserts.delete(id);
+            cur.deletes.add(id);
+          } else {
+            cur.deletes.delete(id);
+            cur.upserts.set(id, ch.doc);
+          }
+          res.applied += 1;
+          continue;
         }
         if (!m) continue;
         if (m.collection === 'userCredentials') {
@@ -383,6 +480,12 @@ export async function follow(
             const u = (ch.doc as { userId?: unknown }).userId;
             if (typeof u === 'string') credentials.push(u);
           }
+          res.applied += 1;
+          continue;
+        }
+        if (m.collection === SLACK_LINKS) {
+          // a delete names only the _id, which the table does not keep: the whole (small) collection is written again after the batch
+          slackLinksChanged = true;
           res.applied += 1;
           continue;
         }

@@ -104,6 +104,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     # Returned whatever their state.
     "get_record_by_id": (Rule.ALL, _BY_KEY + "; content access is gated by TieredRecordAuthorizer"),
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
+    "get_records_by_external_ids": (
+        Rule.ALL,
+        "a live item's indexed copies; TieredRecordAuthorizer reads each and never admits one in the trash",
+    ),
     "get_user_granted_records": (
         Rule.ALL,
         "per-user sync drops grants a user lost and deletes records nobody holds; a trashed record's grant goes too",

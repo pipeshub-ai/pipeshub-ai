@@ -1,0 +1,93 @@
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-bad", "toolCallName": "goldendocs__lookup_ticket", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-bad", "delta": "{\"ticket_id\": \"T-4\"}", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-4\"", "argsPreview": "{\"ticket_id\": \"T-4\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "goldendocs__lookup_ticket", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-bad", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-bad", "content": "", "role": "tool", "status": "failed", "runId": "uuid-1", "resultSummary": null, "errorCode": "failed", "nothingSent": true}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-5", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-5", "runId": "uuid-1"}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-good", "toolCallName": "goldendocs__lookup_ticket", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-good", "delta": "{\"ticket_id\": \"T-42\"}", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "argsPreview": "{\"ticket_id\": \"T-42\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 1, "current_tool": "goldendocs__lookup_ticket", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-good", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-good", "content": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-6", "role": "assistant", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-6", "delta": "Ticket T-42 is resolved ", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-6", "delta": "and Priya owns it.", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-6", "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Ticket T-42 is resolved "}, {"op": "replace", "path": "/rawLength", "value": 24}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 2, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Look up support ticket T-42 and report its status and owner.", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Ticket T-42 is resolved and Priya owns it."}, {"op": "replace", "path": "/rawLength", "value": 42}]}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "Ticket T-42 is resolved and Priya owns it."}, {"op": "replace", "path": "/rawLength", "value": 42}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-bad", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-4\"}", "status": "failed", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-4\"", "resultPreview": "", "errorCode": "failed", "nothingSent": true}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-good", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-42\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "Ticket T-42 is resolved and Priya owns it.", "runId": "uuid-1", "isFinal": true}], "answer": "Ticket T-42 is resolved and Priya owns it.", "citations": [], "confidence": null, "succeeded_tool_names": ["goldendocs__lookup_ticket"], "failed_tool_names": ["goldendocs__lookup_ticket"]}}
+
+event: RUN_FINISHED
+data: {"type": "RUN_FINISHED", "runId": "uuid-1", "threadId": "conv-golden", "result": {"parts": [{"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-bad", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-4\"}", "status": "failed", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-4\"", "resultPreview": "", "errorCode": "failed", "nothingSent": true}, {"type": "text", "content": "", "runId": "uuid-1"}, {"type": "tool_call", "toolCallId": "call-good", "toolName": "goldendocs__lookup_ticket", "args": "{\"ticket_id\": \"T-42\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Lookup Ticket \u2014 ticket_id: \"T-42\"", "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}", "resultSummary": "Completed successfully"}, {"type": "text", "content": "Ticket T-42 is resolved and Priya owns it.", "runId": "uuid-1", "isFinal": true}], "answer": "Ticket T-42 is resolved and Priya owns it.", "citations": [], "confidence": null, "succeeded_tool_names": ["goldendocs__lookup_ticket"], "failed_tool_names": ["goldendocs__lookup_ticket"], "label": {"complete": false, "sources": []}}}
+

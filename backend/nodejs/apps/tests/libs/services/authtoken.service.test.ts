@@ -149,6 +149,35 @@ describe('AuthTokenService', () => {
     });
   });
 
+  describe('verifyUserActionToken', () => {
+    const scope = 'limited:only';
+
+    it('accepts a token signed with the user-action key that holds the scope', async () => {
+      const token = jwt.sign({ userId: 'user1', scopes: [scope] }, deriveUserActionSecret(scopedJwtSecret));
+      expect((await service.verifyUserActionToken(token, scope)).userId).to.equal('user1');
+    });
+
+    it('refuses one signed with the scoped secret, which a service holds, whatever its scope', async () => {
+      const token = service.generateScopedToken({ userId: 'user1', scopes: [scope] });
+      try {
+        await service.verifyUserActionToken(token, scope);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+    });
+
+    it('refuses a genuine token without the scope', async () => {
+      const token = jwt.sign({ userId: 'user1', scopes: ['other:scope'] }, deriveUserActionSecret(scopedJwtSecret));
+      try {
+        await service.verifyUserActionToken(token, scope);
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect((error as UnauthorizedError).message).to.equal('Invalid scope');
+      }
+    });
+  });
+
   describe('verifyScopedToken', () => {
     it('should verify a valid scoped token with matching scope', async () => {
       const payload = { userId: 'user1', scopes: ['token:refresh', 'send:mail'] };
@@ -207,6 +236,26 @@ describe('AuthTokenService', () => {
       const regularToken = service.generateToken(payload);
       try {
         await service.verifyScopedToken(regularToken, 'token:refresh');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+    });
+
+    it('requires the configured audience when one is supplied', async () => {
+      const token = service.generateScopedToken({
+        scopes: ['agent-run:claim'],
+        aud: 'pipeshub-agent-harness',
+      });
+      const decoded = await service.verifyScopedToken(
+        token,
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      );
+      expect(decoded.aud).to.equal('pipeshub-agent-harness');
+
+      try {
+        await service.verifyScopedToken(token, 'agent-run:claim', 'another-service');
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);

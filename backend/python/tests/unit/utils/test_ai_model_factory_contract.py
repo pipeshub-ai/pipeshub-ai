@@ -80,7 +80,21 @@ def _cases():
 
 
 @pytest.mark.parametrize("provider_id,capability,configuration", _cases())
-def test_required_registry_fields_do_not_key_error(provider_id, capability, configuration):
+def test_required_registry_fields_do_not_key_error(provider_id, capability, configuration, monkeypatch):
+    # Built clients must not reach out (the no-network guard refuses it): Bedrock's boto3 client loads
+    # credentials, asking the instance metadata service when it has none; Mistral's embeddings fetch a
+    # tokenizer from the Hugging Face hub and fall back without it.
+    import langchain_mistralai.embeddings as mistral_embeddings
+
+    class _NoHubTokenizer:
+        @staticmethod
+        def from_pretrained(*_args: object, **_kwargs: object) -> None:
+            raise OSError("offline")
+
+    monkeypatch.setattr(mistral_embeddings, "Tokenizer", _NoHubTokenizer)
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     entry = {
         "provider": provider_id,
         "configuration": configuration,

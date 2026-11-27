@@ -4,17 +4,6 @@ import { SWR_NS } from '@/lib/api/swr-cache';
 import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 
 const BASE_URL = '/api/v1/org';
-const METRICS_BASE_URL = '/api/v1/configurationManager/metricsCollection';
-const METRICS_URL = `${METRICS_BASE_URL}/toggle`;
-
-// ========================================
-// Metrics types
-// ========================================
-
-export interface MetricsConfig {
-  enableMetricCollection: string; // "true" | "false" (string from API)
-}
-
 // ========================================
 // Types (matching API response)
 // ========================================
@@ -51,14 +40,12 @@ export interface UpdateOrgPayload {
   shortName: string;
   contactEmail: string;
   permanentAddress: Partial<OrgAddress>;
-  dataCollectionConsent: boolean;
 }
 
 /** SWR keys of the org reads, shared by the sidebar footer and the General page. */
 export const ORG_KEYS = {
   details: [SWR_NS.org, 'details'],
   logo: [SWR_NS.org, 'logo'],
-  metrics: [SWR_NS.org, 'metrics'],
 } as const;
 
 // ========================================
@@ -107,22 +94,13 @@ export const OrgApi = {
   },
 
   /** DELETE /api/v1/org/logo — remove org logo */
+  /** Deletes the organization; the server checks the typed name too. */
+  async deleteOrg(confirmName: string): Promise<void> {
+    await apiClient.delete(BASE_URL, { data: { confirmName } });
+  },
+
   async deleteLogo(): Promise<void> {
     await apiClient.delete(`${BASE_URL}/logo`);
     void mutate(ORG_KEYS.logo, null, { revalidate: false });
-  },
-};
-
-export const MetricsApi = {
-  /** GET /api/v1/configurationManager/metricsCollection */
-  async getMetricsCollection(): Promise<MetricsConfig> {
-    const { data } = await apiClient.get<MetricsConfig>(METRICS_BASE_URL);
-    return data;
-  },
-
-  /** PUT /api/v1/configurationManager/metricsCollection/toggle */
-  async toggleMetricsCollection(enabled: boolean): Promise<void> {
-    await apiClient.put(METRICS_URL, { enableMetricCollection: enabled });
-    void mutate(ORG_KEYS.metrics);
   },
 };

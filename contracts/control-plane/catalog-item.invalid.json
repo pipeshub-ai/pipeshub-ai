@@ -1,0 +1,270 @@
+[
+  {
+    "description": "a ref without a version",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  },
+  {
+    "description": "unknown provenance",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "marketplace",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  },
+  {
+    "description": "descriptors of one kind holding another's",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "tool",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  },
+  {
+    "description": "an extra member",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0,
+      "price": 0
+    }
+  },
+  {
+    "description": "an imported item without its source digest",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "skill:org/quarterly-report@1.4.2",
+      "kind": "skill",
+      "publisher": "org",
+      "name": "quarterly-report",
+      "version": "1.4.2",
+      "orgId": "org-1",
+      "provenance": "imported",
+      "source": {
+        "type": "github",
+        "locator": "x",
+        "fetchedAt": 1
+      },
+      "display": {
+        "name": "quarterly-report",
+        "description": "Quarterly reports.",
+        "icon": null,
+        "categories": [],
+        "hidden": false
+      },
+      "riskClass": "read",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "skill-bundle",
+        "items": [
+          {
+            "name": "quarterly-report",
+            "format": "skill-bundle/1",
+            "files": {
+              "SKILL.md": {
+                "sha256": "89bc9236218276ba24ae56d5feee949728f2cfdd13885876666b06f0c3f396ba",
+                "size": 72
+              }
+            },
+            "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:3267009afa47d29ea63cd4b9b257669b4d79d96ec3908c5fd95ca728f018fed9",
+      "deprecated": false,
+      "createdAt": 1760000000000
+    }
+  },
+  {
+    "description": "an unknown risk class",
+    "instance": {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "dangerous",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    }
+  }
+]

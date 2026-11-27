@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import secrets
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
@@ -68,7 +69,7 @@ class FlakyKV(InMemoryKeyValueStore):
 
 @pytest.fixture
 async def kv(monkeypatch: pytest.MonkeyPatch) -> FlakyKV:
-    monkeypatch.setenv("SECRET_KEY", "oauth-config-read-outage-test")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_urlsafe(32))
     return FlakyKV()
 
 

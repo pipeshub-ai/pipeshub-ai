@@ -24,6 +24,13 @@ export const RENAMED_SIGN_IN_METHODS: Readonly<Record<string, string>> = {
   azureAd: 'microsoft',
 };
 
+/** Labs flags of this edition's own, read and saved beside the shared ones; a flag in neither list is dropped. */
+export const EDITION_PLATFORM_FEATURE_FLAGS: readonly import('./modules/configuration_manager/constants/constants').PlatformFeatureFlagDef[] =
+  [];
+
+/** This edition's Labs flags the durable worker reads, pinned beside the shared WORKER_STAGES (rollout.<key>). */
+export const EDITION_WORKER_STAGES: readonly string[] = [];
+
 /**
  * Logging provider override, or `null` for the default text logging. Typed
  * `unknown` so this file stays import-free; `getProvider` in
@@ -34,10 +41,60 @@ export function structuredLoggingProvider(): unknown {
 }
 
 /**
+ * Whether the PostgreSQL key-value store binds the ambient org (`app.org_id`) while it reads or writes `key` (for a
+ * listing, the prefix it lists). This build's keys belong to the whole install, so it binds none.
+ */
+export function kvKeyBindsOrg(_key: string): boolean {
+  return false;
+}
+
+/**
  * Keys inside an AI model's `configuration`, besides the built-in public ones,
  * that hold settings rather than secrets, so reads return them as stored.
  */
 export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
+
+/**
+ * Collections this edition stores besides this build's, for a move of the document store to PostgreSQL
+ * (docstore-migrate, ADR-DOCMIG-01): every collection is copied, listed as not copied, or held, and preflight refuses
+ * a move while a held one holds documents. `held` names the PostgreSQL tables its data lives in (none when the edition
+ * keeps it in MongoDB only); `heldFields` are fields an edition adds to a collection the copy maps, held the same way.
+ * `carriers` map what would otherwise stay held: each is a docstore-migrate `Carrier` (scripts/docstore-migrate/carry/types.ts)
+ * that copies, follows, verifies, rolls back and resets its collections and fields, so a held collection or field it carries
+ * (this build's or the edition's) is no longer held. Typed `unknown` so this file stays import-free; the migrator checks each
+ * one's shape, and what it may carry, when it loads. `replaced` names collections this build maps whose documents the edition stores in
+ * another shape: the generic copy leaves them alone, and they are held until one of the edition's carriers carries them.
+ */
+export interface EditionDocstoreCoverage {
+  held: ReadonlyArray<{
+    collection: string;
+    reason: string;
+    tables: readonly string[];
+  }>;
+  ignored: ReadonlyArray<{
+    collection: string;
+    reason: string;
+    tables?: readonly string[];
+  }>;
+  heldFields: ReadonlyArray<{
+    collection: string;
+    path: string;
+    reason: string;
+  }>;
+  carriers: readonly unknown[];
+  replaced: ReadonlyArray<{ collection: string; reason: string }>;
+  /** Tables of the document-store schemas only this edition creates that hold no collection's data (none to move), with why. */
+  unmappedTables: Readonly<Record<string, string>>;
+}
+
+export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
+  held: [],
+  ignored: [],
+  heldFields: [],
+  carriers: [],
+  replaced: [],
+  unmappedTables: {},
+};
 
 /**
  * Throws to refuse, at start-up, a combination of settings this build does not

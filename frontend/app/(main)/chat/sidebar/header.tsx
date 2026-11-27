@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
+import { Flex, IconButton, Text, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
@@ -143,8 +143,12 @@ export function ChatSidebarHeader() {
         <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
       </Link>
       <Flex align="center" gap="1">
-        <Link href="/workspace/profile/" className="touch-hit" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
-          {avatar}
+        {/* The name comes from the words, not aria-label: an aria-label lacking the avatar's initials fails WCAG 2.5.3. */}
+        <Link href="/workspace/profile/" className="touch-hit" style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
+          <span aria-hidden style={{ display: 'inline-flex' }}>
+            {avatar}
+          </span>
+          <VisuallyHidden>{t('common.openProfile')}</VisuallyHidden>
         </Link>
         <SidebarHeaderActions />
       </Flex>

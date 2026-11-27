@@ -540,7 +540,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
 
         const r = await callRoute(h, route, route.caller ? sessionToken(h, route.caller) : token)
 
-        expect(r.status, `${route.method} ${route.pattern}`).to.equal(500)
+        expect(r.status, `${route.method} ${route.pattern}`).to.equal(502)
         expect(errorMessage(r), route.pattern).to.match(/^Something went wrong/)
         for (const pattern of INTERNAL_DETAIL) expect(r.text, `${route.pattern} ${pattern}`).to.not.match(pattern)
       }
@@ -586,6 +586,17 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(r.status).to.equal(503)
       expect(r.headers.get('retry-after')).to.equal('7')
       expect(errorMessage(r)).to.equal('This part of PipesHub is briefly unavailable. Please try again in 7 seconds.')
+    })
+
+    it('passes a listing the graph store could not answer through as a 503 with its wait time', async () => {
+      const unreachable = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      h.backend.on('GET', '/api/v1/knowledge-hub/nodes', { status: 503, headers: { 'retry-after': '5' }, body: { detail: unreachable } })
+
+      const r = await call(h, 'GET', '/knowledge-hub/nodes', { token })
+
+      expect(r.status).to.equal(503)
+      expect(r.headers.get('retry-after')).to.equal('5')
+      expect(errorMessage(r)).to.equal(unreachable)
     })
   })
 

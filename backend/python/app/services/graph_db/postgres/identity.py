@@ -21,10 +21,16 @@ from app.core.org_context import (
     SystemContextNotAllowed,
     current_or_system,
     current_org_id,
+    org_optional,
 )
 from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
 from app.schema.node_validator import SchemaValidationError
-from app.services.graph_db.common.utils import dedupe_agents_by_id, is_full_address
+from app.services.graph_db.common.utils import (
+    agent_update_document,
+    decode_agent_json_fields,
+    dedupe_agents_by_id,
+    is_full_address,
+)
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
     NotImplementedInPostgres,
@@ -60,25 +66,6 @@ def _js(v: Any) -> Any:  # noqa: ANN401
 
 _SERVICE_SUFFIX = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
 _AGENT_CAN = {"can_edit": ("OWNER", "WRITER", "ORGANIZER"), "can_delete": ("OWNER",), "can_share": ("OWNER", "ORGANIZER")}
-# what an agent edit may write; its toolsets, knowledge and servers are edges, written by the caller
-_AGENT_FIELDS = ("name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "serviceAccountUserId",
-                 "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools")
-
-
-def _model_entries(models: list) -> list[str]:
-    """``<key>_<name>`` (or the bare key) per model, first seen kept: from ``{modelKey, modelName}`` objects or ``<key>_<name>`` strings; anything else is skipped."""
-    out: list[str] = []
-    for m in models:
-        if isinstance(m, dict):
-            key, name = m.get("modelKey"), m.get("modelName", "")
-        elif isinstance(m, str):
-            key, _, name = m.partition("_")
-        else:
-            continue
-        entry = f"{key}_{name}" if key and name else key
-        if entry and entry not in out:
-            out.append(entry)
-    return out
 
 
 def _stub_app(connector_id: str, app_type: Any = None) -> dict:  # noqa: ANN401
@@ -214,8 +201,12 @@ class IdentityMixin(PgBase):
                                   if u and u.get("userId") else None)
 
     # ---- users and orgs ------------------------------------------------------------------------------------------
+    @org_optional
     @_soft(None, flag=True)
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False,
+                                  org_id: str | None = None) -> dict | None:
+        if org_id == "" or not self._mine(org_id):      # an empty org matches no user, as on the other stores
+            return None
         org = current_org_id()
         if isinstance(user_id, str) and 0 < len(user_id) <= 200:      # the vetted read of graph_0004
             d = await self._one("/* pipeshub:graph.user_by_user_id */ SELECT node_id, doc FROM graph.user_by_user_id($1)", user_id)
@@ -1214,7 +1205,7 @@ class IdentityMixin(PgBase):
                 mcp, agent["mcpServersUnavailable"] = {}, True
             agent["mcpServers"] = mcp.get(agent_id, [])
             agent["shareWithOrg"] = bool(rows[0]["shared"])
-            return agent
+            return decode_agent_json_fields(agent)
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
@@ -1329,13 +1320,8 @@ class IdentityMixin(PgBase):
         if not perm or not perm["can_edit"]:
             self.logger.warning("User %s may not edit agent %s", user_id, agent_id)
             return False
-        data = {"updatedAtTimestamp": get_epoch_timestamp_in_ms(), "updatedBy": user_id, **{f: agent_updates[f] for f in _AGENT_FIELDS if f in agent_updates}}
-        if "models" in agent_updates:
-            models = agent_updates["models"]
-            if isinstance(models, list):
-                data["models"] = _model_entries(models)
-            elif models is None:
-                data["models"] = []
+        # One builder for every backend: the harness settings are kept, as JSON text where the other backends store them so.
+        data = agent_update_document(agent_updates, user_id, get_epoch_timestamp_in_ms())
         return await self.update_node(agent_id, "agentInstances", data, transaction=transaction)
 
     @_soft(False)

@@ -1,0 +1,33 @@
+# DEV-ONLY overlay for `deployment/e2e/run.sh dev-up` (G-50, C20.51): the e2e stack on a laptop.
+#
+# On top of docker-compose.e2e.yml it runs the base file's own MongoDB (an authenticated single-node replica set,
+# rs0) and Redis inside the project, where the lanes borrow the shared pxh-mongo-rs and pxh-redis. Both are in the
+# `dev-harness` profile, carry the run's labels and are removed with the project (`run.sh down RUN`).
+# Variables come from the env file run.sh writes.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  mongodb:
+    profiles: ["dev-harness"]
+    labels: *e2e-labels
+    # The image's first start runs a temporary mongod to create the root user, then starts the real one; on a busy
+    # machine the real one can find the port still held and exit 48. The base file's `restart: always` covers it;
+    # here a few restarts do, and the second start skips the user setup.
+    restart: "on-failure:5"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  redis:
+    profiles: ["dev-harness"]
+    labels: *e2e-labels
+    restart: "no"
+
+# Networks: run.sh gives each of the stack's networks a free /26 of 10.216.0.0/16 (assign_subnets, the run's
+# networks.yml, passed after this file), so the stack takes none of the Docker daemon's default pools.

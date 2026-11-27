@@ -25,19 +25,23 @@ since only it holds the `StorageService`.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import re
-import tarfile
-import zipfile
+import unicodedata
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import IO, Any
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.modules.providers.skills.loader import parse_skill_md
-from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError, SkillValidator
+from app.agent_loop_lib.modules.providers.skills.validator import (
+    SkillFormatError,
+    SkillValidator,
+)
+from app.harness.contracts.workspace import normalize_workspace_file_path
 from app.services.skills.npm_command_parser import PackageSpec
 from app.utils.logger import create_logger
 from app.utils.public_http import (
@@ -49,8 +53,26 @@ from app.utils.public_http import (
     UnsafeUrlError,
 )
 from app.utils.url_redaction import redact_url
+from harness_core.archive_limits import (
+    EXPANDED_TOO_LARGE,
+    RATIO_TOO_HIGH,
+    TOO_MANY_MEMBERS,
+)
+from harness_core.archive_reader import (
+    ENCRYPTED,
+    ENTRY_TOO_LARGE,
+    LINK_ENTRY,
+    NOT_AN_ARCHIVE,
+    SPECIAL_ENTRY,
+    UNSAFE_PATH,
+    ArchiveKind,
+    ArchiveLimits,
+    ArchiveRefused,
+    iter_archive,
+)
 
 __all__ = [
+    "MAX_UPLOAD_BYTES",
     "ImportPreview",
     "PackageImportError",
     "SkillPackageImporter",
@@ -60,7 +82,7 @@ logger = create_logger(__name__)
 
 _MIB = 1024 * 1024
 # Directories/files never imported as bundled resources, on top of the
-# archive-wide zip-slip guard in `_reject_unsafe_path`. Not restricted to
+# archive-wide path guard in `_canonical_archive_path`. Not restricted to
 # `scripts/`/`references/`/`assets/` — the agentskills.io spec allows "any
 # additional files or directories" (real community skills rely on this,
 # e.g. Anthropic's `docx` skill ships an `ooxml/` directory of scripts and
@@ -88,8 +110,9 @@ _CATALOG_INSTALL_URL = "https://www.openagentskill.com/api/skills/{slug}/install
 _MAX_MANIFEST_BYTES = 5 * _MIB
 _MAX_ARCHIVE_BYTES = 25 * _MIB  # a skill pack is markdown + small scripts, not a model checkpoint
 _MAX_EXTRACTED_BYTES = 4 * _MAX_ARCHIVE_BYTES
+_MAX_ARCHIVE_MEMBER_BYTES = _MAX_ARCHIVE_BYTES
 _MAX_ARCHIVE_MEMBERS = 500
-_READ_CHUNK_BYTES = 64 * 1024
+MAX_UPLOAD_BYTES = _MAX_ARCHIVE_BYTES
 _MANIFEST_LIMITS = PublicFetchLimits(max_bytes=_MAX_MANIFEST_BYTES)
 _ARCHIVE_LIMITS = PublicFetchLimits(max_bytes=_MAX_ARCHIVE_BYTES)
 _UNSAFE_URL_MESSAGE = "This URL is not allowed: it must point to a public address."
@@ -142,72 +165,86 @@ def _strip_common_prefix(paths: list[str]) -> str:
     return ""
 
 
-def _read_bounded(fileobj: IO[bytes], remaining: int) -> bytes:
-    """Read one archive member, failing once the extraction budget is spent. Counts the
-    bytes actually produced, because the sizes an archive declares can lie."""
-    chunks: list[bytes] = []
-    received = 0
-    while chunk := fileobj.read(_READ_CHUNK_BYTES):
-        received += len(chunk)
-        if received > remaining:
-            raise PackageImportError(
-                f"Archive is too large once extracted (limit {_MAX_EXTRACTED_BYTES // _MIB} MB)."
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
+def _too_large_once_extracted() -> PackageImportError:
+    return PackageImportError(
+        f"Archive is too large once extracted (limit {_MAX_EXTRACTED_BYTES // _MIB} MB)."
+    )
+
+
+def _canonical_archive_path(path: str) -> str:
+    """Zip-slip guard: the one canonical, relative, NFC form of a member path, or a
+    rejection (absolute, `..`/`.`/empty segments, backslashes, NUL, over-long/deep)."""
+    try:
+        return normalize_workspace_file_path(unicodedata.normalize("NFC", path))
+    except ValueError as exc:
+        raise PackageImportError(f"Archive contains an unsafe path: {path!r}") from exc
+
+
+def _check_duplicate_path(path: str, seen: set[str]) -> None:
+    # Resources may be materialized on a case-insensitive filesystem, so
+    # case-folded aliases of one path are the same file.
+    key = path.casefold()
+    if key in seen:
+        raise PackageImportError(f"Archive contains a duplicate path: {path!r}")
+    seen.add(key)
+
+
+_REFUSALS = {
+    EXPANDED_TOO_LARGE: _too_large_once_extracted,
+    RATIO_TOO_HIGH: _too_large_once_extracted,
+    TOO_MANY_MEMBERS: lambda: PackageImportError(f"Archive has too many files (over {_MAX_ARCHIVE_MEMBERS})."),
+    LINK_ENTRY: lambda: PackageImportError("Archive contains a link or special file."),
+    SPECIAL_ENTRY: lambda: PackageImportError("Archive contains a link or special file."),
+    ENCRYPTED: lambda: PackageImportError("Encrypted zip archives are not supported."),
+    NOT_AN_ARCHIVE: lambda: PackageImportError("Not a valid zip or tar/tgz archive."),
+}
+
+
+def _reader_limits() -> ArchiveLimits:
+    return ArchiveLimits(
+        max_total_bytes=_MAX_EXTRACTED_BYTES,
+        max_entry_bytes=_MAX_ARCHIVE_MEMBER_BYTES,
+        max_entries=_MAX_ARCHIVE_MEMBERS,
+    )
+
+
+def _extract(data: bytes, kind: ArchiveKind | None) -> dict[str, bytes]:
+    """Every file of the archive by canonical path, read through the shared metered reader (SEC-C-05): a member
+    over a limit is refused from its header, before its bytes are inflated."""
+    files: dict[str, bytes] = {}
+    seen: set[str] = set()
+    try:
+        for entry, stream in iter_archive(io.BytesIO(data), _reader_limits(), kind=kind):
+            if stream is None:
+                continue
+            path = _canonical_archive_path(entry.path)
+            _check_duplicate_path(path, seen)
+            files[path] = stream.read()
+    except ArchiveRefused as exc:
+        if exc.reason_code == ENTRY_TOO_LARGE:
+            raise PackageImportError(f"Archive member is too large: {exc}") from exc
+        if exc.reason_code == UNSAFE_PATH:
+            raise PackageImportError(f"Archive contains an unsafe path ({exc}).") from exc
+        refusal = _REFUSALS.get(exc.reason_code)
+        if refusal is not None:
+            raise refusal() from exc
+        label = "zip" if kind == "zip" else "tar/tgz" if kind == "tar" else "zip or tar/tgz"
+        raise PackageImportError(f"Not a valid {label} archive: {exc}") from exc
+    return files
 
 
 def _extract_zip(data: bytes) -> dict[str, bytes]:
-    files: dict[str, bytes] = {}
-    budget = _MAX_EXTRACTED_BYTES
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            infos = zf.infolist()
-            if len(infos) > _MAX_ARCHIVE_MEMBERS:
-                raise PackageImportError(f"Archive has too many files ({len(infos)} > {_MAX_ARCHIVE_MEMBERS}).")
-            for info in infos:
-                if info.is_dir():
-                    continue
-                _reject_unsafe_path(info.filename)
-                with zf.open(info) as member:
-                    content = _read_bounded(member, budget)
-                budget -= len(content)
-                files[info.filename] = content
-    except zipfile.BadZipFile as e:
-        raise PackageImportError(f"Not a valid zip archive: {e}") from e
-    return files
+    return _extract(data, "zip")
 
 
 def _extract_tar(data: bytes) -> dict[str, bytes]:
-    files: dict[str, bytes] = {}
-    budget = _MAX_EXTRACTED_BYTES
-    try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-            members = tf.getmembers()
-            if len(members) > _MAX_ARCHIVE_MEMBERS:
-                raise PackageImportError(f"Archive has too many files ({len(members)} > {_MAX_ARCHIVE_MEMBERS}).")
-            for member in members:
-                if not member.isfile():
-                    continue
-                _reject_unsafe_path(member.name)
-                extracted = tf.extractfile(member)
-                if extracted is not None:
-                    content = _read_bounded(extracted, budget)
-                    budget -= len(content)
-                    files[member.name] = content
-    except tarfile.TarError as e:
-        raise PackageImportError(f"Not a valid tar/tgz archive: {e}") from e
-    return files
+    return _extract(data, "tar")
 
 
 def _extract_archive(data: bytes) -> dict[str, bytes]:
     """Pick the parser from the bytes, not a name: a URL ending in .zip can redirect to a
     tarball, and an upload's name is whatever the user's machine called the file."""
-    if tarfile.is_tarfile(io.BytesIO(data)):
-        return _extract_tar(data)
-    if zipfile.is_zipfile(io.BytesIO(data)):
-        return _extract_zip(data)
-    raise PackageImportError("Not a valid zip or tar/tgz archive.")
+    return _extract(data, None)
 
 
 def _is_ignored_resource(rel_path: str) -> bool:
@@ -221,13 +258,6 @@ def _is_ignored_resource(rel_path: str) -> bool:
     if any(part.startswith(".") for part in parts):
         return True
     return any(part in _IGNORED_RESOURCE_DIR_NAMES for part in parts[:-1])
-
-
-def _reject_unsafe_path(path: str) -> None:
-    """Zip-slip guard: reject absolute paths and any `..` traversal segment
-    before a single byte is written/kept in memory."""
-    if path.startswith("/") or path.startswith("\\") or re.search(r"(^|/)\.\.(/|$)", path):
-        raise PackageImportError(f"Archive contains an unsafe path: {path!r}")
 
 
 def _skill_id_from_path(path: str) -> str:
@@ -391,7 +421,7 @@ class SkillPackageImporter:
         resolved_version = manifest.version or spec.version
 
         data = await self._download(tarball_url, _ARCHIVE_LIMITS, "the package tarball")
-        files = _extract_tar(data)
+        files = await asyncio.to_thread(_extract_tar, data)
         return _files_to_preview(
             files, source_label=f"npm:{spec.name}@{resolved_version}", skill_filter=spec.skill_filter,
         )
@@ -478,7 +508,7 @@ class SkillPackageImporter:
         download_url = self._normalize_url(url)
         data = await self._download(download_url, _ARCHIVE_LIMITS, "the archive")
         return _files_to_preview(
-            _extract_archive(data), source_label=f"url:{url}", skill_filter=skill_filter,
+            await asyncio.to_thread(_extract_archive, data), source_label=f"url:{url}", skill_filter=skill_filter,
         )
 
     async def preview_catalog_slug(self, slug: str, skill_filter: str | None = None) -> ImportPreview:
@@ -506,6 +536,7 @@ class SkillPackageImporter:
         return await self.preview_url(source, skill_filter=skill_filter)
 
     def preview_upload(self, filename: str, data: bytes) -> ImportPreview:
+        """Synchronous and CPU-bound: an async caller runs it in a thread."""
         if len(data) > _MAX_ARCHIVE_BYTES:
             raise PackageImportError(f"Uploaded file is too large ({len(data)} bytes).")
         return _files_to_preview(_extract_archive(data), source_label=f"upload:{filename}")

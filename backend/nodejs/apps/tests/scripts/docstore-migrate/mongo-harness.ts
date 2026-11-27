@@ -15,13 +15,14 @@ export interface TestMongo {
   stop(): Promise<void>;
 }
 
-export async function startMongo(work: string, replSet = true): Promise<TestMongo> {
+/** `args`: more mongod flags (`--auth` makes a server whose first user is created through the localhost exception). */
+export async function startMongo(work: string, replSet = true, args: string[] = []): Promise<TestMongo> {
   const root = join(work, `mongo-${process.pid}-${Date.now()}`);
   mkdirSync(root, { recursive: true });
   const port = await freePort(Number(process.env.PG_TEST_PORT_BASE ?? 61000) + 150 + Math.floor(Math.random() * 40));
   const proc: ChildProcess = spawn(
     MONGOD,
-    ['--dbpath', root, '--port', String(port), '--bind_ip', '127.0.0.1', '--wiredTigerCacheSizeGB', '0.25', '--setParameter', 'enableTestCommands=1', ...(replSet ? ['--replSet', 'rs0'] : [])],
+    ['--dbpath', root, '--port', String(port), '--bind_ip', '127.0.0.1', '--wiredTigerCacheSizeGB', '0.25', '--setParameter', 'enableTestCommands=1', ...(replSet ? ['--replSet', 'rs0'] : []), ...args],
     { stdio: 'ignore' },
   );
   let client: MongoClient | undefined;

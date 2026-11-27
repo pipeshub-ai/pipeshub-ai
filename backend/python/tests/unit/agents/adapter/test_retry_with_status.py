@@ -211,11 +211,10 @@ class TestRetriesAreLogged:
         config = RetryConfig(initial_delay=1.0)
         sleep = AsyncMock()
         with (
-            patch("app.agents.agent_loop.hooks.retry_with_status.asyncio.sleep", new=sleep),
             patch("app.agents.agent_loop.hooks.retry_with_status.random.uniform", return_value=0.043),
             caplog.at_level(logging.DEBUG),
         ):
-            result = await retry_with_status(sink, config)(
+            result = await retry_with_status(sink, config, sleep=sleep)(
                 _failing(TransportError("rate limited", status_code=429, retryable=True)),
             )
 

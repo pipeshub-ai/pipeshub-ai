@@ -16,6 +16,8 @@ import { PgOrgMetricsJobRepository } from '../../src/libs/repositories/org-metri
 import { PgOrgRepository } from '../../src/libs/repositories/org/pg';
 import { PgPictureRepository } from '../../src/libs/repositories/picture/pg';
 import { PgResetLinkRepository } from '../../src/libs/repositories/reset-link/pg';
+import { PgSessionFamilyRepository } from '../../src/libs/repositories/session-family/pg';
+import { describeSessionFamilyContract } from './contract/session-family.contract';
 import { PgUserRepository } from '../../src/libs/repositories/user/pg';
 import { describeIdentityContract } from './contract/identity.contract';
 import { describeLookupContract, describeMetricsContract, describeOrgContract } from './contract/rest.contract';
@@ -75,6 +77,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       });
     });
 
+    describe('session-family contract', () => {
+      describeSessionFamilyContract({
+        repo: new PgSessionFamilyRepository(),
+        newOrg: () => world.newOrg(),
+        newId,
+      });
+    });
+
     const orgFixture = () => ({
       orgs: world.scoped(new PgOrgRepository(), ORG_SPEC),
       metrics: new PgOrgMetricsJobRepository(),
@@ -90,6 +100,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           world.ledger.learn({ orgId: ids.orgId, adminUserId: ids.adminUserId });
           return r;
         }),
+      failCredentialWrites: async () => {
+        await world.stack.admin((c) =>
+          c.query(`CREATE FUNCTION identity.it_refuse_credential() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'credential write refused'; END $$;
+            CREATE TRIGGER it_refuse_credential BEFORE INSERT ON identity.user_credentials FOR EACH ROW EXECUTE FUNCTION identity.it_refuse_credential()`),
+        );
+        return async () => {
+          await world.stack.admin((c) =>
+            c.query('DROP TRIGGER it_refuse_credential ON identity.user_credentials; DROP FUNCTION identity.it_refuse_credential()'),
+          );
+        };
+      },
     });
 
     describe('organisation contract', () => {

@@ -3,7 +3,7 @@
 import React, { useContext } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Select } from '@radix-ui/themes';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldSelectTrigger } from '@/app/(main)/workspace/components/form-field';
 import {
   WorkspaceRightPanelBodyPortalContext,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
@@ -50,7 +50,7 @@ export function SyncSettingsSection({
         <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {t('workspace.connectors.configTab.syncSettings')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.configTab.syncSettingsDescription', { name: connectorName })}
         </Text>
       </Flex>
@@ -62,7 +62,7 @@ export function SyncSettingsSection({
           onValueChange={(v) => onStrategyChange(v as SyncStrategy)}
           disabled={disabled}
         >
-          <Select.Trigger
+          <FormFieldSelectTrigger
             style={{ width: '100%', height: 32 }}
             placeholder={t('workspace.connectors.configTab.syncStrategyPlaceholder')}
           />
@@ -78,7 +78,7 @@ export function SyncSettingsSection({
             ))}
           </Select.Content>
         </Select.Root>
-        <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', marginTop: 2 }}>
           {t('workspace.connectors.configTab.syncStrategyHelper', { name: connectorName })}
         </Text>
       </FormField>
@@ -91,7 +91,7 @@ export function SyncSettingsSection({
             onValueChange={(v) => onIntervalChange(Number(v))}
             disabled={disabled}
           >
-            <Select.Trigger
+            <FormFieldSelectTrigger
               style={{ width: '100%', height: 32 }}
               placeholder={t('workspace.connectors.configTab.syncIntervalPlaceholder')}
             />
@@ -107,7 +107,7 @@ export function SyncSettingsSection({
               ))}
             </Select.Content>
           </Select.Root>
-          <Text size="1" style={{ color: 'var(--gray-10)', marginTop: 2 }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', marginTop: 2 }}>
             {t('workspace.connectors.configTab.syncIntervalHelper', { name: connectorName })}
           </Text>
         </FormField>

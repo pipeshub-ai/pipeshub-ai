@@ -28,7 +28,11 @@
 # ever talks to it.
 services:
   redis-cluster-it:
-    image: grokzen/redis-cluster:7.0.10
+    image: grokzen/redis-cluster:7.0.10@sha256:f130dd8a322fc4dc595380ec94907539c341d5841de7d31e679223aec04d30f6
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     container_name: redis-cluster-it
     environment:
       IP: "0.0.0.0"

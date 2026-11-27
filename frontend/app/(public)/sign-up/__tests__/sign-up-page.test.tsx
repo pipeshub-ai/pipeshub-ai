@@ -22,6 +22,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/config', () => ({
   useAuthStore: (fn: (s: object) => unknown) => fn({ isHydrated: true, setTokens, setUser }),
+  GuestGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@/lib/api/org-exists-public', () => ({
@@ -48,9 +49,6 @@ vi.mock('@/lib/store/toast-store', () => ({
   },
 }));
 vi.mock('@/lib/hooks/use-breakpoint', () => ({ useAuthWideLayout: () => false }));
-vi.mock('@/app/components/ui/guest-guard', () => ({
-  GuestGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 vi.mock('@/app/components/ui/auth-guard', () => ({ LoadingScreen: () => <div>loading</div> }));
 vi.mock('../../components/auth-hero', () => ({ default: () => null }));
 vi.mock('../../components/auth-title-section', () => ({ default: () => null }));

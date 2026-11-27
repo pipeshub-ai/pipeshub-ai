@@ -71,6 +71,7 @@ class Neo4jLabel(Enum):
     # Agent Builder collections
     AGENT_TEMPLATES = "AgentTemplate"
     AGENT_INSTANCES = "AgentInstance"
+    AGENT_VERSIONS = "AgentVersion"
     AGENT_KNOWLEDGE = "AgentKnowledge"
     AGENT_TOOLSETS = "AgentToolset"
     AGENT_TOOLS = "AgentTool"
@@ -80,6 +81,8 @@ class Neo4jLabel(Enum):
     AGENT_SKILLS = "AgentSkills"
     AGENT_SKILL_VERSIONS = "AgentSkillVersions"
     AGENT_SKILL_CANDIDATES = "AgentSkillCandidates"
+
+    KNOWLEDGE_PUBLICATIONS = "KnowledgePublication"
 
     # Sales
     DEALS = "Deals"
@@ -120,6 +123,8 @@ class Neo4jRelationshipType(Enum):
 
     # Agent Skills relationships
     AGENT_SKILL_RELATION = "AGENT_SKILL_RELATION"
+
+    PUBLISHED_VIA = "PUBLISHED_VIA"
 
     # Sales relationships
     SOLD_IN = "SOLD_IN"
@@ -182,6 +187,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     # Agent Builder collections
     CollectionNames.AGENT_TEMPLATES.value: Neo4jLabel.AGENT_TEMPLATES.value,
     CollectionNames.AGENT_INSTANCES.value: Neo4jLabel.AGENT_INSTANCES.value,
+    CollectionNames.AGENT_VERSIONS.value: Neo4jLabel.AGENT_VERSIONS.value,
     CollectionNames.AGENT_KNOWLEDGE.value: Neo4jLabel.AGENT_KNOWLEDGE.value,
     CollectionNames.AGENT_TOOLSETS.value: Neo4jLabel.AGENT_TOOLSETS.value,
     CollectionNames.AGENT_TOOLS.value: Neo4jLabel.AGENT_TOOLS.value,
@@ -190,6 +196,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.AGENT_SKILLS.value: Neo4jLabel.AGENT_SKILLS.value,
     CollectionNames.AGENT_SKILL_VERSIONS.value: Neo4jLabel.AGENT_SKILL_VERSIONS.value,
     CollectionNames.AGENT_SKILL_CANDIDATES.value: Neo4jLabel.AGENT_SKILL_CANDIDATES.value,
+    CollectionNames.KNOWLEDGE_PUBLICATIONS.value: Neo4jLabel.KNOWLEDGE_PUBLICATIONS.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
@@ -217,6 +224,7 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_MCP_SERVER.value: Neo4jRelationshipType.AGENT_HAS_MCP_SERVER.value,
     CollectionNames.MCP_SERVER_HAS_TOOL.value: Neo4jRelationshipType.MCP_SERVER_HAS_TOOL.value,
     CollectionNames.AGENT_SKILL_RELATION.value: Neo4jRelationshipType.AGENT_SKILL_RELATION.value,
+    CollectionNames.PUBLISHED_VIA.value: Neo4jRelationshipType.PUBLISHED_VIA.value,
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,
     CollectionNames.MEMBER_OF.value: Neo4jRelationshipType.MEMBER_OF.value,

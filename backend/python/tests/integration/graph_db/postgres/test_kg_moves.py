@@ -193,6 +193,7 @@ async def test_with_the_switch_off_or_in_a_callers_transaction_kg_is_not_read(pg
     assert tally.c[("pc_ancestor", "off")] == 2 and tally.c[("pc_depth", "off")] == 1 and not tally.c[("pc_ancestor", "kg")], dict(tally.c)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_guard_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: a chain of 200 PARENT_CHILD records beside 12,000 others in the connector, never analysed and analysed: no guard statement scans a table."""
     org = new_org()

@@ -143,7 +143,7 @@ class TestLayering:
 
     def test_custom_instructions_included_when_set(self) -> None:
         """Org-level "Custom Instructions" (workspace settings, mode-resolved
-        by `chat_modes.bridge`) must render as its own section, distinct
+        by `chat_modes.setup`) must render as its own section, distinct
         from the per-agent `## Agent Instructions`."""
         context = make_context(custom_instructions="Always respond in Spanish.")
         result = _build(context)

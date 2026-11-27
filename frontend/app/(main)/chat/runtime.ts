@@ -10,6 +10,9 @@
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
+import { runOutcome } from './run-outcome';
+import { runFailureWords } from './run-failure-words';
+import { i18n } from '@/lib/i18n';
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort, projectAgentCapabilities } from './store';
@@ -40,6 +43,7 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { chatHarnessField, turnHarnessChoice } from './assistant-harness';
 import { bareToolFullName } from './tool-groups';
 import {
   hasUnansweredQuestions,
@@ -47,13 +51,19 @@ import {
   parseAnswerMessage,
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
+import { answerErrorText } from './harness-errors';
+import type { ChatStreamErrorInfo } from './stream-error';
+import { toSentCommand } from './commands';
 import { isToolApprovalResumeQuery } from './tool-approval';
+import { heldRepository, useRepositoryStore } from './repository-store';
+import { turnGatesField, useRunGatesStore } from './run-gates';
 import { applyCompareToRequest, onPrimarySettled, settleBeforeSend } from './compare/compare-controller';
 import { compareModelForSlot } from './compare/compare-store';
+import type { ThreadOwner } from './hooks/use-thread-owner';
 import { ANSWER_FAILED } from './stream-error';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
-const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
+export const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
 
 /** Prefer the `isFinal` text part from the transcript over `msg.content`.
  * Handles pre-fix conversations where `content` had narration mixed in,
@@ -203,6 +213,20 @@ function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
   const agentIdFromUrl = rawUrlAgent?.trim() || undefined;
   const slotAgent = slot.threadAgentId?.trim() || null;
   return slotAgent ?? agentIdFromUrl ?? undefined;
+}
+
+/** The engine `/engine` held for this new chat (CMDUI2): only on the request that creates it, for its own agent. */
+function newChatEngineField(convId: string | null, agentId: string | null): Pick<StreamChatRequest, 'codingEngine'> {
+  const pending = useChatStore.getState().pendingCodingEngine;
+  if (convId || !pending || pending.agentId !== agentId) return {};
+  return { codingEngine: pending.engine };
+}
+
+/** The repository the picker held for this new chat (WP-26), for the request that creates it. */
+export function newChatRepositoryField(convId: string | null, agentId: string | null): Pick<StreamChatRequest, 'repository'> {
+  const held = heldRepository(useRepositoryStore.getState().pending, agentId);
+  if (convId || !held) return {};
+  return { repository: { url: held.url, ...(held.baseRef ? { baseRef: held.baseRef } : {}), toolsetInstanceId: held.toolsetInstanceId } };
 }
 
 /**
@@ -361,6 +385,11 @@ export function buildStreamChatRequestForSlot(
     ...(!currentSlot.convId && currentSlot.projectId
       ? { projectId: currentSlot.projectId }
       : {}),
+    ...chatHarnessField(turnHarnessChoice(currentSlot, currentState.settings.queryMode, isAgent)),
+    ...newChatEngineField(currentSlot.convId, effectiveAgentId ?? null),
+    ...newChatRepositoryField(currentSlot.convId, effectiveAgentId ?? null),
+    // G-03..G-05: the gates the person turned on for this message; an approval's answer carries none of its own.
+    ...(toolApproval ? {} : turnGatesField(useRunGatesStore.getState().turn, effectiveAgentId ? currentState.agentGates : null)),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -654,16 +683,35 @@ export function loadHistoricalMessages(
         mergeNextBotIntoId = null;
         continue;
       }
+      // A saved failure names an error answer's code or a run ending's: either is worded here, with its next step.
+      const code = typeof msg.errorCode === 'string' && msg.errorCode ? msg.errorCode : null;
+      const answerWords = answerErrorText(code);
+      // WP-89/WP-100: worded from the run's typed outcome as the live RUN_ERROR is; the message's own fields from before it.
+      const failureWords = runFailureWords(code, runOutcome(msg.runOutcome), {
+        servers: msg.errorServers,
+        details: msg.errorStop,
+      });
+      const streamError: ChatStreamErrorInfo | null =
+        code === null ? null : { code, source: answerWords !== null ? 'answer' : 'run' };
       result.push({
         id: msg._id,
         role: 'assistant' as const,
-        content: [{ type: 'text' as const, text: msg.content || 'An error occurred. Please try again.' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: failureWords ?? (msg.content || 'An error occurred. Please try again.'),
+          },
+        ],
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            // Shown as an error, not as an answer: the saved code when the row has one, a failed answer otherwise.
+            streamError: streamError ?? { code: ANSWER_FAILED },
+            // A failed durable run keeps the messages the user sent while it ran.
+            ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+            ...(msg.runId ? { durableRunId: msg.runId } : {}),
+            ...(msg.copied ? { copied: true } : {}),
             ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
-            // Shown as an error, not as an answer (the saved row says why the reply failed).
-            streamError: { code: ANSWER_FAILED },
           },
         },
       });
@@ -716,7 +764,9 @@ export function loadHistoricalMessages(
           ? { value: 'dislike' as const }
           : undefined;
 
-      const answerText = extractFinalAnswer(msg.parts, msg.content);
+      const answerText = msg.foreignTurn
+        ? i18n.t('chat.continuePrivately.foreignTurn')
+        : extractFinalAnswer(msg.parts, msg.content);
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
@@ -744,6 +794,9 @@ export function loadHistoricalMessages(
           const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
           const prevCustomRest = { ...prevCustom };
           delete prevCustomRest.status;
+          // The row shows this reply's answer: its not-found fact is this reply's, never the asking row's.
+          delete prevCustomRest.notFound;
+          delete prevCustomRest.limits;
           const prevParts = Array.isArray(prevCustomRest.persistedParts)
             ? (prevCustomRest.persistedParts as MessagePart[])
             : [];
@@ -760,7 +813,14 @@ export function loadHistoricalMessages(
                 modelInfo: msg.modelInfo,
                 ...(feedbackInfo ? { feedbackInfo } : {}),
                 ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+                ...(msg.truncatedBy ? { truncatedBy: msg.truncatedBy } : {}),
+                ...(msg.budgetScope ? { budgetScope: msg.budgetScope } : {}),
+                ...(msg.notFound !== undefined ? { notFound: msg.notFound } : {}),
+            ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
+                ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
+                // The row shows this reply's answer, so its summary, cost and activity are this run's (FU-2).
+                ...(msg.runId ? { durableRunId: msg.runId } : {}),
               },
             },
           });
@@ -780,6 +840,10 @@ export function loadHistoricalMessages(
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+            // BUDGETEND: the answer a limit cut short shows a notice (the saved message names the limit).
+            ...(msg.truncatedBy ? { truncatedBy: msg.truncatedBy } : {}),
+            ...(msg.budgetScope ? { budgetScope: msg.budgetScope } : {}),
+            ...(msg.notFound !== undefined ? { notFound: msg.notFound } : {}),
             ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
@@ -789,6 +853,8 @@ export function loadHistoricalMessages(
             // legacy protocol and every pre-existing conversation; consumers
             // fall back to plain `content` (see AgentActivityTimeline).
             ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+            ...(msg.runId ? { durableRunId: msg.runId } : {}),
+            ...(msg.copied ? { copied: true } : {}),
           },
         },
       });
@@ -893,15 +959,24 @@ export function loadHistoricalMessages(
     }
     // A real question: the reply after it is its own row, whatever came before.
     mergeNextBotIntoId = null;
+    const sentCommand = msg.foreignTurn ? null : toSentCommand(msg.command, msg.content);
     result.push({
       id: msg._id,
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: msg.content }],
+      content: [
+        {
+          type: 'text' as const,
+          text: msg.foreignTurn
+            ? i18n.t('chat.continuePrivately.foreignTurn')
+            : (sentCommand?.typed ?? msg.content),
+        },
+      ],
       metadata: {
         custom: {
           createdAt: msg.createdAt,
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...(sentCommand ? { command: sentCommand } : {}),
         },
       },
     });
@@ -1026,6 +1101,8 @@ export function buildExternalStoreConfig(
   return {
     messages: slot?.messages ?? [],
     isRunning: slot?.isStreaming ?? false,
+    // Applied with the messages, so the thread can tell whose they are (FIX-NAV).
+    extras: { slotId: activeSlotId, convId: slot?.convId ?? null } satisfies ThreadOwner,
 
     // Required when T = ThreadMessageLike (identity — our messages are already ThreadMessageLike)
     convertMessage: (msg: ThreadMessageLike) => msg,

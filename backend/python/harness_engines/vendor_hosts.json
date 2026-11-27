@@ -1,0 +1,11 @@
+{
+ "schema": "pipeshub.vendor-hosts/1",
+ "version": "2026-10-19.1",
+ "_comment": "Release data (SIGNIN, plan §2.5): per sandbox-login vendor row, the hosts its sandbox may open opaque CONNECT tunnels to (port 443) and the hosts a sign-in link the engine prints may point at (the person's browser opens it, never the sandbox). Recorded from Claude Code 2.1.294 by SIGNIN-1 (SP-1, SP-7) and checked 2026-10-19 against https://code.claude.com/docs/en/network-config (Network access requirements): api.anthropic.com for API requests, feature flags and telemetry; platform.claude.com for OAuth token exchange, refresh and revocation of claude.ai accounts; claude.com is opened in the browser and redirects to claude.ai. Signed with the vendor-rules release key (vendor_hosts.json.sig); unsigned, no own sign-in runs.",
+ "rows": {
+  "anthropic-claude-plan-claude-code": {
+   "sandbox": ["api.anthropic.com", "platform.claude.com"],
+   "link": ["claude.com", "claude.ai"]
+  }
+ }
+}

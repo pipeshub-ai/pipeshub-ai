@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.github_teams.runtime import RuntimeHelper
+from app.connectors.sources.github_teams.runtime import RefreshOutcome, RuntimeHelper
 from app.sources.client.github.github import GitHubResponse
 
 from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
@@ -73,7 +73,7 @@ class TestDsCall:
                 return GitHubResponse(success=False, error="401 Unauthorized")
             return GitHubResponse(success=True, data="ok")
 
-        runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+        runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.REFRESHED)
         res = await runtime.ds_call(flaky_method)
         assert res.success is True
         assert res.data == "ok"
@@ -82,7 +82,7 @@ class TestDsCall:
 
     async def test_ds_call_non_auth_failure_no_retry(self) -> None:
         _c, runtime = _make_runtime()
-        runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+        runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.REFRESHED)
 
         async def failing_method() -> GitHubResponse:
             return GitHubResponse(success=False, error="404 Not Found")
@@ -249,9 +249,13 @@ class TestForceRefreshOAuthToken:
 
     async def test_missing_refresh_service_returns_false(self) -> None:
         c, runtime = _make_runtime()
+        c.config_service = AsyncMock()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}},
+        )
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = None
-            assert await runtime.force_refresh_oauth_token() is False
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.UNAVAILABLE
 
     async def test_missing_config_returns_false(self) -> None:
         c, runtime = _make_runtime()
@@ -259,7 +263,7 @@ class TestForceRefreshOAuthToken:
         c.config_service.get_config = AsyncMock(return_value=None)
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = MagicMock()
-            assert await runtime.force_refresh_oauth_token() is False
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.UNAVAILABLE
 
     async def test_api_token_returns_false(self) -> None:
         c, runtime = _make_runtime()
@@ -269,7 +273,7 @@ class TestForceRefreshOAuthToken:
         )
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = MagicMock()
-            assert await runtime.force_refresh_oauth_token() is False
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.CANNOT_REFRESH
 
     async def test_missing_refresh_token_returns_false(self) -> None:
         c, runtime = _make_runtime()
@@ -279,7 +283,7 @@ class TestForceRefreshOAuthToken:
         )
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = MagicMock()
-            assert await runtime.force_refresh_oauth_token() is False
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.CANNOT_REFRESH
 
     async def test_successful_refresh_syncs_client(self) -> None:
         c, runtime = _make_runtime()
@@ -296,7 +300,7 @@ class TestForceRefreshOAuthToken:
         refresh.refresh_now = AsyncMock()
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = refresh
-            assert await runtime.force_refresh_oauth_token() is True
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.REFRESHED
         refresh.refresh_now.assert_awaited_once()
         runtime.refresh_token_if_needed.assert_awaited_once()
 
@@ -306,7 +310,7 @@ class TestForceRefreshOAuthToken:
         c.config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
         with patch(self._PATCH) as mock_ss:
             mock_ss.get_token_refresh_service.return_value = MagicMock()
-            assert await runtime.force_refresh_oauth_token() is False
+            assert await runtime.force_refresh_oauth_token() is RefreshOutcome.UNAVAILABLE
 
 
 class TestExecuteGithubOp:
@@ -336,7 +340,7 @@ class TestExecuteGithubOp:
 class TestDsCallRetries:
     async def test_auth_refresh_failure_returns_original(self) -> None:
         _c, runtime = _make_runtime()
-        runtime.force_refresh_oauth_token = AsyncMock(return_value=False)
+        runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.UNAVAILABLE)
 
         async def failing() -> GitHubResponse:
             return GitHubResponse(success=False, error="401 Unauthorized")

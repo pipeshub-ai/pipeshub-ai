@@ -421,7 +421,7 @@ describe('self-answered failures: one reason on the request’s lines', function
           }),
         );
         const res = await fetch(`${originOf(app)}/api/v1/artifacts/a1`);
-        expect(res.status).to.equal(code === 404 ? 404 : 500);
+        expect(res.status).to.equal(code === 404 ? 404 : 502);
         await access();
         const failureLines = mine().filter((r) => level(r) !== 'debug' && r.message !== 'http.request.end' && r.message !== 'upstream.call.end');
         expect(failureLines.map((r) => r.message)).to.deep.equal(['http.request.error']);

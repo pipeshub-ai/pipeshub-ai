@@ -1,0 +1,18 @@
+{
+  "candidates": [
+    {
+      "content": {"role": "model", "parts": [{"text": "Paris is the capital of France."}]},
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 11,
+    "candidatesTokenCount": 7,
+    "cachedContentTokenCount": 4,
+    "thoughtsTokenCount": 24,
+    "totalTokenCount": 42
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "mgw21-complete-text"
+}

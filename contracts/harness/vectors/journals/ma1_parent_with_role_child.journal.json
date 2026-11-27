@@ -1,0 +1,511 @@
+{
+ "scenario": "ma1_parent_with_role_child",
+ "query": "Find what changed in the Q3 plan",
+ "runId": "run1",
+ "sessionId": "ses1",
+ "events": [
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run1"
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:9d88a6cc12b537514b0b1e0297e5be0af53dec3e9511099394f022dbd1223d90",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 8,
+     "runKind": "interactive",
+     "principalRef": "p_user",
+     "model": {
+      "policy": [
+       {
+        "provider": "scripted",
+        "model": "scripted-1"
+       }
+      ],
+      "promptVersion": "p-test"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 8,
+      "maxTokens": 1000000,
+      "maxCostUsd": 1.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 1
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {}
+    }
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 4,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "cas:2f3378ffd4cd44988936a24aa649c8532a052cecbbd583ac5d45537f720cb00e",
+     "hash": "sha256:2f3378ffd4cd44988936a24aa649c8532a052cecbbd583ac5d45537f720cb00e",
+     "size": 32
+    },
+    "isFinal": false
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 5,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 6,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:b7f5d0f8240beab133615c52aec9404ea72ca5f7c50908aac0ab65b29348036f",
+    "route": {
+     "provider": "scripted",
+     "model": "scripted"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 7,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "cas:b2e111b8bd4ef53b938cdc475e89883acd8746642d1922dc5c048b82f4a12af2",
+     "hash": "sha256:b2e111b8bd4ef53b938cdc475e89883acd8746642d1922dc5c048b82f4a12af2",
+     "size": 139
+    },
+    "toolCalls": [
+     {
+      "callId": "call_0_0",
+      "modelName": "delegate",
+      "argsDigest": "sha256:b71d7d1f627dd0df8110e0db8bd032846b7091adff727fa1dd552ab6353bf13f"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "scripted",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "cas:8babf543b5a7a7665283b7132034672a1935ba02489a03e48a300b6dab4aed29",
+     "hash": "sha256:8babf543b5a7a7665283b7132034672a1935ba02489a03e48a300b6dab4aed29",
+     "size": 185
+    }
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 8,
+   "type": "child.spawned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "childRunId": "1fbeb51b-cfda-772d-ae35-877b4dc91061",
+    "invocationId": "t1.0",
+    "grantDigest": "sha256:a12ad8164c1621da1b1e5fc107658e73841d2a1aece10fd24d36938dc31e0002",
+    "taskId": "research",
+    "model": {
+     "provider": "anthropic",
+     "model": "claude-haiku-4-5",
+     "role": "researcher"
+    }
+   },
+   "runId": "run1"
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 9,
+   "type": "run.suspended",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "reason": "join"
+   },
+   "runId": "run1",
+   "attemptId": "run1.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 10,
+   "type": "child.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "childRunId": "1fbeb51b-cfda-772d-ae35-877b4dc91061",
+    "resultRef": {
+     "ref": "cas:72544c1cc2e66737cad42842e702e153f92ce86a7b5ce177318c31855542edf2",
+     "hash": "sha256:72544c1cc2e66737cad42842e702e153f92ce86a7b5ce177318c31855542edf2",
+     "size": 57
+    },
+    "labels": {
+     "integrity": "trusted"
+    },
+    "outcome": "answered"
+   },
+   "runId": "run1"
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 11,
+   "type": "run.resumed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "cause": "child_done"
+   },
+   "runId": "run1"
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 12,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 2,
+    "leaseMs": 30000
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 13,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "delegate@default/delegate",
+    "argsDigest": "sha256:b71d7d1f627dd0df8110e0db8bd032846b7091adff727fa1dd552ab6353bf13f",
+    "effect": "read",
+    "sink": {
+     "egress": "none",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 14,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "cas:f24d11c196ca74b7a7474aea97591b58c11e4fe6ed73d78718d3be7130bbefa6",
+     "hash": "sha256:f24d11c196ca74b7a7474aea97591b58c11e4fe6ed73d78718d3be7130bbefa6",
+     "size": 85
+    },
+    "labels": {
+     "integrity": "trusted"
+    }
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 15,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 16,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 17,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:4be7dff1ff526274b7f011782f6ba00a36cdbee6d2fe709cb4e195c058ee097f",
+    "route": {
+     "provider": "scripted",
+     "model": "scripted"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 18,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "cas:313906607d2ea1dc1a2420abff089c97bfddb5d1b609ca149318835bfd0b2de2",
+     "hash": "sha256:313906607d2ea1dc1a2420abff089c97bfddb5d1b609ca149318835bfd0b2de2",
+     "size": 67
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "scripted",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "cas:6dca5d7570520d32dcde75c63915ccee4838a3d02efe6a1ce6d663e010af2afa",
+     "hash": "sha256:6dca5d7570520d32dcde75c63915ccee4838a3d02efe6a1ce6d663e010af2afa",
+     "size": 135
+    }
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 19,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "cas:b435ff101d904b5acf2f533a30436727da34ab39d6e408fd6dc56aa74563a145",
+     "hash": "sha256:b435ff101d904b5acf2f533a30436727da34ab39d6e408fd6dc56aa74563a145",
+     "size": 41
+    },
+    "isFinal": true
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 20,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  },
+  {
+   "orgId": "org1",
+   "sessionId": "ses1",
+   "streamId": "ses1",
+   "seq": 21,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run1",
+   "attemptId": "run1.a2",
+   "fence": 2
+  }
+ ]
+}

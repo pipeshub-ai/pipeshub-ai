@@ -2,6 +2,7 @@ import { expect, type APIRequestContext, type Browser, type Page } from '@playwr
 import { randomBytes } from 'crypto';
 import { inviteLinkPath, waitForEmailTo } from './mailpit.helper';
 import { loginViaUI } from './login.helper';
+import en from '../../../lib/i18n/locales/en-US.json';
 
 export type Member = { email: string; password: string };
 
@@ -60,10 +61,10 @@ export async function acceptInvite(browser: Browser, email: string, fullName = '
     await expect(page.getByText('Your password has been changed!')).toBeVisible({ timeout: 20_000 });
 
     await loginViaUI(page, member.email, member.password);
-    const profile = page.getByRole('dialog', { name: 'Complete Your Profile' });
+    const profile = page.getByRole('dialog', { name: en.fullNameDialog.title });
     await expect(profile, 'a new member is asked for their name on first sign-in').toBeVisible({ timeout: 20_000 });
-    await profile.getByPlaceholder('e.g. Jane Smith').fill(fullName);
-    await profile.getByRole('button', { name: 'Save & continue' }).click();
+    await profile.getByPlaceholder(en.fullNameDialog.placeholder).fill(fullName);
+    await profile.getByRole('button', { name: en.fullNameDialog.submit }).click();
     await expect(profile).toBeHidden({ timeout: 15_000 });
   } finally {
     await context.close();

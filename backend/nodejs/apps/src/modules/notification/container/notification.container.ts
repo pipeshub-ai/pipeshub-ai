@@ -22,8 +22,6 @@ import {
   PlatformAlertHandler,
   logIfPlatformAlertsBlocked,
 } from '../service/platform-alert.handler';
-// Who receives installation-wide alerts is chosen in src/config.ts.
-import { resolvePlatformAdminRecipients } from '../../../config';
 
 const loggerConfig = {
   service: 'NotificationContainer',
@@ -65,7 +63,14 @@ export class NotificationContainer {
     container.bind(MailProducer).toSelf().inSingletonScope();
     container
       .bind<PlatformAdminRecipientsResolver>(PLATFORM_ADMIN_RECIPIENTS)
-      .toConstantValue(() => resolvePlatformAdminRecipients());
+      // Who receives installation-wide alerts is chosen in src/config.ts. Loaded on
+      // first use: config.ts re-exports the routers, and the user controller they
+      // build on loads this container, so a static import here is a cycle.
+      .toConstantValue(() =>
+        import('../../../config').then((edition) =>
+          edition.resolvePlatformAdminRecipients(),
+        ),
+      );
     container.bind(PlatformAlertHandler).toSelf().inSingletonScope();
     logIfPlatformAlertsBlocked(this.logger);
 

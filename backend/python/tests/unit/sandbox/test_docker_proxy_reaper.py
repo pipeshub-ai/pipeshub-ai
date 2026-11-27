@@ -14,6 +14,7 @@ import pytest
 
 from app.sandbox import docker_proxy
 from app.sandbox.docker_proxy import (
+    BROKER_STAMP_LABEL,
     INSTANCE_LABEL,
     MANAGED_LABEL,
     DockerApiPolicy,
@@ -22,6 +23,8 @@ from app.sandbox.docker_proxy import (
     ReaperSettings,
     resolve_instance,
 )
+from tests.support.settle import settle
+from tests.unit.sandbox.test_docker_proxy import TOKEN
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -96,7 +99,7 @@ def _container(ident: str, age_s: float, *, instance: str | None = "stack-a", st
 def _reaper(
     sock: str, *, reap_after: float | None = 420, interval: float = 60, reap_unlabeled: bool = False,
 ) -> Reaper:
-    proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
+    proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, caller_token=TOKEN, instance="stack-a")
     settings = ReaperSettings(reap_after_s=reap_after, interval_s=interval, reap_unlabeled=reap_unlabeled)
     return Reaper(proxy, settings, clock=lambda: NOW)
 
@@ -111,6 +114,20 @@ class TestReapOnce:
         deletes = [t for m, t in fake.requests if m == "DELETE"]
         assert sorted(deletes) == ["/containers/dead?force=1", "/containers/old?force=1"]
         assert [c["Id"] for c in fake.containers] == ["young"]
+
+    @pytest.mark.parametrize("reap_unlabeled", [False, True])
+    async def test_a_broker_sandbox_is_never_reaped_however_old(self, daemon, reap_unlabeled: bool) -> None:
+        # The sandbox broker's engine sandboxes live as long as their run, past any run_code timeout; even one that
+        # also carries the legacy labels (with or without this stack's instance) is the broker's to remove.
+        fake, sock = daemon
+        broker_old = _container("broker", 50_000)
+        broker_old["Labels"][BROKER_STAMP_LABEL] = "install-1"
+        broker_legacy = _container("broker-legacy", 50_000, instance=None)
+        broker_legacy["Labels"][BROKER_STAMP_LABEL] = "install-1"
+        fake.containers = [broker_old, broker_legacy, _container("old", 500)]
+
+        assert await _reaper(sock, reap_unlabeled=reap_unlabeled).reap_once() == 1
+        assert sorted(c["Id"] for c in fake.containers) == ["broker", "broker-legacy"]
 
     async def test_lists_only_this_instances_containers(self, daemon) -> None:
         fake, sock = daemon
@@ -141,7 +158,7 @@ class TestReapOnce:
     async def test_disabled_reaper_never_lists(self, daemon, caplog) -> None:
         fake, sock = daemon
         with caplog.at_level(logging.WARNING):
-            await asyncio.wait_for(_reaper(sock, reap_after=None).run(asyncio.Event()), 1)
+            await settle(_reaper(sock, reap_after=None).run(asyncio.Event()))
         assert fake.requests == []
         assert "reaper is off" in caplog.text
 
@@ -177,7 +194,7 @@ class TestReapOnce:
         fake, sock = daemon
         fake.containers = [_container("legacy", 50_000, instance=None)]
         now = [NOW]
-        proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, instance="stack-a")
+        proxy = DockerSocketProxy(DockerApiPolicy(frozenset(), frozenset()), sock, caller_token=TOKEN, instance="stack-a")
         reaper = Reaper(proxy, ReaperSettings(reap_after_s=420, interval_s=60), clock=lambda: now[0])
 
         with caplog.at_level(logging.WARNING):

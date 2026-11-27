@@ -335,7 +335,7 @@ describe('configuration_manager/validator/validators', () => {
       if (result.success) {
         expect(result.data.body.configuration.modelFriendlyName).to.equal(undefined)
         expect(result.data.body.configuration.apiKey).to.equal('sk')
-        expect(result.data.body.models[0].modelFriendlyName).to.equal('Bee')
+        expect(result.data.body.models[0]!.modelFriendlyName).to.equal('Bee')
       }
     })
 
@@ -356,6 +356,73 @@ describe('configuration_manager/validator/validators', () => {
     })
   })
 
+  describe('configurationSchema region and location', () => {
+    it('accepts region names and blanks', () => {
+      for (const value of ['us-gov-west-1', 'europe-west4', 'global', '']) {
+        expect(
+          configurationSchema.safeParse({ region: value, location: value })
+            .success,
+          value,
+        ).to.be.true;
+      }
+    });
+
+    it('rejects values that could redirect the host', () => {
+      expect(configurationSchema.safeParse({ region: 'evil.test/x' }).success)
+        .to.be.false;
+      expect(configurationSchema.safeParse({ location: 'evil.test/x' }).success)
+        .to.be.false;
+    });
+
+    it('trims surrounding whitespace before use', () => {
+      const result = configurationSchema.safeParse({
+        region: '  us-east-1 ',
+        location: '\teurope-west4\n',
+      });
+      expect(result.success).to.be.true;
+      if (result.success) {
+        expect(result.data.region).to.equal('us-east-1');
+        expect(result.data.location).to.equal('europe-west4');
+      }
+    });
+
+    it('refuses only characters that could change a host', () => {
+      for (const value of [
+        'a.b',
+        'a/b',
+        'a\\b',
+        'a@b',
+        'a:b',
+        'a b',
+        'a\tb',
+        'a\u0000b',
+        'a\u007fb',
+      ]) {
+        expect(
+          configurationSchema.safeParse({ region: value }).success,
+          JSON.stringify(value),
+        ).to.be.false;
+        expect(
+          configurationSchema.safeParse({ location: value }).success,
+          JSON.stringify(value),
+        ).to.be.false;
+      }
+      expect(configurationSchema.safeParse({ region: 'us_east~1' }).success).to
+        .be.true;
+    });
+
+    it('refuses URL delimiters that could end a host early', () => {
+      for (const value of ['us-east-1#', 'us-east-1?x', 'us%2eeast']) {
+        expect(configurationSchema.safeParse({ region: value }).success, value)
+          .to.be.false;
+        expect(
+          configurationSchema.safeParse({ location: value }).success,
+          value,
+        ).to.be.false;
+      }
+    });
+  });
+
   describe('configurationSchema defaultReasoningEffort', () => {
     it('should keep a valid default so it is saved with the model', () => {
       const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'low' })
@@ -374,8 +441,8 @@ describe('configuration_manager/validator/validators', () => {
       const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'extreme' })
       expect(result.success).to.be.false
       if (!result.success) {
-        expect(result.error.issues[0].path).to.deep.equal(['defaultReasoningEffort'])
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.path).to.deep.equal(['defaultReasoningEffort'])
+        expect(result.error.issues[0]!.message).to.equal(
           'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
         )
       }

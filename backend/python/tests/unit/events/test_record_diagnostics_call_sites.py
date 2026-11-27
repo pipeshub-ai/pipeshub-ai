@@ -181,8 +181,8 @@ class TestTheStartWrites:
         assert doc["firstQueuedAt"] == 1234 and doc["indexingAttempts"] == 0 and doc["indexingStatus"] == NS
 
     def test_the_upload_route_builds_its_record_with_that_function(self) -> None:
-        source = (APP / "api/routes/chatbot.py").read_text(encoding="utf-8")
-        assert "record_doc = attachment_record_doc(" in source
+        source = (APP / "services/chat_attachments/uploads.py").read_text(encoding="utf-8")
+        assert "**attachment_record_doc(" in source
 
     def test_a_connector_turned_back_on_starts_a_new_run_for_a_record_it_parked(self) -> None:
         fields = EntityEventService._requeued_fields({"indexingStatus": "AUTO_INDEX_OFF", "firstQueuedAt": 3}, 99)

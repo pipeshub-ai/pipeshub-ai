@@ -160,6 +160,23 @@ class TestClassifyCompareDiffs:
         deletes, adds, modifies, renames = _classify_compare_diffs(diffs)
         assert deletes == [] and adds == [] and modifies == [] and renames == []
 
+    def test_a_credential_file_leaves_the_index_when_deleted_changed_or_renamed_away(self) -> None:
+        """Its record may predate the rule that now excludes the path, so the change must reach it."""
+        diffs = [
+            diff_entry(old_path=".kube/config", new_path=".kube/config", deleted_file=True),
+            diff_entry(old_path="gcp/service-account.json", new_path="gcp/service-account.json"),
+            diff_entry(old_path="keys/github_rsa", new_path="keys/github_rsa.md", renamed_file=True),
+        ]
+        deletes, adds, modifies, renames = _classify_compare_diffs(diffs)
+        assert deletes == [".kube/config", "gcp/service-account.json", "keys/github_rsa"]
+        assert adds == ["keys/github_rsa.md"]
+        assert modifies == [] and renames == []
+
+    def test_a_non_credential_excluded_delete_is_still_dropped(self) -> None:
+        diffs = [diff_entry(old_path="node_modules/x/index.js", new_path="node_modules/x/index.js", deleted_file=True)]
+        deletes, _, _, _ = _classify_compare_diffs(diffs)
+        assert deletes == []
+
     def test_dotfile_in_subdirectory_dropped(self) -> None:
         diffs = [diff_entry(old_path="src/.cache", new_path="src/.cache", new_file=True)]
         deletes, adds, modifies, renames = _classify_compare_diffs(diffs)

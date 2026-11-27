@@ -1,0 +1,16 @@
+{
+  "name": "pxh-engine-node-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The Node packages every engine's tools image ships (SK-03): the office and pdf skill packs write .docx with docx, .xlsx with exceljs, .pptx with pptxgenjs and PDFs with pdfkit and pdf-lib. Same pins as deployment/sandbox/package.json.",
+  "dependencies": {
+    "docx": "9.7.1",
+    "exceljs": "4.4.0",
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.20.2",
+    "pptxgenjs": "4.0.1"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

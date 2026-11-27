@@ -13,6 +13,7 @@
 import { request, type APIRequestContext, type Page } from '@playwright/test';
 import { test, expect } from '../fixtures/base.fixture';
 import { apiBaseURL } from '../fixtures/api-context.fixture';
+import { accessTokenFromSession } from '../helpers/session.helper';
 
 const FIXTURE_SITE = (process.env.WEB_FIXTURES_CONNECTOR_URL ?? 'http://web-fixtures:8080').replace(/\/$/, '');
 const STAND_IN_ENDPOINT = `${FIXTURE_SITE}/__fixtures__/openai/v1/`;
@@ -30,8 +31,9 @@ function credentials(): { email: string; password: string } {
 }
 
 async function signedInApi(page: Page, email: string): Promise<APIRequestContext> {
-  const token = await page.evaluate(() => window.localStorage.getItem('jwt_access_token'));
-  expect(token, 'no access token was stored after onboarding').toBeTruthy();
+  // The page keeps its access token in memory; ask for one with its session cookie (ADR-WEB-02).
+  const token = await accessTokenFromSession(page);
+  expect(token, 'no session after onboarding').toBeTruthy();
   const claims = JSON.parse(Buffer.from(token!.split('.')[1], 'base64url').toString()) as {
     email?: string;
     role?: string;

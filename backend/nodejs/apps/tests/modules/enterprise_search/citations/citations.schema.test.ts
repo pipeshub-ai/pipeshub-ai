@@ -50,46 +50,46 @@ describe('enterprise_search/citations/citations.schema', () => {
   describe('metadata sub-schema', () => {
     it('should have orgId as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('orgId')).to.exist
+      expect(metadataSchema!.path('orgId')).to.exist
     })
 
     it('should have mimeType as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('mimeType')).to.exist
+      expect(metadataSchema!.path('mimeType')).to.exist
     })
 
     it('should have recordId as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('recordId')).to.exist
+      expect(metadataSchema!.path('recordId')).to.exist
     })
 
     it('should have recordName as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('recordName')).to.exist
+      expect(metadataSchema!.path('recordName')).to.exist
     })
 
     it('should have origin as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('origin')).to.exist
+      expect(metadataSchema!.path('origin')).to.exist
     })
 
     it('should have extension as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      const extPath = metadataSchema.path('extension')
+      const extPath = metadataSchema!.path('extension')
       expect(extPath).to.exist
       expect(extPath).to.have.property('isRequired', true)
     })
 
     it('should have recordVersion with default 0', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      const rvPath = metadataSchema.path('recordVersion')
+      const rvPath = metadataSchema!.path('recordVersion')
       expect(rvPath).to.exist
       expect(rvPath.defaultValue).to.equal(0)
     })
 
     it('should have bounding_box array', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('bounding_box')).to.exist
+      expect(metadataSchema!.path('bounding_box')).to.exist
     })
   })
 

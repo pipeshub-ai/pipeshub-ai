@@ -237,10 +237,10 @@ function compatIcon(fieldName: string): string {
 
 function fieldStartAdornment(fieldName: string): React.ReactNode | undefined {
   if (fieldName === 'apiKey') {
-    return <MaterialIcon name="key" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="key" size={16} color="var(--gray-11)" />;
   }
   if (fieldName === 'model' || fieldName === 'contextLength') {
-    return <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="widgets" size={16} color="var(--gray-11)" />;
   }
   return undefined;
 }
@@ -645,7 +645,7 @@ export function ModelConfigDialog({
         // Preserve the existing default flag on edit so that tweaking
         // dimensions / api key / etc. does not silently remove the model
         // from being the default.
-        await AIModelsApi.updateProvider(modelType, editModel.modelKey, {
+        const updated = await AIModelsApi.updateProvider(modelType, editModel.modelKey, {
           provider: provider.providerId,
           configuration,
           isMultimodal: (topLevel.isMultimodal as boolean) ?? false,
@@ -653,6 +653,9 @@ export function ModelConfigDialog({
           isDefault: editModel.isDefault ?? false,
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
+        if (updated?.details?.forwardingCredentialsCleared) {
+          toast.warning(t('workspace.aiModels.configForwardingCredentialsCleared'));
+        }
       }
 
       endCheck([]);
@@ -1411,7 +1414,7 @@ function ModelConfigFormBody({
                         {field.displayName}
                       </Text>
                       {field.description ? (
-                        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                        <Text size="1" style={{ color: 'var(--gray-11)' }}>
                           {field.description}
                         </Text>
                       ) : null}

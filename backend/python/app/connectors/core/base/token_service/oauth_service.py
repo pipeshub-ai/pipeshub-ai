@@ -89,16 +89,29 @@ def _code_claim_path(credentials_path: str, code: str) -> str:
 
 
 async def read_oauth_config(config_service: ConfigurationService, path: str) -> dict[str, Any]:
-    """The config at ``path`` ({} when unset). A store that did not answer is an OAuthStoreUnavailableError; a value
-    that is there but does not decode in the encrypted layer (a changed SECRET_KEY) reads as unset, as before, since
-    retrying cannot fix it."""
+    """The config at ``path`` ({} when unset or undecodable). A store that did not answer is an
+    OAuthStoreUnavailableError."""
     try:
-        config = await config_service.get_config(path, raise_on_error=True)
-    except (ValueError, DecryptionError):
-        return {}
+        config = await _read_unless_undecodable(config_service, path)
     except Exception as e:
         raise OAuthStoreUnavailableError("The OAuth config could not be read") from e
     return config if isinstance(config, dict) else {}
+
+
+async def read_oauth_app_list(config_service: ConfigurationService, path: str) -> list[dict[str, Any]]:
+    """The OAuth app list at ``path`` ([] when unset or undecodable). A failed read is raised as it is, for the caller
+    to class."""
+    apps = await _read_unless_undecodable(config_service, path)
+    return apps if isinstance(apps, list) else []
+
+
+async def _read_unless_undecodable(config_service: ConfigurationService, path: str) -> object:
+    """The value at ``path``, or None when unset. A value that is there but does not decode in the encrypted layer (a
+    changed SECRET_KEY) reads as unset, as before, since retrying cannot fix it; any other failure is raised."""
+    try:
+        return await config_service.get_config(path, raise_on_error=True)
+    except (ValueError, DecryptionError):
+        return None
 
 
 class MalformedTokenError(ValueError):
@@ -201,6 +214,8 @@ class OAuthConfig:
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
     # RFC 8414 name for how the token endpoint takes client credentials; set by get_oauth_config.
     token_endpoint_auth_method: str = "client_secret_post"
+    # A person's own connector, whose token URL may be an address they typed: public addresses only.
+    public_only: bool = False
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -346,10 +361,13 @@ class OAuthProvider:
         if self._session is None or self._session.closed:
             # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
             # aiohttp refuses any header over 8190 bytes by default.
-            # The token URL is configured by an administrator: the deployment's rule for such
-            # hosts applies (this server, link-local and cloud metadata never).
+            # An administrator's token URL gets the deployment's rule for such hosts (this server,
+            # link-local and cloud metadata never); a person's own connector, public https only.
             self._session = ClientSession(
-                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+                max_field_size=32 * 1024,
+                **guarded_session_kwargs(
+                    allow_private=not private_addresses_blocked(), public_https_only=self.config.public_only
+                ),
             )
         return self._session
 
@@ -499,8 +517,9 @@ class OAuthProvider:
         token = OAuthToken.from_dict(normalized_data)
         return token
 
-    async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
-        """Refresh access token using refresh token"""
+    async def refresh_access_token(self, refresh_token: str, *, persist: bool = True) -> OAuthToken:
+        """Refresh access token using refresh token. ``persist=False``: the caller stores the token itself
+        (a control-plane binding, CPD-8), so ``credentials_path`` is not written."""
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
@@ -533,6 +552,9 @@ class OAuthProvider:
         # This handles Google and other providers that don't return refresh_token on refresh
         if not token.refresh_token:
             token.refresh_token = refresh_token
+
+        if not persist:
+            return token
 
         # Update the stored credentials with the new token
         try:

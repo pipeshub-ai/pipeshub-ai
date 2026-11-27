@@ -30,10 +30,17 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
         TokenScopes.RECORD_CONTENT.value,  # query -> connectors ACL-checked record content
         TokenScopes.CONVERSATION_CREATE.value,  # Node Slack service account -> query chat
         TokenScopes.CONVERSATION_PERMISSIONS.value,  # Node share/unshare/view -> query record permissions
+        TokenScopes.CONVERSATION_ERASE.value,  # Node erasure job -> query artifact records and blobs (E7)
+        TokenScopes.CONVERSATION_FORK.value,  # Node "continue privately" -> query artifact copies (SS3)
+        TokenScopes.AGENT_ERASE.value,  # Node agent-erasure sweeper -> query agent tombstone (H5)
+        TokenScopes.AGENT_NAMES.value,  # Node usage report and budget notices -> query agent names (WP-51)
+        TokenScopes.CAPABILITIES_READ.value,  # Node control plane -> query legacy capability facts (CPD-7)
+        TokenScopes.DIRECTORY_READ.value,  # Node control plane -> query team membership (CPD-11)
         TokenScopes.FETCH_CONFIG.value,  # Node scheduled-jobs backfill -> connectors
         TokenScopes.DOCUMENT_PARSE.value,  # indexing -> parsing
         TokenScopes.DOCUMENT_CLASSIFY.value,  # indexing -> extraction
         TokenScopes.ENTITY_USER_WRITE.value,  # Node verified-email change -> connectors graph
+        TokenScopes.PRINCIPAL_ERASE.value,  # Node user and org deletion -> connectors personal instances (C-14)
         TokenScopes.USER_NODE_ENSURE.value,  # query -> connectors: a new caller's graph user
     }
 )

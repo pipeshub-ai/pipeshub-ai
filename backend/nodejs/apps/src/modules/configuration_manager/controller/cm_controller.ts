@@ -35,18 +35,27 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
-import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
-import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
+import {
+  normalizeOrgId,
+  setMetricCollectionEnabled,
+} from '../../../libs/services/telemetry/telemetry-impl';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
-  GENERATION_KEY,
-  nextGeneration,
   readMembership,
-  readStoredPlatformBlob,
   savePutsArtifactReadsAtRisk,
 } from '../utils/artifactRollout';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
+import { createHarnessRollout } from '../../agent-harness/composition';
+import { HarnessRolloutPolicy } from '../../agent-harness/ports/harness-rollout';
+import {
+  agentHarnessSwitchedOn,
+  harnessReconcileEnabled,
+  isAgentHarnessInfrastructureReady,
+  orgHarnessTurnedOn,
+} from '../../agent-harness/config';
+import { engineRunsServed } from '../../../libs/repositories/agent-harness/engine-runs-probe';
+import { EnvFlagEnvironment } from '../../../libs/utils/env-flags';
 
 import {
   DefaultStorageConfig,
@@ -74,11 +83,31 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
+import {
+  actorRefOfUser,
+  controlPlaneHttpError,
+  ControlPlaneTransaction,
+  orgScope,
+} from '../../control-plane';
+import { canonicalDigest } from '../../agent-harness/contracts/canonical-json';
+import {
+  aiModelsRepository,
+  plainAiModelsSave,
+  type AiModelsSave,
+} from '../utils/ai-models-save';
+import {
+  AGENT_HARNESS_LABS_FLAGS,
+  PLATFORM_FEATURE_FLAGS,
+} from '../constants/constants';
+import { DURABLE_AGENT_FLAG } from '../utils/flag-overrides';
 import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   getPlatformSettingsFromStore,
+  LABS_CHANGED,
+  PlatformSettingsChanged,
+  type PlatformSettingsSave,
   readStoredAiModelsConfig,
+  savePlatformSettings,
 } from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import {
@@ -92,6 +121,7 @@ import {
   WebSearchProviderConfiguration,
   canSearch,
 } from '../types/web-search.types';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
@@ -101,6 +131,12 @@ import {
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
+  hasForwardingCredentials,
+  reusesSavedAiModelCredentials,
+  withoutForwardingCredentials,
   maskWebSearchProvider,
   maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
@@ -130,6 +166,8 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { modelDisplayName } from '../utils/model-display-name';
+import { currentOrgContext } from '../../../libs/context/orgContext';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerController',
@@ -1028,19 +1066,77 @@ export const deleteSlackBotConfig =
   };
 
 // Platform settings
+/** The flags without the agent harness's, as a release without the harness has them (ADR-OPS-06). */
+const withoutHarnessFlags = <T>(flags: Record<string, T>): Record<string, T> =>
+  Object.fromEntries(
+    Object.entries(flags).filter(
+      ([key]) => !AGENT_HARNESS_LABS_FLAGS.includes(key.toUpperCase()),
+    ),
+  );
+
+export const AGENT_HARNESS_OFF_MESSAGE =
+  'The agent harness is not enabled on this install. Set AGENT_HARNESS_WORKER_ENABLED=true and restart to use it.';
+
+/** What a Labs save decides, for its audit entry: the settings it sends, by path; never `expected`. */
+const labsDecision = (save: {
+  fileUploadMaxSizeBytes?: unknown;
+  featureFlags?: Record<string, unknown>;
+  notices?: unknown;
+  agentHarness?: unknown;
+}): { decided: Record<string, unknown>; paths: string[] } => {
+  const decided = Object.fromEntries(
+    Object.entries(save).filter(([, value]) => value !== undefined),
+  );
+  const paths = Object.keys(decided).flatMap((key) =>
+    key === 'featureFlags' && save.featureFlags !== undefined
+      ? Object.keys(save.featureFlags).map((flag) => `featureFlags.${flag}`)
+      : [key],
+  );
+  return { decided, paths: [...new Set(paths)].sort() };
+};
+
+/**
+ * One Labs save is one audited control-plane write (CPD-1, R2 CP1): UX2's
+ * compare-and-set save is the transaction's effect, so `config.changed` is
+ * recorded only when the save landed; a refused save records nothing.
+ */
 export const setPlatformSettings =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    controlPlane: ControlPlaneTransaction,
+    env: EnvFlagEnvironment = process.env,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { fileUploadMaxSizeBytes, featureFlags } = req.body;
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const stored = await readStoredPlatformBlob(keyValueStoreService);
-      type Flags = Record<string, unknown> | undefined;
-      const storedFlags = stored.featureFlags as Flags;
-      const requestedFlags = featureFlags as Flags;
+      const {
+        fileUploadMaxSizeBytes,
+        featureFlags,
+        notices,
+        agentHarness,
+        expected,
+      } = req.body as PlatformSettingsSave;
+      if (
+        !agentHarnessSwitchedOn(env) &&
+        (agentHarness !== undefined ||
+          Object.keys(featureFlags ?? {}).some((key) =>
+            AGENT_HARNESS_LABS_FLAGS.includes(key.toUpperCase()),
+          ))
+      ) {
+        throw new BadRequestError(AGENT_HARNESS_OFF_MESSAGE, {
+          reasonCode: 'agent_harness_off',
+        });
+      }
+      const orgId = String(currentOrgContext().orgId);
+      const current = await getPlatformSettingsFromStore(keyValueStoreService);
       // Turning artifact reads on while an indexing member that does not follow the stored-write
       // protocol may run, or while the membership check cannot be seen, could serve a mismatch.
-      if (savePutsArtifactReadsAtRisk(storedFlags, requestedFlags)) {
+      // A save sends only the flags it changes, so the flags after it are the stored ones with those applied.
+      if (
+        savePutsArtifactReadsAtRisk(current.featureFlags, {
+          ...current.featureFlags,
+          ...(featureFlags as Record<string, unknown> | undefined),
+        })
+      ) {
         const verdict = await readMembership(keyValueStoreService);
         if (!verdict.ok) {
           throw new ConflictError(
@@ -1051,37 +1147,73 @@ export const setPlatformSettings =
           );
         }
       }
-      // Server-side only: never taken from the request body.
-      const generation = nextGeneration(
-        stored[GENERATION_KEY],
-        storedFlags,
-        requestedFlags,
+      const { decided, paths } = labsDecision({
+        fileUploadMaxSizeBytes,
+        featureFlags,
+        notices,
+        agentHarness,
+      });
+      const { result } = await controlPlane.run(
+        { orgId, actor: actorRefOfUser(String(req.user?.userId)) },
+        (tx) =>
+          Promise.resolve({
+            // UX1: only the flags the admin changed are recorded; UX2: as a compare-and-set, never over a newer choice.
+            result: tx.external(() =>
+              savePlatformSettings(keyValueStoreService, {
+                fileUploadMaxSizeBytes,
+                featureFlags,
+                notices,
+                agentHarness,
+                expected,
+              }),
+            ),
+            change: {
+              scope: orgScope(orgId),
+              object: { type: 'platform-settings', id: 'labs' },
+              revisionFrom: null,
+              revisionTo: null,
+              changeDigest: canonicalDigest(decided),
+              changed: paths,
+            },
+          }),
       );
-      const encryptedPlatformSettings = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(
-        JSON.stringify({
-          fileUploadMaxSizeBytes,
-          featureFlags,
-          [GENERATION_KEY]: generation,
-          updatedAt: new Date().toISOString(),
-        }),
-      );
-
-      await keyValueStoreService.set<string>(
-        configPaths.platform.settings,
-        encryptedPlatformSettings,
-      );
-
-      res.status(200).json({ message: 'Platform settings saved' }).end();
+      const settings = result.value;
+      res
+        .status(200)
+        .json({ message: 'Platform settings saved', settings })
+        .end();
+      // ADR-OPS-08: the org's harness just turned on; its control-plane grants catch up in the background.
+      if (
+        agentHarnessSwitchedOn(env) &&
+        current.featureFlags[DURABLE_AGENT_FLAG] !== true &&
+        settings.featureFlags[DURABLE_AGENT_FLAG] === true
+      ) {
+        orgHarnessTurnedOn(orgId);
+      }
     } catch (error: any) {
-      next(error);
+      // The error middleware's line is the one failure line (#6353): no log here.
+      if (error instanceof PlatformSettingsChanged) {
+        next(
+          new ConflictError(
+            'Someone else changed these settings since you opened them. Review them and save again.',
+            { reasonCode: LABS_CHANGED, stale: error.stale },
+          ),
+        );
+        return;
+      }
+      if (error instanceof BadRequestError) {
+        next(error);
+        return;
+      }
+      next(controlPlaneHttpError(error));
     }
   };
 
 export const getPlatformSettings =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    env: EnvFlagEnvironment = process.env,
+  ) =>
   async (
     _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -1089,6 +1221,20 @@ export const getPlatformSettings =
   ) => {
     try {
       const settings = await getPlatformSettingsFromStore(keyValueStoreService);
+      if (!agentHarnessSwitchedOn(env)) {
+        const { agentHarness: _harness, ...rest } = settings;
+        res
+          .status(200)
+          .json({
+            ...rest,
+            featureFlags: withoutHarnessFlags(settings.featureFlags),
+            featureFlagOverrides: withoutHarnessFlags(
+              settings.featureFlagOverrides ?? {},
+            ),
+          })
+          .end();
+        return;
+      }
       res.status(200).json(settings).end();
     } catch (error: any) {
       next(error);
@@ -1096,7 +1242,7 @@ export const getPlatformSettings =
   };
 
 export const getAvailablePlatformFeatureFlags =
-  () =>
+  (env: EnvFlagEnvironment = process.env) =>
   async (
     _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -1105,14 +1251,25 @@ export const getAvailablePlatformFeatureFlags =
     // Only expose user-toggleable flags. Hidden flags are still seeded with
     // their defaults by getPlatformSettingsFromStore but never surface in the
     // Labs UI.
-    const flags = PLATFORM_FEATURE_FLAGS.filter((f) => !f.hidden);
+    // `previousDefault` only reads settings saved before overrides (UX1); the page never needs it.
+    const harnessOn = agentHarnessSwitchedOn(env);
+    const flags = PLATFORM_FEATURE_FLAGS.filter(
+      (f) => !f.hidden && (harnessOn || f.requiresAgentHarness !== true),
+    ).map(({ previousDefault: _previous, ...flag }) => flag);
     res.status(200).json({ flags }).end();
   };
 
 export const getEffectivePlatformFeatureFlags =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    harnessRollout: HarnessRolloutPolicy = createHarnessRollout(
+      keyValueStoreService,
+    ),
+    env: EnvFlagEnvironment = process.env,
+    engineRuns: () => Promise<boolean> = engineRunsServed,
+  ) =>
   async (
-    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ) => {
@@ -1124,7 +1281,48 @@ export const getEffectivePlatformFeatureFlags =
       const { featureFlags } = await getPlatformSettingsFromStore(
         keyValueStoreService,
       );
-      res.status(200).json({ featureFlags }).end();
+      if (!agentHarnessSwitchedOn(env)) {
+        // ADR-OPS-06: the browser shows nothing of the harness; the fields stay for clients that read them.
+        res
+          .status(200)
+          .json({
+            featureFlags: withoutHarnessFlags(featureFlags),
+            agentHarness: null,
+            harnessReconcile: false,
+            continuePrivately: false,
+            engineRuns: false,
+          })
+          .end();
+        return;
+      }
+      // The browser follows the rollout policy's answer instead of reading
+      // the raw Labs flag, so kill switch and readiness apply to it as well.
+      const orgId = getOrgIdFromRequest(req);
+      const agentHarness = orgId
+        ? await harnessRollout.decideForOrg(orgId)
+        : null;
+      featureFlags.ENABLE_AGENT_HARNESS = agentHarness?.useHarness === true;
+      // Each harness surface follows the org's harness (ADR-OPS-08): with it off the org reads what an install with
+      // the switch off answers.
+      const harnessOn = agentHarness?.harnessOn === true;
+      const harnessReconcile = harnessOn && harnessReconcileEnabled(env);
+      // Personal AI accounts serve only engine runs (UX3): the settings offer
+      // them while a worker runs those.
+      const engineRunsOn = harnessOn && (await engineRuns().catch(() => false));
+      // The fork route (SS3) serves exactly when this holds; the browser
+      // offers "Continue privately" from it instead of a button that answers 503.
+      const continuePrivately =
+        harnessOn && isAgentHarnessInfrastructureReady(env);
+      res
+        .status(200)
+        .json({
+          featureFlags,
+          agentHarness,
+          harnessReconcile,
+          continuePrivately,
+          engineRuns: engineRunsOn,
+        })
+        .end();
     } catch (error: any) {
       next(error);
     }
@@ -2703,6 +2901,7 @@ export const createAIModelsConfig =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -2798,7 +2997,10 @@ export const createAIModelsConfig =
         });
       }
 
-      await new AiModelsConfigRepository(keyValueStoreService).replace(aiConfig);
+      await aiModelsRepository(keyValueStoreService, save, req, [
+        'embedding',
+        'llm',
+      ]).replace(aiConfig);
 
       // Notify other services about the new AI config. The initial config
       // may include LLM and/or embedding models; fire a separate event per
@@ -3030,9 +3232,10 @@ export const getAvailableModelsByType =
         // Create a flattened entry for each individual model
         let markDefault = config.isDefault === true;
 
-        // Only include modelFriendlyName if there's a single model (not comma-separated)
-        const shouldIncludeFriendlyName =
-          modelNames.length === 1 && config.modelFriendlyName;
+        // Only when the admin named it: a client falls back to the model name itself.
+        const hasFriendlyName =
+          typeof config.modelFriendlyName === 'string' &&
+          config.modelFriendlyName.trim().length > 0;
         // Unlike the friendly name, the default applies to every model in the entry.
         const defaultReasoningEffort = storedDefaultReasoningEffort(config);
 
@@ -3045,7 +3248,9 @@ export const getAvailableModelsByType =
             isMultimodal: config.isMultimodal || false,
             isReasoning: config.isReasoning || false,
             isDefault: markDefault,
-            ...(shouldIncludeFriendlyName && { modelFriendlyName: config.modelFriendlyName }),
+            ...(hasFriendlyName && {
+              modelFriendlyName: modelDisplayName(config, modelName),
+            }),
             ...(defaultReasoningEffort && { defaultReasoningEffort }),
           };
           markDefault = false; // Only mark first model as default
@@ -3304,6 +3509,7 @@ export const addAIModelProvider =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3393,7 +3599,9 @@ export const addAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let modelKey = '';
-      await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+      await aiModelsRepository(keyValueStoreService, save, req, [
+        modelType,
+      ]).mutate((aiModels) => {
         const existingKeys = new Set(
           AI_MODEL_TYPES.flatMap((type) =>
             (aiModels[type] ?? []).map((config) => config.modelKey),
@@ -3462,11 +3670,30 @@ export const addAIModelProvider =
     }
   };
 
+function destinationHost(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  provider: unknown,
+): string | undefined {
+  // A key the request leaves out is unchanged, so it is never the moved one.
+  const key = AI_MODEL_DESTINATION_KEYS.find(
+    (k) =>
+      k in incoming &&
+      aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
+  );
+  try {
+    return new URL(String(incoming[key as string])).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3547,11 +3774,62 @@ export const updateAIModelProvider =
         return;
       }
 
+      // Saved credentials are restored below, so a new destination must come
+      // with credentials typed again or they would be sent to it.
+      const savedConfiguration: Record<string, unknown> = stored ?? {};
+      const destinationChanged = aiModelDestinationChanged(
+        incoming,
+        savedConfiguration,
+        targetModel.provider,
+      );
+      const reusesCredentials = reusesSavedAiModelCredentials(
+        incoming,
+        savedConfiguration,
+      );
+      // The save keeps the stored provider, so a check run as another provider
+      // would not describe what is saved.
+      if (
+        targetModel.provider &&
+        String(provider).toLowerCase() !== targetModel.provider.toLowerCase()
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Provider does not match saved model',
+        });
+        return;
+      }
+
+      const securityContext: Record<string, unknown> = {
+        orgId: getCurrentOrgId(),
+        userId: req.user?.userId,
+        modelKey,
+        host: destinationChanged
+          ? destinationHost(incoming, savedConfiguration, targetModel.provider)
+          : undefined,
+      };
+      if (destinationChanged && reusesCredentials) {
+        logger.warn('AI model destination change refused', {
+          securityEvent: 'model_destination_change_refused',
+          ...securityContext,
+        });
+        res.status(400).json({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        });
+        return;
+      }
+
       // GET only returns the public allowlist, so the client can only send back
       // keys it retyped. Restore the rest from storage before the health check.
+      // Forwarding credentials are not retyped, so a new destination does not get them.
+      const restorable = (
+        saved: Record<string, unknown>,
+      ): Record<string, unknown> =>
+        destinationChanged ? withoutForwardingCredentials(saved) : saved;
       const mergedConfiguration = mergeAiModelCredentials(
         configuration,
-        targetModel.configuration as Record<string, unknown>,
+        restorable(targetModel.configuration as Record<string, unknown>),
       );
 
       const healthCheckPayload: Record<string, unknown> = {
@@ -3585,7 +3863,7 @@ export const updateAIModelProvider =
       }
 
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/health-check/${modelType}`,
+        uri: `${appConfig.aiBackend}/api/v1/health-check/${encodeURIComponent(targetModelType)}`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
         body: healthCheckPayload,
@@ -3649,16 +3927,46 @@ export const updateAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let saved: AIModelsConfig;
+      // Set inside the mutate callback, so assert boolean to stop narrowing to false.
+      let forwardingCredentialsCleared = false as boolean;
+      let movedDuringCheck = false as boolean;
       try {
-        saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        saved = await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
+          movedDuringCheck = false;
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
           }
           // A credential rotation can land during the health check; keep its keys.
+          const latestSaved =
+            (current.model.configuration as
+              Record<string, unknown> | undefined) ?? {};
+          // Another save can also move the model during the check. Its stored
+          // credentials belong to that endpoint, which this check never used,
+          // so compare against the latest document, not the earlier read.
+          const latestDestinationChanged = aiModelDestinationChanged(
+            incoming,
+            latestSaved,
+            current.model.provider,
+          );
+          // The check ran against the endpoint read before it, which also
+          // covers a request that leaves the endpoint out.
+          if (
+            aiModelDestinationsDiffer(savedConfiguration, latestSaved) ||
+            (latestDestinationChanged &&
+              reusesSavedAiModelCredentials(incoming, latestSaved))
+          ) {
+            movedDuringCheck = true;
+            throw new AiModelsWriteAborted();
+          }
+          const moved = destinationChanged || latestDestinationChanged;
+          forwardingCredentialsCleared =
+            moved && hasForwardingCredentials(latestSaved);
           current.model.configuration = mergeAiModelCredentials(
             configuration,
-            current.model.configuration as Record<string, unknown>,
+            moved ? withoutForwardingCredentials(latestSaved) : latestSaved,
           );
           current.model.isMultimodal = isMultimodal;
           current.model.isDefault = isDefault;
@@ -3676,6 +3984,19 @@ export const updateAIModelProvider =
           }
         });
       } catch (error) {
+        if (error instanceof AiModelsWriteAborted && movedDuringCheck) {
+          logger.warn('AI model destination change refused', {
+            securityEvent: 'model_destination_change_refused',
+            ...securityContext,
+            reason: 'moved_during_check',
+          });
+          res.status(409).json({
+            status: 'error',
+            message:
+              'This model was moved to another endpoint while it was being checked. Reload it and enter the credentials again.',
+          });
+          return;
+        }
         if (error instanceof AiModelsWriteAborted) {
           res.status(404).json({
             status: 'error',
@@ -3686,6 +4007,12 @@ export const updateAIModelProvider =
         throw error;
       }
       const updatedModel = findModelEntry(saved, modelKey)?.model ?? targetModel;
+      if (destinationChanged) {
+        logger.warn('AI model destination changed', {
+          securityEvent: 'model_destination_changed',
+          ...securityContext,
+        });
+      }
 
       const event: Event =
         targetModelType === 'embedding'
@@ -3716,6 +4043,9 @@ export const updateAIModelProvider =
           contextLength: modelForResponse.contextLength,
           isMultimodal: modelForResponse.isMultimodal,
           isReasoning: modelForResponse.isReasoning,
+          ...(forwardingCredentialsCleared
+            ? { forwardingCredentialsCleared: true }
+            : {}),
         },
       });
     } catch (error: any) {
@@ -3776,6 +4106,7 @@ export const deleteAIModelProvider =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -3899,7 +4230,9 @@ export const deleteAIModelProvider =
       let wasDefault = deletedModel.isDefault || false;
 
       try {
-        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
@@ -3976,6 +4309,7 @@ export const updateDefaultAIModel =
     keyValueStoreService: KeyValueStoreService,
     eventService: AiConfigEventProducer,
     appConfig: AppConfig,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
@@ -4094,7 +4428,9 @@ export const updateDefaultAIModel =
       }
 
       try {
-        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+        await aiModelsRepository(keyValueStoreService, save, req, [
+          targetModelType,
+        ]).mutate((latest) => {
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
@@ -5120,7 +5456,10 @@ export const getModelRoles =
   };
 
 export const updateModelRoles =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { roles } = req.body as {
@@ -5138,7 +5477,12 @@ export const updateModelRoles =
       let rejection: string | null = null;
       let savedRoles: AIModelsConfig['modelRoles'] = roles;
       try {
-        const saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+        const saved = await aiModelsRepository(
+          keyValueStoreService,
+          save,
+          req,
+          ['roles'],
+        ).mutate((aiModels) => {
           for (const [roleName, assignment] of Object.entries(roles)) {
             if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
               rejection = `Role "${roleName}" assignment must be an object`;

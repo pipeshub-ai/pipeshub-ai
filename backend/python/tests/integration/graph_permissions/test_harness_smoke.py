@@ -12,11 +12,13 @@ import os
 import aiohttp
 import pytest
 
+from tests.support import it_backends
+
 pytestmark = pytest.mark.integration
 
 
 def _arango_base() -> tuple[str, aiohttp.BasicAuth, str]:
-    url = os.environ.get("KH_PERM_ARANGO_URL", "http://localhost:8530").rstrip("/")
+    url = it_backends.endpoint("KH_PERM_ARANGO_URL").rstrip("/")
     auth = aiohttp.BasicAuth(
         os.environ.get("KH_PERM_ARANGO_USERNAME", "root"),
         os.environ.get("KH_PERM_ARANGO_PASSWORD", "khpermpass"),

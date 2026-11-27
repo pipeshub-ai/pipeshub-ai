@@ -22,6 +22,7 @@ from app.services.artifact_registry.access import (
     ArtifactNotFoundError,
 )
 from app.services.artifact_registry.models import Actor
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
 
 ORG = "org-1"
@@ -112,7 +113,8 @@ class TestEveryOtherChat:
         )
         graph = MagicMock()
         graph.get_record_by_id = AsyncMock(return_value=record)
-        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        access = InMemoryRecordAccess()
+        access.serve(graph)
         manager = ArtifactManager({
             "org_id": ORG, "user_id": CREATOR, "artifact_owner_user_id": CALLER,
             "graph_provider": graph, "blob_store": MagicMock(),
@@ -120,4 +122,4 @@ class TestEveryOtherChat:
 
         await manager.get_record_download_url("rec-1")
 
-        graph.check_record_access_with_details.assert_awaited_once_with(CREATOR, ORG, "rec-1")
+        assert access.asked_about == [(CREATOR, ORG, "rec-1")]

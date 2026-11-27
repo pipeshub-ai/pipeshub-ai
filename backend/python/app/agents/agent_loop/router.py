@@ -217,6 +217,7 @@ async def select_loop_and_goal(
     opik_active: bool = False,
     opik_project_name: str | None = None,
     transport_registry: "TransportRegistry | None" = None,
+    intent_logger: logging.Logger | None = None,
     resume: bool = False,
 ) -> tuple[LoopStrategy, Goal, list[AskUserQuestionItemInput], ModeDefinition]:
     """Single entry point `PipesHubAgentFactory.create()` calls to resolve
@@ -254,6 +255,9 @@ async def select_loop_and_goal(
       for Opik) a second one just for this one call. `None` (e.g. a
       caller/test with no registry of its own) falls back to
       `parse_intent_and_route()` building its own, unchanged.
+
+    `intent_logger`, when given, receives the intent call's own log lines (a
+    durable run passes a silent one: it logs no content).
 
     The 4th return value is the resolved `ModeDefinition` itself —
     `PipesHubAgentFactory.create()` reads `.compose_domain_agents`/
@@ -301,17 +305,18 @@ async def select_loop_and_goal(
         context.tool_state["needs_whole_document"] = context.needs_whole_document
     else:
         include_routing = mode is None
+        from app.utils.record_access import attachment_reader_id
 
         decision = await parse_intent_and_route(
             _context_to_query_info(context, query),
-            logging.getLogger("app.agents.agent_loop.router.intent"),
+            intent_logger or logging.getLogger("app.agents.agent_loop.router.intent"),
             llm,
             include_routing=include_routing,
             config_service=context.config_service,
             graph_provider=context.graph_provider,
             is_multimodal_llm=context.is_multimodal_llm,
             org_id=context.org_id,
-            user_id=context.user_id,
+            user_id=attachment_reader_id(context.user_id, context.user_info),
             is_service_account=context.is_service_account,
             transport_registry=transport_registry,
             opik_active=opik_active,

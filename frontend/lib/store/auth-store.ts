@@ -2,10 +2,21 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { isElectron } from '@/lib/electron';
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import { allowChatUnreadWrites, discardAllChatUnread } from '@/lib/storage/chat-unread';
 import { clearSessionCache } from '@/lib/api/session-cache';
+import {
+  clearLegacyTokens,
+  clearSignedInMark,
+  endServerSession as endSessionOnServer,
+  forgetRefreshToken,
+  keepRefreshToken,
+  markSignedIn,
+  readLegacyTokens,
+  rememberRefreshToken,
+  requestAccessToken,
+  signedInMark,
+} from '@/lib/auth/session-credential';
 import {
   clearElectronLogoutServerState,
   persistElectronServerUrlOnLogin,
@@ -21,15 +32,20 @@ export interface User {
 }
 
 interface AuthState {
+  /** In memory only (ADR-WEB-02): a reload gets a new one from the session's refresh token. */
   accessToken: string | null;
-  refreshToken: string | null;
   user: User | null;
   isAuthenticated: boolean;
   isHydrated: boolean;
 }
 
 interface AuthActions {
-  setTokens: (accessToken: string, refreshToken: string) => void;
+  /**
+   * Signs in with the tokens a sign-in returned. The web app's refresh token is
+   * a cookie the page never sees, so `refreshToken` is given only where the
+   * server answered with one (the desktop app, a flow that answers in the body).
+   */
+  setTokens: (accessToken: string, refreshToken?: string) => void;
   setAccessToken: (accessToken: string) => void;
   setUser: (user: User | null) => void;
   logout: () => void;
@@ -38,43 +54,18 @@ interface AuthActions {
 
 type AuthStore = AuthState & AuthActions;
 
-/** localStorage keys (shared with the legacy frontend so tokens interop). */
-export const ACCESS_TOKEN_STORAGE_KEY = 'jwt_access_token';
-export const REFRESH_TOKEN_STORAGE_KEY = 'jwt_refresh_token'; 
-
 const initialState: AuthState = {
   accessToken: null,
-  refreshToken: null,
   user: null,
   isAuthenticated: false,
   isHydrated: false,
 };
 
-function writeAccessToken(accessToken: string | null): void {
-  if (typeof window === 'undefined') return;
-  if (accessToken) {
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, accessToken);
-  } else {
-    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
-  }
-}
-
-function writeRefreshToken(refreshToken: string | null): void {
-  if (typeof window === 'undefined') return;
-  if (refreshToken) {
-    window.localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
-  } else {
-    window.localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
-  }
-}
-
 /**
- * Electron main holds its own encrypted copy of the refresh token so Local FS
- * keeps syncing with the window closed. Clearing localStorage alone would
- * leave that copy live and the desktop socket connected after logout.
- *
- * Called through the preload bridge directly rather than via the connectors
- * util, to keep this store free of a feature-module import.
+ * Electron main holds the access token in memory so Local FS keeps syncing;
+ * clearing the renderer alone would leave the desktop socket connected after
+ * logout. Called through the preload bridge directly rather than via the
+ * connectors util, to keep this store free of a feature-module import.
  */
 function clearElectronDesktopCredential(): void {
   if (typeof window === 'undefined' || !isElectron()) return;
@@ -92,18 +83,17 @@ export const useAuthStore = create<AuthStore>()(
       setTokens: (accessToken, refreshToken) => {
         allowChatUnreadWrites();
         allowChatDraftWrites();
-        writeAccessToken(accessToken);
-        writeRefreshToken(refreshToken);
+        markSignedIn(accessToken);
         persistElectronServerUrlOnLogin();
         set((state) => {
           state.accessToken = accessToken;
-          state.refreshToken = refreshToken;
           state.isAuthenticated = true;
         });
+        if (refreshToken) void rememberRefreshToken(refreshToken);
       },
 
       setAccessToken: (accessToken) => {
-        writeAccessToken(accessToken);
+        if (accessToken) markSignedIn(accessToken);
         set((state) => {
           state.accessToken = accessToken;
           state.isAuthenticated = !!accessToken;
@@ -116,12 +106,12 @@ export const useAuthStore = create<AuthStore>()(
         }),
 
       logout: () => {
-        writeAccessToken(null);
-        writeRefreshToken(null);
+        clearSignedInMark();
+        clearLegacyTokens();
+        forgetRefreshToken();
         clearElectronDesktopCredential();
         set((state) => {
           state.accessToken = null;
-          state.refreshToken = null;
           state.user = null;
           state.isAuthenticated = false;
         });
@@ -137,43 +127,91 @@ export const useAuthStore = create<AuthStore>()(
   )
 );
 
-/**
- * Hydrates the auth store from localStorage on the client. Safe to call
- * multiple times — subsequent calls are a no-op once hydrated.
- *
- * This must run in a client context (e.g. from a `'use client'` effect
- * or via the `AuthHydrator` provider mounted in the root layout).
- */
-export function hydrateAuthStore(): void {
-  if (typeof window === 'undefined') return;
-  const api = useAuthStore.getState();
-  if (api.isHydrated) return;
-
-  const accessToken = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-  const refreshToken = window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
-
-  // Use the store's own actions so mutations go through the immer wrapper
-  // exactly like a normal login would, guaranteeing subscribers are
-  // notified with the updated state.
-  if (accessToken && refreshToken) {
-    api.setTokens(accessToken, refreshToken);
-  } else if (accessToken) {
-    api.setAccessToken(accessToken);
+function legacyAccessTokenUsable(token: string | null): boolean {
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob((token.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: unknown };
+    return typeof payload.exp !== 'number' || payload.exp * 1000 > Date.now();
+  } catch {
+    return false;
   }
-  useAuthStore.getState().setHydrated(true);
 }
 
-// Hydrate synchronously as soon as the module loads on the client.
-// This guarantees `isHydrated` is true before any component subscribes
-// to the store, removing the race between the `AuthHydrator` effect
-// and the auth/guest guards.
-if (typeof window !== 'undefined') {
-  // Remove the legacy zustand-persist JSON blob to avoid confusion in DevTools.
-  try {
-    window.localStorage.removeItem('auth-storage');
-  } catch {
-    // ignore storage access errors (private mode, etc.)
+/**
+ * Moves an older build's localStorage tokens out (R41OPS-FU-7): the refresh
+ * token goes into the cookie (desktop: the keychain) and both keys are deleted.
+ * If the server will not take it but the old access token is still good, the
+ * page keeps that one in memory, so nobody is signed out mid-task by the
+ * upgrade. The keys stay only when the server could not be reached, to move
+ * them on the next load.
+ */
+async function migrateLegacyTokens(legacy: { accessToken: string | null; refreshToken: string | null }): Promise<string | null> {
+  const answer = legacy.refreshToken ? await keepRefreshToken(legacy.refreshToken) : null;
+  if (answer?.outcome !== 'unreachable') clearLegacyTokens();
+  if (answer?.outcome === 'issued') return answer.accessToken;
+  return legacyAccessTokenUsable(legacy.accessToken) ? legacy.accessToken : null;
+}
+
+async function restoreFromCredential(): Promise<string | null> {
+  const answer = await requestAccessToken();
+  if (answer.outcome === 'issued') return answer.accessToken;
+  if (answer.outcome === 'refused') clearSignedInMark();
+  return null;
+}
+
+let restoring: Promise<void> | null = null;
+
+/**
+ * Signs this page in from the session it already has: after a reload, in a new
+ * tab, or when another tab signs in. Resolves once `isHydrated` is true;
+ * concurrent callers share one attempt. With nothing to restore it finishes at
+ * once, without a request.
+ */
+export function restoreSession(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (restoring) return restoring;
+  const legacy = readLegacyTokens();
+  const hasLegacy = Boolean(legacy.accessToken || legacy.refreshToken);
+  const mark = signedInMark();
+  const hasSession = hasLegacy || isElectron() || mark !== null;
+  if (!hasSession) {
+    useAuthStore.getState().setHydrated(true);
+    return Promise.resolve();
   }
+  const attempt = (async () => {
+    try {
+      const accessToken = hasLegacy ? await migrateLegacyTokens(legacy) : await restoreFromCredential();
+      // Signed in meanwhile (this page or another tab) wins over the restore. So does a sign-out (or another account's
+      // sign-in) in another tab while the refresh was out (R48MIGFIX-3): storing its token would mark this browser
+      // signed in as the person who just left.
+      const signedOutMeanwhile = mark !== null && signedInMark() !== mark;
+      if (accessToken && !signedOutMeanwhile && !useAuthStore.getState().isAuthenticated) {
+        allowChatUnreadWrites();
+        allowChatDraftWrites();
+        useAuthStore.getState().setAccessToken(accessToken);
+      }
+    } catch {
+      // Nothing to restore from: the page shows sign-in.
+    } finally {
+      useAuthStore.getState().setHydrated(true);
+    }
+  })();
+  restoring = attempt;
+  void attempt.finally(() => {
+    if (restoring === attempt) restoring = null;
+  });
+  return attempt;
+}
+
+/** Kept for callers that hydrate on mount; the restore runs once per page. */
+export function hydrateAuthStore(): void {
+  if (useAuthStore.getState().isHydrated) return;
+  void restoreSession();
+}
+
+// Start as soon as the module loads on the client, so the guards wait on one
+// restore instead of each starting its own.
+if (typeof window !== 'undefined') {
   hydrateAuthStore();
 }
 
@@ -214,20 +252,15 @@ export function requestElectronServerUrlChange(): void {
  */
 /**
  * Asks the server to end the session, so a copy of the tokens stops working
- * too. Fire-and-forget: signing out on this device never waits for or depends
- * on the answer (offline, server down). Plain fetch, not apiClient, so a 401
- * here can't trigger a refresh or another logout.
+ * and the cookie is cleared. Fire-and-forget: signing out on this device never
+ * waits for or depends on the answer (offline, server down). Not apiClient, so
+ * a 401 here can't trigger a refresh or another logout.
  */
 function endServerSession(): void {
   try {
     const accessToken = useAuthStore.getState().accessToken;
-    if (!accessToken) return;
-    void fetch(`${getApiBaseUrl()}/api/v1/userAccount/logout/manual`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}` },
-      // The page navigates away right after this; keepalive lets the request finish.
-      keepalive: true,
-    }).catch(() => undefined);
+    if (!accessToken && signedInMark() === null) return;
+    void endSessionOnServer(accessToken);
   } catch {
     // Signing out locally must still happen.
   }
@@ -259,14 +292,8 @@ export function switchToSignedInWorkspace(_orgId: string): boolean {
   return false;
 }
 
-/** The refresh token stored for this browser; a sign-out in another tab removes it. */
-export function readStoredRefreshToken(): string | null {
-  return typeof window !== 'undefined' ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) : null;
-}
-
 // Selectors for common access patterns
 export const selectAccessToken = (state: AuthStore) => state.accessToken;
-export const selectRefreshToken = (state: AuthStore) => state.refreshToken;
 export const selectUser = (state: AuthStore) => state.user;
 export const selectIsAuthenticated = (state: AuthStore) => state.isAuthenticated;
 export const selectIsHydrated = (state: AuthStore) => state.isHydrated;

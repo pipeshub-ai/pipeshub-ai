@@ -73,7 +73,7 @@ describe('Configuration manager: a stored setting that is not JSON never puts it
 
   before(() => {
     savedSecretKey = process.env.SECRET_KEY;
-    process.env.SECRET_KEY = 'n5l-repro-test-secret';
+    process.env.SECRET_KEY = '5a50e50915d9817fd6e66954d113b89f74a23980a765b226ff1256516adda3d7';
   });
   after(() => {
     if (savedSecretKey === undefined) delete process.env.SECRET_KEY;

@@ -78,8 +78,8 @@ describe('PatController', () => {
 
       const events = eventBuffer.drain()
       expect(events).to.have.length(1)
-      expect(events[0].event).to.equal('pat_created')
-      expect(events[0].props).to.deep.equal({
+      expect(events[0]!.event).to.equal('pat_created')
+      expect(events[0]!.props).to.deep.equal({
         orgId: 'org-1',
         userId: 'user-1',
         domain: 'example.com',
@@ -99,7 +99,7 @@ describe('PatController', () => {
       await controller.createToken(mockReq, mockRes, mockNext)
 
       const [event] = eventBuffer.drain()
-      expect(event.props).to.include({ user_agent: 'pipeshub-cli/4.7.0', channel: 'pipeshub-cli' })
+      expect(event!.props).to.include({ user_agent: 'pipeshub-cli/4.7.0', channel: 'pipeshub-cli' })
     })
 
     it('records the default lifetime when the request omits expiryDays', async () => {
@@ -109,7 +109,7 @@ describe('PatController', () => {
 
       await controller.createToken(mockReq, mockRes, mockNext)
 
-      expect(eventBuffer.drain()[0].props.expiry_days).to.equal(30)
+      expect(eventBuffer.drain()[0]!.props!.expiry_days).to.equal(30)
     })
 
     it('counts the token on the Grafana activity counter with org and domain only', async () => {
