@@ -54,6 +54,27 @@ export async function syncCredentialRows(
   else await syncCredentials(rt, accounts);
 }
 
+/** The Slack user links, written again whole from MongoDB. Nothing when an edition replaced their mapping (its carrier follows them). */
+export async function syncSlackLinkRows(
+  rt: MigrationRuntime,
+  js: JobState,
+): Promise<void> {
+  if (isMapped(SLACK_LINKS)) await syncSlackLinks(rt, js);
+}
+
+/**
+ * After the follow lost its place (a resume token gone from the oplog, or a resync that did not finish): every row this build derives
+ * from a whole collection rather than event by event (credentials, Slack user links) is written again from MongoDB. A collection an
+ * edition replaced is its carrier's (resyncCarried) and is not touched here.
+ */
+export async function syncDerivedRows(
+  rt: MigrationRuntime,
+  js: JobState,
+): Promise<void> {
+  await syncCredentialRows(rt, new Set(), true);
+  await syncSlackLinkRows(rt, js);
+}
+
 /** Collection the migrator writes its own markers to (and the fence lives in): not application events. */
 export const MARKER_COLLECTION = 'docstore_migrate_marker';
 
@@ -211,8 +232,7 @@ export async function resync(
   // the new position is saved before the compare; until the compare ends clean the next run must compare again, not follow on
   if (js.progress.follow) js.progress.follow.needsResync = true;
   await js.checkpoint();
-  await syncAllCredentials(rt);
-  await syncSlackLinks(rt, js);
+  await syncDerivedRows(rt, js);
   // the carriers' rows are written again from what MongoDB holds now: the events in between, deletes included, are not known
   await resyncCarried(carryPg(rt, js), carryMongo(rt));
   let last: VerifyReport | undefined;
@@ -397,7 +417,7 @@ export async function follow(
         ])
           accounts.add(id);
         await syncCredentialRows(rt, accounts, credentialDeleted);
-        if (slackLinksChanged) await syncSlackLinks(rt, js);
+        if (slackLinksChanged) await syncSlackLinkRows(rt, js);
         pending.clear();
         credentials.length = 0;
         credentialDeleted = false;

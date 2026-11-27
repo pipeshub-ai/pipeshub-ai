@@ -12,10 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import mongoose from 'mongoose';
 import { reverseSpecial } from '../../../src/scripts/docstore-migrate/reverse-special';
-import { syncCredentialRows } from '../../../src/scripts/docstore-migrate/follow';
+import { syncCredentialRows, syncDerivedRows, syncSlackLinkRows } from '../../../src/scripts/docstore-migrate/follow';
 import { CARRIED, HELD, IGNORED, MAPPINGS, OUTSIDE_GENERIC, fieldCarrier, isMapped, splitOutside, withEditionHeldFields, withoutReplaced } from '../../../src/scripts/docstore-migrate/mapping';
 import { BUILT_IN_CARRIERS, CARRIERS, EDITION_CARRIERS, asCarrier, carrierProblems } from '../../../src/scripts/docstore-migrate/carry';
 import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
+import type { CollectionMapping } from '../../../src/scripts/docstore-migrate/mapping/types';
 import { HARNESS_HELD } from '../../../src/scripts/docstore-migrate/mapping/harness';
 import { EDITION_DOCSTORE_COVERAGE } from '../../../src/edition';
 import { REPOSITORIES } from '../../../src/libs/repositories/all';
@@ -219,6 +220,30 @@ describe('docstore-migrate: coverage without a database (R45-MIGR)', () => {
       }
     }
     expect(isMapped('userCredentials')).to.equal(true);
+  });
+
+  it('the follower\'s recovery (lost resume token, unfinished resync) leaves replaced collections to their carriers (mutation)', async () => {
+    const untouched = new Proxy({}, { get: (_t, k) => { throw new Error(`the runtime was used (${String(k)})`); } }) as never;
+    const out: Array<[number, CollectionMapping]> = [];
+    for (const name of ['userCredentials', 'slack_user_links']) {
+      const i = MAPPINGS.findIndex((m) => m.collection === name);
+      expect(i, name).to.be.at.least(0);
+      const [m] = MAPPINGS.splice(i, 1);
+      if (m) out.push([i, m]);
+    }
+    try {
+      await syncDerivedRows(untouched, untouched);
+      await syncSlackLinkRows(untouched, untouched);
+    } finally {
+      for (const [i, m] of out.reverse()) MAPPINGS.splice(i, 0, m);
+    }
+    expect(isMapped('slack_user_links') && isMapped('userCredentials')).to.equal(true);
+  });
+
+  it('the follower calls a whole-collection sync only through its replaced-guarded helper', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../src/scripts/docstore-migrate/follow.ts'), 'utf8');
+    for (const call of ['syncAllCredentials(', 'syncCredentials(', 'syncSlackLinks('])
+      expect(src.split(call).length - 1, call).to.equal(1);
   });
 
   it('every mapping names a repository', () => {
