@@ -66815,7 +66815,8 @@ paths:
         `400`. Past that check, a `sync` value that is not an object, and a
         falsy `filters` value (`null`, `false`, `0`, `""` or `[]`), is
         skipped without an error; any other `filters` value that is not an object, such as
-        `true`, `[null]` or a non-empty string, is answered `500`. Fields
+        `true`, `[null]` or a non-empty string, is answered `502` (the connector
+        service fails on it). Fields
         other than `sync` and `filters`, `baseUrl`
         included, are dropped without an error.<br><br>
         The connector must be disabled (`400` otherwise).
