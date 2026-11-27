@@ -123,6 +123,7 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    hide_limited_names,
     hide_names_the_viewer_cannot_open,
     keep_hidden_titles,
     project_files_knowledge,
@@ -5979,8 +5980,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 agent_knowledge = agent.get("knowledge", [])
                 # The names reach the prompt and the answer: a limited connector a member cannot open is named by its id.
-                hidden_connector_ids = await hide_names_the_viewer_cannot_open(
-                    graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key,
+                # Weighed by its limit as it is now: with the org harness on, agent_for_chat served a published version.
+                hidden_connector_ids = await hide_limited_names(
+                    graph_provider, agent_knowledge, user_context.get("userId", ""), org_key, logger,
                     is_admin=is_request_admin(request),
                 )
                 # An unbound service agent would read a collection as its creator, so it reads none,

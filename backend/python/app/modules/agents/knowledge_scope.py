@@ -414,6 +414,28 @@ async def with_current_limits(graph_provider: IGraphDBProvider, knowledge: Seque
             k["accessLimit"] = app.get("accessLimit")
 
 
+async def hide_limited_names(
+    graph_provider: IGraphDBProvider,
+    knowledge: list[dict[str, Any]],
+    user_id: str,
+    org_id: str,
+    logger: Logger,
+    *,
+    is_admin: bool,
+) -> set[str]:
+    """For a turn's knowledge: each source's limit as it is now (``with_current_limits``; a published version froze
+    an older one, or none), then ``hide_names_the_viewer_cannot_open``. A limit that cannot be read is weighed as
+    limited to the creator, so the viewer's own connector list decides. Returns the hidden connector ids."""
+    try:
+        await with_current_limits(graph_provider, knowledge)
+    except Exception:
+        logger.warning("Connector limits could not be read; every source is weighed as limited", exc_info=True)
+        for k in knowledge:
+            if isinstance(k, dict) and k.get("connectorId"):
+                k["accessLimit"] = AccessLimit.CREATOR.value
+    return await hide_names_the_viewer_cannot_open(graph_provider, [knowledge], user_id, org_id, is_admin=is_admin)
+
+
 async def _refused_sources(
     graph_provider: IGraphDBProvider, knowledge_lists: Iterable[Sequence[object]], user_id: str, org_id: str, *, is_admin: bool,
 ) -> list[dict[str, Any]]:
