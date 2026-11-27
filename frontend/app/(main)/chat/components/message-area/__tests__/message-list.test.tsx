@@ -1521,9 +1521,10 @@ describe('MessageList — jump to newest', () => {
     try {
       openTwoTurns();
       scrollTo(100);
+      // The holder spans the list; the button sits at its end, 16px in from the right edge.
       const phone = (jumpButton() as HTMLElement).parentElement as HTMLElement;
-      expect(phone.style.right).toBe('var(--space-4)');
-      expect(phone.style.left).toBe('');
+      expect(phone.style.paddingInlineEnd).toBe('var(--space-4)');
+      expect(phone.className).toContain('rt-r-jc-end');
       expect(phone.style.transform).toBe('');
     } finally {
       viewport.isMobile = false;
@@ -1532,8 +1533,8 @@ describe('MessageList — jump to newest', () => {
     openTwoTurns();
     scrollTo(100);
     const desktop = (jumpButton() as HTMLElement).parentElement as HTMLElement;
-    expect(desktop.style.left).toBe('50%');
-    expect(desktop.style.transform).toBe('translateX(-50%)');
+    expect(desktop.className).toContain('rt-r-jc-center');
+    expect(desktop.style.paddingInlineEnd).toBe('');
   });
 
   it('does not force a minimum size on desktop', () => {

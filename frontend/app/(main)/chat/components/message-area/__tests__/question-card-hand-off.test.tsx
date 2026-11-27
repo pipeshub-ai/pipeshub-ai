@@ -180,10 +180,15 @@ const askedAt = (id: string) =>
 const cards = () => screen.queryAllByText('Quick question').map((heading) => heading.closest('.rt-Card') as HTMLElement);
 const rows = () => [...document.querySelectorAll('[data-row]')];
 /** Everything drawn before `el` (what comes ahead of it and of each element holding it), as markup: what would move it. */
+/** What is drawn above `el`, less the question's "Save as command", which only a saved question offers (it needs its id). */
 function above(el: HTMLElement): string {
   const drawn: string[] = [];
   for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
-    for (let before = node.previousElementSibling; before; before = before.previousElementSibling) drawn.push(before.outerHTML);
+    for (let before = node.previousElementSibling; before; before = before.previousElementSibling) {
+      const copy = before.cloneNode(true) as Element;
+      copy.querySelectorAll('[aria-label="Save as command"]').forEach((link) => link.remove());
+      drawn.push(copy.outerHTML);
+    }
   }
   return drawn.join('\n');
 }

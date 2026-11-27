@@ -120,6 +120,7 @@ describe('the icon of a chip', () => {
       </Theme>,
     );
     expect(iconColor('Atlas')).toBe('var(--emerald-11)');
-    expect(iconColor('Atlas space')).toBe('var(--accent-9)');
+    // A record group keeps the knowledge icon's own colour: step 11, as an icon's hue is.
+    expect(iconColor('Atlas space')).toBe('var(--accent-11)');
   });
 });
