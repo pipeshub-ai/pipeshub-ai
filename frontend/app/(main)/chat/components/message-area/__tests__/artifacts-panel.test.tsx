@@ -98,7 +98,8 @@ describe('ArtifactsPanel for a deleted artifact', () => {
       const glyphs = Array.from(button.querySelectorAll('.material-icons-outlined, .material-icons'));
       for (const glyph of glyphs) expect(name).toContain((glyph.textContent ?? '').replace(/_/g, ' '));
     }
-    expect(screen.getByRole('button', { name: 'Preview artifact' })).toBeTruthy();
+    // Each card's buttons name the file they act on.
+    expect(screen.getByRole('button', { name: 'Preview data.csv' })).toBeTruthy();
   });
 
   it('marks the card unavailable when the preview reports it gone', async () => {

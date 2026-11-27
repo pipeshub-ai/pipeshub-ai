@@ -356,8 +356,8 @@ describe('job panel sections', () => {
     expect(screen.getByRole('tabpanel').getAttribute('data-testid')).toBe('job-tab-outputs');
     const cards = within(await screen.findByTestId('job-outputs-delivered')).getAllByTestId('artifact-card');
     expect(cards.map((c) => c.textContent)).toEqual([expect.stringContaining('report-q3.pdf'), expect.stringContaining('notes.md')]);
-    expect(within(cards[0]).getByRole('button', { name: 'Preview artifact' })).toBeTruthy();
-    expect(within(cards[0]).getByRole('button', { name: 'Download artifact' })).toBeTruthy();
+    expect(within(cards[0]).getByRole('button', { name: /^Preview / })).toBeTruthy();
+    expect(within(cards[0]).getByRole('button', { name: /^Download / })).toBeTruthy();
     // A file with no record is named, never linked.
     expect(within(cards[1]).queryAllByRole('button')).toHaveLength(0);
   });

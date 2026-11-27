@@ -117,7 +117,7 @@ describe('BGUI-11: the report under the card never shows the engine’s raw repl
     expect(within(report).getByTestId('job-report-outcome').textContent).toBe(' · finished in 6m 27s');
     const card = await within(report).findByTestId('artifact-card');
     expect(card.textContent).toContain('ipl_2026_report.pdf');
-    expect(within(card).getByRole('button', { name: 'Download artifact' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: /^Download / })).toBeTruthy();
     expect(within(report).getByRole('button', { name: '6 working files' })).toBeTruthy();
     // None of its reply: no directive, no process talk, no findings (the chat's answer says those once).
     expect(report.textContent).not.toMatch(/::artifact|layout: clean|visually inspected|RCB defended/);
@@ -215,7 +215,7 @@ describe('BGUI-11: the Outputs tab', () => {
   it('on a phone its controls are 44 px', () => {
     view(h(JobOutputs, { outputs, files: files(['notes/a.md']), live: false, phone: true, runId: 'j', onMachine: vi.fn() }));
     expect(screen.getByRole('button', { name: '1 working file' }).style.minHeight).toBe('44px');
-    expect(screen.getByRole('button', { name: 'Download artifact' }).style.minHeight).toBe('44px');
+    expect(screen.getByRole('button', { name: /^Download / }).style.minHeight).toBe('44px');
   });
 
   it('is named by the URL as `section=outputs`, sits between Activity and Machine, and an old Files link lands on it', () => {

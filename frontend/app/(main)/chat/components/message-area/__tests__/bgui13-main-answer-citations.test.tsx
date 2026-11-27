@@ -64,8 +64,8 @@ describe('BGUI-13: the chat answer\'s citation chips', () => {
         <InlineCitationPopoverHost />
       </>,
     );
-    const circle = document.querySelector('.citation-number-circle') as HTMLElement;
-    fireEvent.click(circle.closest('a, button') as HTMLElement);
+    // A lone citation is drawn as its source's pill, named by its number and title.
+    fireEvent.click(screen.getAllByRole('button', { name: /^Citation 1/ })[0]);
     const card = (await screen.findAllByRole('link')).find((a) => a.getAttribute('href')?.startsWith(FINAL));
     expect(card?.getAttribute('href')).toBe(`${FINAL}#:~:text=Royal%20Challengers`);
   });
@@ -80,7 +80,7 @@ describe('BGUI-13: the chat answer\'s citation chips', () => {
     );
     expect(document.body.textContent).toContain('Q3 board pack');
     expect(tab(/sources/i).textContent).toContain('1');
-    fireEvent.click(document.querySelector('.citation-number-circle')?.closest('a, button') as HTMLElement);
+    fireEvent.click(screen.getAllByRole('button', { name: /^Citation 1/ })[0]);
     const passage = await screen.findByText('Q3 revenue grew 12%.');
     expect(within(passage.closest('[data-radix-popper-content-wrapper]') as HTMLElement).getByRole('button', { name: /preview/i })).toBeTruthy();
   });
