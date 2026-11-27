@@ -31,7 +31,6 @@ from app.connectors.sources.network_share.errors import (
     NetworkShareAuthError,
 )
 from app.connectors.sources.network_share.filters import share_folder_scope
-from app.connectors.sources.network_share.permissions import app_level_permissions
 from app.connectors.sources.network_share.record_mapper import (
     RecordMapper,
     is_on_disk,
@@ -70,19 +69,12 @@ async def create_share_groups(
     processor: DataSourceEntitiesProcessor,
     connector_name: Connectors,
     connector_id: str,
-    scope: str,
-    created_by: str,
-    creator_email: str | None,
+    permissions: list[Permission] | None,
     description_prefix: str,
 ) -> None:
+    """``permissions`` None keeps each share's stored grants."""
     if not share_names:
         return
-    permissions = app_level_permissions(
-        scope=scope,
-        org_id=processor.org_id,
-        creator_email=creator_email,
-        created_by=created_by,
-    )
     groups = [
         (
             RecordGroup(

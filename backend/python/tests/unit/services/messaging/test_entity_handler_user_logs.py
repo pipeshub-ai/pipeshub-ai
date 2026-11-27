@@ -166,3 +166,34 @@ async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogC
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
     _assert_no_personal_data(caplog)
     assert errors == ["No graph user is the deleted user (user u-1)"]
+
+
+async def test_a_kept_api_toolset_credential_of_a_deleted_user_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+    from app.agents.openapi.models import (
+        ApiToolsetCredentials,
+        ApiToolsetInstance,
+        AuthScheme,
+        AuthType,
+        CompiledOperation,
+    )
+    from app.agents.openapi.store import ApiToolsetStore
+    from tests.support.in_memory_config import InMemoryConfigService
+
+    class KeepsKeys(InMemoryConfigService):
+        async def delete_config(self, key: str) -> bool:
+            return False
+
+    config = KeepsKeys()
+    store = ApiToolsetStore(config)
+    await store.save_instance(ApiToolsetInstance(
+        id="i1", org_id="org-1", created_by="a", name="i1", spec_title="T", openapi_version="3.1.0", spec_hash="h",
+        base_url="https://api.acme.test", timeout_seconds=10, created_at=1, updated_at=1,
+        auth_scheme=AuthScheme(name="k", type=AuthType.API_KEY, location="header", param_name="K"),
+        operations=[CompiledOperation(tool_name="t", method="GET", path="/t", input_schema={})],
+    ))
+    await store.save_credentials("i1", "u-1", ApiToolsetCredentials(api_key="k"))
+    svc = _service(AsyncMock())
+    svc.app_container.config_service.return_value = config
+    await svc._remove_api_toolset_data("org-1", "u-1")
+    failed = [r for r in caplog.records if r.name == LOGGER_NAME and r.getMessage() == "entity_event.step_failed"]
+    assert len(failed) == 1 and failed[0].error_class == "unavailable" and failed[0].step == "remove_api_toolset_data"

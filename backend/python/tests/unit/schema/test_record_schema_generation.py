@@ -37,6 +37,7 @@ PINNED = {
 # Change app_schema's rule -> bump APP_SCHEMA_GENERATION, then pin the new hash here.
 APPS_PINNED = {
     1: "98a503a14a4e9c5c6c9d7268889bc88f8e0422abf815da390f0252ad88c51fe8",
+    2: "cfdd018a2668045ed11c1fe51a478f0d30ad34001e918821299b1909e4a068bf",  # + accessLimit
 }
 
 

@@ -82,6 +82,15 @@ describe('libs/db unit of work', () => {
   })
 
   describe('prologue', () => {
+    it('turns jit off for the unit, read or write, fenced or not', async () => {
+      for (const opts of [{}, { write: true }]) {
+        for (const fence of [undefined, { fn: 'kernel.assert_store_epoch', epoch: () => 7 }]) {
+          const pool = new FakePool()
+          await inOrg('o', () => rtFor(pool, { fence }).withUow(opts, async () => 1))
+          expect(pool.prologue.text).to.contain("set_config('jit', 'off', true)")
+        }
+      }
+    })
     it('is one statement; read units are READ ONLY, write units are not', async () => {
       const pool = new FakePool()
       const rt = rtFor(pool)

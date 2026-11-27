@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.sources.github_teams.runtime import RefreshOutcome
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -70,7 +72,7 @@ def make_mock_connector() -> MagicMock:
     runtime.ds_call = AsyncMock()
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
-    runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+    runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.REFRESHED)
 
     # The real one caches; the mock goes straight through ds_call so a test
     # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.
@@ -86,6 +88,8 @@ def make_mock_connector() -> MagicMock:
     c.record_sync_point = rsp
 
     c.creator_user_permission = MagicMock(return_value=None)
+    # A run's failure path awaits it; a test of a refused sign-in binds the real one.
+    c._stop_if_sign_in_refused = AsyncMock()
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()
