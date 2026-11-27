@@ -13,6 +13,7 @@ import {
   classicDigest,
   classicTurnBody,
   DEADLINE_PASSED,
+  scheduledConversationId,
 } from '../../../src/modules/agent-harness/application/classic-schedule-runner';
 import { orgSchedulesOn } from '../../../src/modules/agent-harness/config';
 import { Container } from 'inversify';
@@ -22,7 +23,11 @@ import { AGENT_HARNESS_SCHEDULE_FIRER } from '../../../src/modules/agent-harness
 import { HarnessScheduleRefusedError } from '../../../src/modules/agent-harness/domain/errors';
 import { scheduleHttpError } from '../../../src/modules/agent-harness/transport/schedule-routes';
 import { testControlPlane } from '../control-plane/support/in-memory';
-import type { AgentSchedule } from '../../../src/modules/agent-harness/domain/schedules';
+import {
+  type AgentSchedule,
+  FIRING_LEASE_MS,
+  FIRING_BACKOFF_MAX_MS,
+} from '../../../src/modules/agent-harness/domain/schedules';
 import {
   aSchedule,
   ALICE,
@@ -42,12 +47,18 @@ class FakeTurns implements ClassicTurns {
   readonly requests: ClassicTurnRequest[] = [];
   refusal: string | null = null;
   constructor(private readonly conversations?: FakeConversations) {}
+  /** The conversations the turns opened, in order. */
+  get ids(): string[] {
+    return [...new Set(this.requests.map((r) => r.mark.conversationId))];
+  }
   async start(
     request: ClassicTurnRequest,
   ): Promise<{ conversationId: string } | { refused: string }> {
     this.requests.push(request);
     if (this.refusal !== null) return { refused: this.refusal };
-    const id = `conv-${String(this.requests.length)}`;
+    const id = request.mark.conversationId;
+    // The store's unique id: a second create of the firing's conversation is refused, as SessionExistsError is.
+    if (this.conversations?.states.has(id) === true) return { refused: 'unavailable' };
     this.conversations?.set(id, { status: 'in_progress' });
     return { conversationId: id };
   }
@@ -194,9 +205,9 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect(firing).to.include({
         status: 'admitted',
         runner: 'classic',
-        runRef: 'conv-1',
+        runRef: w.turns.ids[0]!,
         runId: null,
-        sessionId: 'conv-1',
+        sessionId: w.turns.ids[0]!,
         costCapIgnored: true,
       });
       expect(w.admission.requests).to.have.length(0);
@@ -207,6 +218,7 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect(turn!.mark).to.deep.equal({
         scheduleId: schedule.id,
         firingId: firing.id,
+        conversationId: scheduledConversationId(ORG, firing.id),
         title: schedule.name,
         deadlineAt: firing.watchUntil,
       });
@@ -242,7 +254,7 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       await w.firer.tick();
       expect(await onlyFiring(w, schedule)).to.include({
         runner: 'classic',
-        runRef: 'conv-1',
+        runRef: w.turns.ids[0]!,
       });
     });
 
@@ -251,13 +263,13 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       const schedule = await due(w);
       await w.firer.tick();
       w.harnessOn = true;
-      w.conversations.set('conv-1', { status: 'complete', answer: answered });
+      w.conversations.set(w.turns.ids[0]!, { status: 'complete', answer: answered });
       await w.firer.watchRuns();
       expect(w.notifier.ends).to.have.length(1);
       expect(w.notifier.ends[0]).to.include({
         runner: 'classic',
-        runId: 'conv-1',
-        sessionId: 'conv-1',
+        runId: w.turns.ids[0]!,
+        sessionId: w.turns.ids[0]!,
         status: 'completed',
       });
       expect(w.notifier.ends[0]!.digest?.records.read).to.equal(3);
@@ -301,14 +313,14 @@ describe('ADR-SCH-02 schedules without the harness', () => {
         trigger: { kind: 'cron', cron: '*/5 * * * *', timeZone: 'UTC', catchUp: 'skip' },
       });
       await w.firer.tick();
-      w.conversations.set('conv-1', { status: 'in_progress' });
+      w.conversations.set(w.turns.ids[0]!, { status: 'in_progress' });
       w.clock.value = (await w.store.get(ORG, schedule.id))!.nextFireAt! + 1_000;
       await w.firer.tick();
       const queued = await w.store.queuedFiring(ORG, schedule.id);
-      expect(queued?.queuedBehind).to.equal('conv-1');
-      w.conversations.set('conv-1', { status: 'complete', answer: answered });
+      expect(queued?.queuedBehind).to.equal(w.turns.ids[0]!);
+      w.conversations.set(w.turns.ids[0]!, { status: 'complete', answer: answered });
       const first = (await w.store.firings(ORG, schedule.id, 10)).find(
-        (f) => f.runRef === 'conv-1',
+        (f) => f.runRef === w.turns.ids[0]!,
       )!;
       await w.firer.runnerEnded(ORG, first.id);
       expect((await w.store.getFiring(ORG, queued!.id))!.leaseUntil).to.be.at.most(
@@ -322,14 +334,14 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       const w = world();
       await due(w);
       await w.firer.tick();
-      w.conversations.set('conv-1', { status: 'complete', answer: waiting });
+      w.conversations.set(w.turns.ids[0]!, { status: 'complete', answer: waiting });
       await w.firer.watchRuns();
       await w.firer.watchRuns();
       expect(w.notifier.notices).to.have.length(1);
       expect(w.notifier.notices[0]).to.include({
         runner: 'classic',
-        sessionId: 'conv-1',
-        runId: 'conv-1',
+        sessionId: w.turns.ids[0]!,
+        runId: w.turns.ids[0]!,
       });
       expect(w.notifier.ends).to.have.length(0);
     });
@@ -338,11 +350,11 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       const w = world();
       const schedule = await due(w);
       await w.firer.tick();
-      w.conversations.set('conv-1', { status: 'complete', answer: waiting });
+      w.conversations.set(w.turns.ids[0]!, { status: 'complete', answer: waiting });
       const firing = await onlyFiring(w, schedule);
       w.clock.value = firing.watchUntil! + 1_000;
       await w.firer.watchRuns();
-      expect(w.conversations.expired).to.deep.equal(['conv-1']);
+      expect(w.conversations.expired).to.deep.equal([w.turns.ids[0]!]);
       expect(w.notifier.ends[0]).to.include({
         status: 'failed',
         reason: ASK_EXPIRED,
@@ -490,6 +502,91 @@ describe('ADR-SCH-02 schedules without the harness', () => {
       expect(errors.join(' ')).to.contain('replica set');
       await startScheduleServices(container, logger, async () => ({ created: [] }), () => true);
       expect(started).to.equal(1);
+    });
+  });
+
+  describe('D3: a firing opens one classic conversation, however often it is started', () => {
+    it('the conversation id is the firing’s: a 24-hex id every store takes, one per org and firing', () => {
+      const id = scheduledConversationId(ORG, 'fir-1');
+      expect(id).to.match(/^[0-9a-f]{24}$/);
+      expect(scheduledConversationId(ORG, 'fir-1')).to.equal(id);
+      expect(scheduledConversationId(ORG, 'fir-2')).to.not.equal(id);
+      expect(scheduledConversationId('0000000000000000000000e2', 'fir-1')).to.not.equal(id);
+    });
+
+    it('a settle that fails after the turn started: the retry answers the same conversation and starts no turn', async () => {
+      const w = world();
+      const schedule = await due(w);
+      const settle = w.store.settle.bind(w.store);
+      let failures = 1;
+      w.store.settle = async (...args) => {
+        if (args[2].status === 'admitted' && failures > 0) {
+          failures -= 1;
+          throw new Error('store write lost');
+        }
+        return settle(...args);
+      };
+      await w.firer.tick();
+      let firing = await onlyFiring(w, schedule);
+      expect(firing.status).to.equal('pending');
+      expect(w.turns.requests).to.have.length(1);
+      w.clock.value += FIRING_BACKOFF_MAX_MS + FIRING_LEASE_MS;
+      await w.firer.tick();
+      firing = await onlyFiring(w, schedule);
+      expect(firing).to.include({ status: 'admitted', runRef: scheduledConversationId(ORG, firing.id) });
+      expect(w.turns.requests).to.have.length(1);
+      expect(w.conversations.states.size).to.equal(1);
+    });
+
+    it('a crash before the settle: the stale firing retaken after its lease starts no second turn', async () => {
+      const w = world();
+      const schedule = await due(w);
+      // The process dies once the turn started: neither the settle nor the release is written.
+      w.store.settle = async () => {
+        throw new Error('process died');
+      };
+      w.store.release = async () => {
+        throw new Error('process died');
+      };
+      await w.firer.fireDue();
+      expect(w.turns.requests).to.have.length(1);
+      const restarted = new InMemoryScheduleStore(w.clock);
+      Object.assign(w.store, {
+        settle: restarted.settle.bind(w.store),
+        release: restarted.release.bind(w.store),
+      });
+      w.clock.value += FIRING_LEASE_MS + 1_000;
+      expect(await w.firer.retryStale()).to.equal(1);
+      const firing = await onlyFiring(w, schedule);
+      expect(firing).to.include({ status: 'admitted', runRef: scheduledConversationId(ORG, firing.id) });
+      expect(w.turns.requests).to.have.length(1);
+      expect(w.conversations.states.size).to.equal(1);
+    });
+
+    it('two starts of one firing at once: one conversation, the same run for both', async () => {
+      const w = world();
+      const runner = new ClassicScheduleRunner(w.turns, w.conversations, () => w.clock.value);
+      const request = {
+        orgId: ORG,
+        actorId: ALICE,
+        scheduleId: 'sch-x',
+        scheduleName: 'Joke',
+        firingId: 'fir-x',
+        idempotencyKey: 'k',
+        deadlineMs: 60_000,
+        deadlineAt: w.clock.value + 60_000,
+        input: aSchedule().input!,
+        authorization: 'Bearer token-of-alice',
+        trigger: { scheduleId: 'sch-x', firingId: 'fir-x', slotKey: 'm:x' },
+      };
+      const [a, b] = await Promise.all([runner.start(request), runner.start(request)]);
+      expect(a).to.deep.equal(b);
+      expect(a).to.include({ kind: 'started', runRef: scheduledConversationId(ORG, 'fir-x') });
+      expect(w.conversations.states.size).to.equal(1);
+      // Once it exists a further start reads it and opens no turn at all.
+      const before = w.turns.requests.length;
+      expect(await runner.start(request)).to.deep.equal(a);
+      expect(w.turns.requests).to.have.length(before);
     });
   });
 });

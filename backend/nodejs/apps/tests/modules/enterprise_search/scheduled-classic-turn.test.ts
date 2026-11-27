@@ -43,7 +43,7 @@ function container(): Container {
   return c
 }
 
-const mark = { scheduleId: 'sch-1', firingId: 'fir-1', title: 'Morning joke', deadlineAt: DEADLINE }
+const mark = { scheduleId: 'sch-1', firingId: 'fir-1', conversationId: '0123456789abcdef01234567', title: 'Morning joke', deadlineAt: DEADLINE }
 
 describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
   let store: InMemoryChatStore
@@ -77,6 +77,8 @@ describe('ADR-SCH-02 D3: a scheduled classic turn', () => {
     expect(started).to.have.property('conversationId')
     const session = store.sessions[0]!
     expect(String(session._id)).to.equal((started as { conversationId: string }).conversationId)
+    // Opened under the firing's own id, so a second start of the firing meets this conversation.
+    expect(String(session._id)).to.equal(mark.conversationId)
     expect(session.get('title')).to.equal('Morning joke')
     const metadata = session.get('metadata') as Map<string, unknown>
     expect(metadata.get('origin')).to.deep.equal({

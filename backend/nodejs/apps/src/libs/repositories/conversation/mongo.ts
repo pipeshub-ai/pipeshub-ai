@@ -52,6 +52,9 @@ import type {
   SessionDeletionDto,
   UserSessionDto,
 } from './types';
+import { SessionExistsError } from './types';
+
+const DUPLICATE_KEY = 11000;
 
 const logger = new Logger({ service: 'conversation-repository' });
 
@@ -279,11 +282,19 @@ export class MongoConversationRepository implements ConversationRepository {
 
   async createSession(fields: NewSession, tx?: Tx): Promise<ChatSessionDto> {
     const { id, metadata, ...rest } = fields;
-    const saved = await new ChatSession({
-      ...rest,
-      ...(id && { _id: id }),
-      ...(metadata && { metadata: new Map(Object.entries(metadata)) }),
-    }).save(opts(tx));
+    let saved;
+    try {
+      saved = await new ChatSession({
+        ...rest,
+        ...(id && { _id: id }),
+        ...(metadata && { metadata: new Map(Object.entries(metadata)) }),
+      }).save(opts(tx));
+    } catch (error) {
+      if (id && (error as { code?: unknown }).code === DUPLICATE_KEY) {
+        throw new SessionExistsError(id);
+      }
+      throw error;
+    }
     return toPlain<ChatSessionDto>(saved);
   }
 

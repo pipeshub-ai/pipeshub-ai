@@ -319,10 +319,11 @@ const scheduleOriginField = (
 /** A schedule's classic turn (ADR-SCH-02 D3): its conversation is named after the schedule and records which made it. */
 const scheduledSessionFields = (
   req: Request,
-): Pick<NewSession, 'title' | 'metadata'> => {
+): Pick<NewSession, 'id' | 'title' | 'metadata'> => {
   const mark = scheduledTurnOf(req);
   if (mark === null) return {};
   return {
+    id: mark.conversationId,
     title: mark.title,
     metadata: { origin: scheduledTurnOrigin(mark) },
   };

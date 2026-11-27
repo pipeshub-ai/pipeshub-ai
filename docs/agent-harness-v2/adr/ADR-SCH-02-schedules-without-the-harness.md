@@ -93,6 +93,11 @@ to ask, when, notices, overlap, catch-up, the agent and its version) means the s
   `metadata.origin {kind: schedule, scheduleId, firingId, scheduleName}`, which the conversation detail answers as
   `origin`. The actor credential's lifetime is a parameter of `ActorAuthority.authorize` (`ttlS`, the firing's
   deadline for a classic turn).
+- One conversation per firing: a classic turn opens its conversation under an id derived from the org and the firing
+  (`scheduledConversationId`), and both conversation stores refuse a second session under a caller's id
+  (`SessionExistsError`: Mongo's unique `_id`, PostgreSQL's `ON CONFLICT (org_id, id) DO NOTHING`). A start that finds
+  that conversation (a retry after a failed settle, a firing retaken after a crash, two firers at once) answers it as
+  the run and starts no other turn; the watch then reads whether it is still running or ended.
 - Headers to the query service: `x-pipeshub-schedule-firing` and `x-pipeshub-ask-deadline`
   (`transport/scheduled-turn-mark.ts`) are sent only through `AICommandOptions.scheduledTurnHeaders`, set by the two
   stream handlers from the runner's mark (a `WeakMap` keyed by the request object the runner made); a client's own

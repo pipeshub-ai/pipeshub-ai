@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { RunInputSnapshot } from '../domain/execution';
 import type {
   EndedScheduleRunStatus,
@@ -17,6 +18,8 @@ import {
 export interface ScheduledTurnMark {
   scheduleId: string;
   firingId: string;
+  /** The conversation the turn opens, derived from the firing: a second start of it meets the one the first made. */
+  conversationId: string;
   /** The conversation's title: the schedule's name. */
   title: string;
   /** An ask in the turn waits for the person until then (D4). */
@@ -73,6 +76,22 @@ export interface ClassicConversations {
 }
 
 export const ASK_EXPIRED = 'ask_expired';
+
+/**
+ * The conversation id of a firing's classic turn (ADR-SCH-02 D3): an ObjectId's 24 hex digits, as both document
+ * stores take a caller's conversation id, derived from the org and the firing so every start of one firing names it.
+ */
+export const scheduledConversationId = (
+  orgId: string,
+  firingId: string,
+): string =>
+  createHash('sha256')
+    .update(
+      `schedule-firing-conversation\u0000${orgId}\u0000${firingId}`,
+      'utf8',
+    )
+    .digest('hex')
+    .slice(0, 24);
 export const DEADLINE_PASSED = 'deadline_passed';
 
 const assistantModes: ReadonlySet<string> = new Set([
@@ -227,29 +246,51 @@ export class ClassicScheduleRunner implements ScheduleRunner {
     private readonly now: () => number = Date.now,
   ) {}
 
+  /**
+   * Starts the firing's turn at most once, however often the firer retries it (a failed settle, a crash before it,
+   * two firers): the turn opens the conversation under an id derived from the firing, so the store's unique id is
+   * what lets one start through. A start that finds that conversation, before or because its create was refused,
+   * answers it, and the watch reads whether it is still running or ended.
+   */
   async start(request: ScheduleRunRequest): Promise<ScheduleRunStart> {
-    const started = await this.turns.start({
+    const conversationId = scheduledConversationId(
+      request.orgId,
+      request.firingId,
+    );
+    const started = (): ScheduleRunStart => ({
+      kind: 'started',
+      runRef: conversationId,
+      sessionId: conversationId,
+      ...(request.trigger.maxCostUsd !== undefined
+        ? { costCapIgnored: true }
+        : {}),
+    });
+    if (
+      (await this.conversations.read(request.orgId, conversationId)) !== null
+    ) {
+      return started();
+    }
+    const turn = await this.turns.start({
       authorization: request.authorization,
       ...(request.agentKey !== undefined ? { agentKey: request.agentKey } : {}),
       body: classicTurnBody(request.input, request.agentKey),
       mark: {
         scheduleId: request.scheduleId,
         firingId: request.firingId,
+        conversationId,
         title: request.scheduleName,
         deadlineAt: request.deadlineAt,
       },
       ...(request.ended !== undefined ? { ended: request.ended } : {}),
     });
-    if ('refused' in started)
-      return { kind: 'refused', reason: started.refused };
-    return {
-      kind: 'started',
-      runRef: started.conversationId,
-      sessionId: started.conversationId,
-      ...(request.trigger.maxCostUsd !== undefined
-        ? { costCapIgnored: true }
-        : {}),
-    };
+    if (!('refused' in turn)) return started();
+    // Refused because another start of this firing made the conversation first: that start is the run.
+    if (
+      (await this.conversations.read(request.orgId, conversationId)) !== null
+    ) {
+      return started();
+    }
+    return { kind: 'refused', reason: turn.refused };
   }
 
   async status(

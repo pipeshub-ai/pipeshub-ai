@@ -6,6 +6,7 @@
  */
 import { expect } from 'chai';
 import type { ConversationRepository, NewMessage, NewSession, SessionListQuery, SessionScope } from '../../../src/libs/repositories/conversation';
+import { SessionExistsError } from '../../../src/libs/repositories/conversation';
 import type { ScopedUnitOfWork } from './unit-of-work-scope';
 
 export interface ConversationFixture {
@@ -73,6 +74,20 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(rows[0]!.dto.seq).to.equal(1);
       expect(rows[0]!.dto.sessionId).to.equal(s._id);
       expect(rows[0]!.dto.content).to.equal('hi');
+    });
+
+    it('a caller-allocated id opens one session: a second open under it is refused SessionExistsError and writes nothing', async () => {
+      const org = fx.newId(), user = fx.newId(), id = fx.newId();
+      const first = await open(org, user, { id }, userMsg('first'));
+      expect(first._id).to.equal(id);
+      const again = await Promise.allSettled([open(org, user, { id }, userMsg('second')), open(org, user, { id }, userMsg('third'))]);
+      for (const outcome of again) {
+        expect(outcome.status).to.equal('rejected');
+        expect((outcome as PromiseRejectedResult).reason).to.be.instanceOf(SessionExistsError);
+      }
+      const rows = await repo.listMessages(id, { orgId: org });
+      expect(rows.map((r) => r.dto.content)).to.deep.equal(['first']);
+      expect((await repo.findById(id))?.title).to.equal('chat');
     });
 
     it('rolls the session back with its first message on a replica set, and not on a standalone server', async () => {
