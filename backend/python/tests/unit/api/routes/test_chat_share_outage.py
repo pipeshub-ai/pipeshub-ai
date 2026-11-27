@@ -55,7 +55,7 @@ def _graph(
 
     gp = AsyncMock()
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda uid, *, raise_on_error=False: answer(
+        side_effect=lambda uid, *, raise_on_error=False, **_: answer(
             "get_user_by_user_id", uid, USERS.get(uid), raise_on_error))
     gp.get_document = AsyncMock(
         side_effect=lambda rid, _c, *_, raise_on_error=False: answer("get_document", rid, ATTACHMENT, raise_on_error))

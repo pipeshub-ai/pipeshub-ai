@@ -13,7 +13,7 @@ import { useKbUploadExtras } from '../hooks/use-kb-upload-extras';
 import { ConnectorOverviewExtras } from '@/app/(main)/workspace/connectors/components/instance-panel/connector-overview-extras';
 
 const wrap = (ui: React.ReactElement) => render(<Theme>{ui}</Theme>);
-const BADGE = 'Available in EE';
+const BADGE = 'Available in Enterprise';
 
 afterEach(() => {
   cleanup();

@@ -122,11 +122,9 @@ const forward =
         // an unreachable or slow AI service is a 503 or 504, as for every other route that calls it
         throw handleBackendError(error, what);
       }
-      if (!aiResponse.data) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
       if (aiResponse.statusCode === 501) {
-        // the AI service says this deployment cannot serve the route; handleBackendError has no 501 and would make it a 500
+        // the AI service says this deployment cannot serve the route; its words tell the reader why, and handleBackendError
+        // would give our generic sentence instead
         const data = aiResponse.data as { detail?: unknown } | undefined;
         throw new NotImplementedError(
           typeof data?.detail === 'string'
@@ -135,12 +133,10 @@ const forward =
         );
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: { status: aiResponse.statusCode, data: aiResponse.data },
-          },
-          what,
-        );
+        throw handleBackendError(aiResponse, what);
+      }
+      if (!aiResponse.data) {
+        throw new InternalServerError('Failed to get response from AI service');
       }
       res.status(200).json(aiResponse.data);
     } catch (error) {

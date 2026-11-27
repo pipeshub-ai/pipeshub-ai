@@ -1193,6 +1193,58 @@ def test_in_enforce_each_service_role_reads_and_writes_only_its_prefixes(kv_db):
     assert wrong == []
 
 
+PREFIXED_PATH = ("CREATE OR REPLACE FUNCTION platform.kv_access_path(p_key text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS "
+                 "$$ SELECT CASE WHEN pg_catalog.starts_with(p_key, 'ns1/') THEN pg_catalog.substr(p_key, 5) ELSE p_key END $$")
+
+
+def _prefixed_access(cluster, name):
+    """(role, key, read, wrote) for every row of KV_MATRIX, the key stored under the prefix ns1/."""
+    out = []
+    for role, key, _, _ in KV_MATRIX:
+        with _as(cluster, name, role) as c:
+            seen = c.execute("SELECT value FROM platform.kv_entries WHERE key = %s", ("ns1/" + key,)).fetchone() is not None
+            try:
+                c.execute(UPSERT, ("ns1/" + key,))
+                wrote = True
+            except psycopg.errors.InsufficientPrivilege:
+                wrote = False
+            c.rollback()
+            out.append((role, key, seen, wrote))
+    return out
+
+
+def test_in_enforce_the_matrix_checks_the_path_kv_access_path_gives(kv_db):
+    """By default the path is the key, so a key under a prefix is judged as that whole key (the allow-list roles see none of
+    them). A replaced body (as an extra migration location may install) makes the matrix check the path after the prefix: each role then
+    reads and writes the prefixed keys exactly as it does the plain ones, and the policies and the catalog stay as registered."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, True)
+    with connect(cluster, name) as c:
+        for k in sorted({k for _, k, _, _ in KV_MATRIX}):
+            c.execute("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'secret-value')", ("ns1/" + k,))
+    expected = {(role, key): (may_read, may_write) for role, key, may_read, may_write in KV_MATRIX}
+    default = _prefixed_access(cluster, name)
+    # the allow-list roles see no prefixed key, and the deny-list ones read admin-only keys under it: the prefix changes the answer
+    assert all((seen, wrote) == (False, False) for role, _k, seen, wrote in default if role in ("indexing", "kv"))
+    assert [x for x in default if (x[2], x[3]) != expected[(x[0], x[1])]] != []
+    with connect(cluster, name) as c, c.transaction():
+        c.execute("SET LOCAL ROLE pipeshub_owner")
+        c.execute(PREFIXED_PATH)
+    assert [x for x in _prefixed_access(cluster, name) if (x[2], x[3]) != expected[(x[0], x[1])]] == []
+    with connect(cluster, name) as c:
+        assert [r for r in c.execute("SELECT rule, object FROM kernel.rls_violations") if "kv_" in r[0] or "kv_entries" in r[1]] == []
+
+
+def test_platform_0015_downgrades_to_the_policies_on_the_key_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url, "downgrade", "platform_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regprocedure('platform.kv_access_path(text)')").fetchone()[0] is None
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    assert run_migrate(url).returncode == 0
+
+
 def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_purged_only_where_the_writer_can_read(kv_db):
     cluster, name = kv_db
     _set_mode(cluster, name, True)

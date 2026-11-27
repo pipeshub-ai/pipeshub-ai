@@ -458,7 +458,8 @@ def test_a_jobs_write_unit_runs_its_prologue(vdb):
 def test_the_catalog_and_the_manifests_agree(vdb):
     with vdb.admin() as c:
         assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
-        assert vetted.problems(c, FNS) == []
+        # every manifest the database was migrated with (extra migration locations' too), and the fixture's
+        assert vetted.problems(c, vetted.load_all([*vetted.manifest_files(), FIXTURE])) == []
 
 
 # ---- the checklist: a planted violation for every item ---------------------------------------------------------------
