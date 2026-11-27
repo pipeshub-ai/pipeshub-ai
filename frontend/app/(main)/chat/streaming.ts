@@ -959,7 +959,7 @@ function statusMessageReconnecting(): StatusMessage {
   return {
     id: `status-reconnecting-${Date.now()}`,
     status: 'reconnecting',
-    message: i18n.t('errorToast.reconnecting'),
+    message: i18n.t('chatStream.reconnecting'),
     timestamp: new Date().toISOString(),
   };
 }

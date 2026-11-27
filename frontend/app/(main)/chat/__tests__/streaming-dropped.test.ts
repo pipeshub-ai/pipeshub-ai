@@ -197,6 +197,8 @@ describe('a question whose stream drops', () => {
     expect(slot(slotId).isStreaming).toBe(true);
     expect(failedRows(slotId)).toBe(0);
     expect(statusOf(slotId)).toBe('reconnecting');
+    // In words the reader can read, never a key the catalogue does not hold.
+    expect(slot(slotId).currentStatusMessage?.message).toBe('Reconnecting…');
 
     await pass(200);
     await run;
