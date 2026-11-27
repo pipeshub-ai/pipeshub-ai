@@ -184,7 +184,6 @@ class OpenEditionRoots(unittest.TestCase):
             ("backend/python/app/ee/permission_sync/bridge.py", "from .. import harness"),
             ("backend/python/app/ee/permission_sync/bridge.py", "from ... import ee"),
             ("backend/python/app/ee/permission_sync/bridge.py", "from ... import models, ee as edition"),
-            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import (  # names follow"),
             ("backend/python/app/x.py", "from . import ee"),
             ("backend/python/tests/unit/ee/permission_sync/test_x.py", "from ..other import helper"),
             ("backend/nodejs/apps/src/ee/modules/license/bridge.ts", "export { x } from '../billing/secret';"),
@@ -194,6 +193,52 @@ class OpenEditionRoots(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(len(edition_guard.check([], diff(path, line)).errors), 1)
+
+
+class PythonImportsAreParsed(unittest.TestCase):
+    """Python files are parsed, so every statement is read whatever its layout, and each is reported once."""
+
+    BRIDGE = "backend/python/app/ee/permission_sync/bridge.py"
+
+    def _errors(self, path: str, *lines: str) -> list[str]:
+        return edition_guard.check([], diff(path, *lines)).errors
+
+    def test_a_closed_import_fails_however_it_is_written(self) -> None:
+        for path, lines in (
+            (self.BRIDGE, ("from ... import (", "    models,", "    ee,", ")")),
+            (self.BRIDGE, ("from ..harness \\", "    import edition")),
+            (self.BRIDGE, ("from .box_access import read_grants; from ..harness import edition",)),
+            (self.BRIDGE, ("import importlib", "m = importlib.import_module(\"..harness\", \"app.ee.permission_sync\")")),
+            ("backend/python/app/x.py", ("from .ee.permission_sync.box import X; from .ee.harness import edition",)),
+            ("backend/python/app/x.py", ("from app.ee.permission_sync.box import (", "    X,", ")", "import app.ee.harness")),
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(len(self._errors(path, *lines)), 1, lines)
+
+    def test_a_parenthesised_import_of_shared_modules_passes(self) -> None:
+        for path in ("backend/python/app/x.py", "backend/python/app/connectors/sources/box/connector.py",
+                     "backend/python/tests/unit/foo.py", self.BRIDGE):
+            with self.subTest(path=path):
+                self.assertEqual(self._errors(path, "from . import (", "    models,", ")"), [])
+
+    def test_open_imports_pass_however_they_are_written(self) -> None:
+        for lines in (
+            ("from .box_access import (", "    read_grants,", ")"),
+            ("from ...models.entities \\", "    import Record"),
+            ("import importlib", "m = importlib.import_module(\".zoom\", \"app.ee.permission_sync\")"),
+        ):
+            with self.subTest(lines=lines):
+                self.assertEqual(self._errors(self.BRIDGE, *lines), [])
+
+    def test_the_error_is_at_the_statements_first_added_line(self) -> None:
+        changed = "+++ b/backend/python/app/x.py\n@@ -3,0 +4,2 @@\n+    models,\n+    ee,\n"
+        source = "import os\n\nfrom . import (\n    models,\n    ee,\n)\n"
+        (error,) = edition_guard.check([], changed, read=lambda _p: source).errors
+        self.assertTrue(error.startswith("backend/python/app/x.py:4:"), error)
+
+    def test_an_unparsable_file_is_read_line_by_line(self) -> None:
+        (error,) = self._errors("backend/python/app/x.py", "from app.ee.harness import edition", "def broken(:")
+        self.assertTrue(error.startswith("backend/python/app/x.py:1:"), error)
 
 
 class Licence(unittest.TestCase):
