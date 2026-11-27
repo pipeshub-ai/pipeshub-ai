@@ -3751,6 +3751,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
         Get a user by their internal user ID.
@@ -3759,6 +3760,8 @@ class IGraphDBProvider(ABC):
             user_id (str): Internal user ID
             raise_on_error: raise when the lookup fails. Without it a failed
                 lookup returns None, the same as a user that does not exist.
+            org_id: when given, only a user of this organisation matches;
+                an empty string matches no user.
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
