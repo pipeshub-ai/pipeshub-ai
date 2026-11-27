@@ -1494,6 +1494,26 @@ class TestDriveWorkspaceEntitySync:
                 description=f"B ({second_email}) PERMISSION on parent",
             )
 
+            # The owner's own grant on the restricted folder and the child shows their permission
+            # lists were written; only then does an absent grant for B mean anything.
+            owner_email = drive_workspace_entity_connector["test_user_email"]
+
+            async def _owner_granted_on_restricted_and_child() -> bool:
+                for external_id in (restricted_id, child_id):
+                    if not await graph_provider.user_has_direct_record_permission(
+                        connector_id, owner_email, external_id
+                    ):
+                        return False
+                return True
+
+            await wait_until_graph_condition(
+                connector_id,
+                check=_owner_granted_on_restricted_and_child,
+                timeout=_SYNC_TIMEOUT_SEC,
+                poll_interval=10,
+                description=f"owner ({owner_email}) PERMISSION on restricted folder and its child",
+            )
+
             async def _restricted_and_child_lack_b() -> bool:
                 for external_id in (restricted_id, child_id):
                     if await graph_provider.user_has_direct_record_permission(

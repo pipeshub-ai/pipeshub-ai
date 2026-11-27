@@ -415,8 +415,9 @@ class TestSalesforceConnector:
         (salesforce_source.ids["fresh"],) = sim.ops(
             {"op": "add_case", "key": "fresh", "subject": "Fresh case", "owner": "admin", "account": "acme"})
         modified = {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cut, "end": None}}}
-        pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": modified}})
         try:
+            pipeshub_client.update_connector_filters_sync_safe(
+                salesforce_connector, filters={"sync": {"values": modified}})
             await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
             await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
                                salesforce_users, org_id, "the narrowed filter", filters=modified)

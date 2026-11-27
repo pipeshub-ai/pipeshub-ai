@@ -108,6 +108,8 @@ class TestDriveWorkspaceSharedDriveLifecycle:
         connector_id = state["connector_id"]
         file_id = state["group_file_id"]
         organizer = state["test_user_email"].lower()
+        if second_user.lower() == organizer:
+            pytest.skip(f"{ENV_SECOND_USER} is the organizer, so no other group member syncs")
         members = await list_group_user_member_emails(drive_workspace_admin_datasource, state["group_email"])
         if second_user.lower() not in {address.lower() for address in members}:
             pytest.skip(f"{ENV_SECOND_USER} is not a direct member of {state['group_email']}")
