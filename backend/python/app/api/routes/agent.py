@@ -152,6 +152,7 @@ from app.modules.retrieval.selection_scope import (
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
+from app.schedules.firing import scheduled_turn
 from app.schema.node_validator import SchemaValidationError
 from app.services.featureflag.platform_settings import is_agent_harness_on
 from app.services.graph_db.common.utils import (
@@ -6149,6 +6150,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "isAssistantChat": bool(is_placeholder),
                     "chatStreaming": getattr(request.state, "chat_streaming", True) is not False,
                     "toolApproval": chat_query.toolApproval,
+                    "scheduleFiring": scheduled_turn(request.headers),
+                    "nodeAuthorization": request.headers.get("authorization"),
                 }
 
                 client_name = request.headers.get("client-name")

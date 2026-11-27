@@ -123,7 +123,7 @@ from app.harness.repositories import (
 )
 from app.harness.run_gates import RunCitationSources
 from app.harness.run_policy.resolved import bind_run_tuning
-from app.harness.schedules import SCHEDULE_CREATE_TOOL, schedule_asks
+from app.harness.schedules import SCHEDULE_CREATE_TOOL, schedule_asks, schedule_reader
 from app.harness.site_uploads import SiteUploads
 from app.harness.skills.pinned_labels import (
     MountedSkills,
@@ -442,8 +442,10 @@ def engine_disclosure(
     if mode == "eager" or not lazy_tools_enabled():
         return None
     first_use = lazy is not None and bool(lazy)
-    small = mode is None and len(names) <= engine_lazy_tools_threshold()
-    if small and not first_use:
+    # On-demand toolsets (ADR-SCH-03 D8) are always found through the search and never counted toward the threshold.
+    on_demand = registry.on_demand_tool_names() & names
+    small = mode is None and len(names - on_demand) <= engine_lazy_tools_threshold()
+    if small and not first_use and not on_demand:
         return None
     kept = {"skills"} if mode == "filesystem" else {"skills", *essential}
     grouped = {n for g in registry.toolsets() for n in g.tool_names}
@@ -452,7 +454,7 @@ def engine_disclosure(
         if small
         else {n for g in registry.toolsets() if g.name not in kept for n in g.tool_names if n in names}
         | ({n for n in names if n not in grouped} if mode == "filesystem" else set())
-    ) | (lazy.granted_names() if lazy is not None else frozenset())
+    ) | on_demand | (lazy.granted_names() if lazy is not None else frozenset())
 
     async def rank(query: str, limit: int) -> Ranked:
         """The grant's matches, best first. Each is built before it counts toward ``limit`` (D-LAZY-4): a match its
@@ -477,8 +479,14 @@ def engine_disclosure(
             ranked.append(name)
         return Ranked(ranked, held)
 
-    lines = tuple(sources.lines()) if sources is not None else ()
+    # The on-demand lines first: the description names at most SOURCES_LISTED_MAX lines.
+    lines = (*_on_demand_lines(registry, on_demand), *(sources.lines() if sources is not None else ()))
     return LazyDisclosure(deferred, rank, lines, always=first_use) if deferred or first_use else None
+
+
+def _on_demand_lines(registry: ToolRegistry, on_demand: frozenset[str]) -> list[str]:
+    """An on-demand toolset's one line for ``search_tools``' description, so the engine knows what it can find."""
+    return [f"{g.name}: {g.description}" for g in registry.toolsets() if g.on_demand and set(g.tool_names) & on_demand]
 
 
 def engine_checkout(claim: NodeClaim, context: Any) -> GitCheckout | None:  # noqa: ANN401 - the legacy AgentContext
@@ -933,7 +941,7 @@ class PipesHubEngineAssembler:
                 log=log, references=shelf, hosts=repositories.hosts,
             )
         # ADR-SCH-01 D2: a schedule the engine proposes asks the person every time, whatever the grants under it say.
-        guarded = schedule_asks(guarded, offered=registry.has(SCHEDULE_CREATE_TOOL))
+        guarded = schedule_asks(guarded, offered=registry.has(SCHEDULE_CREATE_TOOL), read=schedule_reader(registry))
         # Whether the run's knowledge reads and exports may go ahead (an edition's gate; this build's lets all through).
         knowledge = knowledge_access_gate().gate(guarded, route=route, claim=claim, log=log)
         guarded = knowledge.policy

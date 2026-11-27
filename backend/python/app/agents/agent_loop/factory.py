@@ -151,6 +151,7 @@ from app.agents.agent_loop.lazy_tools_wiring import (
     lazy_tools_enabled,
     lazy_tools_scope,
     make_lazy_tools_decider,
+    make_lazy_tools_planner,
     register_lazy_tool_meta_tools,
     register_tool_preloading,
 )
@@ -184,6 +185,7 @@ from app.agents.agent_loop.sandbox_bridge import (
     register_coding_sandbox_tools,
     sandbox_network_enabled,
 )
+from app.agents.agent_loop.schedule_tool import register_schedule_tool
 from app.agents.agent_loop.skills_wiring import (
     DOMAIN_SHARED_SKILL_TOOL_NAMES,
     build_skill_manager,
@@ -715,6 +717,7 @@ class PipesHubAgentFactory:
         if harness_on:
             _ = await register_legacy_flow_guard(hooks, context)
         tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
+        _ = await register_schedule_tool(tool_registry, context)
         _register_final_answer_if_enabled(tool_registry)
         if skill_manager is not None:
             register_skill_preloading(hooks, skill_manager)
@@ -1012,7 +1015,7 @@ class PipesHubAgentFactory:
         # scope for this pass). No-op (returns `tool_names` unchanged,
         # `tool_disclosure="eager"`) whenever the flag is off, this scope
         # wasn't selected, or `tool_names` doesn't exceed the threshold.
-        top_level_lazy_tools = make_lazy_tools_decider(
+        top_level_lazy_tools = make_lazy_tools_planner(
             apply=(
                 lazy_tools_enabled()
                 and mode.loop_kind != "orchestrator"
@@ -1022,7 +1025,7 @@ class PipesHubAgentFactory:
             context=context,
             uncounted_names=_SWITCHED_TOOL_NAMES,
         )
-        tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
+        tool_names, tool_disclosure, on_demand_pins = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above
         # (before this decision existed) so they'd be available to append
         # again — a no-op — if disclosure went lazy. If it didn't, they have
@@ -1047,7 +1050,8 @@ class PipesHubAgentFactory:
         # `fetch_tools` round trip — same reasoning `ControlPlane.start()`
         # already applies for skills (see `control_plane.py`'s "skills"
         # auto-pin), generalized here to every declared-essential toolset.
-        pinned_toolsets = essential_toolset_names if tool_disclosure == "lazy" else []
+        # A grant lazy only for an on-demand toolset (ADR-SCH-03 D8) keeps every other group it holds listed.
+        pinned_toolsets = [*essential_toolset_names, *on_demand_pins] if tool_disclosure == "lazy" else []
         if tool_disclosure == "lazy":
             grouped = sorted(g.name for g in tool_registry.children_of(CONNECTORS_PARENT))
         else:

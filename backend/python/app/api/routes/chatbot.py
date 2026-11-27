@@ -81,6 +81,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
+from app.schedules.firing import scheduled_turn
 from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.artifact_registry.copies import (
     COPY_LIMIT,
@@ -2118,6 +2119,8 @@ async def _stream_chat_via_agent_loop(
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
         "resolvedFlowRules": resolved.flow if resolved is not None else None,
+        "scheduleFiring": scheduled_turn(request.headers),
+        "nodeAuthorization": request.headers.get("authorization"),
     }
     user_info = {
         "userId": user_id,

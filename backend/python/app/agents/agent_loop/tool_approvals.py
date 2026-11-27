@@ -18,7 +18,11 @@ deletes data at Block. A toolset tool: reads and changes at Allow, one that dele
   "Don't ask again" also saves the answer as the person's rule for an MCP tool or a personal
   toolset; an org toolset's rules change only in its rules editor.
 - Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
-  service account): there, Ask is Block. Only a pre-approved tool runs there.
+  service account): there, Ask is Block. Only a pre-approved tool runs there. A turn a schedule
+  fired is the exception (ADR-SCH-02 D4): its person reads it later, so its Ask waits for them,
+  until the firing's deadline, and they answer it in that conversation.
+- PipesHub's own platform tools (`schedule_create`) ask every time: no rule, no "Don't ask
+  again", and the env switches below do not turn them off.
 
 Enforced at the tool executor's one checkpoint (PreToolUse). `MCP_TOOL_APPROVALS=false` turns it
 off for MCP tools, `TOOLSET_TOOL_APPROVALS=false` for toolset tools. Approvals are bound to the
@@ -56,7 +60,7 @@ from app.utils.error_class import log_failure
 from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from app.agent_loop_lib.agent import Agent
     from app.agent_loop_lib.context.manager import ContextManager
@@ -91,18 +95,24 @@ _MAX_PREVIEW_CHARS = 2_000
 _MAX_CARD_ARGUMENT_CHARS = 8_000
 # The stopped turn is kept (`parked_turn`) until the card can no longer be answered.
 TURN_TTL_SECONDS = APPROVAL_TTL_SECONDS + 600
+# The longest a scheduled turn's ask waits for its person: a firing's longest deadline (Node's MAX_DEADLINE_S),
+# which is also how long a saved call is kept past being answerable.
+SCHEDULED_ASK_MAX_SECONDS = _RECORD_TTL_SECONDS
+_TURN_TTL = "_tool_approval_turn_ttl"
 # How the result of a call that stopped on a card starts (its row, and its result in the history).
 WAITING_PREFIX = "Waiting for your approval to run"
 
 Rule = Literal["allow", "ask", "block"]
 Decision = Literal["allow", "deny"]
-# Whose tool: an MCP server's, or a toolset's.
-Source = Literal["mcp", "toolset"]
+# Whose tool: an MCP server's, a toolset's, or PipesHub's own (a platform tool such as `schedule_create`).
+Source = Literal["mcp", "toolset", "platform"]
 
 # `context.tool_state` keys.
 TOOLS_BY_PATH = "_mcp_tools_by_path"
 # The toolset tools the gate checks, by path (`ApprovalTarget`s, filled by `tool_loader`).
 TOOLSET_TOOLS_BY_PATH = "_toolset_tools_by_path"
+# The platform tools the gate checks, by path (`ApprovalTarget`s with source `platform`).
+PLATFORM_TOOLS_BY_PATH = "_platform_tools_by_path"
 # MCP paths of stand-ins that never reach a server (an unconnected server's masked tools, WS-09): no rule to read.
 _NO_SERVER_PATHS = "_mcp_paths_never_reaching_a_server"
 MCP_PATH_PREFIX = "/mcp/"
@@ -165,6 +175,8 @@ class Outcome(MCPCamelModel):
 
 
 def enabled(source: Source = "mcp") -> bool:
+    if source == "platform":
+        return True
     return env_bool(TOOLSET_ENABLED_ENV if source == "toolset" else ENABLED_ENV, True)
 
 
@@ -194,6 +206,14 @@ class ApprovalTarget:
     # Whose starting rules apply where nobody set one, when not its source's own. An API action's
     # operation is any REST call an admin picked from a spec, so it starts like an MCP tool.
     defaults: Source | None = None
+    # Why a call cannot succeed, checked before any card (a platform tool's own pre-card checks): such a call is
+    # refused to the model without asking anyone. None: the call may be asked about.
+    refuses: Callable[[dict[str, Any]], Optional[str]] | None = None
+    # The card's details about the thing a call changes, read before asking (a schedule's current values), or why the
+    # call cannot succeed (it is gone, or changed since the model read it), which is refused without asking.
+    reads: Callable[[dict[str, Any]], Awaitable[tuple[Optional[dict[str, Any]], Optional[str]]]] | None = None
+    # The tool's id on the card (`pipeshub@schedules/create`), so the app picks a card by it, never by a name.
+    tool_id: Optional[str] = None
 
     @property
     def own_rules(self) -> bool:
@@ -284,6 +304,8 @@ class Verdict:
 _STARTING_RULES: dict[Source, dict[str, Rule]] = {
     "mcp": {"read": "allow", "write": "ask", "destructive": "block"},
     "toolset": {"read": "allow", "write": "allow", "destructive": "ask"},
+    # Nobody sets a rule for a platform tool: each call that acts asks.
+    "platform": {"read": "allow", "write": "ask", "destructive": "ask"},
 }
 
 
@@ -319,6 +341,25 @@ def watched(context: "AgentContext") -> bool:
         context.client_name == WEB_CLIENT_NAME and context.chat_streaming
         and context.conversation_id and not context.is_service_account
     )
+
+
+def answered_later_until(context: "AgentContext") -> Optional[float]:
+    """Until when (epoch s) an ask in a turn a schedule fired waits for its person (ADR-SCH-02 D4): the firing's
+    deadline, capped at `SCHEDULED_ASK_MAX_SECONDS`. None for any other turn, or a deadline already past. The marks
+    grant nothing: the call still runs only on the person's own answer, in their own request."""
+    deadline = context.ask_deadline
+    if not context.schedule_firing_id or deadline is None:
+        return None
+    if not context.conversation_id or context.is_service_account:
+        return None
+    now = time.time()
+    until = min(deadline, now + SCHEDULED_ASK_MAX_SECONDS)
+    return until if until > now else None
+
+
+def can_ask(context: "AgentContext") -> bool:
+    """Whether an Ask in this run can be answered: now, by someone watching, or later, in a scheduled turn."""
+    return watched(context) or answered_later_until(context) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +494,9 @@ def _target(context: "AgentContext", path: str) -> Optional[ApprovalTarget]:
     adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(path)
     if adapter is not None:
         return _mcp_target(adapter) if enabled("mcp") else None
+    platform: Optional[ApprovalTarget] = context.tool_state.get(PLATFORM_TOOLS_BY_PATH, {}).get(path)
+    if platform is not None:
+        return platform
     target: Optional[ApprovalTarget] = context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).get(path)
     return target if target is not None and enabled("toolset") else None
 
@@ -474,7 +518,10 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str, 
     key = (source, instance_id)
     if key not in cache:
         try:
-            if source == "mcp":
+            if source == "platform":
+                # No rule, the org's included, can answer a platform tool's call (ADR-SCH-01 D2).
+                rules = ToolRules()
+            elif source == "mcp":
                 rules = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
             elif instance_id and (personal or organization_toolset_tool_rules()):
                 # A personal instance's rules are its owner's, in every edition.
@@ -538,6 +585,16 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             await next_fn()
             return
         target = replace(target, kind=call_kind(target, ctx.tool_path, ctx.tool_input))
+        approved_call = bool(context.tool_state.get(KERNEL_ASKS)) or context.tool_state.get(_APPROVED_CALL) == _identity(target)
+        problem = None if approved_call or target.refuses is None else target.refuses(dict(ctx.tool_input))
+        shown: Optional[dict[str, Any]] = None
+        if problem is None and not approved_call and target.reads is not None:
+            shown, problem = await target.reads(dict(ctx.tool_input))
+        if problem is not None:
+            # A call that cannot succeed is refused as it is: nobody is asked about it.
+            ctx.deny(problem, code="invalid_call")
+            await next_fn()
+            return
         rules = await _rules_for(context, target.source, target.instance_id, personal=target.personal)
         if rules.unavailable:
             ctx.deny(
@@ -551,21 +608,22 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             own=rules.rules.tools.get(target.tool_name),
             kind=target.kind,
             source=target.defaults or target.source,
-            watched=watched(context),
-            approved_call=bool(context.tool_state.get(KERNEL_ASKS))
-            or context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            watched=can_ask(context),
+            approved_call=approved_call,
             enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target), code=_DENY_CODE.get(verdict.reason, verdict.reason))
         elif verdict.rule == "ask":
-            await _ask(context, ctx, target)
+            await _ask(context, ctx, target, shown=shown)
         await next_fn()
 
     return _gate
 
 
-async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget) -> None:
+async def _ask(
+    context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget, *, shown: Optional[dict[str, Any]] = None,
+) -> None:
     tool_name, server = target.tool_name, target.owner
     if context.tool_state.get(_PENDING_IN_RUN):
         # The model reads this when the answer to the other card resumes the turn: it must ask again
@@ -577,13 +635,18 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         )
         return
     now = time.time()
+    # Nobody watching here means a scheduled turn (the gate asks only where an answer can come): its ask waits.
+    later = None if watched(context) else answered_later_until(context)
+    expires_at = later if later is not None else now + APPROVAL_TTL_SECONDS
+    record_ttl = _RECORD_TTL_SECONDS if later is None else int(later - now) + _RECORD_TTL_SECONDS
+    context.tool_state[_TURN_TTL] = TURN_TTL_SECONDS if later is None else int(later - now) + 600
     call = getattr(ctx.scope, "call", None)
     pending = PendingCall(
         approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
         conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
-        created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
+        created_at=now, expires_at=expires_at,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
     context.tool_state[_PENDING_IN_RUN] = pending.approval_id
@@ -591,7 +654,7 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
     try:
         saved = await _write(
             context.config_service, get_mcp_tool_approval_path(pending.approval_id),
-            pending.model_dump(by_alias=True), ttl_seconds=_RECORD_TTL_SECONDS,
+            pending.model_dump(by_alias=True), ttl_seconds=record_ttl,
         )
     except Exception as e:
         log_failure(
@@ -616,17 +679,20 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
     ctx.ask_later(PendingApproval(
         message=message,
         details={
+            # First, so nothing it holds can stand in for the approval's own fields.
+            **(shown or {}),
             "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
             "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
             # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
             "canRemember": target.own_rules,
             "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
+            "source": target.source, **({"toolId": target.tool_id} if target.tool_id else {}),
         },
     ))
     # The executor binds the call's tool, tool_call_id and server/toolset id; the arguments are never logged.
     log_event(
         logger, "tool_approval.requested", outcome="success", approval_id=pending.approval_id,
-        source=target.source, kind=target.kind, personal=target.personal,
+        source=target.source, kind=target.kind, personal=target.personal, later=later is not None,
     )
 
 
@@ -694,7 +760,8 @@ async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
     """After a run that stopped on a card: the turn as the model had it, for the answer (`parked_turn`)."""
     call_id = context.tool_state.get(_STOPPED_CALL)
     if awaiting_approval(context) and call_id:
-        await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
+        ttl = context.tool_state.get(_TURN_TTL, TURN_TTL_SECONDS)
+        await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=ttl)
 
 
 def _show_tools(run: "RunScope", names: list[str]) -> None:
@@ -728,7 +795,7 @@ def _log_answered(
     """The answer's one `tool_approval.answered` line. `_settle` runs before any tool call, so nothing has
     bound the instance: it is passed here. Never the call's arguments."""
     instance: dict[str, str] = {}
-    if pending is not None and pending.instance_id:
+    if pending is not None and pending.instance_id and pending.source != "platform":
         instance["mcp_server_id" if pending.source == "mcp" else "toolset_id"] = pending.instance_id
     log_event(
         logger, "tool_approval.answered", level=level, approval_id=answer.approval_id, decision=decision, reason=reason,
@@ -848,7 +915,10 @@ async def _saved(save: Any, rule: Rule) -> str:  # noqa: ANN401
 async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> str:
     """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
     since the card was shown stands over an Allow. An org toolset's rules are the admin's: an answer
-    never changes them, whatever the request says. Returns what came of it, for the log."""
+    never changes them, whatever the request says. A platform tool's answer is never kept: it asks every
+    time. Returns what came of it, for the log."""
+    if pending.source == "platform":
+        return "not_allowed"
     if pending.source != "mcp":
         return await _remember_for_personal_toolset(context, pending, rule)
     rules = await _rules_for(context, "mcp", pending.instance_id)
@@ -889,6 +959,8 @@ def _target_for(context: "AgentContext", pending: PendingCall) -> Optional[Appro
     """The tool a saved call was for, as this request loaded it."""
     if pending.source == "mcp":
         targets = [_mcp_target(adapter) for adapter in context.tool_state.get(TOOLS_BY_PATH, {}).values()]
+    elif pending.source == "platform":
+        targets = list(context.tool_state.get(PLATFORM_TOOLS_BY_PATH, {}).values())
     else:
         targets = list(context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).values())
     return next((t for t in targets if (t.instance_id, t.tool_name) == (pending.instance_id, pending.tool_name)), None)

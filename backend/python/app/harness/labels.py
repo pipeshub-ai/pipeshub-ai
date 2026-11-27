@@ -275,14 +275,15 @@ def known_tools() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     from app.harness.assembly.plan import PLAN_TOOL
     from app.harness.assembly.tool_sources import ASKS_USER, WEB_TOOLS
     from app.harness.schedules import SCHEDULE_CREATE_TOOL
+    from app.schedules.arguments import TOOL_IDS
     from harness_core.memories import REMEMBER_TOOL
     from harness_core.tools.call_tool import CALL_TOOL
 
     # The delegate is a child run: its own label is joined by Node.
     # The quarantined summary (G-58) is drawn only from the records its search put in the citation state.
     records = (INTERNAL_SEARCH_TOOL_NAMES - {INTERNAL_SEARCH_DELEGATE_NAME}) | {FETCH_RECORD_TOOL_NAME, SUMMARIZE_TOOL_NAME}
-    # ``remember`` answers with an id and a status, never record content (P7.3); ``schedule_create`` with the schedule
-    # the person approved (ADR-SCH-01).
+    # ``remember`` answers with an id and a status, never record content (P7.3); the schedule tools with the person's
+    # own schedules (ADR-SCH-01, ADR-SCH-03).
     # The skill reads answer the agent's own configuration: the skills its owner installed, pinned at admission, the
     # same text the start hooks preload into the prompt and an engine mounts in its workspace. What an agent wrote
     # into a skill is journaled with the read as its writing run's label (``skill_labels``). The write surface,
@@ -290,7 +291,7 @@ def known_tools() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     meta = frozenset(META_TOOL_NAMES) - {CALL_TOOL}
     no_content = (
         ASKS_USER | frozenset(ROUTED_TOOLS) | frozenset(ROUTED) | DOMAIN_SHARED_SKILL_TOOL_NAMES | meta
-        | {REMEMBER_TOOL, PLAN_TOOL, SCHEDULE_CREATE_TOOL}
+        | {REMEMBER_TOOL, PLAN_TOOL, SCHEDULE_CREATE_TOOL, *TOOL_IDS}
     )
     return frozenset(records), no_content, frozenset(WEB_TOOLS)
 

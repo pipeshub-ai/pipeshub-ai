@@ -71,6 +71,8 @@ class AgentContext(BaseModel):
     # Every model call of the request, for the opt-in `run_usage` frame.
     _usage_ledger: Any = PrivateAttr(default=None)
     _run_usage_claimed: bool = PrivateAttr(default=False)
+    # The request's own Authorization header (`node_authorization`): private, so no dump or log of the context has it.
+    _node_authorization: str | None = PrivateAttr(default=None)
 
     # Identity
     org_id: str
@@ -216,6 +218,9 @@ class AgentContext(BaseModel):
     is_assistant: bool = False
     chat_streaming: bool = True
     tool_approval: Any = None
+    # A turn a schedule fired (ADR-SCH-02 D4): its firing, and until when an ask may wait for the person (epoch s).
+    schedule_firing_id: str | None = None
+    ask_deadline: float | None = None
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
@@ -503,7 +508,12 @@ class AgentContext(BaseModel):
         already-derived value), and every PipesHub tool mutates the one dict
         both this context and `RespondPipeline` read from.
         """
-        return cls(
+        authorization = state.pop("node_authorization", None)
+        firing = state.get("schedule_firing")
+        firing_id = firing.get("firingId") if isinstance(firing, dict) else None
+        deadline = firing.get("askDeadline") if isinstance(firing, dict) else None
+        ask_deadline = float(deadline) if isinstance(deadline, (int, float)) and not isinstance(deadline, bool) else None
+        context = cls(
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
             artifact_owner_user_id=state.get("artifact_owner_user_id") or state.get("user_id", ""),
@@ -568,6 +578,8 @@ class AgentContext(BaseModel):
             is_assistant=bool(state.get("is_assistant_chat", False)),
             chat_streaming=state.get("chat_streaming", True) is not False,
             tool_approval=_tool_approval_answer(state.get("tool_approval")),
+            schedule_firing_id=firing_id if isinstance(firing_id, str) else None,
+            ask_deadline=ask_deadline,
             previous_conversations=state.get("previous_conversations") or [],
             virtual_filesystem=state.get("virtual_filesystem"),
             workspace_manifest=state.get("workspace_manifest"),
@@ -581,6 +593,12 @@ class AgentContext(BaseModel):
             cancellation_token=cancellation_token,
             tool_state=state,
         )
+        context._node_authorization = authorization if isinstance(authorization, str) and authorization else None
+        return context
+
+    def node_authorization(self) -> str | None:
+        """The request's own Authorization header, for a call to Node as this person; None when it had none."""
+        return self._node_authorization
 
     def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
         for key, value in self._seed_tool_state().items():
