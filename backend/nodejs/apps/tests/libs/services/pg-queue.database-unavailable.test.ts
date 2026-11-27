@@ -14,6 +14,7 @@ import {
   configureEnvelope,
   renewEnvelope,
   sign,
+  MAX_FUTURE_SKEW_SECONDS,
 } from '../../../src/libs/context/envelope';
 import {
   BasePgQueueConsumerConnection,
@@ -298,7 +299,8 @@ describe('PostgreSQL queue consumer: a database that cannot be reached', () => {
     });
 
     it('a message dated too far ahead is never signed again: its refusal that the outage failed to record is not handed back', async () => {
-      const ahead = signedAt(Math.floor(Date.now() / 1000) + 301);
+      // an hour past the bound: a second that ticks between signing and the check must not bring it back inside
+      const ahead = signedAt(Math.floor(Date.now() / 1000) + MAX_FUTURE_SKEW_SECONDS + 3600);
       expect(renewEnvelope('t', ahead)).to.equal(null);
       const row = queue({ dead: 1 });
       const runs = await deliver(row, [], ahead);

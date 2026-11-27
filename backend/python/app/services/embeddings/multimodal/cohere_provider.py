@@ -31,6 +31,7 @@ from app.services.llm_gateway.embedding_gateway import (
     get_embedding_gateway,
 )
 from app.services.llm_gateway.wire import refused_by_allowance
+from app.utils.aimodels import vetted_model_configuration
 
 _CONCURRENCY_LIMIT = 10
 
@@ -66,10 +67,16 @@ def _install_wire_hooks(client: object) -> None:
 
 class CohereMultimodalProvider(IMultimodalEmbeddingProvider):
     def __init__(
-        self, api_key: str | None, model_name: str | None, logger: logging.Logger | None = None,
+        self,
+        api_key: str | None,
+        model_name: str | None,
+        logger: logging.Logger | None = None,
         sdk_retries: int | None = None,
+        *,
+        allow_ambient: bool = False,
     ) -> None:
-        self.api_key = api_key
+        # When refused, the SDK must not read a key from the server environment.
+        self.api_key = api_key if allow_ambient else vetted_model_configuration("cohere", {"apiKey": api_key})["apiKey"]
         self.sdk_retries = sdk_retries
         self.model_name = model_name
         self.logger = logger

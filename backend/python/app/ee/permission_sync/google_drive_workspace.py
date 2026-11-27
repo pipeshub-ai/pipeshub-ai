@@ -272,10 +272,13 @@ class GoogleDriveWorkspacePermissionsMixin:
                     )
                     for group_id in changed
                 ])
-                await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {
-                    "digests": sorted(digests.values()),
-                    "written_at": now if full else int(saved.get("written_at") or 0),
-                })
+                # Without a licence the processor drops the groups without raising. Their digests stay forgotten,
+                # so the first licensed run writes them, and an unlicensed run does not use up the timed rewrite.
+                if not await self._copies_no_source_access():
+                    await self.drive_delta_sync_point.update_sync_point(AUDIENCE_DIGESTS_SYNC_POINT_KEY, {
+                        "digests": sorted(digests.values()),
+                        "written_at": now if full else int(saved.get("written_at") or 0),
+                    })
         except Exception as e:
             # Like a group that failed in the listing: the stored groups stay as they were, grants are still
             # written to them, and the run is reported incomplete so the write is tried again.

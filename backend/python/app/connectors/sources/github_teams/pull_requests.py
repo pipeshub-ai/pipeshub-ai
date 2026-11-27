@@ -152,16 +152,19 @@ class PullRequestsSync:
                              "sync stopped", repo.full_name, page)
         resumed_page = page if resume is not None else None
 
+        saved_place: dict[str, Any] = {}  # the place this run stored, cleared with the old one
+
         async def save_place() -> None:
             # Never behind the stored place: a failure while re-reading the page before it
             # would otherwise step the next sync back a page each time, towards page 1.
             if (place := max(page, stored_page)) > 1:
-                await c.issues._write_checkpoint(group_id, {
+                saved_place.update({
                     GitHubLiterals.RESUME_PAGE.value: place,
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
                     GitHubLiterals.RESUME_WATERMARK.value: watermark or None,
                     GitHubLiterals.RESUME_WINDOW.value: rolling,
                 })
+                await c.issues._write_checkpoint(group_id, dict(saved_place))
 
         while True:
             res = await c.runtime.ds_call(
@@ -178,7 +181,7 @@ class PullRequestsSync:
                 if page == resumed_page and res.status_code in STALE_RESUME_STATUSES:
                     self.logger.warning("GitHub no longer reads the saved place in the pull requests of "
                                         "%s; the next sync lists them from the start.", repo.full_name)
-                    await c.issues._write_checkpoint(group_id, resume_fields_to_clear(saved))
+                    await c.issues._write_checkpoint(group_id, resume_fields_to_clear({**saved, **saved_place}))
                 else:
                     await save_place()
                 return False
@@ -207,6 +210,9 @@ class PullRequestsSync:
             if len(fresh) < len(prs) or len(prs) < PR_PAGE_SIZE:
                 break
             page += 1
+            # Kept per page, so a sync stopped by anything (a restart while it waits out a
+            # rate limit) reads on from here rather than from page 1.
+            await save_place()
 
         if processed:
             self.logger.info(
@@ -216,7 +222,7 @@ class PullRequestsSync:
             # Also when the pages read since a saved place held nothing new:
             # the watermark then comes from the pages read before it.
             await c.issues._update_sync_checkpoint(group_id, watermark)
-        if cleared := resume_fields_to_clear(saved):
+        if cleared := resume_fields_to_clear({**saved, **saved_place}):
             await c.issues._write_checkpoint(group_id, cleared)
         return True
 

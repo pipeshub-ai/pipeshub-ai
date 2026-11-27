@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.core import org_context
 from app.harness.engines.durable import DurableEngineServices, PipesHubEngineAssembler
 from app.harness.gateway.host import HttpToolGatewayHost
 from app.harness.gateway.keys import parse_published
@@ -23,6 +24,7 @@ from app.harness.sandbox.docker_broker import DockerSandboxBroker
 from app.harness.sandbox.docker_client import DockerClientProvider
 from app.harness.sandbox.docker_egress import DockerEgressWiring
 from app.harness.skills.bundles import GraphProviderSkillSource, session_skill_bundles
+from app.harness.worker.claimer import RUN_JOB_SOURCE
 from harness_core.clock import SystemClock
 from harness_core.driver import RunDriver
 from harness_core.engines.controller import EngineControllerConfig
@@ -126,7 +128,9 @@ async def run_matrix_attempt(
             claim = await journal.claim(cfg.run_id, worker_id="e2e3-worker", org_id=cfg.org_id)
             if claim is None:
                 return {"status": "not_claimed"}
-            disposition = await driver.run_claimed(claim)
+            # As the production worker's slot claimer binds it: the attempt acts for the run's org.
+            with org_context.bind(org_context.OrgContext(claim.org_id, None, "job", RUN_JOB_SOURCE, claim.run_id)):
+                disposition = await driver.run_claimed(claim)
             return {"status": disposition.status, "reason": disposition.reason, "attempt": claim.attempt_id}
     finally:
         await broker.aclose()

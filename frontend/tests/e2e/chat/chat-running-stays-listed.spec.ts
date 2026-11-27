@@ -37,7 +37,9 @@ test('FIX-RAIL1: classic: a running chat stays in the sidebar after New chat, an
   const firstId = conversationIdOf(page);
   await untilHolding(model);
 
-  const row = page.locator(`a[href*="conversationId=${firstId}"]`);
+  // The sidebar's row, never the "Answer ready" toast: an answer that finishes before the click below lands is
+  // announced with an "Open chat" link to the same conversation.
+  const row = page.locator(`a[href*="conversationId=${firstId}"]:not([data-ph-toast-region] a)`);
   // Recents starts folded in the classic sidebar.
   await page.getByText('Recents', { exact: true }).click();
   await expect(row, 'the running chat is listed while it answers').toBeVisible({ timeout: 30_000 });

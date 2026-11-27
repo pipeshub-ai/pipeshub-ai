@@ -192,6 +192,58 @@ class TestRunReport:
         await report.finish(complete=True)
         assert len(sent) == 1 and "2 folders" in sent[0]["message"]
 
+    async def test_a_workspace_with_no_active_user_is_reported_and_not_as_an_outage(self) -> None:
+        sent: list = []
+        sync_point = _SyncPoint()
+        for _ in range(3):
+            report = self._report(sent, sync_point)
+            report.note_nobody_to_sync(nobody=True)
+            await report.finish(complete=False)
+        assert {s["title"] for s in sent} == {"Drive: nobody to sync Google Drive for"}
+        for _ in range(3):  # an outage after that is still reported
+            await self._report(sent, sync_point).finish(complete=False)
+        assert "some of Google Drive is not syncing" in sent[-1]["title"]
+
+    @pytest.mark.parametrize(("active", "accounts", "cut", "nobody"), [
+        (["someone@else.example"], ["a@acme.example"], False, True),
+        (["someone@else.example"], ["a@acme.example"], True, False),  # the listing may leave the match out
+        (["A@acme.example"], ["a@acme.example"], False, False),
+        ([], ["a@acme.example"], False, False),  # the read failed: not a Workspace without users
+        (["a@acme.example"], [], False, False),
+    ])
+    async def test_nobody_to_sync_is_told_from_a_failed_read(
+        self, active: list, accounts: list, cut: bool, nobody: bool,
+    ) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock(email=e) for e in active])
+        conn._run_report = self._report([], _SyncPoint())
+        conn._listing_cut = cut
+        await conn._get_users_to_sync([_user(e) for e in accounts])
+        assert conn._run_report.nobody_to_sync is nobody
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock(email=e) for e in accounts])
+        await conn._get_users_to_sync([_user(e) for e in accounts])
+        assert conn._run_report.nobody_to_sync is False, "the last selection counts"
+
+    async def test_users_to_sync_can_be_asked_for_outside_a_run(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock(email="b@else.example")])
+        conn._run_report = None
+        assert await conn._get_users_to_sync([_user("a@acme.example")]) == []
+
     async def test_a_refused_connection_names_the_setup_problem(self) -> None:
         from unittest.mock import AsyncMock
 

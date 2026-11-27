@@ -62,6 +62,7 @@ import { grantingAccess } from './support/agent-definition';
 import { legacyWorld, RESOLVED_TURN_VECTOR, type LegacyWorld, type LegacyWorldOptions } from './support/resolved-turn-world';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
+import { SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED } from '../../support/edition-defaults';
 
 const JWT_SECRET = 'cpd10-jwt-secret';
 const SCOPED_SECRET = 'cpd10-scoped-secret';
@@ -488,6 +489,8 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
       proxiedTo: string;
       sub: string;
       status?: number;
+      /** A Slack member without an account, whom a build may refuse (SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED). */
+      refusedWithoutAccount?: boolean;
     }
     const sites: Site[] = [
       {
@@ -612,6 +615,7 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
         request: () => ({ path: `/api/v1/agents/${AGENT}/conversations/internal/stream`, token: slackToken(SERVICE_EMAIL, 'U0BOTUSER'), body: AGENT_TURN }),
         proxiedTo: `/api/v1/agent/${AGENT}/chat/stream`,
         sub: '',
+        refusedWithoutAccount: true,
       },
     ];
 
@@ -621,6 +625,12 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
         const { path, token, body } = site.request(rig);
         const reply = await rig.send(path, token, body, FOREIGN_HEADER);
         const text = await reply.text();
+        if (site.refusedWithoutAccount === true && SLACK_CALLER_WITHOUT_ACCOUNT_REFUSED) {
+          // This build refuses a caller without an account: nothing reaches the query service, with or without a header.
+          expect(reply.status, text).to.equal(401);
+          expect(rig.chat()).to.deep.equal([]);
+          return;
+        }
         expect(reply.status, text).to.equal(site.status ?? 200);
         const calls = rig.chat();
         expect(calls.map((call) => call.path)).to.deep.equal([site.proxiedTo]);
