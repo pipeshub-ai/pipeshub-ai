@@ -108,7 +108,7 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     expect(before(linkTo(NAV.tenants), linkTo(NAV.scim))).toBe(true);
   });
 
-  it('lists SCIM under Groups, then the Usage & credits section after Workspace, then Audit logs under Security', () => {
+  it('lists SCIM under Groups, then the Usage & billing section after Workspace, then Audit logs under Security', () => {
     renderSidebar();
 
     const workspace = screen.getByText(SECTIONS.workspace);

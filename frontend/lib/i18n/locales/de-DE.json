@@ -665,8 +665,8 @@
     "moreOptions": "Weitere Optionen",
     "docs": "Dokumentation",
     "enterprise": {
-      "label": "In EE verfügbar",
-      "tooltip": "Teil der PipesHub Enterprise Edition",
+      "label": "In Enterprise verfügbar",
+      "tooltip": "In der PipesHub Enterprise Edition enthalten",
       "short": "EE"
     },
     "errorBoundary": {
@@ -2076,7 +2076,7 @@
       "title": "Gruppen",
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
-      "enterpriseMessage": "Legen Sie pro Gruppe fest, wer was sieht, statt für jede Person einzeln.",
+      "enterpriseMessage": "Zugriff pro Gruppe vergeben statt für jeden Benutzer einzeln.",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -2162,86 +2162,86 @@
     "enterprise": {
       "contact": "Sprechen Sie mit uns",
       "scim": {
-        "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
-        "message": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu und entfernt sie.",
+        "heading": "SCIM-Provisionierung ist in der Enterprise Edition verfügbar",
+        "message": "Automatisieren Sie das Provisionieren und Deprovisionieren von Benutzern aus Okta oder Microsoft Entra ID.",
         "benefits": {
-          "providers": "Funktioniert mit Okta und Microsoft Entra ID",
-          "offboarding": "Wer das Unternehmen verlässt, verliert sofort den Zugriff",
-          "noManualWork": "Kein manuelles Hinzufügen oder Entfernen von Personen mehr"
+          "providers": "Funktioniert mit Okta und Microsoft Entra ID über SCIM 2.0",
+          "offboarding": "Deprovisionierte Benutzer verlieren automatisch den Zugriff",
+          "noManualWork": "Kein manuelles Einladen und Entfernen von Benutzern mehr"
         }
       },
       "auditLogs": {
-        "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
+        "heading": "Audit-Protokolle sind in der Enterprise Edition verfügbar",
         "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann.",
         "benefits": {
-          "everyEvent": "Jede Aktion: wer, wann und von welcher IP-Adresse",
-          "filters": "Nach Person, Aktion oder Ergebnis filtern",
-          "alerts": "Benachrichtigungen erhalten und Protokolle für Prüfungen exportieren"
+          "everyEvent": "Jede Aktion mit Akteur, Zeit, IP-Adresse, Ziel und Ergebnis",
+          "filters": "Nach Benutzer, Aktion oder Ergebnis filtern",
+          "alerts": "Warnungen einrichten und Protokolle für Compliance-Prüfungen exportieren"
         }
       },
       "usage": {
-        "heading": "Nutzung und Abrechnung sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie, was KI kostet und wer sie nutzt. Verwalten Sie Guthaben und Rechnungen und erhalten Sie Ausgabenwarnungen.",
+        "heading": "Nutzung & Abrechnung ist in der Enterprise Edition verfügbar",
+        "message": "Verfolgen Sie KI-Ausgaben nach Benutzer, Agent, Connector und Modell. Verwalten Sie Guthaben, Rechnungen und Ausgabenwarnungen.",
         "benefits": {
-          "breakdown": "KI-Kosten nach Person, Agent, Connector und Modell",
-          "billing": "Guthaben, Tarif und Rechnungen an einem Ort",
-          "alerts": "Warnungen, wenn die Ausgaben Ihr Limit überschreiten"
+          "breakdown": "KI-Ausgaben nach Benutzer, Agent, Connector und Modell",
+          "billing": "Guthaben und Rechnungen an einem Ort",
+          "alerts": "Warnungen, wenn die KI-Ausgaben Ihr Limit überschreiten"
         }
       },
-      "benefitsTitle": "Das bekommen Sie",
+      "benefitsTitle": "Was enthalten ist",
       "relatedTitle": "Ebenfalls in Enterprise",
       "tenants": {
         "heading": "Mandantenfähigkeit ist in der Enterprise Edition verfügbar",
-        "message": "Geben Sie jedem Team, jeder Region oder jedem Kunden einen eigenen Bereich, alles in einer Installation.",
+        "message": "Geben Sie jedem Team, jeder Region oder jedem Kunden eine eigene Organisation, alles in einer Installation.",
         "benefits": {
-          "separate": "Jeder Mandant hat eigene Personen, Connectors, Sammlungen und Agents",
-          "inherit": "Mandanten können Ihre Einstellungen nutzen, etwa KI-Modelle, E-Mail und Anmeldung",
+          "separate": "Jeder Mandant hat eigene Benutzer, Gruppen, Connectors, Sammlungen und Agents",
+          "inherit": "Legen Sie fest, welche Einstellungen Mandanten erben, etwa KI-Modelle, E-Mail und Anmeldung",
           "manage": "Alle Mandanten an einem Ort anlegen und verwalten"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Einer ganzen Gruppe in einem Schritt Zugriff geben",
-          "teams": "Ganze Teams oder einzelne Personen zu einer Gruppe hinzufügen",
+          "grantOnce": "Einer ganzen Gruppe auf einmal Zugriff geben",
+          "teams": "Ganze Teams oder einzelne Benutzer zu einer Gruppe hinzufügen",
           "builtIn": "Mit den integrierten Gruppen „Admin“ und „Alle“ beginnen"
         }
       },
       "seeWhatsInEnterprise": "Was Enterprise bietet",
       "sidebarCard": {
         "title": "Enterprise Edition",
-        "body": "Mandantenfähigkeit, Single Sign-on, SCIM, Audit-Protokolle und mehr.",
+        "body": "Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und mehr.",
         "action": "Alle Funktionen ansehen",
         "dismiss": "Enterprise-Edition-Karte ausblenden"
       },
       "overview": {
-        "currentEdition": "Sie nutzen die Community Edition",
+        "currentEdition": "Aktuelle Edition: Community Edition",
         "title": "Enterprise Edition",
-        "subtitle": "Alles, was Sie heute haben, plus das, was größere Unternehmen brauchen: mehr Kontrolle, mehr Sicherheit und einen klaren Blick auf die Kosten.",
-        "seePreview": "So sieht es aus",
-        "seePreviewLabel": "So sieht {{name}} aus",
+        "subtitle": "Alles aus der Community Edition, dazu Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und Kostenkontrolle.",
+        "seePreview": "Vorschau",
+        "seePreviewLabel": "Vorschau: {{name}}",
         "plans": {
           "community": {
             "name": "Community Edition",
-            "yourPlan": "Ihr Tarif",
+            "yourPlan": "Aktuelle Edition",
             "summary": "Kostenlos, Open Source, selbst gehostet",
-            "lead": "Was Sie heute haben",
+            "lead": "In Community enthalten",
             "items": {
               "search": "Suchen und chatten über Ihre verbundenen Apps",
-              "agents": "Agents, Aktionen und MCP-Server",
-              "people": "Personen und Teams",
-              "signIn": "Anmeldung mit Passwort, Einmalcode, Google und Microsoft"
+              "agents": "KI-Agents, Aktionen und MCP-Server",
+              "people": "Benutzer und Teams",
+              "signIn": "Anmeldung mit Passwort, Einmalcode per E-Mail, Google und Microsoft"
             },
-            "current": "Ihr aktueller Tarif"
+            "current": "Ihre aktuelle Edition"
           },
           "enterprise": {
             "name": "Enterprise Edition",
-            "summary": "Für größere Unternehmen. Preis auf Anfrage.",
+            "summary": "Für größere Organisationen. Preis auf Anfrage.",
             "lead": "Alles aus Community, dazu:",
             "seeAll": "Alle {{count}} Funktionen ansehen"
           }
         },
         "compare": {
-          "title": "Die Editionen im Vergleich",
+          "title": "Editionen vergleichen",
           "feature": "Funktion",
           "community": "Community",
           "enterprise": "Enterprise",
@@ -2249,9 +2249,9 @@
           "included": "Enthalten",
           "notIncluded": "Nicht enthalten",
           "communityHas": {
-            "scim": "Personen von Hand hinzufügen und entfernen",
+            "scim": "Manuelle Benutzerverwaltung",
             "groups": "Teams",
-            "sso": "Passwort, Einmalcode, Google und Microsoft"
+            "sso": "Passwort, Einmalcode per E-Mail, Google und Microsoft"
           }
         },
         "faq": {
@@ -2261,12 +2261,12 @@
             "answer": "Ja. Sie bleibt Open Source und kostenlos."
           },
           "preview": {
-            "question": "Kann ich eine Funktion ansehen, bevor ich mit jemandem spreche?",
+            "question": "Kann ich mir eine Funktion vorher ansehen?",
             "answer": "Ja. Funktionen mit „{{label}}“ öffnen die Seite, auf der sie wären, mit einer Vorschau des Bildschirms."
           },
           "get": {
             "question": "Wie bekomme ich die Enterprise Edition?",
-            "answer": "{{contact}}. Wir besprechen, was Ihr Unternehmen braucht und wie die Einrichtung abläuft."
+            "answer": "{{contact}}. Wir besprechen, was Ihre Organisation braucht und wie die Einrichtung abläuft."
           }
         },
         "groups": {
@@ -2278,43 +2278,43 @@
         "items": {
           "tenants": {
             "name": "Mandantenfähigkeit",
-            "description": "Ein eigener Bereich für jedes Team, jede Region oder jeden Kunden, in einer Installation."
+            "description": "Eigene Organisationen für jedes Team, jede Region oder jeden Kunden, in einer Installation."
           },
           "scim": {
             "name": "SCIM-Bereitstellung",
-            "description": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu und entfernt sie."
+            "description": "Benutzer automatisch aus Okta oder Microsoft Entra ID provisionieren und deprovisionieren."
           },
           "groups": {
             "name": "Gruppenberechtigungen",
-            "description": "Einer ganzen Gruppe in einem Schritt Zugriff geben."
+            "description": "Zugriff pro Gruppe vergeben statt für jeden Benutzer einzeln."
           },
           "toolApprovals": {
-            "name": "Regeln für Tool-Freigaben",
-            "description": "Legen Sie fest, welche Agent-Tools laufen dürfen, eine Freigabe brauchen oder gesperrt sind."
+            "name": "Richtlinien für Tool-Freigaben",
+            "description": "Organisationsweite Regeln für jedes Agent-Tool: ausführen, Freigabe anfordern oder sperren."
           },
           "actOnBehalf": {
             "name": "Im Namen einer Person handeln",
-            "description": "Ein Dienstkonto handelt als eine bestimmte Person. Jeder Versuch wird protokolliert."
+            "description": "Ein Dienstkonto handelt als ein bestimmter Benutzer (delegierter Zugriff). Jeder Versuch wird protokolliert."
           },
           "peoplesOwnApps": {
-            "name": "Persönliche Apps prüfen",
-            "description": "Apps, Aktionen und MCP-Server sehen und entfernen, die Personen für sich selbst hinzufügen."
+            "name": "Von Benutzern verbundene Apps",
+            "description": "OAuth-Apps, Aktionen und MCP-Server prüfen und entfernen, die Benutzer verbinden."
           },
           "sso": {
-            "name": "Single Sign-on",
-            "description": "Anmeldung über Okta, OneLogin oder einen anderen SAML- oder OpenID-Connect-Anbieter."
+            "name": "Single Sign-on (SSO)",
+            "description": "Anmeldung über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-(OIDC-)Anbieter."
           },
           "auditLogs": {
             "name": "Audit-Protokolle",
-            "description": "Sehen, wer was wann getan hat. Filtern, Warnungen erhalten und exportieren."
+            "description": "Jede Aktion nach Akteur, Zeit, IP-Adresse und Ergebnis verfolgen. Filtern, warnen und exportieren."
           },
           "usage": {
-            "name": "Nutzung, Credits und Abrechnung",
-            "description": "KI-Kosten nach Person, Agent, Connector und Modell sehen und Ausgabenwarnungen erhalten."
+            "name": "Nutzung & Abrechnung",
+            "description": "KI-Ausgaben nach Benutzer, Agent, Connector und Modell verfolgen, mit Guthaben und Ausgabenwarnungen."
           },
           "indexingPriority": {
             "name": "Indexierungspriorität",
-            "description": "Festlegen, was zuerst indexiert wird."
+            "description": "Festlegen, welche Datensätze, Sammlungen und Uploads zuerst indexiert werden."
           }
         }
       }
@@ -2826,7 +2826,7 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
-        "usageAndCredits": "Nutzung & Credits",
+        "usageAndCredits": "Nutzung & Abrechnung",
         "security": "Sicherheit",
         "personal": "Persönlich",
         "people": "Personen",
@@ -2858,7 +2858,7 @@
         "groups": "Gruppen",
         "scim": "SCIM",
         "auditLogs": "Audit-Logs",
-        "usage": "Nutzung & Credits",
+        "usage": "Nutzung & Abrechnung",
         "teams": "Teams",
         "webSearch": "Websuche",
         "tenants": "Mandanten",
@@ -3142,7 +3142,7 @@
       "edition": {
         "title": "Edition",
         "name": "Community Edition",
-        "description": "Open Source und selbst gehostet. Die Enterprise Edition bietet zusätzlich Mandantenfähigkeit, Single Sign-on, SCIM, Audit-Protokolle und mehr."
+        "description": "Open Source und selbst gehostet. Die Enterprise Edition bietet zusätzlich Mandantenfähigkeit, SSO, SCIM-Provisionierung, Audit-Protokolle und mehr."
       }
     },
     "mcpAccess": {
@@ -5197,7 +5197,7 @@
     },
     "tenants": {
       "title": "Mandanten",
-      "subtitle": "Mandantenorganisationen im Arbeitsbereich erstellen und verwalten",
+      "subtitle": "Mandanten-Organisationen in dieser Installation anlegen und verwalten",
       "createTenant": "Mandanten erstellen",
       "searchPlaceholder": "Mandanten suchen...",
       "emptyTitle": "Noch keine Mandanten erstellt",

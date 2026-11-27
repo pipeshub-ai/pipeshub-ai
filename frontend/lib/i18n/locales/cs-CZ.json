@@ -794,8 +794,8 @@
     "moreOptions": "Další možnosti",
     "docs": "Dokumentace",
     "enterprise": {
-      "label": "K dispozici v EE",
-      "tooltip": "Součást edice PipesHub Enterprise",
+      "label": "K dispozici v Enterprise",
+      "tooltip": "Součástí edice PipesHub Enterprise",
       "short": "EE"
     },
     "errorBoundary": {
@@ -2280,7 +2280,7 @@
       "title": "Skupiny",
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
-      "enterpriseMessage": "Určujte, kdo co vidí, podle skupin, ne po jednotlivých lidech.",
+      "enterpriseMessage": "Udělujte přístup podle skupin, ne po jednotlivých uživatelích.",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -2366,80 +2366,80 @@
     "enterprise": {
       "contact": "Napište nám",
       "scim": {
-        "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
-        "message": "Okta nebo Microsoft Entra ID za vás přidává a odebírá lidi.",
+        "heading": "SCIM provisioning je k dispozici v edici Enterprise",
+        "message": "Automatické zřizování a rušení uživatelů z Okta nebo Microsoft Entra ID.",
         "benefits": {
-          "providers": "Funguje s Okta a Microsoft Entra ID",
-          "offboarding": "Kdo odejde, hned ztratí přístup",
-          "noManualWork": "Žádné ruční přidávání ani odebírání lidí"
+          "providers": "Funguje s Okta a Microsoft Entra ID přes SCIM 2.0",
+          "offboarding": "Zrušení uživatelé automaticky ztratí přístup",
+          "noManualWork": "Žádné ruční zvaní a odebírání uživatelů"
         }
       },
       "auditLogs": {
         "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
         "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy.",
         "benefits": {
-          "everyEvent": "Každá akce: kdo, kdy a z jaké IP adresy",
-          "filters": "Filtrování podle osoby, akce nebo výsledku",
-          "alerts": "Upozornění a export protokolů pro kontroly"
+          "everyEvent": "Každá akce s aktérem, časem, IP adresou, cílem a výsledkem",
+          "filters": "Filtrování podle uživatele, akce nebo výsledku",
+          "alerts": "Nastavení upozornění a export protokolů pro kontroly souladu"
         }
       },
       "usage": {
         "heading": "Využití a fakturace jsou k dispozici v edici Enterprise",
-        "message": "Podívejte se, kolik AI stojí a kdo ji používá. Spravujte kredity a faktury a dostávejte upozornění na útratu.",
+        "message": "Sledujte útratu za AI podle uživatele, agenta, konektoru a modelu. Spravujte kredity, faktury a upozornění na útratu.",
         "benefits": {
-          "breakdown": "Náklady na AI podle osob, agentů, konektorů a modelů",
-          "billing": "Kredity, tarif a faktury na jednom místě",
-          "alerts": "Upozornění, když útrata překročí váš limit"
+          "breakdown": "Útrata za AI podle uživatele, agenta, konektoru a modelu",
+          "billing": "Kredity a faktury na jednom místě",
+          "alerts": "Upozornění, když útrata za AI překročí váš limit"
         }
       },
-      "benefitsTitle": "Co získáte",
+      "benefitsTitle": "Co je součástí",
       "relatedTitle": "V edici Enterprise také",
       "tenants": {
         "heading": "Multitenance je k dispozici v edici Enterprise",
-        "message": "Každý tým, region nebo zákazník dostane vlastní oddělený prostor, vše v jedné instalaci.",
+        "message": "Každý tým, region nebo zákazník dostane vlastní organizaci, vše v jedné instalaci.",
         "benefits": {
-          "separate": "Každý tenant má vlastní lidi, konektory, kolekce a agenty",
-          "inherit": "Tenanti mohou používat vaše nastavení, třeba modely AI, e-mail a přihlašování",
+          "separate": "Každý tenant má vlastní uživatele, skupiny, konektory, kolekce a agenty",
+          "inherit": "Vyberte, která nastavení tenanti zdědí, třeba modely AI, e-mail a přihlašování",
           "manage": "Všechny tenanty vytvoříte a spravujete na jednom místě"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Přístup celé skupině jedním krokem",
-          "teams": "Do skupiny přidáte celé týmy i jednotlivce",
+          "grantOnce": "Přístup celé skupině najednou",
+          "teams": "Do skupiny přidáte celé týmy i jednotlivé uživatele",
           "builtIn": "Začněte s vestavěnými skupinami Admin a Všichni"
         }
       },
       "seeWhatsInEnterprise": "Co nabízí edice Enterprise",
       "sidebarCard": {
         "title": "Edice Enterprise",
-        "body": "Multitenance, jednotné přihlašování, SCIM, protokoly auditu a další.",
+        "body": "Multitenance, SSO, SCIM provisioning, protokoly auditu a další.",
         "action": "Zobrazit, co obsahuje",
         "dismiss": "Skrýt kartu edice Enterprise"
       },
       "overview": {
-        "currentEdition": "Používáte edici Community",
+        "currentEdition": "Aktuální edice: Community",
         "title": "Edice Enterprise",
-        "subtitle": "Vše, co máte dnes, a k tomu to, co potřebují větší firmy: více kontroly, lepší zabezpečení a jasný přehled o nákladech.",
-        "seePreview": "Jak to vypadá",
-        "seePreviewLabel": "Jak vypadá {{name}}",
+        "subtitle": "Vše z edice Community a navíc multitenance, SSO, SCIM provisioning, protokoly auditu a kontrola nákladů.",
+        "seePreview": "Náhled",
+        "seePreviewLabel": "Náhled: {{name}}",
         "plans": {
           "community": {
             "name": "Edice Community",
-            "yourPlan": "Váš tarif",
+            "yourPlan": "Aktuální edice",
             "summary": "Zdarma, open source, na vlastním serveru",
-            "lead": "Co máte dnes",
+            "lead": "Součástí edice Community",
             "items": {
               "search": "Hledání a chat napříč propojenými aplikacemi",
-              "agents": "Agenti, akce a servery MCP",
-              "people": "Lidé a týmy",
-              "signIn": "Přihlášení heslem, jednorázovým kódem, přes Google a Microsoft"
+              "agents": "AI agenti, akce a servery MCP",
+              "people": "Uživatelé a týmy",
+              "signIn": "Přihlášení heslem, jednorázovým kódem e-mailem, přes Google a Microsoft"
             },
-            "current": "Tento tarif používáte"
+            "current": "Vaše aktuální edice"
           },
           "enterprise": {
             "name": "Edice Enterprise",
-            "summary": "Pro větší firmy. Cena na vyžádání.",
+            "summary": "Pro větší organizace. Cena na vyžádání.",
             "lead": "Vše z edice Community a navíc:",
             "seeAll": "Zobrazit všech {{count}} funkcí"
           }
@@ -2453,9 +2453,9 @@
           "included": "Součástí",
           "notIncluded": "Není součástí",
           "communityHas": {
-            "scim": "Ruční přidávání a odebírání lidí",
+            "scim": "Ruční správa uživatelů",
             "groups": "Týmy",
-            "sso": "Heslo, jednorázový kód, Google a Microsoft"
+            "sso": "Heslo, jednorázový kód e-mailem, Google a Microsoft"
           }
         },
         "faq": {
@@ -2465,12 +2465,12 @@
             "answer": "Ano. Zůstane open source a zdarma."
           },
           "preview": {
-            "question": "Můžu si funkci prohlédnout, než s někým budu mluvit?",
+            "question": "Můžu si funkci nejdřív prohlédnout?",
             "answer": "Ano. Funkce označené „{{label}}“ otevřou stránku, kde by byly, s náhledem obrazovky."
           },
           "get": {
             "question": "Jak získám edici Enterprise?",
-            "answer": "{{contact}}. Probereme, co vaše firma potřebuje a jak vše nastavit."
+            "answer": "{{contact}}. Probereme, co vaše organizace potřebuje a jak vše nastavit."
           }
         },
         "groups": {
@@ -2482,43 +2482,43 @@
         "items": {
           "tenants": {
             "name": "Multitenance",
-            "description": "Oddělený prostor pro každý tým, region nebo zákazníka v jedné instalaci."
+            "description": "Oddělené organizace pro každý tým, region nebo zákazníka v jedné instalaci."
           },
           "scim": {
             "name": "Zřizování SCIM",
-            "description": "Okta nebo Microsoft Entra ID za vás přidává a odebírá lidi."
+            "description": "Automatické zřizování a rušení uživatelů z Okta nebo Microsoft Entra ID."
           },
           "groups": {
             "name": "Oprávnění skupin",
-            "description": "Přístup celé skupině jedním krokem."
+            "description": "Udělujte přístup podle skupin, ne po jednotlivých uživatelích."
           },
           "toolApprovals": {
-            "name": "Pravidla schvalování nástrojů",
-            "description": "Vyberte, které nástroje agentů smějí běžet, potřebují schválení nebo jsou blokované."
+            "name": "Zásady schvalování nástrojů",
+            "description": "Nastavte pro každý nástroj agentů pravidla pro celou organizaci: spustit, žádat o schválení, nebo blokovat."
           },
           "actOnBehalf": {
             "name": "Jednání jménem osoby",
-            "description": "Servisní účet jedná jako konkrétní člověk. Každý pokus se zaznamená."
+            "description": "Servisní účet jedná jako konkrétní uživatel (delegovaný přístup). Každý pokus se zaznamená."
           },
           "peoplesOwnApps": {
-            "name": "Kontrola osobních aplikací",
-            "description": "Zobrazte a odeberte aplikace, akce a servery MCP, které si lidé přidají sami."
+            "name": "Aplikace připojené uživateli",
+            "description": "Kontrolujte a odebírejte aplikace OAuth, akce a servery MCP, které uživatelé připojí."
           },
           "sso": {
-            "name": "Jednotné přihlašování",
-            "description": "Přihlašování přes Okta, OneLogin nebo jiného poskytovatele SAML či OpenID Connect."
+            "name": "Jednotné přihlašování (SSO)",
+            "description": "Přihlašování přes Okta, OneLogin nebo jiného poskytovatele SAML 2.0 či OpenID Connect (OIDC)."
           },
           "auditLogs": {
             "name": "Protokoly auditu",
-            "description": "Kdo co a kdy udělal. Filtrování, upozornění a export."
+            "description": "Sledujte každou akci podle aktéra, času, IP adresy a výsledku. Filtrování, upozornění a export."
           },
           "usage": {
-            "name": "Využití, kredity a fakturace",
-            "description": "Náklady na AI podle osoby, agenta, konektoru a modelu a upozornění na útratu."
+            "name": "Využití a fakturace",
+            "description": "Sledujte útratu za AI podle uživatele, agenta, konektoru a modelu, s kredity a upozorněními na útratu."
           },
           "indexingPriority": {
             "name": "Priorita indexování",
-            "description": "Vyberte, co se indexuje jako první."
+            "description": "Vyberte, které záznamy, kolekce a nahrané soubory se indexují jako první."
           }
         }
       }
@@ -3130,7 +3130,7 @@
       "sections": {
         "overview": "Přehled",
         "workspace": "Pracovní prostor",
-        "usageAndCredits": "Využití a kredity",
+        "usageAndCredits": "Využití a fakturace",
         "security": "Zabezpečení",
         "personal": "Osobní",
         "people": "Lidé",
@@ -3164,7 +3164,7 @@
         "groups": "Skupiny",
         "scim": "SCIM",
         "auditLogs": "Protokoly auditu",
-        "usage": "Využití a kredity",
+        "usage": "Využití a fakturace",
         "teams": "Týmy",
         "webSearch": "Vyhledávání na webu",
         "tenants": "Tenanti",
@@ -3446,7 +3446,7 @@
       "edition": {
         "title": "Edice",
         "name": "Edice Community",
-        "description": "Open source a s vlastním hostováním. Edice Enterprise přidává multitenanci, jednotné přihlašování, SCIM, protokoly auditu a další."
+        "description": "Open source a na vlastním serveru. Edice Enterprise přidává multitenanci, SSO, SCIM provisioning, protokoly auditu a další."
       }
     },
     "mcpAccess": {
@@ -5744,7 +5744,7 @@
     },
     "tenants": {
       "title": "Tenanti",
-      "subtitle": "Vytvářejte a spravujte organizace tenantů v rámci pracovního prostoru",
+      "subtitle": "Vytvářejte a spravujte organizace tenantů v této instalaci",
       "createTenant": "Vytvořit tenanta",
       "searchPlaceholder": "Hledat tenanty...",
       "emptyTitle": "Zatím nebyli vytvořeni žádní tenanti",

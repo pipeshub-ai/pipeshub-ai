@@ -747,8 +747,8 @@
     "moreOptions": "更多选项",
     "docs": "文档",
     "enterprise": {
-      "label": "EE 版提供",
-      "tooltip": "属于 PipesHub 企业版",
+      "label": "企业版提供",
+      "tooltip": "PipesHub 企业版包含此功能",
       "short": "EE"
     },
     "errorBoundary": {
@@ -2143,7 +2143,7 @@
       "title": "用户组",
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
-      "enterpriseMessage": "按用户组决定谁能看到什么，不用逐个设置。",
+      "enterpriseMessage": "按用户组授予访问权限，无需逐个用户设置。",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -2230,79 +2230,79 @@
       "contact": "联系我们",
       "scim": {
         "heading": "SCIM 预配功能仅在企业版中提供",
-        "message": "Okta 或 Microsoft Entra ID 会替你添加和移除成员。",
+        "message": "通过 Okta 或 Microsoft Entra ID 自动预配和取消预配用户。",
         "benefits": {
-          "providers": "支持 Okta 和 Microsoft Entra ID",
-          "offboarding": "离职人员立即失去访问权限",
-          "noManualWork": "不再需要手动添加或移除成员"
+          "providers": "通过 SCIM 2.0 支持 Okta 和 Microsoft Entra ID",
+          "offboarding": "取消预配的用户会自动失去访问权限",
+          "noManualWork": "不再需要手动邀请和移除用户"
         }
       },
       "auditLogs": {
         "heading": "审计日志功能仅在企业版中提供",
         "message": "查看工作区中谁在何时做了什么。",
         "benefits": {
-          "everyEvent": "每项操作：谁做的、何时、来自哪个 IP 地址",
-          "filters": "按人员、操作或结果筛选",
-          "alerts": "接收提醒，并导出日志用于审查"
+          "everyEvent": "每项操作的执行者、时间、IP 地址、对象和结果",
+          "filters": "按用户、操作或结果筛选",
+          "alerts": "设置提醒，并导出日志用于合规审查"
         }
       },
       "usage": {
         "heading": "用量和账单功能仅在企业版中提供",
-        "message": "查看 AI 花费和使用者。管理额度和发票，并接收支出提醒。",
+        "message": "按用户、智能体、连接器和模型跟踪 AI 支出。管理额度、发票和支出提醒。",
         "benefits": {
-          "breakdown": "按人员、智能体、连接器和模型查看 AI 成本",
-          "billing": "额度、套餐和发票集中在一处",
-          "alerts": "支出超出上限时提醒你"
+          "breakdown": "按用户、智能体、连接器和模型统计 AI 支出",
+          "billing": "额度和发票集中在一处",
+          "alerts": "AI 支出超出上限时提醒你"
         }
       },
-      "benefitsTitle": "您将获得",
+      "benefitsTitle": "包含内容",
       "relatedTitle": "企业版还提供",
       "tenants": {
         "heading": "多租户功能仅在企业版中提供",
-        "message": "在一套部署中，为每个团队、地区或客户提供各自独立的空间。",
+        "message": "在一套部署中，为每个团队、地区或客户提供各自的组织。",
         "benefits": {
-          "separate": "每个租户都有自己的成员、连接器、集合和智能体",
-          "inherit": "租户可以沿用你的设置，例如 AI 模型、邮件和登录",
+          "separate": "每个租户都有自己的用户、用户组、连接器、集合和智能体",
+          "inherit": "选择租户继承哪些设置，例如 AI 模型、邮件和登录",
           "manage": "在一个地方创建和管理所有租户"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "一步为整个用户组授予访问权限",
-          "teams": "把整个团队或单个成员加入用户组",
+          "grantOnce": "一次为整个用户组授予访问权限",
+          "teams": "把整个团队或单个用户加入用户组",
           "builtIn": "从内置的管理员和所有人用户组开始"
         }
       },
       "seeWhatsInEnterprise": "查看企业版功能",
       "sidebarCard": {
         "title": "企业版",
-        "body": "多租户、单点登录、SCIM、审计日志等。",
+        "body": "多租户、SSO、SCIM 预配、审计日志等。",
         "action": "查看包含的功能",
         "dismiss": "隐藏企业版卡片"
       },
       "overview": {
-        "currentEdition": "您正在使用社区版",
+        "currentEdition": "当前版本：社区版",
         "title": "企业版",
-        "subtitle": "包含你现在拥有的一切，再加上大型企业需要的：更多管控、更强安全、清晰的成本视图。",
-        "seePreview": "查看界面",
-        "seePreviewLabel": "查看{{name}}的界面",
+        "subtitle": "包含社区版的全部功能，另有多租户、SSO、SCIM 预配、审计日志和成本控制。",
+        "seePreview": "预览",
+        "seePreviewLabel": "预览{{name}}",
         "plans": {
           "community": {
             "name": "社区版",
-            "yourPlan": "你的版本",
+            "yourPlan": "当前版本",
             "summary": "免费、开源、自行部署",
-            "lead": "你现在拥有",
+            "lead": "社区版包含",
             "items": {
               "search": "在已连接的应用中搜索和聊天",
-              "agents": "智能体、操作和 MCP 服务器",
-              "people": "成员和团队",
-              "signIn": "密码、一次性验证码、Google 和 Microsoft 登录"
+              "agents": "AI 智能体、操作和 MCP 服务器",
+              "people": "用户和团队",
+              "signIn": "密码、邮件一次性验证码、Google 和 Microsoft 登录"
             },
-            "current": "你正在使用此版本"
+            "current": "你当前的版本"
           },
           "enterprise": {
             "name": "企业版",
-            "summary": "适合规模较大的企业。价格请咨询。",
+            "summary": "适合规模较大的组织。价格请咨询。",
             "lead": "包含社区版的全部功能，另外还有：",
             "seeAll": "查看全部 {{count}} 项功能"
           }
@@ -2316,9 +2316,9 @@
           "included": "包含",
           "notIncluded": "不包含",
           "communityHas": {
-            "scim": "手动添加和移除成员",
+            "scim": "手动管理用户",
             "groups": "团队",
-            "sso": "密码、一次性验证码、Google 和 Microsoft"
+            "sso": "密码、邮件一次性验证码、Google 和 Microsoft"
           }
         },
         "faq": {
@@ -2328,12 +2328,12 @@
             "answer": "会。它将继续开源且免费。"
           },
           "preview": {
-            "question": "联系你们之前能先看看某项功能吗？",
+            "question": "能先预览某项功能吗？",
             "answer": "可以。标有“{{label}}”的功能会打开它所在的页面，并显示界面预览。"
           },
           "get": {
             "question": "如何获得企业版？",
-            "answer": "{{contact}}。我们会了解你的企业需要什么，以及如何部署。"
+            "answer": "{{contact}}。我们会了解你的组织需要什么，以及如何部署。"
           }
         },
         "groups": {
@@ -2345,43 +2345,43 @@
         "items": {
           "tenants": {
             "name": "多租户",
-            "description": "一套部署中，每个团队、地区或客户各有独立空间。"
+            "description": "一套部署中，每个团队、地区或客户各有独立的组织。"
           },
           "scim": {
             "name": "SCIM 配置",
-            "description": "Okta 或 Microsoft Entra ID 会替你添加和移除成员。"
+            "description": "通过 Okta 或 Microsoft Entra ID 自动预配和取消预配用户。"
           },
           "groups": {
             "name": "用户组权限",
-            "description": "一步为整个用户组授予访问权限。"
+            "description": "按用户组授予访问权限，无需逐个用户设置。"
           },
           "toolApprovals": {
-            "name": "工具审批规则",
-            "description": "决定哪些智能体工具可以运行、需要审批或被禁止。"
+            "name": "工具审批策略",
+            "description": "为每个智能体工具设置全组织规则：运行、需要审批或禁止。"
           },
           "actOnBehalf": {
             "name": "代表他人执行操作",
-            "description": "让服务账号以指定成员的身份操作，每次尝试都有记录。"
+            "description": "让服务账号以指定用户的身份操作（委派访问），每次尝试都有记录。"
           },
           "peoplesOwnApps": {
-            "name": "审查个人应用",
-            "description": "查看并移除成员为自己添加的应用、操作和 MCP 服务器。"
+            "name": "用户连接的应用",
+            "description": "审查并移除用户连接的 OAuth 应用、操作和 MCP 服务器。"
           },
           "sso": {
-            "name": "单点登录",
-            "description": "通过 Okta、OneLogin 或任意 SAML、OpenID Connect 提供方登录。"
+            "name": "单点登录 (SSO)",
+            "description": "通过 Okta、OneLogin 或任意 SAML 2.0、OpenID Connect (OIDC) 提供方登录。"
           },
           "auditLogs": {
             "name": "审计日志",
-            "description": "查看谁在何时做了什么。可筛选、提醒和导出。"
+            "description": "按执行者、时间、IP 地址和结果跟踪每项操作。可筛选、提醒和导出。"
           },
           "usage": {
-            "name": "用量、额度和账单",
-            "description": "按成员、智能体、连接器和模型查看 AI 花费，并接收支出提醒。"
+            "name": "用量和账单",
+            "description": "按用户、智能体、连接器和模型跟踪 AI 支出，含额度和支出提醒。"
           },
           "indexingPriority": {
             "name": "索引优先级",
-            "description": "选择优先索引的内容。"
+            "description": "选择优先索引的记录、集合和上传内容。"
           }
         }
       }
@@ -2982,7 +2982,7 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
-        "usageAndCredits": "用量与额度",
+        "usageAndCredits": "用量和账单",
         "security": "安全",
         "personal": "个人",
         "people": "成员",
@@ -3016,7 +3016,7 @@
         "groups": "群组",
         "scim": "SCIM",
         "auditLogs": "审计日志",
-        "usage": "用量与额度",
+        "usage": "用量和账单",
         "teams": "团队",
         "webSearch": "网络搜索",
         "tenants": "租户",
@@ -3298,7 +3298,7 @@
       "edition": {
         "title": "版本",
         "name": "社区版",
-        "description": "开源且自托管。企业版增加了多租户、单点登录、SCIM、审计日志等功能。"
+        "description": "开源、自行部署。企业版另有多租户、SSO、SCIM 预配、审计日志等功能。"
       }
     },
     "mcpAccess": {
@@ -5554,7 +5554,7 @@
     },
     "tenants": {
       "title": "租户",
-      "subtitle": "在工作区内创建和管理租户组织",
+      "subtitle": "在此部署中创建和管理租户组织",
       "createTenant": "创建租户",
       "searchPlaceholder": "搜索租户...",
       "emptyTitle": "尚未创建任何租户",

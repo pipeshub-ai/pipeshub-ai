@@ -665,8 +665,8 @@
     "moreOptions": "More options",
     "docs": "Docs",
     "enterprise": {
-      "label": "Available in EE",
-      "tooltip": "Part of the PipesHub Enterprise Edition",
+      "label": "Available in Enterprise",
+      "tooltip": "Included in PipesHub Enterprise Edition",
       "short": "EE"
     },
     "errorBoundary": {
@@ -2075,8 +2075,8 @@
     "groups": {
       "title": "Groups",
       "subtitle": "Create and manage groups to control access and permissions",
-      "enterpriseTitle": "Group permissions are available in the Enterprise Edition",
-      "enterpriseMessage": "Control who sees what by group, not person by person.",
+      "enterpriseTitle": "Group permissions are available in Enterprise Edition",
+      "enterpriseMessage": "Grant access by group instead of user by user.",
       "createGroup": "Create group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -2162,86 +2162,86 @@
     "enterprise": {
       "contact": "Talk with us",
       "scim": {
-        "heading": "SCIM provisioning is available in the Enterprise Edition",
-        "message": "Okta or Microsoft Entra ID adds and removes people for you.",
+        "heading": "SCIM provisioning is available in Enterprise Edition",
+        "message": "Automate user provisioning and deprovisioning from Okta or Microsoft Entra ID.",
         "benefits": {
-          "providers": "Works with Okta and Microsoft Entra ID",
-          "offboarding": "People who leave lose access right away",
-          "noManualWork": "No more adding or removing people by hand"
+          "providers": "Works with Okta and Microsoft Entra ID over SCIM 2.0",
+          "offboarding": "Deprovisioned users lose access automatically",
+          "noManualWork": "No more manual user invites and removals"
         }
       },
       "auditLogs": {
-        "heading": "Audit logs are available in the Enterprise Edition",
+        "heading": "Audit logs are available in Enterprise Edition",
         "message": "See who did what in your workspace, and when.",
         "benefits": {
-          "everyEvent": "Every action: who did it, when, and from which IP address",
-          "filters": "Filter by person, action or result",
-          "alerts": "Get alerts and export logs for reviews"
+          "everyEvent": "Every action with its actor, time, IP address, target and outcome",
+          "filters": "Filter by user, action or outcome",
+          "alerts": "Set alerts and export logs for compliance reviews"
         }
       },
       "usage": {
-        "heading": "Usage and billing are available in the Enterprise Edition",
-        "message": "See what AI costs and who uses it. Manage credits and invoices, and get spending alerts.",
+        "heading": "Usage & billing is available in Enterprise Edition",
+        "message": "Track AI spend by user, agent, connector and model. Manage credits, invoices and spending alerts.",
         "benefits": {
-          "breakdown": "AI cost by person, agent, connector and model",
-          "billing": "Credits, plan and invoices in one place",
-          "alerts": "Alerts when spending goes over your limit"
+          "breakdown": "AI spend by user, agent, connector and model",
+          "billing": "Credits and invoices in one place",
+          "alerts": "Alerts when AI spend goes over your limit"
         }
       },
-      "benefitsTitle": "What you get",
+      "benefitsTitle": "What's included",
       "relatedTitle": "Also in Enterprise",
       "tenants": {
-        "heading": "Multi-tenancy is available in the Enterprise Edition",
-        "message": "Give each team, region or customer its own separate space, all on one setup.",
+        "heading": "Multi-tenancy is available in Enterprise Edition",
+        "message": "Give each team, region or customer its own organization, all on one deployment.",
         "benefits": {
-          "separate": "Each tenant has its own people, connectors, collections and agents",
-          "inherit": "Tenants can use your settings, like AI models, email and sign-in",
+          "separate": "Each tenant has its own users, groups, connectors, collections and agents",
+          "inherit": "Choose which settings tenants inherit, like AI models, email and sign-in",
           "manage": "Create and manage every tenant in one place"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Give a whole group access in one step",
-          "teams": "Add whole teams or single people to a group",
+          "grantOnce": "Grant access to an entire group at once",
+          "teams": "Add whole teams or individual users to a group",
           "builtIn": "Start with the built-in Admin and Everyone groups"
         }
       },
       "seeWhatsInEnterprise": "See what's in Enterprise",
       "sidebarCard": {
         "title": "Enterprise Edition",
-        "body": "Multi-tenancy, single sign-on, SCIM, audit logs and more.",
+        "body": "Multi-tenancy, SSO, SCIM provisioning, audit logs and more.",
         "action": "See what's included",
         "dismiss": "Hide the Enterprise Edition card"
       },
       "overview": {
-        "currentEdition": "You're on the Community Edition",
+        "currentEdition": "Current edition: Community Edition",
         "title": "Enterprise Edition",
-        "subtitle": "Everything you have today, plus what larger companies need: more control, stronger security and a clear view of cost.",
-        "seePreview": "See how it looks",
-        "seePreviewLabel": "See how {{name}} looks",
+        "subtitle": "Everything in Community Edition, plus multi-tenancy, SSO, SCIM provisioning, audit logs and cost controls.",
+        "seePreview": "Preview",
+        "seePreviewLabel": "Preview {{name}}",
         "plans": {
           "community": {
             "name": "Community Edition",
-            "yourPlan": "Your plan",
+            "yourPlan": "Current edition",
             "summary": "Free and open source, self-hosted",
-            "lead": "What you have today",
+            "lead": "Included in Community",
             "items": {
               "search": "Search and chat across your connected apps",
-              "agents": "Agents, actions and MCP servers",
-              "people": "People and teams",
-              "signIn": "Password, one-time code, Google and Microsoft sign-in"
+              "agents": "AI agents, actions and MCP servers",
+              "people": "Users and teams",
+              "signIn": "Password, email one-time code, Google and Microsoft sign-in"
             },
-            "current": "You're on this plan"
+            "current": "Your current edition"
           },
           "enterprise": {
             "name": "Enterprise Edition",
-            "summary": "For larger companies. Pricing on request.",
+            "summary": "For larger organizations. Pricing on request.",
             "lead": "Everything in Community, plus:",
             "seeAll": "See all {{count}} features"
           }
         },
         "compare": {
-          "title": "Compare the editions",
+          "title": "Compare editions",
           "feature": "Feature",
           "community": "Community",
           "enterprise": "Enterprise",
@@ -2249,24 +2249,24 @@
           "included": "Included",
           "notIncluded": "Not included",
           "communityHas": {
-            "scim": "Add and remove people by hand",
+            "scim": "Manual user management",
             "groups": "Teams",
-            "sso": "Password, one-time code, Google and Microsoft"
+            "sso": "Password, email one-time code, Google and Microsoft"
           }
         },
         "faq": {
           "title": "Questions",
           "free": {
-            "question": "Does the Community Edition stay free?",
+            "question": "Does Community Edition stay free?",
             "answer": "Yes. It stays open source and free."
           },
           "preview": {
-            "question": "Can I see a feature before I talk to anyone?",
+            "question": "Can I preview a feature first?",
             "answer": "Yes. Features marked “{{label}}” open the page where they would live, with a preview of the screen."
           },
           "get": {
-            "question": "How do I get the Enterprise Edition?",
-            "answer": "{{contact}}. We’ll go through what your company needs and how to set it up."
+            "question": "How do I get Enterprise Edition?",
+            "answer": "{{contact}}. We’ll go through your organization’s needs and how to set it up."
           }
         },
         "groups": {
@@ -2278,43 +2278,43 @@
         "items": {
           "tenants": {
             "name": "Multi-tenancy",
-            "description": "A separate space for each team, region or customer, on one setup."
+            "description": "Separate organizations for each team, region or customer, on one deployment."
           },
           "scim": {
             "name": "SCIM provisioning",
-            "description": "Okta or Microsoft Entra ID adds and removes people for you."
+            "description": "Automate user provisioning and deprovisioning from Okta or Microsoft Entra ID."
           },
           "groups": {
             "name": "Group permissions",
-            "description": "Give a whole group access in one step."
+            "description": "Grant access by group instead of user by user."
           },
           "toolApprovals": {
-            "name": "Tool approval rules",
-            "description": "Choose which agent tools can run, need approval or are blocked."
+            "name": "Tool approval policies",
+            "description": "Set organization-wide rules for each agent tool: run, ask for approval or block."
           },
           "actOnBehalf": {
             "name": "Acting on behalf of a person",
-            "description": "Let a service account act as a named person. Every attempt is logged."
+            "description": "Let a service account act as a named user (delegated access). Every attempt is logged."
           },
           "peoplesOwnApps": {
-            "name": "Personal apps review",
-            "description": "See and remove the apps, actions and MCP servers people add for themselves."
+            "name": "User-connected apps",
+            "description": "Review and remove the OAuth apps, actions and MCP servers users connect."
           },
           "sso": {
-            "name": "Single sign-on",
-            "description": "Let people sign in with Okta, OneLogin or any SAML or OpenID Connect provider."
+            "name": "Single sign-on (SSO)",
+            "description": "Sign in through Okta, OneLogin or any SAML 2.0 or OpenID Connect (OIDC) provider."
           },
           "auditLogs": {
             "name": "Audit logs",
-            "description": "See who did what, and when. Filter, get alerts and export."
+            "description": "Track every action by actor, time, IP address and outcome. Filter, alert and export."
           },
           "usage": {
-            "name": "Usage, credits and billing",
-            "description": "See AI cost by person, agent, connector and model, and get spending alerts."
+            "name": "Usage & billing",
+            "description": "Track AI spend by user, agent, connector and model, with credits and spending alerts."
           },
           "indexingPriority": {
             "name": "Indexing priority",
-            "description": "Choose what gets indexed first."
+            "description": "Choose which records, collections and uploads are indexed first."
           }
         }
       }
@@ -2821,7 +2821,7 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
-        "usageAndCredits": "Usage & credits",
+        "usageAndCredits": "Usage & billing",
         "security": "Security",
         "personal": "Personal",
         "people": "People",
@@ -2855,7 +2855,7 @@
         "groups": "Groups",
         "scim": "SCIM",
         "auditLogs": "Audit logs",
-        "usage": "Usage & credits",
+        "usage": "Usage & billing",
         "teams": "Teams",
         "webSearch": "Web search",
         "tenants": "Tenants",
@@ -3133,7 +3133,7 @@
       "edition": {
         "title": "Edition",
         "name": "Community Edition",
-        "description": "Open source and self-hosted. The Enterprise Edition adds multi-tenancy, single sign-on, SCIM, audit logs and more."
+        "description": "Open source and self-hosted. Enterprise Edition adds multi-tenancy, SSO, SCIM provisioning, audit logs and more."
       }
     },
     "mcpAccess": {
@@ -5188,7 +5188,7 @@
     },
     "tenants": {
       "title": "Tenants",
-      "subtitle": "Create and manage tenant organisations within the workspace",
+      "subtitle": "Create and manage tenant organizations on this deployment",
       "createTenant": "Create Tenant",
       "searchPlaceholder": "Search tenants...",
       "emptyTitle": "No tenants created yet",
