@@ -109,9 +109,9 @@ jobs:
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
         # the folder minus what the others name (--ignore for a file, --deselect for a test), so a new test file runs there.
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
-        # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
+        # collection, so no count is written here. The jobs are sized to about 25 min of the 45 min limit (shard 1: 30-40 of
         # 60); --durations in the graph step prints the per-test times to rebalance by.
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
           # rest is split by the state of the copy
@@ -133,7 +133,6 @@ jobs:
           - shard: 4
             graph_tests: >-
               tests/integration/graph_db/postgres/test_accessible_scope_differential.py
-              tests/integration/graph_db/postgres/test_conformance.py
               tests/integration/graph_db/postgres/test_kg_service.py
               tests/integration/graph_db/postgres/test_kg_stamps.py
               tests/integration/graph_db/postgres/test_kh_browse.py
@@ -149,6 +148,14 @@ jobs:
               tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
               tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
               tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
+          # from shard 5, by test, as shard 7: the corpus and generated worlds of test_kg_read.py (8-10 min) and the mutation
+          # worlds of test_kg_kb_root.py (3 min), with test_conformance.py from shard 4 (7 min)
+          - shard: 8
+            graph_tests: >-
+              tests/integration/graph_db/postgres/test_conformance.py
+              tests/integration/graph_db/postgres/test_kg_read.py::test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle
+              tests/integration/graph_db/postgres/test_kg_read.py::test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle
+              tests/integration/graph_db/postgres/test_kg_kb_root.py::test_after_every_mutation_the_root_from_kg_equals_the_walk
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -166,6 +173,9 @@ jobs:
               --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
               --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
               --deselect=tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_read.py::test_the_corpus_answered_from_kg_equals_the_walk_and_the_oracle
+              --deselect=tests/integration/graph_db/postgres/test_kg_read.py::test_generated_worlds_answered_from_kg_equal_the_walk_and_the_oracle
+              --deselect=tests/integration/graph_db/postgres/test_kg_kb_root.py::test_after_every_mutation_the_root_from_kg_equals_the_walk
     services:
       redis:
         image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
