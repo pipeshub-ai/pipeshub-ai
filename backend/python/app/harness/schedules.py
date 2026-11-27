@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -96,41 +96,154 @@ def _instant(value: object) -> datetime | None:
         return None
 
 
-def _minutes(field: str) -> set[int] | None:
-    """The minutes a cron minute field fires at; ``None`` when it is not one this check reads."""
-    minutes: set[int] = set()
-    for part in field.split(","):
-        body, slash, step_text = part.partition("/")
-        if slash and not (step_text.isdigit() and int(step_text) > 0):
-            return None
-        step = int(step_text) if slash else 1
-        if body == "*":
-            low, high = 0, 59
-        elif "-" in body:
-            a, _, b = body.partition("-")
-            if not (a.isdigit() and b.isdigit()):
-                return None
-            low, high = int(a), int(b)
-        elif body.isdigit():
-            low = int(body)
-            high = 59 if slash else low
-        else:
-            return None
-        if not 0 <= low <= high <= 59:
-            return None
-        minutes.update(range(low, high + 1, step))
-    return minutes
+_MONTHS: Final = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+_DAYS: Final = ("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")
+# minute, hour, day of month, month, day of week: their bounds and names as Node's cron parser (cron-parser 4) reads.
+_CRON_FIELDS_SPEC: Final = (
+    ("minute", 0, 59, {}),
+    ("hour", 0, 23, {}),
+    ("day of month", 1, 31, {}),
+    ("month", 1, 12, {name: i + 1 for i, name in enumerate(_MONTHS)}),
+    ("day of week", 0, 7, {name: i for i, name in enumerate(_DAYS)}),
+)
+# Days a cron is matched over to find whether it ever fires and how close two of its slots come: eight years from a
+# fixed day hold every leap day and weekday-of-month pattern, and no wall clock is read.
+_CRON_SCAN_FROM: Final = datetime(2026, 1, 1, tzinfo=UTC).date()
+_CRON_SCAN_DAYS: Final = 8 * 366
+
+
+class _CronInvalid(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class _DaySpec:
+    """What a day-of-month or day-of-week field matches: plain values, and the ``L``/``nL``/``n#k`` forms."""
+
+    values: frozenset[int]
+    wildcard: bool
+    last: bool = False
+    last_weekdays: frozenset[int] = frozenset()
+    nth: tuple[int, int] | None = None
+
+
+def _value(text: str, low: int, high: int, names: Mapping[str, int], field: str) -> int:
+    if text.isdigit():
+        value = int(text)
+    elif text.upper() in names:
+        value = names[text.upper()]
+    else:
+        raise _CronInvalid(f"`when.cron` has an unreadable {field} value {text!r}.")
+    if not low <= value <= high:
+        raise _CronInvalid(f"`when.cron` {field} {value} is outside {low}-{high}.")
+    return value
+
+
+def _item(item: str, low: int, high: int, names: Mapping[str, int], field: str, *, days: bool) -> tuple[set[int], bool]:
+    """One comma item's values, and whether it is a wildcard (``*``, or ``?`` in a day field)."""
+    body, slash, step_text = item.partition("/")
+    if slash and not step_text.isdigit():
+        raise _CronInvalid(f"`when.cron` has an unreadable step in {field}: {item!r}.")
+    step = int(step_text) if slash else 1
+    if step == 0:
+        raise _CronInvalid(f"`when.cron` cannot step by 0 in {field}.")
+    wildcard = body == "*" or (days and body == "?")
+    if wildcard:
+        first, last = low, high
+    elif "-" in body:
+        a, _, b = body.partition("-")
+        first, last = _value(a, low, high, names, field), _value(b, low, high, names, field)
+        if first > last:
+            raise _CronInvalid(f"`when.cron` has a backwards range in {field}: {item!r}.")
+    else:
+        first = _value(body, low, high, names, field)
+        last = high if slash else first
+    return set(range(first, last + 1, step)), wildcard and not slash
+
+
+def _field(text: str, index: int) -> tuple[set[int], _DaySpec | None]:
+    field, low, high, names = _CRON_FIELDS_SPEC[index]
+    values: set[int] = set()
+    wildcard = False
+    last = False
+    last_weekdays: set[int] = set()
+    nth: tuple[int, int] | None = None
+    items = text.split(",")
+    for item in items:
+        if index == 2 and item.upper() == "L":
+            last = True
+            continue
+        if index == 4 and len(item) > 1 and item.upper().endswith("L"):
+            last_weekdays.add(_value(item[:-1], low, high, names, field) % 7)
+            continue
+        if index == 4 and "#" in item:
+            if len(items) > 1:
+                raise _CronInvalid("`when.cron` cannot combine `#` with a list in the day of week.")
+            day, _, occurrence = item.partition("#")
+            if not occurrence.isdigit() or not 1 <= int(occurrence) <= 5:
+                raise _CronInvalid("`when.cron` day-of-week `#` takes an occurrence from 1 to 5.")
+            nth = (_value(day, low, high, names, field) % 7, int(occurrence))
+            continue
+        found, wild = _item(item, low, high, names, field, days=index in (2, 4))
+        values |= found
+        wildcard = wildcard or wild
+    if index == 4:
+        values = {v % 7 for v in values}
+    if index in (2, 4):
+        spec = _DaySpec(frozenset(values), wildcard, last, frozenset(last_weekdays), nth)
+        return values, spec
+    return values, None
+
+
+def _day_matches(day: date, dom: _DaySpec, dow: _DaySpec, months: set[int]) -> bool:
+    if day.month not in months:
+        return False
+    last_day = (day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    weekday = (day.weekday() + 1) % 7
+
+    def by_dom() -> bool:
+        return day.day in dom.values or (dom.last and day == last_day)
+
+    def by_dow() -> bool:
+        return (
+            weekday in dow.values
+            or (weekday in dow.last_weekdays and day + timedelta(days=7) > last_day)
+            or (dow.nth is not None and weekday == dow.nth[0] and (day.day - 1) // 7 + 1 == dow.nth[1])
+        )
+
+    # Standard cron, as Node's parser: with both day fields restricted, a day matching either fires.
+    if dom.wildcard and dow.wildcard:
+        return True
+    if dom.wildcard:
+        return by_dow()
+    if dow.wildcard:
+        return by_dom()
+    return by_dom() or by_dow()
 
 
 def _cron_problem(cron: object) -> str | None:
+    """What Node's ``assertCron`` refuses, said for the model: five fields its parser reads, a slot that ever comes,
+    and no two slots closer than five minutes."""
     if not isinstance(cron, str) or len(cron.split()) != 5:
         return "`when.cron` must be a five-field cron expression (minute hour day-of-month month day-of-week)."
-    minutes = _minutes(cron.split()[0])
-    if minutes is None:
-        return None
-    ordered = sorted(minutes)
-    gaps = [b - a for a, b in zip(ordered, ordered[1:], strict=False)] + [60 - ordered[-1] + ordered[0]]
-    if len(ordered) > 1 and min(gaps) < MIN_CRON_GAP_MINUTES:
+    try:
+        parsed = [_field(text, index) for index, text in enumerate(cron.split())]
+    except _CronInvalid as exc:
+        return str(exc)
+    (minutes, _), (hours, _), (_, dom), (months, _), (_, dow) = parsed
+    assert dom is not None and dow is not None
+    times = sorted(h * 60 + m for h in hours for m in minutes)
+    days = [
+        day
+        for offset in range(_CRON_SCAN_DAYS)
+        if _day_matches(day := _CRON_SCAN_FROM + timedelta(days=offset), dom, dow, months)
+    ]
+    if not days:
+        return "`when.cron` never fires (no day matches it)."
+    gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
+    if any((b - a).days == 1 for a, b in zip(days, days[1:], strict=False)):
+        gaps.append(24 * 60 - times[-1] + times[0])
+    if gaps and min(gaps) < MIN_CRON_GAP_MINUTES:
         return f"`when.cron` fires more often than once every {MIN_CRON_GAP_MINUTES} minutes; schedules may not."
     return None
 

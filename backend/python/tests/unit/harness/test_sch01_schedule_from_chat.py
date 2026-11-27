@@ -90,6 +90,7 @@ CRON: dict[str, Any] = {
 EFFECT = ToolEffect(SCHEDULE_TOOL_ID, "write", False, SinkDescriptor(egress="self", args_leave_boundary=False))
 ORG_ALLOWS = LayeredApprovalPolicy((parse_rules({"writes": "allow"}),), ("org",))
 ORG_DENIES = LayeredApprovalPolicy((parse_rules({"writes": "deny"}),), ("org",))
+_TOP = type("Spec", (), {"run_kind": "interactive"})()
 FLAGS_ON = {"featureFlags": {"ENABLE_AGENT_HARNESS": True, "ENABLE_SCHEDULED_RUNS": True}}
 
 
@@ -171,7 +172,7 @@ async def test_sch01_offered_only_with_the_org_harness_and_scheduled_runs_on(
     assert await is_scheduled_runs_on(config) is on  # type: ignore[arg-type]
     services = type("S", (), {"config_service": lambda self: config})()
     run = type("R", (), {"sub_agent": None, "timezone": "UTC"})()
-    claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None})()
+    claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": _TOP})()
     registry = ToolRegistry()
     offered = await schedule_tool(services, run, claim, registry)  # type: ignore[arg-type]
     assert (offered is not None) is on
@@ -191,7 +192,7 @@ async def test_sch01_no_route_or_a_fired_run_is_not_offered(monkeypatch: pytest.
     config = _Config(FLAGS_ON)
     services = type("S", (), {"config_service": lambda self: config})()
     run = type("R", (), {"sub_agent": None, "timezone": "UTC"})()
-    claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, **claim_fields})()
+    claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": _TOP, **claim_fields})()
     assert await schedule_tool(services, run, claim, ToolRegistry()) is None  # type: ignore[arg-type]
 
 
@@ -460,3 +461,73 @@ def test_sch01_its_result_carries_no_record_content() -> None:
     from app.harness.labels import tool_kind
 
     assert tool_kind(SCHEDULE_CREATE_TOOL) == "none"
+
+
+# What Node's ``assertCron`` (cron-parser 4.9.0, five fields, 50 slots at least five minutes apart) answered for each
+# expression: ``True`` it makes the schedule, ``False`` it refuses it. Recorded from Node; the parity test below asks
+# it again when the Node workspace is installed.
+NODE_CRON_VERDICTS: dict[str, bool] = {
+    "0 9 * * 1-5": True, "0 9 * * MON-FRI": True, "0 9 * JAN,jul *": True, "*/5 * * * *": True, "0 9 ? * *": True,
+    "0 9 L * *": True, "0 9 * * 5L": True, "0 9 * * 1#2": True, "0 9 * * 7": True, "0/15 * * * *": True,
+    "10/70 * * * *": True, "0 0,23 * * *": True, "59 23 * * *": True, "0 9 1-31/2 * *": True, "0 9 * * sun": True,
+    "0 9 * * 1,3-5/2": True, "0 9 * * */2": True, "0 9 31 1,4 *": True, "0 9 29 2 *": True, "0 9 1-31 2 *": True,
+    "0 9 */31 2 *": True, "0 9 * * MON-FRI/2": True, "0 9 * * 0-7": True, "*/60 * * * *": True, "0 9 L 2 *": True,
+    "0 9 * jan-mar/2 *": True, "0 9 1,L * *": True, "0 9 ?/2 * *": True, "0 9 * * 1,?": True, "0 9 ? * ?": True,
+    "00 09 * * *": True, "0 9 * * 5L,1": True, "0 9 15 * 5L": True, "0 9 1 1 *": True,
+    "0 99 * * *": False, "*/4 * * * *": False, "0 9 * * 8": False, "5-1 * * * *": False, "0 9 31 2 *": False,
+    "0 9 30 2 *": False, "*/0 * * * *": False, "0,3 * * * *": False, "0 9 * 13 *": False, "0 9 0 * *": False,
+    "0 24 * * *": False, "60 * * * *": False, "a b c d e": False, "0 9 W * *": False, "0 9 15W * *": False,
+    "1-5/0 * * * *": False, "0-4 * * * *": False, "* 9 * * *": False, "H 9 * * *": False, "0 9 31 4 *": False,
+    "0 9 31 2,4 *": False, "0 9 30,31 2 *": False, "0 9 30-31 2 *": False, "0 9 31/1 2 *": False,
+    "0 9 L-2 * *": False, "0 9 LW * *": False, "0 9 * * L": False, "0 9 * * 1#6": False, "0 9 * * 1#0": False,
+    "0 9 * * 8#1": False, "0 9 * FEB-JAN *": False, "+5 9 * * *": False, "0 9 * * SUN,MON#1": False,
+    "0,1-3/2 9 * * *": False, "1-2,4 9 * * *": False, "0 9 * * 7-0": False, "0 9 * * mon-sun": False,
+    "0 9 * * fri-mon": False, "0 9 * *": False, "@daily": False,
+}
+
+
+def _cron_call(cron: str) -> dict[str, Any]:
+    return {**CRON, "when": {**CRON["when"], "cron": cron, "timeZone": "UTC"}}
+
+
+@pytest.mark.parametrize(("cron", "node_accepts"), sorted(NODE_CRON_VERDICTS.items()))
+def test_sch01_a_cron_is_refused_here_exactly_when_node_refuses_it(cron: str, node_accepts: bool) -> None:
+    problem = schedule_problem(_cron_call(cron), now=NOW)
+    assert (problem is None) is node_accepts, problem
+    # A cron Node refuses never reaches the card; one it accepts is asked about.
+    assert _asks()(_call(_cron_call(cron)), EFFECT) == ("ask" if node_accepts else "allow")
+
+
+def test_sch01_the_recorded_verdicts_are_nodes() -> None:
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    apps = Path(__file__).resolve().parents[4] / "nodejs/apps"
+    if shutil.which("node") is None or not (apps / "node_modules/cron-parser").is_dir():
+        pytest.skip("the Node workspace is not installed (npm ci)")
+    script = (
+        "const {parseExpression}=require(process.argv[1]+'/node_modules/cron-parser');"
+        "const out={};for(const c of JSON.parse(process.argv[2])){let ok=c.trim().split(/\\s+/).length===5,s=[];"
+        "if(ok){try{const it=parseExpression(c,{currentDate:new Date(Date.UTC(2026,10,27,12)),tz:'UTC'});"
+        "for(let i=0;i<50;i++){try{s.push(it.next().getTime())}catch{break}}}catch{ok=false}}"
+        "ok=ok&&s.length>0&&s.every((t,i)=>i===0||t-s[i-1]>=300000);out[c]=ok}console.log(JSON.stringify(out))"
+    )
+    answered = subprocess.run(
+        ["node", "-e", script, str(apps), json.dumps(list(NODE_CRON_VERDICTS))],
+        capture_output=True, text=True, check=True, timeout=20,
+    )
+    assert json.loads(answered.stdout) == NODE_CRON_VERDICTS
+
+
+async def test_sch01_a_code_task_engine_child_is_not_offered(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_HARNESS_WORKER_ENABLED", "true")
+    config = _Config(FLAGS_ON)
+    services = type("S", (), {"config_service": lambda self: config})()
+    run = type("R", (), {"sub_agent": None, "timezone": "UTC"})()
+    spec = type("Spec", (), {"run_kind": "child"})()
+    claim = type("C", (), {"attempt_route": _Route(), "trigger_context": None, "spec": spec})()
+    registry = ToolRegistry()
+    assert await schedule_tool(services, run, claim, registry) is None  # type: ignore[arg-type]
+    assert not registry.has(SCHEDULE_CREATE_TOOL)

@@ -1648,9 +1648,11 @@ async def schedule_tool(
 ) -> SourcedTool | None:
     """Registers ``schedule_create`` (ADR-SCH-01 D2) for a run a person started in chat, when the org's harness and
     its Labs scheduled runs are on; the loop and an engine run are offered it the same way, through the run's tool
-    gateway. A delegated child and a run a schedule fired are not: a schedule is asked for in chat, by the person."""
+    gateway. A child run (a sub-agent, or a ``code_task`` engine child, which has no sub-agent ref) and a run a
+    schedule fired are not: a schedule is asked for in chat, by the person."""
     route = getattr(claim, "attempt_route", None)
-    if route is None or run.sub_agent is not None or getattr(claim, "trigger_context", None) is not None:
+    child = claim.spec.run_kind == "child" or run.sub_agent is not None
+    if route is None or child or getattr(claim, "trigger_context", None) is not None:
         return None
     if not await is_scheduled_runs_on(services.config_service()):
         return None
