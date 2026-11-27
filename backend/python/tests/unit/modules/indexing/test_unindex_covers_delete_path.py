@@ -19,6 +19,7 @@ COVERED = {
 }
 EXCLUDED = {
     "self.event_processor.graph_provider.get_document": "a read",
+    "self._superseded_delete": "a read that tells a delete of an earlier life of the id from a live record; unindex acts on a record that exists",
     "entity_store.delete_entity": "the record's title point stays: the record still exists and is found by name",
     "paid_cache_access.paid_cache_for(self.config_service, self.logger).delete_record":
         "keyed by content: a later index of the same bytes reuses it, and the record still exists",

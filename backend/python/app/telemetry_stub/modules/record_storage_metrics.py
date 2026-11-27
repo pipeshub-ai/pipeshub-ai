@@ -62,6 +62,14 @@ def record_property_projection(outcome: str) -> None:
     return None
 
 
+def pushed_properties_refused(outcome: str) -> None:
+    return None
+
+
+def record_delete_guard(outcome: str) -> None:
+    return None
+
+
 PROPERTY_VALUES_DROPPED = NOOP
 
 

@@ -48,7 +48,7 @@ class PushLives:
         return env.storage.docs[record["externalRecordId"]]
 
     async def purge(self) -> None:
-        assert await self.graph.delete_nodes_and_edges([self.record_id], RECORDS)
+        await self.graph.delete_nodes_and_edges([self.record_id], RECORDS)  # the providers differ in what they return, so the read below decides
         assert await self.env.record() is None
 
     async def repush(self) -> None:

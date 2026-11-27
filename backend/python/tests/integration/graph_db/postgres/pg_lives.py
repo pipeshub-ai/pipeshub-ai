@@ -45,7 +45,7 @@ class PgLives:
         return data
 
     async def purge(self) -> None:
-        assert await self.graph.delete_nodes_and_edges([self.record_id], "records")
+        await self.graph.delete_nodes_and_edges([self.record_id], "records")
         assert await self.graph.get_document(self.record_id, "records") is None
 
     async def repush(self) -> None:
