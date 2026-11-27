@@ -158,11 +158,19 @@ describe('history turns: a durable answer steered while it ran (MG-3b)', () => {
   it('every legacy golden transcript formats exactly as before T3', () => {
     const files = fs.readdirSync(GOLDEN_DIR).filter((file) => file.endsWith('.transcript.json'))
     expect(files.length).to.be.greaterThan(10)
+    // Each entry also carries the seal of the row it came from (`_ref`, the version of its text `_ver`, `_pub`): what the
+    // new answer's label names. Without it, every entry is as before T3; with it, each names a row of the transcript.
+    const SEAL = new Set(['_ref', '_ver', '_pub'])
+    const withoutSeal = (turn: Record<string, unknown>): Record<string, unknown> =>
+      Object.fromEntries(Object.entries(turn).filter(([key]) => !SEAL.has(key)))
     for (const file of files) {
       const { messages } = JSON.parse(fs.readFileSync(path.join(GOLDEN_DIR, file), 'utf8')) as {
         messages: IMessage[]
       }
-      expect(formatPreviousConversations(messages), file).to.deep.equal(beforeT3(messages))
+      const turns = formatPreviousConversations(messages) as unknown as Array<Record<string, unknown>>
+      expect(turns.map(withoutSeal), file).to.deep.equal(beforeT3(messages))
+      const rows = new Set(messages.map((m) => String((m as { _id?: unknown })._id)))
+      for (const turn of turns.filter((t) => '_ref' in t)) expect(rows.has(String(turn._ref)), `${file}: a sealed row`).to.equal(true)
     }
   })
 
