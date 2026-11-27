@@ -85,7 +85,7 @@ function CheckItem({ icon, muted, title, detail }: { icon: string; muted?: boole
     <Flex asChild gap="2" align="start">
       <li>
         <Box style={{ marginTop: 1 }}>
-          <Icon name={icon} color={muted ? 'var(--slate-9)' : 'var(--accent-11)'} />
+          <Icon name={icon} color={muted ? 'var(--slate-11)' : 'var(--accent-11)'} />
         </Box>
         <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
@@ -208,7 +208,7 @@ function CompareRow({ item, compact }: { item: EnterpriseOverviewItem; compact: 
           </Text>
         ) : (
           <>
-            <Text size="2" aria-hidden="true" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" aria-hidden="true" style={{ color: 'var(--slate-11)' }}>
               —
             </Text>
             <span style={VISUALLY_HIDDEN}>{t(`${OVERVIEW}.compare.notIncluded`)}</span>
