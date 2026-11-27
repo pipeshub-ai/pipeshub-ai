@@ -414,7 +414,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const answerSlotId = useAnswerSlotId();
   // The slot this row renders in (an answer's scope, else the render slot, else the active slot): its approvals,
   // run and card state. Without a provider that is the active slot, as on the chat page.
-  const activeSlotId = answerSlotId;
+  const rowSlotId = answerSlotId;
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
   // Reads the chat again, so the access check that could not run is asked again. Only a read: nothing is sent.
@@ -530,10 +530,10 @@ export const ChatResponse = React.memo(function ChatResponse({
   const chatRunning = useChatStore((s) => repliedInChat && Boolean(answerSlotId && s.slots[answerSlotId]?.isStreaming));
 
   const pendingApprovals = useChatStore((s) =>
-    activeSlotId ? s.slots[activeSlotId]?.pendingApprovals : undefined
+    rowSlotId ? s.slots[rowSlotId]?.pendingApprovals : undefined
   );
   const durableRun = useChatStore((s) =>
-    activeSlotId ? s.slots[activeSlotId]?.durableRun ?? null : null
+    rowSlotId ? s.slots[rowSlotId]?.durableRun ?? null : null
   );
   const approvalAuthority = useDecisionAuthority(
     durableRun,
@@ -555,11 +555,11 @@ export const ChatResponse = React.memo(function ChatResponse({
   const questionPending =
     askQuestionMatchesRow && (pendingAskUserQuestion?.status === 'pending' || questionRetrying) && isLastMessage;
   const interactionWaiting = useChatStore((s) =>
-    activeSlotId ? s.slots[activeSlotId]?.interactionWaiting ?? null : null
+    rowSlotId ? s.slots[rowSlotId]?.interactionWaiting ?? null : null
   );
   const paused = isStreaming && interactionWaiting?.paused === true;
-  const queuedSteers = useChatStore((s) => (activeSlotId ? s.slots[activeSlotId]?.queuedSteers : undefined));
-  const isOwner = useChatStore((s) => (activeSlotId ? s.slots[activeSlotId]?.isOwner : undefined));
+  const queuedSteers = useChatStore((s) => (rowSlotId ? s.slots[rowSlotId]?.queuedSteers : undefined));
+  const isOwner = useChatStore((s) => (rowSlotId ? s.slots[rowSlotId]?.isOwner : undefined));
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -910,7 +910,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const messageRun = useMessageRun(runId, isLastMessage);
   // C10.05: the live cost beside the elapsed time in the steps' header, while the run works.
   const liveCost = useLiveRunCost(messageRun, isStreaming);
-  const plan = useChatStore((s) => (activeSlotId ? (s.slots[activeSlotId]?.plan ?? null) : null));
+  const plan = useChatStore((s) => (rowSlotId ? (s.slots[rowSlotId]?.plan ?? null) : null));
   // The slot holds the plan of the run it streamed last; it belongs to this answer only if that run wrote it.
   const savedPlan = useMemo(() => planFromParts(effectiveParts), [effectiveParts]);
   const messagePlan = (plan && messageRun && plan.runId === messageRun.runId ? plan : null) ?? savedPlan;
@@ -964,17 +964,17 @@ export const ChatResponse = React.memo(function ChatResponse({
       scope?: Parameters<typeof decideApproval>[3],
       reason?: string,
     ) => {
-      const sid = activeSlotId;
+      const sid = rowSlotId;
       if (sid) void decideApproval(sid, item, decision, scope ?? 'once', reason);
     },
-    [activeSlotId],
+    [rowSlotId],
   );
   const decideEdited = useCallback(
     (item: Parameters<typeof decideApproval>[1], edits: Record<string, unknown>) => {
-      const sid = activeSlotId;
+      const sid = rowSlotId;
       if (sid) void decideApproval(sid, item, 'approved', 'once', undefined, edits);
     },
-    [activeSlotId],
+    [rowSlotId],
   );
   const decideAll = useCallback(
     (
@@ -983,10 +983,10 @@ export const ChatResponse = React.memo(function ChatResponse({
       scope?: Parameters<typeof decideApprovals>[3],
       reason?: string,
     ) => {
-      const sid = activeSlotId;
+      const sid = rowSlotId;
       if (sid) void decideApprovals(sid, items, decision, scope ?? 'once', reason);
     },
-    [activeSlotId],
+    [rowSlotId],
   );
 
   const renderQuestion = (state: InteractionState) => {
@@ -1024,7 +1024,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         readOnlyFor={ext.askCardReadOnlyFor}
         submitHeld={ext.askCardSubmitHeld}
         onAnswersChange={(nextAnswers) => {
-          const sid = activeSlotId;
+          const sid = rowSlotId;
           const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
           if (!sid || !p) return;
           useChatStore.getState().updateSlot(sid, {
@@ -1032,7 +1032,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           });
         }}
         onSubmit={(message, nextAnswers) => {
-          if (activeSlotId) void answerQuestionCard(activeSlotId, message, nextAnswers, ext.decorateResumeRequest);
+          if (rowSlotId) void answerQuestionCard(rowSlotId, message, nextAnswers, ext.decorateResumeRequest);
         }}
       />
       <CardSendNotice sendKey={questionSendKeyOfRow} refusalText={(code) => admissionRefusalText(code ?? 'FAILED')} />

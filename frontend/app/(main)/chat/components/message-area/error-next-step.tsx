@@ -8,7 +8,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { oneClickStep, type OneClickStep } from '../../harness-errors';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
-import { useChatStore } from '../../store';
+import { answerSlotIdNow, useScopedSlotId } from './answer-slot-scope';
 import type { ChatStreamErrorInfo } from '../../stream-error';
 
 const LABELS: Record<OneClickStep, { key: string; icon: string }> = {
@@ -18,9 +18,9 @@ const LABELS: Record<OneClickStep, { key: string; icon: string }> = {
   new_conversation: { key: 'chatStream.nextStep.newChat', icon: 'add_comment' },
 };
 
-/** Sends the stopped question again in this conversation, as the MCP card's "Try again" does. */
-export function sendAgain(question: string): boolean {
-  const slotId = useChatStore.getState().activeSlotId;
+/** Sends the stopped question again in this answer's conversation (its slot, else the active one), as the MCP card's "Try again" does. */
+export function sendAgain(question: string, scoped: string | null = null): boolean {
+  const slotId = answerSlotIdNow(scoped);
   if (!slotId) return false;
   const request = buildStreamChatRequestForSlot(slotId, question);
   if (!request) return false;
@@ -35,6 +35,7 @@ export function sendAgain(question: string): boolean {
  */
 export function ErrorNextStep({ error, question }: { error: ChatStreamErrorInfo | undefined; question: string }) {
   const { t } = useTranslation();
+  const scoped = useScopedSlotId();
   const [used, setUsed] = useState(false);
   if (!error?.source) return null;
   const step = oneClickStep(error.source, error.code);
@@ -48,7 +49,7 @@ export function ErrorNextStep({ error, question }: { error: ChatStreamErrorInfo 
       window.location.reload();
       return;
     }
-    if (sendAgain(question)) setUsed(true);
+    if (sendAgain(question, scoped)) setUsed(true);
   };
   return (
     <Flex align="center" gap="2" wrap="wrap" mt="2" data-testid="error-next-step" data-step={step}>
