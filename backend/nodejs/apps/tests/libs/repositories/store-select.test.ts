@@ -116,37 +116,53 @@ describe('DOC_STORE switch', () => {
       const { schemaRequirements } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
       delete process.env.DOC_STORE_MONGO_REPOS
       const { EDITION_SCHEMA_REQUIREMENTS } = require('../../../src/edition') as typeof import('../../../src/edition')
-      const edition = Object.keys(EDITION_SCHEMA_REQUIREMENTS)
-      const all = ['content', 'conversation', 'harness', 'identity', 'integrations', 'oauth', 'platform', 'platform_data', ...edition].sort()
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
+      // the edition's branches are waited for too; a key is a branch, so one both name counts once
+      const withEdition = (shipped: string[]) => [...new Set([...shipped, ...Object.keys(EDITION_SCHEMA_REQUIREMENTS)])].sort()
+      const keys = () => Object.keys(schemaRequirements()).sort()
+      const shipped = ['content', 'conversation', 'harness', 'identity', 'integrations', 'oauth', 'platform', 'platform_data']
+      const all = withEdition(shipped)
+      expect(keys()).to.deep.equal(all)
       process.env.DOC_STORE_MONGO_REPOS = '*'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // every repository has a PostgreSQL implementation: none is kept
+      expect(keys()).to.deep.equal(all) // every repository has a PostgreSQL implementation: none is kept
       process.env.DOC_STORE_MONGO_REPOS = 'conversation'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // saved searches still need their tables
+      expect(keys()).to.deep.equal(all) // saved searches still need their tables
       process.env.DOC_STORE_MONGO_REPOS = 'document,project'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'content'))
+      expect(keys()).to.deep.equal(withEdition(shipped.filter((b) => b !== 'content')))
       process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup,delegation,agent-call-event'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'oauth'))
+      expect(keys()).to.deep.equal(withEdition(shipped.filter((b) => b !== 'oauth')))
       process.env.DOC_STORE_MONGO_REPOS = 'slack-thread'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // the Slack account links still need their table
+      expect(keys()).to.deep.equal(all) // the Slack account links still need their table
       process.env.DOC_STORE_MONGO_REPOS = 'slack-thread,slack-user-link'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'integrations'))
+      expect(keys()).to.deep.equal(withEdition(shipped.filter((b) => b !== 'integrations')))
       process.env.DOC_STORE_MONGO_REPOS = 'identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
-      expect(Object.keys(schemaRequirements())).to.include('identity') // an OAuth app takes its slug number from the identity tables
+      expect(keys()).to.include('identity') // an OAuth app takes its slug number from the identity tables
       process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,agent-call-event,slack-thread,slack-user-link,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job,session-family'
-      expect(Object.keys(schemaRequirements())).to.deep.equal([...edition, 'platform', 'harness']) // the harness has no per-store fallback: its branch is needed under postgres
+      expect(keys()).to.deep.equal(withEdition(['platform', 'harness'])) // the harness has no per-store fallback: its branch is needed under postgres
     })
 
-    it("waits for the edition's own schema branches as for the shipped ones, and never loosens a shipped one", () => {
+    it("waits for the edition's own schema branches as for the shipped ones, and a shipped requirement wins over the edition's", () => {
       const { schemaRequirements } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
       const { EDITION_SCHEMA_REQUIREMENTS } = require('../../../src/edition') as typeof import('../../../src/edition')
       delete process.env.DOC_STORE_MONGO_REPOS
-      const req = schemaRequirements()
-      for (const [branch, need] of Object.entries(EDITION_SCHEMA_REQUIREMENTS)) {
-        if (['content', 'conversation', 'harness', 'identity', 'integrations', 'oauth', 'platform', 'platform_data'].includes(branch)) continue
-        expect(req[branch], branch).to.deep.equal(need)
+      const shipped = schemaRequirements()
+      const names = ['content', 'conversation', 'harness', 'identity', 'integrations', 'oauth', 'platform', 'platform_data']
+      for (const [branch, need] of Object.entries(EDITION_SCHEMA_REQUIREMENTS))
+        if (!names.includes(branch)) expect(shipped[branch], branch).to.deep.equal(need)
+      // an edition that names a branch of its own, and one that also names a shipped branch with a looser requirement
+      const edition = EDITION_SCHEMA_REQUIREMENTS as Record<string, { requires: number; code: number }>
+      const before = { ...edition }
+      try {
+        edition.test_extra = { requires: 3, code: 4 }
+        edition.platform = { requires: 0, code: 99 }
+        const req = schemaRequirements()
+        expect(req.test_extra).to.deep.equal({ requires: 3, code: 4 })
+        expect(req.platform).to.deep.equal(shipped.platform)
+        expect(req.platform).to.deep.equal({ requires: 1, code: 1 })
+        expect(Object.keys(req).filter((k) => k === 'platform')).to.have.length(1)
+      } finally {
+        for (const k of Object.keys(edition)) if (!(k in before)) delete edition[k]
+        Object.assign(edition, before)
       }
-      expect(req.platform).to.deep.equal({ requires: 1, code: 1 })
     })
 
     it('does nothing under DOC_STORE=mongo', () => {
