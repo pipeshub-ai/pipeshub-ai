@@ -824,7 +824,7 @@ def test_each_function_belongs_to_its_schemas_vetted_owner(vdb):
     assert owners == {"kt.notes_by_title(text,integer)": "pipeshub_vetted_kt", "kt.set_note_title(text,text)": "pipeshub_vetted_kt",
                       "kt.token_owner(text)": "pipeshub_vetted_kt", "ku.item_labels(integer)": "pipeshub_vetted_ku",
                       "kernel.org_lineage(text)": "pipeshub_vetted_kernel", "kernel.org_parent_ids(text)": "pipeshub_vetted_kernel",
-                      "kernel.org_writes_held(text)": "pipeshub_vetted_kernel",
+                      "kernel.org_writes_held(text)": "pipeshub_vetted_kernel", "kernel.assert_org_writable(text)": "pipeshub_vetted_kernel",
                       "kernel.assert_profile_epoch(integer)": "pipeshub_vetted_kernel", "kernel.profile_epoch()": "pipeshub_vetted_kernel",
                           "kernel.assert_store_epoch(integer)": "pipeshub_vetted_kernel", "kernel.postgres_store_epoch()": "pipeshub_vetted_kernel",
                       **dict.fromkeys(("kt.w_grants_set(bigint[],bigint[],smallint[],smallint[])", "kt.w_grants_delete(bigint[],bigint[],smallint[])", "kt.w_fence_remove(bigint)",

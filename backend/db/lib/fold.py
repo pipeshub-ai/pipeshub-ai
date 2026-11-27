@@ -140,6 +140,9 @@ def keeps_bounds(jobs: psycopg.Connection) -> None:
     jobs.execute("SELECT set_config('retrieval.bounds_kept', 'on', true)")
 
 
+PROFILE_BARRIER = 7341      # kernel.lock_keys: the profile fence's barrier, which a hold is recorded behind
+
+
 def org_lock(jobs: psycopg.Connection, org: str, lock_class: int = LOCK_CLASS) -> bool:
     """Take the org's transaction-scoped advisory lock of this job class (False: another run of the same job holds it). Raises
     ReadOnlySqlTransaction for an org whose writes are held (kernel.assert_org_writable): the step writes nothing and the org is
@@ -163,6 +166,12 @@ def fold_org(jobs: psycopg.Connection, org: str) -> int:
 def recount_org(jobs: psycopg.Connection, org: str) -> list[tuple[int, int, int]] | None:
     """Recompute the point counts of ``org`` from its live points, and its term frequencies from its postings (None: another fold or recount holds the org, or a fold committed under it; nothing changed). Returns
     (collection, space, count) as the search will see it."""
+    # The write barrier (7341) is taken shared for the session BEFORE the REPEATABLE READ snapshot: a hold recorded before it is
+    # committed, so the snapshot sees it at the fence; one recorded after it waits for this recount. Taken inside the transaction,
+    # the snapshot (fixed by its first statement) could predate a hold that committed before the fence ran. PG_JOBS_URL is a
+    # direct address (no pooler), so a session lock is this connection's.
+    if not jobs.execute("SELECT pg_try_advisory_lock_shared(%s, 1)", (PROFILE_BARRIER,)).fetchone()[0]:
+        return None                                  # a hold is being recorded, or the profile switched: run again
     try:
         with jobs.transaction():
             jobs.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
@@ -174,6 +183,8 @@ def recount_org(jobs: psycopg.Connection, org: str) -> list[tuple[int, int, int]
             return counts
     except psycopg.errors.SerializationFailure:      # a fold committed between the lock and the snapshot: nothing changed, run again
         return None
+    finally:
+        jobs.execute("SELECT pg_advisory_unlock_shared(%s, 1)", (PROFILE_BARRIER,))
 
 
 def fill_bounds_org(jobs: psycopg.Connection, org: str) -> int:
