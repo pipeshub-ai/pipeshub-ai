@@ -684,7 +684,8 @@ class IdentityMixin(PgBase):
         """Apps the user is linked to, directly, through a team, or by authenticating as another account; hidden ones left out."""
         rows = await self._id_rows("""/* pipeshub:graph.get_user_app_ids */ WITH ids AS (
               SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
-              UNION SELECT t.to_id FROM graph.edges p JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id AND t.to_coll = 'apps'
+              UNION SELECT t.to_id FROM graph.edges p JOIN graph.nodes tm ON tm.org_id = p.org_id AND tm.coll = 'teams' AND tm.id = p.to_id
+                JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = tm.id AND t.to_coll = 'apps'
                 WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
               UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2)
             SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
@@ -722,7 +723,8 @@ class IdentityMixin(PgBase):
                     SELECT e.to_id FROM graph.nodes u JOIN graph.edges e ON e.org_id = u.org_id AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = u.id
                     WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4
                     UNION SELECT t.to_id FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
-                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id
+                    JOIN graph.nodes tm ON tm.org_id = p.org_id AND tm.coll = 'teams' AND tm.id = p.to_id
+                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = tm.id
                     WHERE u.org_id = n.org_id AND u.coll = 'users' AND u.doc->>'userId' = $4))))
               AND ($9::text IS NULL OR position(lower($9) in lower(coalesce(n.doc->>'name', ''))) > 0 OR position(lower($9) in lower(coalesce(n.doc->>'type', ''))) > 0
                    OR position(lower($9) in lower(coalesce(n.doc->>'appGroup', ''))) > 0)

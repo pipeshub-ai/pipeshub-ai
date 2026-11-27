@@ -62,6 +62,11 @@ def _graph(kind: str) -> tuple[list, list]:
         app(APP, "Drive", connector=DRIVE, app_group="G"),
     ]
     edges = [user_app("u", APP), authenticated_as("u", "src", APP)]
+    # two external collaborators of the App, each kept there only by what its one membership grants (the reaper's question)
+    for h in ("own-live", "own-gone"):
+        nodes.append(_node("User", f"ext-{h}", email=f"ext-{h}@example.com", fullName=f"Ext {h}"))
+        edges += [perm(f"ext-{h}", h, role="READER"),
+                  {"type": "USER_APP_RELATION", "from": f"ext-{h}", "to": APP, "props": {"syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}}]
     extra = {"Role": {"externalRoleId": "ext", "connectorName": DRIVE, "connectorId": APP, "createdAtTimestamp": TS}}
     for h in HOLDERS:
         nodes += [_node(kind, h, name=h, **extra.get(kind, {})),
@@ -167,3 +172,63 @@ async def test_a_membership_whose_group_no_longer_exists_grants_nothing(world: _
 
     scope = await g.get_entity_access_context("u-uid", w.org)
     assert {w.plain(i) for i in scope["record_group_ids"]} == {f"g-{h}" for h in LIVE}
+
+
+@pytest.fixture
+async def teams(graph: Any) -> AsyncIterator[_World]:  # noqa: ANN401
+    """The Teams world, with what a team opens beside records: an App it holds a user-app relation to (``a-``) and an agent template it is shared (``t-``)."""
+    async with contextlib.AsyncExitStack() as cleanup:
+        w = _World(graph, uuid.uuid4().hex[:10], "Teams")
+        for h in ("own-live", "own-gone"):
+            w.nodes.append(app(f"a-{h}", f"app {h}", connector=DRIVE, app_group="G"))
+            w.edges.append({"type": "USER_APP_RELATION", "from": h, "to": f"a-{h}", "props": {"syncState": "COMPLETED", "lastSyncUpdate": TS}})
+        cleanup.push_async_callback(w.remove)
+        templates = [w.sid(f"t-{h}") for h in ("own-live", "own-gone")]
+
+        async def drop_templates() -> None:
+            if hasattr(graph, "client"):
+                await graph.client.execute_query("MATCH (n) WHERE n.id IN $ids DETACH DELETE n", parameters={"ids": templates})
+            else:
+                await graph.http_client.execute_aql("FOR d IN agentTemplates FILTER d._key IN @ids REMOVE d IN agentTemplates", {"ids": templates})
+                await graph.http_client.execute_aql("FOR e IN permission FILTER PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN permission", {"ids": templates})
+        cleanup.push_async_callback(drop_templates)
+        await w.seed()      # the teams first: Neo4j writes a relationship only between nodes it holds
+        assert await graph.batch_upsert_nodes([{"id": t, "name": t, "description": "d", "startMessage": "s", "systemPrompt": "p", "isDeleted": False, "createdAtTimestamp": TS, "updatedAtTimestamp": TS}
+                                               for t in templates], collection="agentTemplates")
+        assert await graph.batch_create_edges([{"from_id": w.sid(h), "from_collection": "teams", "to_id": w.sid(f"t-{h}"), "to_collection": "agentTemplates",
+                                                "type": "TEAM", "role": "READER", "createdAtTimestamp": TS} for h in ("own-live", "own-gone")], collection="permission")
+        yield w
+
+
+async def test_a_team_that_no_longer_exists_opens_no_collection_app_or_agent_template(teams: _World) -> None:
+    """The reads of what a user's teams open besides records: the role on a collection and the collections listed, the Apps shared through a team, and the agent templates."""
+    w, g = teams, teams.graph
+    u, live, gone = w.sid("u"), "own-live", "own-gone"
+    kbs, _, _ = await g.list_user_knowledge_bases(u, w.org, 0, 100)
+    app_ids = {w.plain(a) for a in await g.get_user_app_ids(u)}
+    got = {
+        "kb role": {h: await g.get_user_kb_permission(w.sid(f"k-{h}"), u) for h in (live, gone)},
+        "kbs listed": {w.plain(k["id"]) for k in kbs},
+        "kbs shared": {w.plain(a) for a in await g.get_user_permission_app_ids(u, w.org)},
+        "apps": {a for a in app_ids if a.startswith("a-")},
+        "templates": {w.plain(t.get("_key") or t.get("id")) for t in await g.get_all_agent_templates(u)},
+        "template": {h: await g.get_template(w.sid(f"t-{h}"), u) is not None for h in (live, gone)},
+    }
+    want = {"kb role": {live: "WRITER", gone: None}, "kbs listed": {f"k-{live}"}, "kbs shared": {f"k-{live}"}, "apps": {f"a-{live}"},
+            "templates": {f"t-{live}"}, "template": {live: True, gone: False}}
+    if hasattr(g, "_get_user_accessible_team_app_keys"):      # the connector listing's team Apps (ArangoDB's helper)
+        got["team apps"] = {a for a in (w.plain(k) for k in await g._get_user_accessible_team_app_keys("u-uid")) if a.startswith("a-")}
+        want["team apps"] = {f"a-{live}"}
+    assert got == want
+
+
+async def test_the_collaborator_reaper_keeps_only_whom_an_existing_group_still_grants(world: _World) -> None:
+    """``reap_stale_external_app_relations`` keeps an external collaborator's gate edge while a grant still holds them there, the read of grants' rule
+    (``get_knowledge_hub_access_v3``): a membership of a group that no longer exists holds no one."""
+    w, g = world, world.graph
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
+    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live"}

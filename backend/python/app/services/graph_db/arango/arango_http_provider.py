@@ -2979,6 +2979,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER perm._from == user_from
                 FILTER perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                FILTER DOCUMENT(perm._to) != null
                 FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
                     FILTER app.scope == @team_scope
                     RETURN app._key
@@ -9633,6 +9634,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, "{grp}/")
                         OR STARTS_WITH(perm._to, "{role}/")
                         OR STARTS_WITH(perm._to, "{team}/")
+                    FILTER DOCUMENT(perm._to) != null
                     FOR perm2 IN {perm}
                         FILTER perm2._from == perm._to
                         FILTER STARTS_WITH(perm2._to, "{rec}/") OR STARTS_WITH(perm2._to, "{rg}/")
@@ -15698,6 +15700,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER user_team_perm._from == user_from
                     FILTER user_team_perm.type == "USER"
                     FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                    FILTER DOCUMENT(user_team_perm._to) != null
                     RETURN {
                         team_id: SPLIT(user_team_perm._to, '/')[1],
                         role: user_team_perm.role,
@@ -15824,6 +15827,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER user_team_perm._from == @user_from
                         FILTER user_team_perm.type == "USER"
                         FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        FILTER DOCUMENT(user_team_perm._to) != null
                         RETURN {{
                             team_id: SPLIT(user_team_perm._to, '/')[1],
                             role: (user_team_perm.role IN @retired_roles ? "READER" : user_team_perm.role),
@@ -15934,6 +15938,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER user_team_perm._from == @count_user_from
                         FILTER user_team_perm.type == "USER"
                         FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        FILTER DOCUMENT(user_team_perm._to) != null
                         RETURN {{
                             team_id: SPLIT(user_team_perm._to, '/')[1],
                             role: (user_team_perm.role IN @retired_roles ? "READER" : user_team_perm.role),
@@ -16008,6 +16013,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER user_team_perm._from == @filters_user_from
                         FILTER user_team_perm.type == "USER"
                         FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        FILTER DOCUMENT(user_team_perm._to) != null
                         RETURN {
                             team_id: SPLIT(user_team_perm._to, '/')[1],
                             role: (user_team_perm.role IN @retired_roles ? "READER" : user_team_perm.role),
@@ -23993,6 +23999,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR perm IN {CollectionNames.PERMISSION.value}
                         FILTER perm._from == @user_from AND perm.type == "USER"
                         FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                        FILTER DOCUMENT(perm._to) != null
                         FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
                             RETURN app
                 )
@@ -24048,6 +24055,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == user_from AND perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FILTER DOCUMENT(perm._to) != null
                     RETURN SPLIT(perm._to, '/')[1]
             )
 
@@ -30057,6 +30065,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    FILTER DOCUMENT(perm._to) != null
                     RETURN perm._to
             )
 
@@ -30143,6 +30152,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.TEAMS.value}/')
+                    FILTER DOCUMENT(perm._to) != null
                     RETURN perm._to
             )
 
