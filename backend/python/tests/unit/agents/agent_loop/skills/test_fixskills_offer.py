@@ -44,7 +44,7 @@ from app.harness.engines.durable import _pins  # pyright: ignore[reportPrivateUs
 from app.harness.skills.bundles import SkillBundleService
 from app.harness.skills.pinned_labels import mounted_skills, mounted_skills_instructions
 from harness_core.sandbox.types import LeaseRef
-from harness_core.skills import TarSkillMaterializer, skills_mount
+from harness_core.skills import SkillRef, TarSkillMaterializer, skills_mount
 from harness_core.testing.clock import ManualClock
 from harness_core.testing.sandbox import FakeContractEnv, FakeSandboxBroker
 from harness_core.testing.sandbox.contract import run as run_in
@@ -210,6 +210,23 @@ class TestTheOffer:
         definition = await with_offered_skills(agent, graph, ORG, VIEWERS, enabled=True)
 
         assert definition.skills[0].name == "col-secret", "its archived versions do not make a deleted skill exist"
+
+    async def test_a_deleted_assignment_naming_an_archived_version_is_reported_missing_not_pinned(self) -> None:
+        graph = await _world()
+        store = GraphSkillStore(graph, ORG, COLLEAGUE.key)  # type: ignore[arg-type]
+        skill = await store.get_skill("col-secret")
+        assert skill is not None
+        assert await store.delete_skill("col-secret")
+        assigned = RunDefinitionSkill(name="col-secret", version=skill.metadata.version)
+        assert await GraphSkillSource(graph).content_digest(ORG, SkillRef("col-secret", assigned.version)), (
+            "the version log still holds the deleted skill's content"
+        )
+        agent = AgentRunDefinition(agentKey="a", definitionVersion=1, skills=(assigned,))
+
+        definition = await _pinned(graph, agent)
+
+        [kept] = [s for s in definition.skills if s.name == "col-secret"]
+        assert kept.bundle_digest is None, "a deleted skill's archive is not mounted"
 
 
 class TestTheEngineMountsThePins:
