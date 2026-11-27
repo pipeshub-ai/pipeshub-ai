@@ -555,6 +555,32 @@ describe('identity-control route scan: it fails on each way the table can go wro
     });
   });
 
+  it('reports an unguarded POST that shares a route() with a guarded GET', () => {
+    const router = Router();
+    router
+      .route('/authConfig/okta')
+      .get(authenticate, requireSessionAuth, scope, handler)
+      .post(authenticate, scope, handler);
+    const spec = { prefixes: ['/authConfig'], routes: [], fieldRoutes: {} };
+    expect(
+      identityControlViolations(routeChains(router), spec, authenticate),
+    ).to.deep.equal([
+      'POST /authConfig/okta: requireSessionAuth does not directly follow authenticate',
+    ]);
+  });
+
+  it('matches a prefix whatever its case, but not a longer sibling', () => {
+    const router = Router();
+    router.post('/AuthConfig/okta', authenticate, scope, handler);
+    router.post('/authConfigBackup', authenticate, scope, handler);
+    const spec = { prefixes: ['/authConfig'], routes: [], fieldRoutes: {} };
+    expect(
+      identityControlViolations(routeChains(router), spec, authenticate),
+    ).to.deep.equal([
+      'POST /AuthConfig/okta: requireSessionAuth does not directly follow authenticate',
+    ]);
+  });
+
   it('reads the path of a sub-router mounted on a parameter', () => {
     const router = Router();
     const sub = Router();
@@ -618,6 +644,27 @@ describe('config:write routes: a token is refused before the scope check', () =>
         [authenticate, noopGuard, configWrite, admin, handler],
       ]),
     ).to.not.deep.equal([]);
+  });
+
+  it('reports the guard placed before authenticate', () => {
+    expect(
+      scan([
+        'post',
+        '/new-setting',
+        [requireSessionAuth, authenticate, configWrite, admin, handler],
+      ]),
+    ).to.deep.equal([
+      'POST /new-setting: requireSessionAuth runs before authenticate',
+    ]);
+  });
+
+  it('accepts authenticate from router-level middleware', () => {
+    const router = Router();
+    router.use(authenticate);
+    router.post('/new-setting', requireSessionAuth, configWrite, admin, handler);
+    expect(
+      identityControlViolations(routeChains(router), spec, authenticate),
+    ).to.deep.equal([]);
   });
 
   it('requireScopes says which scopes it checks', () => {

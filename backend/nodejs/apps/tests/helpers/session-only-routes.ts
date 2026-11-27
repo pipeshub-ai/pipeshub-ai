@@ -25,7 +25,7 @@ interface Layer {
   route?: {
     path: string;
     methods: Record<string, boolean>;
-    stack: Array<{ handle: unknown }>;
+    stack: Array<{ handle: unknown; method?: string }>;
   };
   name?: string;
   handle: unknown;
@@ -69,9 +69,15 @@ export function routeChains(
   const ahead: unknown[] = [...inherited];
   for (const layer of (router as unknown as { stack: Layer[] }).stack) {
     if (layer.route) {
-      const handlers = [...ahead, ...layer.route.stack.map((s) => s.handle)];
       for (const method of Object.keys(layer.route.methods)) {
         const path = `${prefix}${layer.route.path}`;
+        // One route() can carry several methods; Express runs only this method's handlers and `all()` ones.
+        const handlers = [
+          ...ahead,
+          ...layer.route.stack
+            .filter((s) => s.method === undefined || s.method === method)
+            .map((s) => s.handle),
+        ];
         out.push({
           id: `${method.toUpperCase()} ${path}`,
           method: method.toUpperCase(),
@@ -168,7 +174,7 @@ export const CONFIG_ROUTER_SPEC: IdentityControlSpec = {
   ],
   // Any write under /ai-models (providers, connections, credentials, roles, defaults,
   // identity forwarding) except the read-only identity preview.
-  patterns: [/^\/ai-models\/(?!identity\/preview$)/],
+  patterns: [/^\/ai-models\/(?!identity\/preview$)/i],
   routes: [
     'POST /authConfig/microsoft',
     'POST /authConfig/google',
@@ -314,8 +320,12 @@ export const USER_ROUTER_SPEC: IdentityControlSpec = {
 
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-const underPrefix = (path: string, prefix: string) =>
-  path === prefix || path.startsWith(`${prefix}/`);
+// Express routers match paths case-insensitively by default.
+const underPrefix = (path: string, prefix: string) => {
+  const p = path.toLowerCase();
+  const pre = prefix.toLowerCase();
+  return p === pre || p.startsWith(`${pre}/`);
+};
 
 const isInternalOrPublic = (path: string) =>
   path.startsWith('/internal/') || path.startsWith('/public/');
@@ -399,9 +409,15 @@ export function identityControlViolations(
     const configWrite = scopeCheckIndex(chain.handlers, CONFIG_WRITE);
     if (configWrite >= 0) {
       const guard = chain.handlers.indexOf(requireSessionAuth);
+      const at = chain.handlers.indexOf(authenticate);
       if (guard < 0 || guard > configWrite) {
         problems.push(
           `${chain.id}: asks a token for config:write without requireSessionAuth before it`,
+        );
+      } else if (at < 0 || at > guard) {
+        // The guard needs the signed-in user; ahead of authenticate it refuses everyone.
+        problems.push(
+          `${chain.id}: requireSessionAuth runs before authenticate`,
         );
       }
     }

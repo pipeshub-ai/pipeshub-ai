@@ -178,6 +178,13 @@ export async function call(
   return { status: res.status, text: await res.text() };
 }
 
+// Not signed in, refused by any check, or no route matched: none of these show the request got
+// through. A 404 the route itself answers (a record it could not find) does.
+const expectPastAuth = (r: { status: number; text: string }) => {
+  expect(r.status, r.text).to.not.be.oneOf([401, 403]);
+  expect(r.text, 'no route matched').to.not.match(/Cannot [A-Z]+ \//);
+};
+
 /** Per route: every delegated token gets the session-only 403 and runs nothing; an admin session gets through. */
 export function describeSessionOnlyRows(
   base: () => string,
@@ -218,7 +225,7 @@ export function describeSessionOnlyRows(
             sessionToken(ADMIN, 'admin'),
           );
           expect(r.text).to.not.contain(SESSION_ONLY_TEXT);
-          expect(r.status, r.text).to.not.equal(401);
+          expectPastAuth(r);
           if (row.control === 'success')
             expect(r.status, r.text).to.be.within(200, 299);
         },
@@ -254,7 +261,7 @@ export function describeFieldRows(base: () => string, rows: FieldRow[]): void {
             sessionToken(ADMIN, 'admin'),
           );
           expect(r.text).to.not.contain(SESSION_ONLY_TEXT);
-          expect(r.status, r.text).to.not.equal(401);
+          expectPastAuth(r);
         });
       }
       for (const body of row.allowed) {
@@ -267,6 +274,7 @@ export function describeFieldRows(base: () => string, rows: FieldRow[]): void {
             DELEGATED['admin PAT with every scope']!(),
           );
           expect(r.text).to.not.contain(SESSION_ONLY_TEXT);
+          expectPastAuth(r);
         });
       }
     });

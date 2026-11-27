@@ -26,8 +26,12 @@ import { createServiceTokenRouter } from '../../../src/modules/oauth_provider/ro
 import { createServiceAccountsRouter } from '../../../src/modules/user_management/routes/service-accounts.routes';
 import { createCrawlingManagerRouter } from '../../../src/modules/crawling_manager/routes/cm_routes';
 import type { Logger } from '../../../src/libs/services/logger.service';
+import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../../src/modules/user_management/services/user-admin.service';
 import {
   ADMIN,
+  MEMBER,
+  chain,
   DELEGATED,
   FieldRow,
   SESSION_ONLY_TEXT,
@@ -509,6 +513,23 @@ describe('credential, connector and org-wide writes over HTTP with the real Auth
       expect(r.status, r.text).to.equal(403);
       expect(r.text).to.contain(SESSION_ONLY_TEXT);
     });
+  });
+
+  // The service token above acts as an admin. One whose app acts as a member never gets as
+  // far as the session guard: the router's admin check refuses it first.
+  it('a service token acting as a member cannot mint a service token either', async () => {
+    (OAuthApp.findOne as sinon.SinonStub).callsFake((() =>
+      chain({ createdBy: ADMIN, tokenIdentityUserId: MEMBER })) as never);
+    const r = await call(
+      base,
+      'POST',
+      '/service-tokens',
+      { serviceAccountId: '64b000000000000000000003', name: 'ci', scopes: ['kb:read'] },
+      DELEGATED['service token (client_credentials) with every scope']!(),
+    );
+    expect(r.status, r.text).to.equal(403);
+    expect(r.text).to.contain(ADMIN_ACCESS_REQUIRED_MESSAGE);
+    expect(ran).to.deep.equal([]);
   });
 
   // Tokens issued before config:write was retired still carry it in their claim.

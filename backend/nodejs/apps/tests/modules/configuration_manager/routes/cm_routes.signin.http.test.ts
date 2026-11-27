@@ -274,7 +274,10 @@ describe('Sign-in settings routes over HTTP with the real AuthMiddleware', funct
           const res = await fetch(`${baseUrl}/configurationManager/authConfig/${name}?reveal=true`, {
             headers: { authorization: `Bearer ${DELEGATED[kind]!()}` },
           });
-          expect(await res.text(), `HTTP ${res.status}`).to.not.contain(SECRET);
+          const text = await res.text();
+          // A refusal or a failure would not contain it either; the read has to succeed masked.
+          expect(res.status, text).to.equal(200);
+          expect(text).to.not.contain(SECRET);
         });
       }
       it(`GET authConfig/${name} with an admin session and masking off still shows it (settings page)`, async () => {

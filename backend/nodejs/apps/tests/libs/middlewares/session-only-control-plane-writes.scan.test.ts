@@ -14,6 +14,22 @@ import { createAgentHarnessAdminRouter } from '../../../src/modules/agent-harnes
 const guarded = (handlers: unknown[]): boolean =>
   handlers.includes(requireSessionAuth);
 
+// After authentication and before the config:write check, so a token is told it needs a
+// session rather than that it lacks a scope it can no longer be granted.
+const guardedInOrder = (handlers: unknown[], authenticate: unknown): boolean => {
+  const guard = handlers.indexOf(requireSessionAuth);
+  const scopeCheck = handlers.findIndex((h) =>
+    (h as { requiredScopes?: readonly string[] }).requiredScopes?.includes(
+      OAuthScopeNames.CONFIG_WRITE,
+    ),
+  );
+  return (
+    handlers.indexOf(authenticate) === guard - 1 &&
+    guard > 0 &&
+    guard < scopeCheck
+  );
+};
+
 describe('configuration writes of the control plane and the agent harness take an interactive session', () => {
   it('every control-plane route that asks config:write', () => {
     const router = registerCpRoutes(
@@ -35,21 +51,28 @@ describe('configuration writes of the control plane and the agent harness take a
       '/bindings/:bindingId/actions/rotate',
     ]);
     for (const spec of CONTROL_PLANE_ROUTES) {
-      const handlers = chains.get(`${spec.method} ${spec.path}`.toLowerCase());
-      expect(guarded(handlers ?? []), `${spec.method} ${spec.path}`).to.equal(
-        writes.includes(spec),
-      );
+      const handlers =
+        chains.get(`${spec.method} ${spec.path}`.toLowerCase()) ?? [];
+      if (writes.includes(spec)) {
+        expect(
+          guardedInOrder(handlers, handlers[0]),
+          `${spec.method} ${spec.path}`,
+        ).to.equal(true);
+      } else {
+        expect(guarded(handlers), `${spec.method} ${spec.path}`).to.equal(
+          false,
+        );
+      }
     }
   });
 
   it("the organization's coding engine", () => {
+    const authenticate = () => undefined;
     const container = new Container();
-    container
-      .bind('AuthMiddleware')
-      .toConstantValue({ authenticate: () => undefined });
+    container.bind('AuthMiddleware').toConstantValue({ authenticate });
     const route = routeChains(createAgentHarnessAdminRouter(container)).find(
-      (r) => r.path === '/coding-engine',
+      (r) => r.method === 'PUT' && r.path === '/coding-engine',
     );
-    expect(guarded(route?.handlers ?? [])).to.equal(true);
+    expect(guardedInOrder(route?.handlers ?? [], authenticate)).to.equal(true);
   });
 });
