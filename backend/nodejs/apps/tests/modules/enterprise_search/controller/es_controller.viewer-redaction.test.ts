@@ -199,12 +199,12 @@ const stubAccess = (readable: string[] | null, unmatched: string[] = []) => {
   return asked
 }
 
-const stubConversation = (messages: unknown[]) => {
+const stubConversation = (messages: unknown[], sharedWith: unknown[] = [{ userId: VIEWER }], kind: { agentKey?: string } = {}) => {
   sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
   sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
-    chain({ _id: SESSION, orgId: ORG, userId: OWNER, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+    chain({ _id: SESSION, orgId: ORG, userId: OWNER, ...kind, title: 't', initiator: OWNER, isShared: true, sharedWith, status: 'complete' }),
   )
   sinon.stub(ChatSession, 'find').returns(chain([]))
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
@@ -1232,9 +1232,12 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
   const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
   const COLLABORATOR = '999999999999999999999999'
   const HIDDEN = [TOOL_TEXT, 'thinking prose', 'I looked at the pages', 'narration between steps']
+  // Behind the guard the route mounts, as every read of this file runs.
   const fetchRows = async (userId: string) => {
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub() as any)
+    const next = sinon.stub()
+    await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
+    sinon.assert.notCalled(next)
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -1269,13 +1272,14 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
   it("a turn's response to a collaborator reads a message without a sender as the initiator's", async () => {
     stubAccess(ALL)
-    const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [richAnswer()] })
-    expect(out.messages[0].content).to.equal('The answer [1][2]')
-    expect(out.messages[0].reasoning).to.deep.equal([])
-    expect(out.messages[0].tools).to.deep.equal([])
-    for (const leaked of HIDDEN) expect(JSON.stringify(out.messages[0]), leaked).to.not.contain(leaked)
-    const own: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [{ ...richAnswer(), senderId: COLLABORATOR }] })
-    expect(own.messages[0].reasoning).to.have.length(1)
+    // The frame holds each answer's turn from its question: an answer cut from it is hidden as unconfirmed.
+    const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [asked_(), richAnswer()] })
+    expect(out.messages[1].content).to.equal('The answer [1][2]')
+    expect(out.messages[1].reasoning).to.deep.equal([])
+    expect(out.messages[1].tools).to.deep.equal([])
+    for (const leaked of HIDDEN) expect(JSON.stringify(out.messages[1]), leaked).to.not.contain(leaked)
+    const own: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [asked_(), { ...richAnswer(), senderId: COLLABORATOR }] })
+    expect(own.messages[1].reasoning).to.have.length(1)
   })
 
   it('the owner still gets reasoning and tool steps of their own answer', async () => {
@@ -1289,21 +1293,24 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
   it('an agent conversation and the archive list drop them too', async () => {
     stubAccess(ALL)
-    stubConversation([richAnswer()])
+    stubConversation([richAnswer()], [{ userId: VIEWER }], { agentKey: 'agent-1' })
     const r = res()
-    await getAgentConversationById(appConfig)(req(VIEWER, { params: { agentKey: 'agent-1', conversationId: SESSION } }), r, sinon.stub() as any)
+    const next = sinon.stub()
+    await getAgentChat()(req(VIEWER, { params: { agentKey: 'agent-1', conversationId: SESSION } }), r, next)
+    sinon.assert.notCalled(next)
     const wire = JSON.stringify(r.json.firstCall.args[0])
     expect(wire).to.contain('The answer [1][2]')
     for (const leaked of HIDDEN) expect(wire, leaked).to.not.contain(leaked)
     sinon.restore()
 
     stubAccess(ALL)
-    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
-    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }] }]))
+    // As the route mounts the archive list (its list scope), with the chat as an archive row reads it.
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], updatedAt: new Date(), archivedBy: OWNER }]))
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer() }]))
+    // The answer with its question: an archive judges each answer with its whole turn.
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...asked_() }, { sessionId: SESSION, ...richAnswer() }]))
     const list = res()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), list, sinon.stub() as any)
+    await listArchives()(req(VIEWER), list, sinon.stub())
     const listed = JSON.stringify(list.json.firstCall.args[0])
     expect(listed).to.contain('The answer [1][2]')
     for (const leaked of HIDDEN) expect(listed, leaked).to.not.contain(leaked)
@@ -1336,7 +1343,7 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
       [COLLABORATOR, 'COLLAB-STEP', 'OWNER-STEP'],
     ] as const) {
       stubAccess([])
-      stubConversation(rows)
+      stubConversation(rows, [{ userId: VIEWER }, { userId: COLLABORATOR, accessLevel: 'write' }])
       const wire = JSON.stringify(await fetchRows(reader))
       expect(wire).to.contain('owner answer').and.to.contain('collaborator answer').and.to.contain(kept)
       expect(wire).to.not.contain(dropped)
@@ -1346,9 +1353,12 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
 
   it('the conversation a turn ends with drops them as a fetch does', async () => {
     stubAccess([])
+    // Each answer with its question, as a frame that holds the turns.
     const final: any = await redactConversationFor(appConfig, viewerOf(OWNER, ORG), {
       messages: [
+        { messageType: 'user_query', content: 'mine' },
         { messageType: 'bot_response', content: 'a', tools: [{ toolResult: 'OWN-STEP' }] },
+        { messageType: 'user_query', content: 'theirs', senderId: COLLABORATOR },
         { messageType: 'bot_response', content: 'b', senderId: COLLABORATOR, tools: [{ toolResult: 'COLLAB-STEP' }] },
       ],
     })
@@ -1376,10 +1386,17 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
       { messageType: 'user_query', content: 'question' },
       { messageType: 'bot_response', content: `no sources ${SECRET}` },
     ]
-    for (const get of [getConversationById, getAgentConversationById]) {
-      stubConversation(rows)
+    // Each read behind its route's guard; the plain chat's handler takes the user directory before its checks.
+    const reads = [
+      { kind: {}, handler: () => behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { citations }) as Handler, 'chat') as any },
+      { kind: { agentKey: 'agent-1' }, handler: () => behindGuard(realGuards(), 'read', getAgentConversationById(appConfig, { citations }) as Handler, 'agent') as any },
+    ]
+    for (const { kind, handler } of reads) {
+      stubConversation(rows, [{ userId: VIEWER }], kind)
       const r = res()
-      await get(appConfig, { citations })(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, sinon.stub() as any)
+      const next = sinon.stub()
+      await handler()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+      sinon.assert.notCalled(next)
       const [first, , second] = r.json.firstCall.args[0].conversation.messages
       expect(first.answerHidden).to.deep.equal(unconfirmed)
       expect(second.answerHidden).to.deep.equal(unconfirmed)
