@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -1639,30 +1639,32 @@ class GoogleDriveTeamConnector(BaseConnector):
         inactive = getattr(self, "_inactive_emails", ())
         return bool(email) and email.lower() in inactive
 
-    def _track_external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> None:
-        """Note a user grant whose email is outside this Workspace domain.
+    def _external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> Optional[str]:
+        """The normalized email of a user grant outside this Workspace domain, else None.
 
         Guarded on a non-empty membership set: an empty one means user sync produced
         nothing, and treating the whole domain as external would flag every member.
         """
-        if entity_type != EntityType.USER or not email:
-            return
-        if not self.synced_user_emails:
-            return
+        if entity_type != EntityType.USER or not email or not self.synced_user_emails:
+            return None
         normalized = email.lower()
-        if normalized not in self.synced_user_emails:
-            self._external_emails.add(normalized)
+        return None if normalized in self.synced_user_emails else normalized
 
-    async def _flush_external_app_users(self) -> None:
-        """Hand accumulated external collaborators to the processor for app membership.
+    def _track_external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> None:
+        """Note a user grant whose email is outside this Workspace domain."""
+        if external := self._external_collaborator(entity_type, email):
+            self._external_emails.add(external)
+
+    async def _flush_external_app_users(self, emails: Optional[Iterable[str]] = None) -> None:
+        """Hand external collaborators (by default, those this sync accumulated) to the processor for app membership.
 
         Non-fatal: a sync that indexed every record should not be reported as failed
         because a visibility edge could not be written. The next run re-derives the set
         from source permissions and retries.
         """
-        if not self._external_emails:
+        emails = list(self._external_emails if emails is None else emails)
+        if not emails:
             return
-        emails = list(self._external_emails)
         if self._listing_cut:
             # A person missing from a cut listing looks external: those on a domain of the listed people, of the last
             # complete listing, or verified for the Workspace (an alias domain with no listed account) are held back
@@ -8141,9 +8143,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             updated_records = []
             non_updated_records = []
             unreadable: list[Record] = []
+            # The grants this reindex writes: their external collaborators need app membership now, as a sync
+            # gives it, and not only after the next sync (whose reaper may also run while these are written).
+            granted: list[Permission] = []
             for record in records:
                 try:
-                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
+                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record, granted)
                     if updated_record_data:
                         updated_record, permissions = updated_record_data
                         updated_records.append((updated_record, permissions))
@@ -8166,7 +8171,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Update DB only for records that changed at source
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
+                granted.extend(p for _, permissions in updated_records for p in permissions)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+            # After the grants are committed: membership resolves the principals they created.
+            await self._flush_external_app_users(
+                {e for p in granted if (e := self._external_collaborator(p.entity_type, p.email))}
+            )
 
             # Publish reindex events for non updated records
             if non_updated_records:
@@ -8177,9 +8187,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             raise
 
     async def _check_and_fetch_updated_record(
-        self, org_id: str, record: Record
+        self, org_id: str, record: Record, granted: Optional[list[Permission]] = None
     ) -> Optional[Tuple[Record, List[Permission]]]:
-        """Fetch record from Google Drive and return data for reindexing if changed."""
+        """Fetch record from Google Drive and return data for reindexing if changed.
+
+        Permissions it writes itself (a sharing change without new content) are added to ``granted``.
+        """
         try:
             file_id = record.external_record_id
             record_group_id = record.external_record_group_id
@@ -8287,6 +8300,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 return (record_update.record, record_update.new_permissions)
             if record_update.is_updated:
                 await self._handle_record_updates(record_update)
+                if record_update.permissions_changed and granted is not None:
+                    granted.extend(record_update.new_permissions or [])
 
             return None
 
