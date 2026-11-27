@@ -18,6 +18,8 @@ _NAMED = "entityRelations edges (a record and the people and organizations it na
 
 WRITERS: dict[str, tuple[str, str]] = {
     "backfill_block_name_folded": (NO_PROJECTION, _CODE),
+    # code files are not access data; a record group's repoKey is not a projected field (kg.proj_doc), so its capture logs no change
+    "backfill_code_path_scope": (PROJECTED, ""),
     "batch_create_edges": (PROJECTED, ""),
     "batch_delete_edges": (PROJECTED, ""),
     "batch_update_connector_status": (NO_PROJECTION, "isActive and isAgentActive of an app are not projected"),

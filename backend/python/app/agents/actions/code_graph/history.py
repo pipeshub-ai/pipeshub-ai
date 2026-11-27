@@ -65,7 +65,7 @@ async def history_impl(
         return await _choose_records(graph_provider, org_id, keys, connector_id, file_path=file_path, repo=repo,
                                      access=access)
 
-    record_ids, path = await _records_for_path(graph_provider, org_id, file_path, choose=choose)
+    record_ids, path = await _records_for_path(graph_provider, org_id, file_path, choose=choose, connector_id=connector_id, repo=repo)
     if not record_ids:
         return {"error": f"No readable indexed file {file_path!r} in this repository."}
     pr_ids, capped = await _linked(graph_provider, record_ids, RecordRelations.MODIFIES.value, "inbound")

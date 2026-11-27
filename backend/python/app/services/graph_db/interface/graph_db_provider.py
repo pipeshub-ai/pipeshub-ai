@@ -5650,6 +5650,15 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def backfill_code_path_scope(self, limit: int = 5000) -> int:
+        """Copy ``connectorId`` and ``recordGroupId`` from each code file's record onto up to ``limit`` ``codeFiles`` lacking ``connectorId``
+        (one whose record has a connector), and set ``repoKey`` (``entities.repo_key`` of ``groupName``) on record groups lacking it.
+
+        Returns how many were updated; 0 means none is left. Idempotent, and safe beside writers: a row a writer gave the fields is not touched.
+        """
+        pass
+
+    @abstractmethod
     async def update_sync_point_if(
         self,
         sync_point_key: str,

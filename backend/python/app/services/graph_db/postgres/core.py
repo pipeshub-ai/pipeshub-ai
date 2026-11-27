@@ -45,6 +45,10 @@ _HOT_SQL = {
     "blocks_by_record": "/* pipeshub:graph.blocks_by_record */ SELECT node_id, doc FROM graph.blocks_by_record($1, $2::text[], $3::jsonb[], $4, $5, $6)",
     "blocks_by_name": "/* pipeshub:graph.blocks_by_name */ SELECT node_id, doc FROM graph.blocks_by_name($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
     "code_files_by_path": "/* pipeshub:graph.code_files_by_path */ SELECT node_id, doc FROM graph.code_files_by_path($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+    "code_files_by_scope": "/* pipeshub:graph.code_files_by_scope */ SELECT node_id, doc FROM graph.code_files_by_scope($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
+    "code_files_by_repo": "/* pipeshub:graph.code_files_by_repo */ SELECT node_id, doc FROM graph.code_files_by_repo($1, $2, $3, $4::text[], $5::jsonb[], $6, $7, $8)",
+    "record_groups_by_repo_key": "/* pipeshub:graph.record_groups_by_repo_key */ SELECT node_id, doc FROM graph.record_groups_by_repo_key($1, $2::text[], $3::jsonb[], $4, $5, $6)",
+    "record_groups_by_parent": "/* pipeshub:graph.record_groups_by_parent */ SELECT node_id, doc FROM graph.record_groups_by_parent($1, $2, $3::text[], $4::jsonb[], $5, $6, $7)",
 }
 _HOT_PAGE = 1000
 

@@ -353,13 +353,20 @@ def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] |
     f = filters or {}
     if not 0 < len(f) <= 32 or not all(0 < len(k) <= 200 for k in f):
         return None
-    rec, conn, name, path = (f.get(k) if isinstance(f.get(k), str) else "" for k in ("recordId", "connectorId", "nameFolded", "filePath"))
+    rec, conn, name, path, group, key, parent = (f.get(k) if isinstance(f.get(k), str) else "" for k in (
+        "recordId", "connectorId", "nameFolded", "filePath", "recordGroupId", "repoKey", "parentExternalGroupId"))
     if collection == "blocks" and 0 < len(rec) <= 200:
         return "blocks_by_record", (rec,)
     if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
         return "blocks_by_name", (conn, name)
+    if collection == "codeFiles" and 0 < len(path) <= 4096 and 0 < len(conn) <= 200:     # graph_0024: within the connector, and the repo
+        return ("code_files_by_repo", (conn, group, path)) if 0 < len(group) <= 200 else ("code_files_by_scope", (conn, path))
     if collection == "codeFiles" and 0 < len(path) <= 4096:
         return "code_files_by_path", (path,)
+    if collection == "recordGroups" and "repoKey" in f and isinstance(f["repoKey"], str) and len(key) <= 1000:
+        return "record_groups_by_repo_key", (key,)
+    if collection == "recordGroups" and 0 < len(conn) <= 200 and 0 < len(parent) <= 1000:
+        return "record_groups_by_parent", (conn, parent)
     return None
 
 

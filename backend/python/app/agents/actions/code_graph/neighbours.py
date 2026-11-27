@@ -262,6 +262,7 @@ async def _resolve_anchors(
             graph_provider, org_id, ids, connector_id,
             file_path=file_path, repo=repo, access=access,
         ),
+        connector_id=connector_id, repo=repo,
     )
     if not record_ids:
         return [], file_path
