@@ -1,6 +1,7 @@
 import { Logger } from '../../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../../libs/services/keyValueStore.service';
 import { EncryptionService } from '../../../../libs/encryptor/encryptor';
+import { storedCiphertext } from '../../../../libs/vault/versioned-secret-documents';
 import { configPaths } from '../../paths/paths';
 import { Users } from '../../../user_management/schema/users.schema';
 
@@ -196,7 +197,8 @@ export class ServiceAccountKindBackfillMigration {
         configPaths.serviceAccountKindBackfill,
       );
       if (raw === null || raw === '') return null;
-      const ciphertext = JSON.parse(raw) as string;
+      // the bare ciphertext as the store hands it back, or a quoted one an older reader returned as stored
+      const ciphertext = storedCiphertext(raw);
       const plaintext = EncryptionService.getInstance(
         this.encryptionAlgorithm,
         this.encryptionSecretKey,

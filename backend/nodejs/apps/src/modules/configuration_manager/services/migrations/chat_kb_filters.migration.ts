@@ -2,6 +2,7 @@ import { Model } from 'mongoose';
 import { Logger } from '../../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../../libs/services/keyValueStore.service';
 import { EncryptionService } from '../../../../libs/encryptor/encryptor';
+import { storedCiphertext } from '../../../../libs/vault/versioned-secret-documents';
 import { configPaths } from '../../paths/paths';
 import { Conversation } from '../../../enterprise_search/schema/conversation.schema';
 import { AgentConversation } from '../../../enterprise_search/schema/agent.conversation.schema';
@@ -208,17 +209,15 @@ export class ChatKbFiltersMigration {
 
     for (let attempt = 1; attempt <= this.backoffMaxAttempts; attempt++) {
       try {
-        // Python's raw Redis store JSON-encodes every string value it's given
-        // (even an already-encrypted one) via json.dumps(), so the bytes here
-        // are the ciphertext wrapped in an extra layer of JSON quoting — strip
-        // that first. Then decrypt (AES-256-GCM, "iv:ciphertext:authTag" hex
-        // format, set by Python's EncryptedKeyValueStore) with the same
+        // The ciphertext ("iv:ciphertext:authTag" hex, set by Python's
+        // EncryptedKeyValueStore): bare as the store hands it back, or quoted
+        // as an older reader returned it. Decrypt with the same
         // SECRET_KEY-derived key Python uses, then JSON.parse the plaintext
         // to get { done, ... }.
         const raw = await this.kvStore.get<string>(configPaths.kbAppsMigrationDone);
         let flag: KbAppsMigrationFlag | null = null;
         if (raw) {
-          const encryptedValue: string = JSON.parse(raw);
+          const encryptedValue = storedCiphertext(raw);
           const decrypted = EncryptionService.getInstance(
             this.encryptionAlgorithm,
             this.encryptionSecretKey,
