@@ -6275,7 +6275,7 @@
     "svcAcctKnowledgeNote1": "僅使用您在建構器中連線的知識來源，而非整個工作區。",
     "svcAcctKnowledgeNote2": "向代理程式提問的每個人，只會得到來自自己有權存取的來源內容的回答。您自己的存取權限不會借給任何其他人。",
     "svcAcctToolsetsTitle": "工具集使用每個人自己的連線",
-    "svcAcctToolsetsNote1": "有人與代理程式聊天時，工具呼叫使用該使用者自己已連線的動作與登入，而不是您的。尚未連線動作的使用者會在代理程式執行前被提示到 Workspace → 動作 中連線。",
+    "svcAcctToolsetsNote1": "有人與代理程式聊天時，工具呼叫使用該使用者自己已連線的動作與登入，而不是您的。如果該使用者尚未連線某個動作，回答會告知這一點，使用者可以在 Workspace → 動作 中連線後再次提問。",
     "svcAcctOrgTitle": "全組織存取",
     "svcAcctOrgDesc": "您組織中的任何人都可以找到、開啟並執行此代理。不會有另外的私人副本。",
     "svcAcctConfirmTitle": "確認後繼續",

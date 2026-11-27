@@ -6316,7 +6316,7 @@
     "svcAcctKnowledgeNote1": "Only knowledge sources you connect in the builder are used—not your entire workspace.",
     "svcAcctKnowledgeNote2": "Each person who asks the agent gets answers drawn only from content they can access in those sources. Your own access is not lent to anyone else.",
     "svcAcctToolsetsTitle": "Toolsets use each person’s own connections",
-    "svcAcctToolsetsNote1": "When someone chats with the agent, tool calls run with that person’s own connected actions and sign-in, never yours. People who have not connected an action are asked to do so in Workspace → Actions before the agent runs.",
+    "svcAcctToolsetsNote1": "When someone chats with the agent, tool calls run with that person’s own connected actions and sign-in, never yours. If they have not connected an action, the answer tells them, and they can connect it in Workspace → Actions and ask again.",
     "svcAcctOrgTitle": "Organization-wide access",
     "svcAcctOrgDesc": "Anyone in your organization can find, open, and run this agent. There is no separate private copy.",
     "svcAcctConfirmTitle": "Confirm to continue",

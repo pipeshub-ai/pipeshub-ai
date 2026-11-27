@@ -6177,7 +6177,7 @@
     "svcAcctKnowledgeNote1": "Es werden nur Wissensquellen verwendet, die Sie im Builder verbinden – nicht Ihr gesamter Workspace.",
     "svcAcctKnowledgeNote2": "Jede Person, die den Agenten fragt, erhält Antworten nur aus Inhalten, auf die sie in diesen Quellen selbst zugreifen darf. Ihr eigener Zugriff wird an niemanden weitergegeben.",
     "svcAcctToolsetsTitle": "Toolsets nutzen die eigenen Verbindungen jeder Person",
-    "svcAcctToolsetsNote1": "Wenn jemand mit dem Agenten chattet, laufen Tool-Aufrufe mit den eigenen verbundenen Aktionen und der Anmeldung dieser Person, nie mit Ihren. Personen, die eine Aktion nicht verbunden haben, werden gebeten, das unter Workspace → Aktionen zu tun, bevor der Agent läuft.",
+    "svcAcctToolsetsNote1": "Wenn jemand mit dem Agenten chattet, laufen Tool-Aufrufe mit den eigenen verbundenen Aktionen und der Anmeldung dieser Person, nie mit Ihren. Hat die Person eine Aktion nicht verbunden, weist die Antwort darauf hin, und sie kann die Aktion unter Workspace → Aktionen verbinden und erneut fragen.",
     "svcAcctOrgTitle": "Zugriff in der Organisation",
     "svcAcctOrgDesc": "Jede Person in Ihrer Organisation kann den Agenten finden, öffnen und ausführen. Es gibt keine separate private Kopie.",
     "svcAcctConfirmTitle": "Zum Fortfahren bestätigen",

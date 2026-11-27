@@ -6253,7 +6253,7 @@
     "svcAcctKnowledgeNote1": "Solo se usan las fuentes de conocimiento que conectes en el constructor, no todo tu espacio de trabajo.",
     "svcAcctKnowledgeNote2": "Cada persona que consulta al agente recibe respuestas basadas solo en el contenido al que puede acceder en esas fuentes. Tu propio acceso no se presta a nadie más.",
     "svcAcctToolsetsTitle": "Los conjuntos de herramientas usan las conexiones de cada persona",
-    "svcAcctToolsetsNote1": "Cuando alguien chatea con el agente, las llamadas a herramientas se ejecutan con las acciones conectadas y el inicio de sesión de esa persona, nunca con los tuyos. A quienes no hayan conectado una acción se les pide hacerlo en Workspace → Acciones antes de que se ejecute el agente.",
+    "svcAcctToolsetsNote1": "Cuando alguien chatea con el agente, las llamadas a herramientas se ejecutan con las acciones conectadas y el inicio de sesión de esa persona, nunca con los tuyos. Si no ha conectado una acción, la respuesta se lo indica, y puede conectarla en Workspace → Acciones y volver a preguntar.",
     "svcAcctOrgTitle": "Acceso en toda la organización",
     "svcAcctOrgDesc": "Cualquier persona de su organización puede encontrar, abrir y ejecutar este agente. No existe una copia privada independiente.",
     "svcAcctConfirmTitle": "Confirme para continuar",

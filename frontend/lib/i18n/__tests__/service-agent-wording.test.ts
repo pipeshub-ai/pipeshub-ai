@@ -68,6 +68,12 @@ describe('service agent wording', () => {
     expect(english.svcAcctToolsetsNote1).toMatch(/never yours/i);
   });
 
+  it('says a missing action is reported in the answer, not asked for before the run', () => {
+    // The run goes on without an unconnected action; the answer says so.
+    expect(english.svcAcctToolsetsNote1).not.toMatch(/before the agent runs/i);
+    expect(english.svcAcctToolsetsNote1).toMatch(/the answer tells them/i);
+  });
+
   it('no longer asks anyone to remove toolsets or to set agent-level credentials', () => {
     for (const key of ['svcAcctRemoveToolsetsTitle', 'svcAcctRemoveToolsetsDesc', 'svcAcctToolsetsNote2Convert']) {
       expect(english[key]).toBeUndefined();

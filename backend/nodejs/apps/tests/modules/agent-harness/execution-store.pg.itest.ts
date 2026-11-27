@@ -74,6 +74,13 @@ import { PgRunState } from '../../../src/libs/repositories/agent-harness/run-sta
 import { PgRunStatusReader } from '../../../src/libs/repositories/agent-harness/run-status/pg';
 import { PgWorkerFeatureSightings } from '../../../src/libs/repositories/agent-harness/worker-feature-sightings/pg';
 import { pgActiveOrgIds } from '../../../src/libs/repositories/agent-harness/active-orgs/pg';
+import { pgEngineRunsServed } from '../../../src/libs/repositories/agent-harness/engine-runs-probe/pg';
+import { PgJournalDurabilityProbe } from '../../../src/libs/repositories/agent-harness/journal-durability-probe/pg';
+import {
+  currentJournalCapability,
+  JournalCapability,
+  recordJournalCapability,
+} from '../../../src/modules/agent-harness/config';
 import { HARNESS_ENABLED } from './support/rollout';
 import { agentDefinition } from './support/agent-definition';
 import { testCipher, testRunKeys } from './support/data-protection';
@@ -878,6 +885,43 @@ for (const bin of pgBins()) {
           expect((await sightings.sighting('executor_engine')).seenAt).to.equal(
             50_000,
           );
+        });
+
+        it('engine runs are served once a worker showing the engine feature was seen, on a ready deployment', async () => {
+          const names = ['DOC_STORE', 'AGENT_HARNESS_RELAY_ENABLED', 'AGENT_HARNESS_WORKER_ENABLED'];
+          const saved = names.map((name) => process.env[name]);
+          const journal = currentJournalCapability();
+          try {
+            recordJournalCapability(null);
+            process.env.AGENT_HARNESS_WORKER_ENABLED = 'false';
+            expect(await pgEngineRunsServed()).to.equal(false);
+            process.env.DOC_STORE = 'postgres';
+            process.env.AGENT_HARNESS_RELAY_ENABLED = 'true';
+            process.env.AGENT_HARNESS_WORKER_ENABLED = 'true';
+            await new PgWorkerFeatureSightings().saw(['executor_engine']);
+            expect(await pgEngineRunsServed()).to.equal(true);
+          } finally {
+            names.forEach((name, i) => {
+              if (saved[i] === undefined) delete process.env[name];
+              else process.env[name] = saved[i];
+            });
+            recordJournalCapability(journal);
+          }
+        });
+
+        it('the journal is durable on PostgreSQL only when every harness store is there', async () => {
+          const recorded: JournalCapability[] = [];
+          const record = (capability: JournalCapability) => recorded.push(capability);
+          expect(await new PgJournalDurabilityProbe(undefined, record).probe()).to.deep.equal({
+            'journal.durable': true,
+          });
+          expect(
+            await new PgJournalDurabilityProbe(() => ['memory'], record).probe(),
+          ).to.deep.equal({ 'journal.durable': false });
+          expect(recorded).to.deep.equal([
+            { durable: true, reason: 'postgres' },
+            { durable: false, reason: 'postgres_incomplete' },
+          ]);
         });
 
         it('the active orgs are every org not deleted, read as the jobs role', async () => {

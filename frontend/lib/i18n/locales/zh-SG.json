@@ -6275,7 +6275,7 @@
     "svcAcctKnowledgeNote1": "仅使用您在构建器中连接的知识来源，而不是整个工作区。",
     "svcAcctKnowledgeNote2": "向智能体提问的每个人，只会得到来自自己有权访问的来源内容的回答。您自己的访问权限不会借给任何其他人。",
     "svcAcctToolsetsTitle": "工具集使用每个人自己的连接",
-    "svcAcctToolsetsNote1": "有人与智能体聊天时，工具调用使用该用户自己已连接的操作和登录，而不是您的。尚未连接操作的用户会在智能体运行前被提示到 Workspace → 操作 中连接。",
+    "svcAcctToolsetsNote1": "有人与智能体聊天时，工具调用使用该用户自己已连接的操作和登录，而不是您的。如果该用户尚未连接某个操作，回答会告知这一点，用户可以在 Workspace → 操作 中连接后再次提问。",
     "svcAcctOrgTitle": "全组织范围的访问权限",
     "svcAcctOrgDesc": "您组织中的任何人都可以查找、打开和运行此智能体。不存在单独的私人副本。",
     "svcAcctConfirmTitle": "确认后继续",

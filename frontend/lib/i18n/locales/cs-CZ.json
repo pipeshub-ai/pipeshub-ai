@@ -6486,7 +6486,7 @@
     "svcAcctKnowledgeNote1": "Používají se jen znalostní zdroje, které připojíte v editoru, nikoli celý váš pracovní prostor.",
     "svcAcctKnowledgeNote2": "Každý, kdo se agenta ptá, dostane odpovědi jen z obsahu, ke kterému má v těchto zdrojích sám přístup. Váš vlastní přístup se nikomu nepůjčuje.",
     "svcAcctToolsetsTitle": "Sady nástrojů používají vlastní připojení každého člověka",
-    "svcAcctToolsetsNote1": "Když s agentem někdo chatuje, volání nástrojů běží s jeho vlastními připojenými akcemi a přihlášením, nikdy s vašimi. Kdo akci nepřipojil, bude před spuštěním agenta vyzván, aby to udělal v části Pracovní prostor → Akce.",
+    "svcAcctToolsetsNote1": "Když s agentem někdo chatuje, volání nástrojů běží s jeho vlastními připojenými akcemi a přihlášením, nikdy s vašimi. Pokud akci nepřipojil, odpověď mu to sdělí a on ji může připojit v části Pracovní prostor → Akce a zeptat se znovu.",
     "svcAcctOrgTitle": "Přístup v celé organizaci",
     "svcAcctOrgDesc": "Kdokoli ve vaší organizaci může tohoto agenta najít, otevřít a spustit. Neexistuje žádná samostatná soukromá kopie.",
     "svcAcctConfirmTitle": "Potvrďte pro pokračování",
