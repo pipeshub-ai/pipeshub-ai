@@ -25,6 +25,7 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.mcp import service as mcp_service
 from app.config.configuration_service import delete_config_or_raise
+from app.core.org_context import org_of
 from app.utils import error_class
 
 if TYPE_CHECKING:
@@ -75,19 +76,25 @@ async def _list(config_service: ConfigurationService, prefix: str) -> list[str]:
         return []
 
 
-async def purge_instance_credentials(config_service: ConfigurationService, instance_id: str) -> list[str]:
+async def purge_instance_credentials(
+    config_service: ConfigurationService, instance: dict[str, Any], *, user_id: str | None = None,
+) -> list[str]:
     """Every user's and agent's credentials for the instance, its shared DCR client and any
-    authorization still in flight. The admin's static OAuth app config is kept.
+    authorization still in flight; with ``CONTROL_PLANE_CREDENTIALS`` on, every binding made on it is
+    revoked too (audited as ``user_id``). The admin's static OAuth app config is kept.
 
     Not best-effort: raises when anything may still be stored (a listing that failed, a delete the
-    store refused), after trying every key, so a new target is never saved next to the old one's
-    secrets.
+    store refused, a revoke the binder did not confirm), after trying everything, so a new target is
+    never saved next to the old one's secrets.
     """
+    from app.harness.credentials.legacy_records import legacy_records
+
+    instance_id = instance["_id"]
     refresh_service = _refresh_service()
     if refresh_service:
         refresh_service.cancel_refresh_tasks_for_instance(instance_id)
 
-    unlisted: list[Exception] = []
+    failures: list[Exception] = []
 
     async def listed(prefix: str) -> list[str]:
         try:
@@ -95,7 +102,7 @@ async def purge_instance_credentials(config_service: ConfigurationService, insta
         except Exception as e:
             # Still delete what was found, then raise: a server delete has already dropped the record, so
             # nothing could reach these keys later.
-            unlisted.append(e)
+            failures.append(e)
             return []
 
     keys = await listed(get_mcp_instance_credentials_prefix(instance_id))
@@ -110,9 +117,18 @@ async def purge_instance_credentials(config_service: ConfigurationService, insta
             continue
         if isinstance(state, dict) and state.get("instanceId") == instance_id:
             keys.append(key)
-    await error_class.attempt_each(keys, lambda key: delete_config_or_raise(config_service, key), "MCP credentials")
-    if unlisted:
-        raise unlisted[0]
+    try:
+        await error_class.attempt_each(keys, lambda key: delete_config_or_raise(config_service, key), "MCP credentials")
+    except Exception as e:
+        failures.append(e)
+    # Last, and even when a delete failed: with the sign-in states gone no new sign-in for the old target can start,
+    # and one that was saved before this point is revoked here.
+    try:
+        await legacy_records(config_service).revoke_instance(org_of(instance) or "", instance_id, user_id=user_id)
+    except Exception as e:
+        failures.append(e)
+    if failures:
+        raise error_class.first_to_raise(failures)
     return keys
 
 
@@ -121,7 +137,7 @@ async def delete_instance_data(config_service: ConfigurationService, instance: d
     removed: list[str] = []
     await _delete(config_service, mcp_service.instance_record_path(instance), removed)
     try:
-        removed += await purge_instance_credentials(config_service, instance["_id"])
+        removed += await purge_instance_credentials(config_service, instance)
     except Exception as e:
         logger.warning(f"Could not remove every credential of MCP instance {instance['_id']}: {e}")
     await _delete(config_service, get_mcp_oauth_client_config_path(instance["_id"]), removed)

@@ -160,6 +160,31 @@ settings.register_profile(
 settings.load_profile("ci")
 
 
+# Switches a test world pins for its scope (``world.deployment()``). ``monkeypatch.setenv`` inside a
+# ``patch.dict(os.environ)`` scope puts back the patched value once the patch has undone itself, and every later test
+# of the process then runs with that deployment. A module may hold such a world for all its tests (a module-scoped
+# fixture), so the check is at the module's edges: what the module found is what it must leave.
+_DEPLOYMENT_SWITCHES = ("PIPESHUB_ENABLE_SKILLS", "PIPESHUB_ENABLE_CODE_EXECUTION", "MCP_TOOL_APPROVALS")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _no_deployment_switch_left_behind(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fails the module that left a deployment switch changed, after putting back what it found so the tests after it
+    do not inherit it. Module-scoped and first of the autouse fixtures, so it is torn down after every fixture of the
+    module, monkeypatch's included."""
+    found = {name: os.environ.get(name) for name in _DEPLOYMENT_SWITCHES}
+    yield
+    left = {name: os.environ.get(name) for name in _DEPLOYMENT_SWITCHES if os.environ.get(name) != found[name]}
+    for name in left:
+        value = found[name]
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    if left:
+        pytest.fail(f"{request.node.nodeid} left {left} in the environment for the modules after it", pytrace=False)
+
+
 @pytest.fixture(autouse=True)
 def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     # The lane maps producers share are process-wide. One a test left behind

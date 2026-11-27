@@ -62,7 +62,7 @@ async def test_a_page_sets_the_planner_profile_before_it_reads_and_a_callers_tra
     class Tx:
         async def fetchrow(self, sql: str, *a: object) -> dict:
             seen.append((sql,))
-            return {"b": "on", "s": "on", "p": "2", "m": "auto"}
+            return {"b": "on", "s": "on", "p": "2", "m": "auto", "o": "on", "j": "on"}
 
         async def fetchval(self, sql: str, *a: object) -> None:
             seen.append((sql, *a))
@@ -71,7 +71,7 @@ async def test_a_page_sets_the_planner_profile_before_it_reads_and_a_callers_tra
             seen.append((sql,))
             return []
     await cg._hop_page(Tx(), "o", "blocks", ["a"], ["CALLS"], 5, out=True, inn=True, both=False, after="", restore=restore)
-    assert seen == [(cg._HOP_PROFILE,), (cg._HOP_FIRST_ANY_SQL,), *([(cg._HOP_RESTORE, "on", "on", "2", "auto")] if restore else [])]
+    assert seen == [(cg._HOP_PROFILE,), (cg._HOP_FIRST_ANY_SQL,), *([(cg._HOP_RESTORE, "on", "on", "2", "auto", "on", "on")] if restore else [])]
 
 
 @pytest.mark.parametrize(("out", "inn", "sql", "n"), [(True, False, "_HOP_FIRST_OUT_SQL", 5), (False, True, "_HOP_FIRST_IN_SQL", 6), (True, True, "_HOP_FIRST_ANY_SQL", 6)])

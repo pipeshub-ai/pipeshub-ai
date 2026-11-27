@@ -99,6 +99,9 @@ export interface ShareAdapter {
     labels?: Record<ShareRole, { label: string; description: string }>;
   };
 
+  /** Shown under the search box, for what sharing this entity implies. */
+  notice?: string;
+
   getSharedMembers: () => Promise<SharedMember[]>;
   share: (submission: ShareSubmission) => Promise<void>;
   updateRole?: (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => Promise<void>;

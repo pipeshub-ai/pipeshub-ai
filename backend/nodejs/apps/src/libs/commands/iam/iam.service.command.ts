@@ -15,6 +15,7 @@ export interface IAMResponse {
   statusCode: number;
   data?: any;
   msg?: string;
+  headers?: Record<string, string>;
 }
 
 export class IAMServiceCommand extends BaseCommand<IAMResponse> {
@@ -47,12 +48,11 @@ export class IAMServiceCommand extends BaseCommand<IAMResponse> {
       300,
     );
 
-    // Assuming the response is JSON; adjust as needed.
-    const data = await response.json();
     return {
       statusCode: response.status,
-      data: data,
+      data: await this.readBody(response),
       msg: response.statusText,
+      ...this.retryAfterHeaders(response),
     };
   }
 }

@@ -46,7 +46,10 @@ function validate(form: SmtpFormData, t: TFunction): SmtpFormErrors {
   }
   if (!form.fromEmail.trim()) {
     errors.fromEmail = t('workspace.mail.errors.fromEmailRequired');
-  } else if (!isValidEmail(form.fromEmail.trim())) {
+  } else if (
+    form.fromEmail !== CONFIG_SECRET_PLACEHOLDER &&
+    !isValidEmail(form.fromEmail.trim())
+  ) {
     errors.fromEmail = t('workspace.mail.errors.fromEmailInvalid');
   }
   return errors;

@@ -54,7 +54,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
-from app.core.org_context import MissingOrgContext
+from app.core.org_context import MissingOrgContext, org_optional
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -8759,26 +8759,33 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="get_user_by_source_id")
             return None
 
+    @org_optional
     async def get_user_by_user_id(
         self,
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
-        Get user by user ID.
+        Get user by user ID; with ``org_id``, only a user of that organisation.
         Note: user_id is the userId field value, not the _key.
         """
+        if org_id == "":
+            return None  # an empty organisation matches no user
         try:
+            scoped = org_id is not None
+            org_filter = "FILTER user.orgId == @org_id" if scoped else ""
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId == @user_id
+                    {org_filter}
                     LIMIT 1
                     RETURN user
             """
             result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_id": user_id}
+                bind_vars={"user_id": user_id, **({"org_id": org_id} if scoped else {})}
             )
             return result[0] if result else None
         except Exception as e:
