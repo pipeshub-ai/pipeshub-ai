@@ -28,6 +28,7 @@ ANSWERS: dict[str, object] = {
     "brave": {"web": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
     "searxng": {"results": [{"title": "One", "url": "https://a.example/1", "content": "first"}]},
     "keenable": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first"}]},
+    "sofya": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first", "content": "first"}]},
     "firecrawl": {"success": True, "data": {"web": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
 }
 CONFIGURATION = {"apiKey": "test-key", "baseUrl": "https://provider.example"}

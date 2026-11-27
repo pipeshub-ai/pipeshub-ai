@@ -28,6 +28,7 @@ from app.web.search.brave import BraveSearch
 from app.web.search.firecrawl import FirecrawlSearch
 from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
+from app.web.search.sofya import SofyaSearch
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -156,6 +157,30 @@ class TestKeenable:
         assert seen[0].headers["X-API-Key"] == "k"
 
 
+
+class TestSofya:
+    async def test_search(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"results": [
+                {"url": "https://a.example/", "title": "A", "description": "d", "content": "c", "published_date": "2026-02-03"},
+                {"url": "https://b.example/", "title": "B", "content": "c", "published_date": None},
+            ]})
+
+        results = await SofyaSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert [(r.url, r.snippet, r.published) for r in results] == [
+            ("https://a.example/", "d", "2026-02-03"), ("https://b.example/", "c", None),
+        ]
+        assert str(seen[0].url) == "https://sofya.co/v1/search"
+        assert seen[0].headers["Authorization"] == "Bearer k"
+        assert json.loads(seen[0].content) == {"query": "q", "search_depth": "snippets", "max_results": 10}
+
+    async def test_bad_key(self) -> None:
+        http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(401)))
+        with pytest.raises(AuthFailed):
+            await SofyaSearch({"apiKey": "k"}, http).search("q", deadline())
 class TestFirecrawlSearch:
     async def test_cloud_by_default(self, server: Server) -> None:
         server.handler = lambda r: httpx.Response(200, json={"success": True, "data": {"web": [{"url": "https://a.example/", "title": "A", "description": "d"}]}})

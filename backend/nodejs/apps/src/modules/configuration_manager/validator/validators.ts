@@ -761,6 +761,7 @@ export const webSearchProviderType = z.enum([
   'firecrawl',
   'crawl4ai',
   'keenable',
+  'sofya',
 ]);
 
 const notADefaultPageReader = (body: {
