@@ -388,15 +388,15 @@ class HierarchyMixin(PgBase):
 
         async def walk(tx: Tx) -> dict[str, int]:
             was = (await tx.fetchrow(DEPTHS_SORTS_OFF))["was"]
-            try:
-                if parent_type == "app":
-                    rows = await tx.fetch(DEPTHS_APP, org, parent_id, list(node_ids), rec_depth)
-                elif parent_type == "recordGroup":
-                    rows = await tx.fetch(DEPTHS_GROUP, org, parent_id, list(node_ids), rec_depth)
-                else:
-                    rows = await tx.fetch(DEPTHS_RECORD, org, parent_id, list(node_ids), safe)
-            finally:
-                await tx.fetchval(DEPTHS_SORTS_BACK, was)
+            if parent_type == "app":
+                rows = await tx.fetch(DEPTHS_APP, org, parent_id, list(node_ids), rec_depth)
+            elif parent_type == "recordGroup":
+                rows = await tx.fetch(DEPTHS_GROUP, org, parent_id, list(node_ids), rec_depth)
+            else:
+                rows = await tx.fetch(DEPTHS_RECORD, org, parent_id, list(node_ids), safe)
+            # put back only after an answer: a failed read aborted the transaction, which ends the setting with it, and a statement now would fail too and hide
+            # the read's own error (a serialization failure the unit of work retries)
+            await tx.fetchval(DEPTHS_SORTS_BACK, was)
             return {r["id"]: int(r["lvl"]) for r in rows}
         got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
         if got is not None:

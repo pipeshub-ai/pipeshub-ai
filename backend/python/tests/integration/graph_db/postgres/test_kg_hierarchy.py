@@ -297,6 +297,26 @@ async def test_the_level_walk_reads_about_the_asked_nodes_whatever_the_size_of_t
     assert read[2000] < read[200] * 1.5 + 50, read
 
 
+async def test_a_level_walk_that_fails_retryably_is_retried_with_its_own_error(pg_provider, pg_db, monkeypatch) -> None:
+    """The walk's level read fails once with a serialization failure (raised by the server, so the transaction aborts): the unit of work sees that error and runs the
+    walk again, which answers. Nothing after the failed read runs in the aborted transaction, where it would fail too and put its own error in place of the retryable one."""
+    import app.core.db.uow as uow
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    real = uow.Tx._run
+    injected: list[str] = []
+
+    async def failing(self, op, sql, *args, internal=False) -> object:
+        if "get_node_depths_batch_group " in sql[:80] and not injected:
+            injected.append(sql)
+            return await real(self, "execute", "DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40001'; END $$")
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(uow.Tx, "_run", failing)
+    with _switch("0"), _bound(org):
+        got = await pg_provider.get_node_depths_batch("g1", list("fabcd"), 5, "recordGroup")
+    assert injected and got == await _legacy_depths(pg_db, org, "g1", "recordGroup", list("fabcd"), 5) and got, got
+
+
 # ---- one thing at a time -----------------------------------------------------------------------------------------------------------------------------------------------------------
 
 async def _tree(p, db, org: str, *, extra: list[dict] | None = None, links: list[dict] | None = None) -> None:
