@@ -2467,6 +2467,8 @@ describe('Enterprise Search Controller', () => {
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID, sharedWith: [] } as any)
       stubChatSessionMessageLeanFind([])
+      // The real content access, whose revoke the query service refuses.
+      useConversationExtensions({ acl: testAcl })
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 503,
         data: { detail: 'DATABASE_UNREACHABLE' },

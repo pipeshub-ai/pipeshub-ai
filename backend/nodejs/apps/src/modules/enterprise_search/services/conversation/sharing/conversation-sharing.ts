@@ -106,9 +106,11 @@ const normalizedIds = (userIds: readonly string[]): string[] => [
 /**
  * Sharing with users: whole-array writes, each recipient stored with the level asked for (`read`
  * unless `write` is asked; an agent chat only `read`). Recipients are given read access to the
- * conversation's attachments and artifacts once the write is committed, and lose it on unshare.
- * People newly given access are notified. With the harness's participant recorder, the write and
- * its record commit together.
+ * conversation's attachments and artifacts once the write is committed. An unshare takes it back
+ * before the write, and the write waits on it: a refused revoke answers an error and leaves the
+ * people listed, so the owner can try again; once written, the revoke is repeated. People newly
+ * given access are notified. With the harness's participant recorder, the write and its record
+ * commit together.
  */
 export class ConversationSharing implements IConversationSharing {
   constructor(
@@ -220,17 +222,26 @@ export class ConversationSharing implements IConversationSharing {
       }
     });
     const userIds = normalizedIds(requestedIds);
+    const findConversation = (): Promise<IChatSessionDocument | null> =>
+      ChatSession.findOne({
+        _id: grant.session._id,
+        orgId: identity.orgId,
+        isDeleted: false,
+        ...kindScope(grant),
+      });
+    // Revoke before the list changes: a refused revoke leaves the people listed, so the owner can retry. A chat
+    // that is gone asks the query service nothing.
+    if (!(await findConversation())) {
+      throw new NotFoundError('Conversation not found or unauthorized');
+    }
+    const change = this.shareChange(grant, identity, userIds);
+    await conversationExtensions().content.revoke(change);
     const result = await this.withParticipantRecord(
       participants,
       grant,
       identity,
       async (session, before) => {
-        const conversation = await ChatSession.findOne({
-          _id: grant.session._id,
-          orgId: identity.orgId,
-          isDeleted: false,
-          ...kindScope(grant),
-        });
+        const conversation = await findConversation();
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
         }
@@ -251,9 +262,8 @@ export class ConversationSharing implements IConversationSharing {
         return this.write(grant, updateObject, session, 'read');
       },
     );
-    await conversationExtensions().content.unshared(
-      this.shareChange(grant, identity, userIds),
-    );
+    // Again after the commit: a view that read the old list may have granted in between.
+    await conversationExtensions().content.unshared(change);
     return result;
   }
 
@@ -268,6 +278,7 @@ export class ConversationSharing implements IConversationSharing {
       ownerId: identity.userId,
       orgId: identity.orgId,
       userIds,
+      ...requestIdOf(identity),
     };
   }
 

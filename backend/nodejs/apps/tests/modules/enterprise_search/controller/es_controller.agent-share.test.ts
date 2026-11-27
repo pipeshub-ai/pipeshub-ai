@@ -669,10 +669,15 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       it('a refused revoke writes no participant-journal event; the retry writes one', async () => {
         const s = setup()
         shareWith(s, RECIPIENT)
-        // The real one needs a replica set; the unit of work it wraps is the same either way.
-        sinon.stub(durableTransaction, 'inDurableTransaction').callsFake((work) => work(undefined as never))
+        // The real one needs a replica set; the unit of work it wraps is the same either way. The handle has no
+        // session, as the unit of work hands out on a standalone server.
+        sinon.stub(durableTransaction, 'inDurableTransaction').callsFake((work) => work({ session: undefined } as never))
         const participantsChanged = sinon.stub().resolves()
-        const handler = controller.unshareAgentConversation(appConfig, () => ({ participantsChanged }) as never) as JsonHandler
+        // Behind the route's guard, as the router mounts it; the sharing service is the default one.
+        const handler = agentRoute(
+          'manageSharing',
+          controller.unshareAgentConversation(appConfig, undefined, () => ({ participantsChanged }) as never) as JsonHandler,
+        )
         const unshare = () => callJson(handler, request(owner, agentParams(s), { userIds: [String(RECIPIENT)] }))
         s.ai.reply(ART, 503, { detail: 'DATABASE_UNREACHABLE' }, { 'retry-after': '5' })
 

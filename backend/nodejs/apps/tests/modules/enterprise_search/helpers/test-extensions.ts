@@ -11,6 +11,7 @@ export const testAcl = {
 /** Content access that grants nothing, for tests about the share write itself. */
 export const noContentAccess = {
   shared: () => Promise.resolve(),
+  revoke: () => Promise.resolve(),
   unshared: () => Promise.resolve(),
   viewed: () => Promise.resolve(),
 }
