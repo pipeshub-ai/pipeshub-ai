@@ -1,11 +1,19 @@
 /// <reference types="mocha" />
 import 'reflect-metadata'
 import { expect } from 'chai'
+import fs from 'fs'
+import path from 'path'
 
 import {
   AI_PUBLIC_CONFIG_KEYS,
   CONFIG_SECRET_PLACEHOLDER,
   mergeAiModelCredentials,
+  aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
+  connectionEndpointsDifferBody,
+  reusesSavedAiModelCredentials,
+  hasForwardingCredentials,
+  withoutForwardingCredentials,
   stripAiModelSecrets,
   stripAiModelsStoredConfig,
   maskSmtpConfig,
@@ -20,6 +28,8 @@ import {
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
   redactCredentialTemplates,
+  CREDENTIAL_HEADER_HINT,
+  isCredentialHeaderName,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
 const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
@@ -103,8 +113,22 @@ describe('maskConfigSecrets', () => {
       expect(out['Authorization']).to.equal(CONFIG_SECRET_PLACEHOLDER)
       expect(out['Ocp-Apim-Subscription-Key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
       expect(out['x-functions-key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
-      expect(out['x-pipeshub-counter-key']).to.equal('{{SUBJECT}}')
+      // Any header named like a key is treated as a credential, as the preview does.
+      expect(out['x-pipeshub-counter-key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
       expect(out['x-litellm-customer-id']).to.equal('{{SUBJECT}}')
+    })
+
+    it('classifies header names as the Python preview does (shared contract fixture)', () => {
+      const fixture = JSON.parse(
+        fs.readFileSync(
+          path.join(__dirname, '../../../contract/credential-header-hints.fixture.json'),
+          'utf8',
+        ),
+      ) as { pattern: string; credential: string[]; notCredential: string[] }
+      expect(CREDENTIAL_HEADER_HINT.source).to.equal(fixture.pattern)
+      expect(CREDENTIAL_HEADER_HINT.flags).to.equal('i')
+      expect(fixture.credential.filter((name) => !isCredentialHeaderName(name))).to.deep.equal([])
+      expect(fixture.notCredential.filter((name) => isCredentialHeaderName(name))).to.deep.equal([])
     })
   })
 
@@ -305,5 +329,163 @@ describe('maskConfigSecrets', () => {
       expect(result.botToken).to.equal('xoxb-rotated')
       expect(result.signingSecret).to.equal('real-signing-secret')
     })
+  })
+})
+
+describe('aiModelDestinationChanged', () => {
+  it('detects a changed endpoint or baseUrl', () => {
+    expect(aiModelDestinationChanged({ endpoint: 'https://evil.test/v1' }, { endpoint: 'https://a.test/v1' })).to.equal(true)
+    expect(aiModelDestinationChanged({ endpoint: '' }, { endpoint: 'https://a.test/v1' })).to.equal(true)
+    expect(aiModelDestinationChanged({ baseUrl: 'https://evil.test' }, {})).to.equal(true)
+  })
+
+  it('tells apart hosts that have no special scheme', () => {
+    expect(aiModelDestinationChanged({ endpoint: 'evil.test:11434' }, { endpoint: 'ollama.internal:11434' })).to.equal(true)
+    expect(aiModelDestinationChanged({ endpoint: 'x://evil.test/v1' }, { endpoint: 'y://a.test/v1' })).to.equal(true)
+  })
+
+  it('ignores case, trailing slashes, absent keys and non-destination keys', () => {
+    expect(aiModelDestinationChanged({ endpoint: 'HTTPS://A.test/v1/' }, { endpoint: 'https://a.test/v1' })).to.equal(false)
+    expect(aiModelDestinationChanged({}, { endpoint: 'https://a.test/v1' })).to.equal(false)
+    expect(aiModelDestinationChanged({ region: 'eu-west-1' }, { region: 'us-east-1' })).to.equal(false)
+  })
+
+  it('counts the provider form default and a blank endpoint as different endpoints', () => {
+    // The runtime falls back to its own environment for a blank endpoint, not the form default.
+    const cases: Array<[string, string]> = [
+      ['ollama', 'http://host.docker.internal:11434'],
+      ['lmStudio', 'http://host.docker.internal:1234/v1'],
+      ['litellmProxy', 'http://host.docker.internal:4000'],
+    ]
+    for (const [provider, endpoint] of cases) {
+      expect(aiModelDestinationChanged({ endpoint }, {}, provider), provider).to.equal(true)
+      expect(aiModelDestinationChanged({ endpoint: '' }, { endpoint }, provider), provider).to.equal(true)
+      expect(aiModelDestinationChanged({ endpoint: `${endpoint}/` }, { endpoint }, provider), provider).to.equal(false)
+    }
+  })
+
+  it('counts any other endpoint as changed', () => {
+    expect(aiModelDestinationChanged({ endpoint: 'https://evil.test' }, {}, 'ollama')).to.equal(true)
+    expect(aiModelDestinationChanged({ endpoint: 'http://host.docker.internal:4000' }, {}, 'ollama')).to.equal(true)
+    expect(aiModelDestinationChanged({ endpoint: 'http://host.docker.internal:11434' }, {}, 'openAI')).to.equal(true)
+    expect(aiModelDestinationChanged({ endpoint: 'http://host.docker.internal:11434' }, {})).to.equal(true)
+    expect(
+      aiModelDestinationChanged({ endpoint: 'http://host.docker.internal:11434' }, { endpoint: 'https://a.test' }, 'ollama'),
+    ).to.equal(true)
+    expect(aiModelDestinationChanged({ baseUrl: 'http://host.docker.internal:11434' }, {}, 'ollama')).to.equal(true)
+  })
+})
+
+describe('one definition of the same endpoint', () => {
+  it('counts a blank endpoint and the provider default as different in both checks', () => {
+    const blank = { endpoint: '' }
+    const dflt = { endpoint: 'http://host.docker.internal:11434' }
+    expect(aiModelDestinationsDiffer(blank, dflt, 'ollama')).to.equal(true)
+    expect(aiModelDestinationsDiffer(dflt, {}, 'ollama')).to.equal(true)
+    expect(aiModelDestinationChanged(blank, dflt, 'ollama')).to.equal(true)
+    expect(aiModelDestinationChanged(dflt, blank, 'ollama')).to.equal(true)
+  })
+
+  it('refuses a connection key when one member is blank and another names the default', () => {
+    const member = (modelKey: string, endpoint: string) => ({
+      modelType: 'llm',
+      entry: { provider: 'ollama', modelKey, configuration: { model: 'llama3', endpoint, apiKey: 'k' } } as any,
+    })
+    for (const members of [
+      [member('a', ''), member('b', 'http://host.docker.internal:11434')],
+      [member('a', 'http://host.docker.internal:11434'), member('b', '')],
+    ]) {
+      const body = connectionEndpointsDifferBody(members)
+      expect(body?.error_code).to.equal('credential_reentry_required')
+    }
+    expect(connectionEndpointsDifferBody([member('a', ''), member('b', '')])).to.equal(null)
+  })
+
+  it('counts a different query string or userinfo as a different endpoint', () => {
+    const saved = { endpoint: 'https://gw.test/v1?route=a' }
+    for (const endpoint of [
+      'https://gw.test/v1?route=b',
+      'https://gw.test/v1',
+      'https://user:pw@gw.test/v1?route=a',
+      'https://evil.test@gw.test/v1?route=a',
+    ]) {
+      expect(aiModelDestinationsDiffer({ endpoint }, saved), endpoint).to.equal(true)
+      expect(aiModelDestinationChanged({ endpoint }, saved), endpoint).to.equal(true)
+    }
+    expect(aiModelDestinationsDiffer({ endpoint: 'HTTPS://GW.test:443/v1/?route=a' }, saved)).to.equal(false)
+  })
+
+  it('agrees with itself for every pair when every key is sent', () => {
+    const endpoints = ['', 'http://host.docker.internal:11434', 'https://a.test/v1', 'https://a.test/v1?x=1', 'https://u@a.test/v1']
+    for (const provider of ['ollama', 'openAI', undefined]) {
+      for (const a of endpoints) {
+        for (const b of endpoints) {
+          const incoming = { endpoint: a, baseUrl: '' }
+          const existing = { endpoint: b, baseUrl: '' }
+          expect(aiModelDestinationChanged(incoming, existing, provider), `${a} vs ${b}`).to.equal(
+            aiModelDestinationsDiffer(incoming, existing, provider),
+          )
+        }
+      }
+    }
+  })
+})
+
+describe('reusesSavedAiModelCredentials', () => {
+  it('is true only when a saved credential is absent from the request', () => {
+    expect(reusesSavedAiModelCredentials({}, { apiKey: 'saved' })).to.equal(true)
+    expect(reusesSavedAiModelCredentials({ apiKey: 'new' }, { apiKey: 'saved' })).to.equal(false)
+    expect(reusesSavedAiModelCredentials({}, {})).to.equal(false)
+  })
+
+  it('treats a present blank value as an explicit clear, not a reuse', () => {
+    expect(reusesSavedAiModelCredentials({ apiKey: '' }, { apiKey: 'saved' })).to.equal(false)
+    expect(reusesSavedAiModelCredentials({ apiKey: '   ' }, { apiKey: 'saved' })).to.equal(false)
+  })
+
+  it('does not count identity forwarding secrets, which the dialog never sends', () => {
+    const saved = { apiKey: 'saved', identityForwardingServiceApiKey: 'svc', identityForwardingHeaderTemplates: { 'X-Key': 'v' } }
+    expect(reusesSavedAiModelCredentials({}, saved)).to.equal(true)
+    expect(reusesSavedAiModelCredentials({ apiKey: 'new' }, saved)).to.equal(false)
+  })
+})
+
+describe('hasForwardingCredentials', () => {
+  it('finds flat and nested forwarding secrets only', () => {
+    expect(hasForwardingCredentials({ identityForwardingServiceApiKey: 'svc' })).to.equal(true)
+    expect(hasForwardingCredentials({ identityForwardingHeaderTemplates: { 'x-api-key': 'v' } })).to.equal(true)
+    expect(hasForwardingCredentials({ identityForwarding: { serviceApiKey: 'svc' } })).to.equal(true)
+    expect(hasForwardingCredentials({ apiKey: 'k', identityForwardingHeaderTemplates: { 'x-user': '{{email}}' } })).to.equal(false)
+  })
+})
+
+describe('withoutForwardingCredentials', () => {
+  it('drops the service key and credential headers, and keeps the rest', () => {
+    const saved = {
+      apiKey: 'saved',
+      identityForwardingServiceApiKey: 'svc',
+      identityForwardingHeaderTemplates: { Authorization: 'Bearer x', 'x-api-key': 'k', 'x-user': '{{email}}' },
+    }
+    expect(withoutForwardingCredentials(saved)).to.deep.equal({
+      apiKey: 'saved',
+      identityForwardingHeaderTemplates: { 'x-user': '{{email}}' },
+    })
+  })
+
+  it('cleans the nested identityForwarding object the same way', () => {
+    const saved = {
+      identityForwarding: {
+        enabled: true,
+        serviceApiKey: 'svc',
+        headerTemplates: { 'x-api-key': 'k', 'x-user': '{{EMAIL}}' },
+      },
+    }
+    expect(withoutForwardingCredentials(saved)).to.deep.equal({
+      identityForwarding: { enabled: true, headerTemplates: { 'x-user': '{{EMAIL}}' } },
+    })
+  })
+
+  it('leaves a model without forwarding settings alone', () => {
+    expect(withoutForwardingCredentials({ apiKey: 'a' })).to.deep.equal({ apiKey: 'a' })
   })
 })

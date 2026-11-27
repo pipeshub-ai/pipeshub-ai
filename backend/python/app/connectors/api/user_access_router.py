@@ -78,7 +78,12 @@ from app.core.org_context import OrgContext, bind, current_org_id, spawn_detache
 from app.services.cache.invalidation_hooks import notify_connector_permissions_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: TC001 - FastAPI reads the annotation at runtime
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    await_or_503,
+    get_document_or_503,
+    get_org_or_503,
+    get_user_or_503,
+)
 
 if TYPE_CHECKING:
     import asyncio
@@ -122,7 +127,7 @@ async def _per_user_connector(request: Request, connector_id: str, graph_provide
     """The connector, when it is a team connector of the caller's organisation that runs in per-user mode.
     Its config is under ``"config"``."""
     org_id = current_org_id()
-    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    app = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     if (
         not app or not org_id
         or app.get("type") not in _SUPPORTED_TYPES
@@ -130,9 +135,9 @@ async def _per_user_connector(request: Request, connector_id: str, graph_provide
         or not await request.app.state.connector_registry.belongs_to_org(app, org_id)
     ):
         raise _not_found()
-    config = await _config_service(request).get_config(
+    config = await await_or_503(_config_service(request).get_config(
         f"/services/connectors/{connector_id}/config", raise_on_error=True
-    )
+    ))
     if not is_per_user(config if isinstance(config, dict) else None):
         raise _not_found()
     return {**app, "config": config}
@@ -459,7 +464,9 @@ async def _complete_user_sign_in(
     """Finish ``user``'s sign-in and connect them. Returns the connector."""
     try:
         app = await _per_user_connector(request, connector_id, graph_provider)
-    except HTTPException:
+    except HTTPException as e:
+        if e.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value:
+            raise
         raise _SignInFailed("This connector does not let users connect their own Notion account.") from None
     started_at = get_epoch_timestamp_in_ms()
     config_service = _config_service(request)
@@ -873,7 +880,9 @@ async def _link_target(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE)
     try:
         app = await _per_user_connector(request, link.connector_id, graph_provider)
-    except HTTPException:
+    except HTTPException as e:
+        if e.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value:
+            raise
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE) from None
     return user, app
 

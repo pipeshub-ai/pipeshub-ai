@@ -92,7 +92,7 @@ from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_user_or_503, raise_if_unavailable
 from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
@@ -405,14 +405,15 @@ async def _save_org_instances(
     Writing those back as the whole list erased other orgs' instances and any instance a concurrent request
     added (R2 F21). Instead the change (``loaded`` -> ``updated``) is replayed onto a fresh read. The lock
     closes the window within this process; across replicas it stays open until the control plane's
-    installation store, which has compare-and-set, is the store of record (CPD-7).
+    installation store, which has compare-and-set, is the store of record (CPD-7). A failed re-read raises: read as
+    empty, it would erase every org's rows.
     """
     before = {i.get("_id"): i for i in loaded}
     after = {i.get("_id"): i for i in updated}
     removed = before.keys() - after.keys()
     changed = [i for key, i in after.items() if before.get(key) != i]
     async with _INSTANCE_WRITES:
-        current = await config_service.get_config(_get_instances_path(org_id), default=[])
+        current = await config_service.get_config(_get_instances_path(org_id), default=[], raise_on_error=True)
         rows = [i for i in _validate_list(value=current, field_name="toolset instances")
                 if not (org_of(i) == org_id and i.get("_id") in removed)]
         positions = {i.get("_id"): n for n, i in enumerate(rows)}
@@ -1522,6 +1523,7 @@ async def create_toolset_instance(
     try:
         await _save_org_instances(org_id, instances, [*instances, new_instance], config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to save toolset instance. Please try again."
@@ -1925,6 +1927,7 @@ async def update_toolset_instance(
     try:
         await _save_org_instances(org_id, loaded, updated, config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
 
     # Deauthenticate all users in parallel if credentials changed
@@ -1995,17 +1998,16 @@ async def delete_toolset_instance(
 
     await _assert_instance_not_in_use(request, instance)
 
-    # After agent check passes, delete all user credentials for this instance
-    # This happens AFTER agent check to prevent deleting credentials if agents are using the instance
-    deleted_credentials_count = await toolset_store.delete_instance_credentials(config_service, instance_id)
-
     updated = [i for i in instances if i.get("_id") != instance_id]
 
     try:
         await _save_org_instances(org_id, instances, updated, config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
+    # Sign-ins go after the agent check and after the save, so a refused delete leaves a still-listed instance's users signed in
+    deleted_credentials_count = await toolset_store.delete_instance_credentials(config_service, instance_id)
     await toolset_store.delete_instance_rules(config_service, instance_id)
 
     message = "Toolset instance deleted successfully."
@@ -2410,6 +2412,19 @@ async def update_toolset_credentials(
 
     return {"status": "success", "message": "Credentials updated successfully."}
 
+
+async def _remove_credentials(
+    config_service: ConfigurationService, instance_id: str, owner_id: str, user_id: str, failure: str,
+) -> None:
+    """Disconnects ``owner_id`` (a user or an agent) from the instance. A store that kept the credential or could not
+    answer is a 503 (asked again), any other failure a 500 with ``failure``: never a success over a stored credential."""
+    try:
+        await legacy_records(config_service).remove("toolset", current_org_id(), instance_id, owner_id, user_id=user_id)
+    except Exception as e:
+        raise_if_unavailable(e)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=failure) from e
+
+
 @router.delete("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def remove_toolset_credentials(
@@ -2434,12 +2449,7 @@ async def remove_toolset_credentials(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
-        )
-    except Exception as e:
-        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
+    await _remove_credentials(config_service, instance_id, user_id, user_id, "Failed to remove credentials.")
 
     return {"status": "success", "message": "Credentials removed successfully."}
 
@@ -2475,12 +2485,7 @@ async def reauthenticate_toolset_instance(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
-        )
-    except Exception as e:
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.") from e
+    await _remove_credentials(config_service, instance_id, user_id, user_id, "Failed to clear credentials.")
 
     return {"status": "success", "message": "Credentials cleared. Please re-authenticate."}
 
@@ -3740,13 +3745,9 @@ async def remove_agent_toolset_credentials(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, agent_key,
-            user_id=_get_user_context(request)["user_id"],
-        )
-    except Exception as e:
-        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
+    await _remove_credentials(
+        config_service, instance_id, agent_key, _get_user_context(request)["user_id"], "Failed to remove agent credentials.",
+    )
 
     return {"status": "success", "message": "Agent credentials removed successfully."}
 
@@ -3783,13 +3784,9 @@ async def reauthenticate_agent_toolset(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, agent_key,
-            user_id=_get_user_context(request)["user_id"],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear agent credentials.") from e
+    await _remove_credentials(
+        config_service, instance_id, agent_key, _get_user_context(request)["user_id"], "Failed to clear agent credentials.",
+    )
 
     return {"status": "success", "message": "Agent credentials cleared. Please re-authenticate."}
 

@@ -150,3 +150,14 @@ async def test_no_more_than_the_bound_are_compared_at_once(monkeypatch: pytest.M
     again = p._kh_shadow_start(LEGACY, {})      # a finished comparison frees its place
     assert again is not None
     await again
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", [{"totalCapped": True}, {"resume": {"id": "secret-b"}, "hasMore": True}])
+async def test_a_split_page_cut_by_its_time_budget_is_not_compared(caplog: pytest.LogCaptureFixture, cut: dict) -> None:
+    # A wide start's split page is windowed with legacy's budget: where it stopped depends on timing, so no difference is reported.
+    p, _ = _provider({**LEGACY, "rows": [{"id": "secret-a"}], **cut})
+    with caplog.at_level(logging.INFO):
+        await p._kh_shadow_compare(LEGACY, {})
+    skipped = [r for r in caplog.records if r.getMessage() == "kh.browse.shadow_skipped"]
+    assert [r.reason for r in skipped] == ["split_cut_by_budget"] and "differ" not in caplog.text

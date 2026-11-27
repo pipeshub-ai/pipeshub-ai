@@ -606,6 +606,7 @@ async def test_the_samples_draw_their_ids_from_the_nodes_kg_decided(pg_db, every
     assert got and set(got[0]) <= set(IDS) and not any(i.startswith("nothing") for i in got[0])      # the 40 unknown ids are the walk's and are not repeated
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
@@ -632,6 +633,7 @@ async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> N
         assert "Index Scan using scope_members" in plans["grants"] or "Index Only Scan using scope_members" in plans["grants"], plans["grants"]
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_verify_checks_seek_every_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
     """The statistics know two orgs of 10,000 records and links each and not this one (its first load into kg, before the maintenance worker's ANALYZE),
     so the planner puts it at a row. Each check of verify_app reads the connector's records once and every other row by its key: written as joins,

@@ -75,11 +75,11 @@ import {
 } from '../services/entity_events.service';
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   domainFromEmail,
+  recordEvent,
   signupSource,
-} from '../../../libs/services/telemetry/identity';
+} from '../../../libs/services/telemetry/telemetry-impl';
 import { ORG_CREATED_EVENT } from '../constants/constants';
 import { audit } from '../../../libs/services/audit';
 import { withCause } from '../../../libs/errors/base.error';
