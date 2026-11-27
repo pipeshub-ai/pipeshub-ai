@@ -258,7 +258,7 @@ describe('AgentActivityTimeline — a step that joins the trail while it streams
     // The new tool step opens, and so does the narration that waited to be told from the answer.
     expect(opening(container)).toHaveLength(2);
     expect(opening(container)[0]).toContain('Next I will search.');
-    expect(opening(container)[1]).toContain('Searched call-1');
+    expect(opening(container)[1]).toContain('Searched the web');
     // Once opening, it stays the same element as the trail goes on.
     const row = container.querySelector('.trail-row-opens');
     rerender(timeline([think, { type: 'text', content: 'Next I will search.', settled: true, runId: 'r1' }, tool('call-1'), think]));
@@ -269,7 +269,7 @@ describe('AgentActivityTimeline — a step that joins the trail while it streams
     const { container, rerender } = render(timeline([think]));
     rerender(timeline([think, { type: 'text', content: `I will search. ${'x'.repeat(400)}`, settled: true, runId: 'r1' }, tool('call-1')]));
     expect(opening(container)).toHaveLength(1);
-    expect(opening(container)[0]).toContain('Searched call-1');
+    expect(opening(container)[0]).toContain('Searched the web');
   });
 
   it('opens the status that joins steps already drawn after a quiet moment, not one that starts the trail', () => {

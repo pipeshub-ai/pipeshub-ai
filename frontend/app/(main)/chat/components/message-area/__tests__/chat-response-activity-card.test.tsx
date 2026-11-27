@@ -72,7 +72,7 @@ function answer(opts: { cited?: boolean } = {}) {
       />
     </Theme>,
   );
-  return { activity: screen.getByText('Used 1 tool') };
+  return { activity: screen.getByTestId('activity-summary') };
 }
 
 const precedes = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
