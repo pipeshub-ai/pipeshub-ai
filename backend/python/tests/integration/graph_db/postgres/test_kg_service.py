@@ -549,3 +549,56 @@ async def test_the_stamping_of_a_large_connector_goes_on_across_passes_and_the_c
     moved = [c for c in seen if c]
     assert len(moved) >= 3 and len(set(moved)) == len(moved)                       # one page a pass, each from where the last stopped
     assert (org, "drv") not in bootstrap._STAMP_AFTER
+
+
+async def test_the_connectors_of_an_org_take_their_turns_at_the_same_time_and_each_still_promotes(pg_db, monkeypatch) -> None:
+    # one connector's stamping must not wait for the copies of the others: their turns overlap, bounded by CONNECTORS_AT_ONCE
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=3)                                                   # four connectors
+    monkeypatch.setattr(bootstrap, "CONNECTORS_AT_ONCE", 3, raising=False)       # raising=False: the same test fails on code that takes the connectors one by one
+    active = {"now": 0, "max": 0}
+    real = bf.backfill
+
+    async def slow(db, o, app, **k) -> object:
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        try:
+            await asyncio.sleep(0.3)
+            return await real(db, o, app, **k)
+        finally:
+            active["now"] -= 1
+    monkeypatch.setattr(bf, "backfill", slow)
+    due: dict = {}
+    for _ in range(10):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        if await _enforced(p, org) == 4:
+            break
+    assert active["max"] == 3, active                                             # side by side, never more than the bound
+    assert await _enforced(p, org) == 4 and await _log_rows(p, org) == 0
+
+
+async def test_one_connectors_verify_does_not_hold_up_another_connectors_stamping_in_the_same_pass(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=1)                                                   # drv and drv0; drv takes its turn first
+    stamped = asyncio.Event()
+    real_stamp, real_verify, seen = bf._restamp_pages, bf.verify_app, {}
+
+    async def stamp(db, o, app, *a, **k) -> object:
+        out = await real_stamp(db, o, app, *a, **k)
+        if app == "drv0":
+            stamped.set()
+        return out
+
+    async def slow_verify(tx, o, app) -> object:
+        if app == "drv":                                                          # a long verify, under drv's lock
+            seen["stamped_meanwhile"] = await asyncio.wait_for(stamped.wait(), 5) if not stamped.is_set() else True
+        return await real_verify(tx, o, app)
+    monkeypatch.setattr(bf, "_restamp_pages", stamp)
+    monkeypatch.setattr(bf, "verify_app", slow_verify)
+    due: dict = {}
+    for _ in range(5):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        if await _enforced(p, org) == 2:
+            break
+    assert seen.get("stamped_meanwhile") is True, seen                            # drv0 stamped while drv was being verified
+    assert await _enforced(p, org) == 2
