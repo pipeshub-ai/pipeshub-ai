@@ -86,6 +86,22 @@ export function upgradeGraceNotice(
   return { endsAt, key: 'missing', keyDate: null };
 }
 
+/**
+ * Whether a key dated ahead turns permission sync on and starts before the grace ends: it takes over with no gap,
+ * so nothing will be limited and the grace needs no warning.
+ */
+export function keyTakesOver(
+  view: LicenseStatusView,
+  grace: UpgradeGraceNotice | null,
+): boolean {
+  return (
+    grace?.key === 'startsLater' &&
+    grace.keyDate !== null &&
+    Date.parse(grace.keyDate) <= Date.parse(grace.endsAt) &&
+    (view.upcoming?.features.includes(PERMISSION_SYNC_FEATURE) ?? false)
+  );
+}
+
 export interface NoticeViewer {
   userId: string;
   orgId: string;
@@ -134,13 +150,9 @@ export async function licenseNotice(
 ): Promise<LicenseNotice> {
   const view = await licenseStatus(store, now);
   const grace = upgradeGraceNotice(view, now);
-  // A key that turns permission sync on and starts before the grace ends takes over with no gap: nothing will be limited.
-  const keyTakesOver =
-    grace?.key === 'startsLater' &&
-    grace.keyDate !== null &&
-    Date.parse(grace.keyDate) <= Date.parse(grace.endsAt) &&
-    (view.upcoming?.features.includes(PERMISSION_SYNC_FEATURE) ?? false);
-  const graceEndsAt = keyTakesOver ? null : (grace?.endsAt ?? null);
+  const graceEndsAt = keyTakesOver(view, grace)
+    ? null
+    : (grace?.endsAt ?? null);
   const permissionSync = view.permissionSync?.allowed ?? true;
 
   const states = (await storedConnectors(store))

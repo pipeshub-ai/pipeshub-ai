@@ -1,4 +1,8 @@
-import { upgradeGraceEndsAt } from './license-notice';
+import {
+  keyTakesOver,
+  upgradeGraceNotice,
+  type UpgradeGraceNotice,
+} from './license-notice';
 import { licenseStatus, type LicenseStore } from './license.service';
 
 /** Days before the upgrade grace ends at which the install's admins are mailed, once each. */
@@ -40,6 +44,9 @@ export interface GraceReminderDeps {
     to: string[];
     daysLeft: number;
     endsAt: string;
+    /** Which key there is: none, one dated ahead (`keyDate` its start) or one that ended (`keyDate` its end). */
+    key: UpgradeGraceNotice['key'];
+    keyDate: string | null;
   }): Promise<ReminderOutcome>;
   log: {
     info(message: string, meta?: Record<string, unknown>): void;
@@ -65,16 +72,20 @@ const toldNoMail = new Set<string>();
 
 /**
  * Mails the install's admins the reminder due now, while the upgrade grace runs
- * with no licence key in force. Each reminder is claimed in the store before it
- * is sent, so restarts and other replicas never send it again; a send that can
- * be retried gives the claim back. Returns the reminder sent, or null.
+ * with no licence key in force, unless a key dated ahead takes over before it
+ * ends (as the banner decides, `keyTakesOver`). Each reminder is claimed in the
+ * store before it is sent, so restarts and other replicas never send it again;
+ * a send that can be retried gives the claim back. Returns the reminder sent,
+ * or null.
  */
 export async function sendGraceReminder(
   deps: GraceReminderDeps,
   now: Date = new Date(),
 ): Promise<number | null> {
-  const endsAt = upgradeGraceEndsAt(await licenseStatus(deps.store, now), now);
-  if (endsAt === null) return null;
+  const view = await licenseStatus(deps.store, now);
+  const grace = upgradeGraceNotice(view, now);
+  if (grace === null || keyTakesOver(view, grace)) return null;
+  const { endsAt } = grace;
   const daysLeft = graceDaysLeft(endsAt, now);
   const days = dueReminder(daysLeft);
   if (days === null) return null;
@@ -104,6 +115,8 @@ export async function sendGraceReminder(
       to: admins.emails,
       daysLeft,
       endsAt,
+      key: grace.key,
+      keyDate: grace.keyDate,
     });
   } catch (error) {
     // Nothing was sent (e.g. the stored mail settings could not be read): give the claim back.

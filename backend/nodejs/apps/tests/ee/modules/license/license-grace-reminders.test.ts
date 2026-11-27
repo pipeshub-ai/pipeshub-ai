@@ -17,7 +17,10 @@ import {
   type ReminderOutcome,
 } from '../../../../src/ee/modules/license/license-grace-reminders';
 import { useLicenseKeysForTesting } from '../../../../src/ee/modules/license/license-keys';
-import { UPGRADE_GRACE_DAYS } from '../../../../src/ee/modules/license/license-policy';
+import {
+  PERMISSION_SYNC_FEATURE,
+  UPGRADE_GRACE_DAYS,
+} from '../../../../src/ee/modules/license/license-policy';
 import {
   LICENSE_FILES_KEY,
   UPGRADE_KEY,
@@ -68,6 +71,8 @@ interface Sent {
   to: string[];
   daysLeft: number;
   endsAt: string;
+  key: string;
+  keyDate: string | null;
 }
 
 describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => {
@@ -79,7 +84,9 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
   /** One process (a replica, or the same one after a restart) on the shared store. */
   const replica = (
     over: Partial<GraceReminderDeps> = {},
-  ): GraceReminderDeps & { log: { info: sinon.SinonSpy; warn: sinon.SinonSpy } } => ({
+  ): GraceReminderDeps & {
+    log: { info: sinon.SinonSpy; warn: sinon.SinonSpy };
+  } => ({
     store: encryptedLicenseStore(kv, encryption),
     ...encryptedClaims(kv, encryption),
     admins: async () => ({
@@ -143,7 +150,15 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
 
   it('picks the nearest threshold reached', () => {
     expect([21, 15, 14, 8, 7, 4, 3, 2, 1].map(dueReminder)).to.deep.equal([
-      null, null, 14, 14, 7, 7, 3, 3, 1,
+      null,
+      null,
+      14,
+      14,
+      7,
+      7,
+      3,
+      3,
+      1,
     ]);
   });
 
@@ -183,6 +198,46 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
       expect(await sendGraceReminder(replica(), left(days))).to.equal(null);
     }
     expect(sent).to.deep.equal([]);
+  });
+
+  it('sends nothing when a key dated ahead turns permission sync on before the grace ends', async () => {
+    await install({
+      startDate: new Date(ENDS.getTime() - DAY_MS).toISOString(),
+      features: [PERMISSION_SYNC_FEATURE],
+    });
+    for (const days of [14, 7, 3, 1]) {
+      expect(await sendGraceReminder(replica(), left(days))).to.equal(null);
+    }
+    expect(sent).to.deep.equal([]);
+  });
+
+  it('names a key dated past the grace, one without permission sync, and one that ended', async () => {
+    const after = new Date(ENDS.getTime() + 5 * DAY_MS);
+    const before = new Date(ENDS.getTime() - DAY_MS);
+    const cases: Array<[Partial<LicensePayload>, string, string]> = [
+      [{ startDate: after.toISOString() }, 'startsLater', after.toISOString()],
+      [
+        { startDate: before.toISOString(), features: [] },
+        'startsLater',
+        before.toISOString(),
+      ],
+      [
+        { endDate: new Date(UPGRADED.getTime() + DAY_MS).toISOString() },
+        'ended',
+        new Date(UPGRADED.getTime() + DAY_MS).toISOString(),
+      ],
+    ];
+    for (const [over, key, keyDate] of cases) {
+      kv = new MemoryKv();
+      sent = [];
+      await replica().store.write(UPGRADE_KEY, {
+        upgradedAt: UPGRADED.toISOString(),
+        affected: true,
+      });
+      await install(over);
+      expect(await sendGraceReminder(replica(), left(7))).to.equal(7);
+      expect(sent[0], key).to.deep.include({ key, keyDate });
+    }
   });
 
   it('sends nothing before the first threshold, after the grace, or with no grace', async () => {
@@ -283,7 +338,9 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
     });
     expect(html).to.contain('3 more days');
     expect(html).to.contain('November 22, 2026');
-    expect(html).to.contain('href="https://pipeshub.example/workspace/license/"');
+    expect(html).to.contain(
+      'href="https://pipeshub.example/workspace/license/"',
+    );
     expect(
       getEmailContent('licenseGraceReminder', {
         daysLeft: 1,
@@ -292,5 +349,37 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
         link: 'y',
       }),
     ).to.contain('1 more day</strong>');
+  });
+
+  it('the mail says which key there is, and what is limited when the grace ends', () => {
+    const base = {
+      daysLeft: 3,
+      oneDay: false,
+      endsOn: 'November 22, 2026',
+      link: 'y',
+      keyOn: 'December 1, 2026',
+    };
+    const text = (data: Record<string, unknown>): string =>
+      getEmailContent('licenseGraceReminder', { ...base, ...data }).replace(
+        /\s+/g,
+        ' ',
+      );
+    expect(text({ keyMissing: true })).to.contain('No license key is in force');
+    const later = text({ keyStartsLater: true, keyStartsAfterGrace: true });
+    expect(later).to.contain(
+      'starts on <strong>December 1, 2026</strong>, after the upgrade grace ends',
+    );
+    expect(later).to.contain(
+      'until a key that includes permission sync is in force',
+    );
+    expect(later).to.not.contain('No license key is in force');
+    expect(
+      text({ keyStartsLater: true, keyStartsAfterGrace: false }),
+    ).to.contain('does not include permission sync');
+    const ended = text({ keyEnded: true });
+    expect(ended).to.contain(
+      'ended on <strong>December 1, 2026</strong>; a new one is required',
+    );
+    expect(ended).to.not.contain('No license key is in force');
   });
 });

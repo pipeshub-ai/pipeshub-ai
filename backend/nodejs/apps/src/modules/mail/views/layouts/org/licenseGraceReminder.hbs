@@ -39,15 +39,33 @@
                     "
                   >
                     <div>
-                      No license key is in force on this {{productName}} installation. Company-wide
-                      connectors that copy access from their sources keep doing so for
+                      {{#if keyStartsLater}}
+                      {{#if keyStartsAfterGrace}}
+                      The license key installed on this {{productName}} installation starts on
+                      <strong>{{keyOn}}</strong>, after the upgrade grace ends.
+                      {{else}}
+                      The license key installed on this {{productName}} installation, starting on
+                      <strong>{{keyOn}}</strong>, does not include permission sync.
+                      {{/if}}
+                      {{else if keyEnded}}
+                      The license key on this {{productName}} installation ended on
+                      <strong>{{keyOn}}</strong>; a new one is required.
+                      {{else}}
+                      No license key is in force on this {{productName}} installation.
+                      {{/if}}
+                      Company-wide connectors that copy access from their sources keep doing so for
                       <strong>{{daysLeft}} more {{#if oneDay}}day{{else}}days{{/if}}</strong>, until
                       <strong>{{endsOn}}</strong>.
                     </div>
                     <div style="height: 12px; line-height: 12px;">&nbsp;</div>
                     <div>
+                      {{#if keyStartsLater}}
+                      After that, each of them is limited to the person who created it until a key
+                      that includes permission sync is in force. Nothing is deleted.
+                      {{else}}
                       After that, without a license key, each of them is limited to the person who
                       created it until a key is installed. Nothing is deleted.
+                      {{/if}}
                     </div>
                   </div>
                   <div style="margin: 0 0 32px 0;">
@@ -66,7 +84,7 @@
                         padding: 8px 16px;
                         border-radius: 3px;
                       "
-                    >Install a license key</a>
+                    >{{#if keyStartsLater}}Review the license{{else}}Install a license key{{/if}}</a>
                   </div>
                   <div
                     style="

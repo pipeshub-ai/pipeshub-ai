@@ -168,7 +168,7 @@ function graceReminderDeps(licenseStore: LicenseStore): GraceReminderDeps {
     release: (key) => configuredClaims().release(key),
     admins: installAdmins,
     mailConfigured: async () => (await mailSender().getSmtpConfig()) !== null,
-    async send({ orgId, to, daysLeft, endsAt }) {
+    async send({ orgId, to, daysLeft, endsAt, key, keyDate }) {
       const sender = mailSender();
       const smtp = await sender.getSmtpConfig(orgId);
       if (smtp === null) return 'retry';
@@ -176,20 +176,34 @@ function graceReminderDeps(licenseStore: LicenseStore): GraceReminderDeps {
         .get<AppConfig>('AppConfig')
         .frontendUrl.replace(/\/+$/, '');
       const days = `${String(daysLeft)} ${daysLeft === 1 ? 'day' : 'days'}`;
+      const onDate = (iso: string): string =>
+        new Date(iso).toLocaleDateString('en-US', {
+          dateStyle: 'long',
+          timeZone: 'UTC',
+        });
+      const subject = {
+        missing: `The upgrade grace ends in ${days}: install a license key`,
+        startsLater: `The upgrade grace ends in ${days}, before your license key starts`,
+        ended: `The upgrade grace ends in ${days}: your license key has ended`,
+      }[key];
       const result = await sender.send(
         {
           orgId,
           emailTemplateType: EmailTemplateType.LicenseGraceReminder,
           isAutoEmail: true,
           sendEmailTo: to,
-          subject: `The upgrade grace ends in ${days}: install a license key`,
+          subject,
           templateData: {
             daysLeft,
             oneDay: daysLeft === 1,
-            endsOn: new Date(endsAt).toLocaleDateString('en-US', {
-              dateStyle: 'long',
-              timeZone: 'UTC',
-            }),
+            endsOn: onDate(endsAt),
+            keyMissing: key === 'missing',
+            keyStartsLater: key === 'startsLater',
+            // A key dated ahead that starts in time does not take over only when it lacks permission sync.
+            keyStartsAfterGrace:
+              keyDate !== null && Date.parse(keyDate) > Date.parse(endsAt),
+            keyEnded: key === 'ended',
+            keyOn: keyDate === null ? '' : onDate(keyDate),
             link: `${frontendUrl}/workspace/license/`,
           },
         },
