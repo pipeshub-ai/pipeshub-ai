@@ -1062,24 +1062,37 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     assert not set(walked) & set(KIDS), walked
 
 
-async def _children_rows_read(org: str, statements: list[tuple[str, tuple]]) -> dict[str, int]:
-    """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE), by its site."""
+async def _children_rows_read(org: str, statements: list[tuple[int, str, tuple]]) -> dict[str, int]:
+    """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE: returned and removed by a filter), by its site. Each transaction
+    of the request is replayed in one of its own, every statement in order (its settings and savepoints too), so a read is planned as it was: under the profile it ran with."""
     import asyncpg
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     read: dict[str, int] = {}
     try:
-        for sql, args in statements:
-            if "kg.records" not in sql or not sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper().startswith(("SELECT", "WITH")):
-                continue
+        for tx in dict.fromkeys(t for t, _, _ in statements):
             async with con.transaction():
                 await con.execute("SELECT set_config('app.org_id', $1, true)", org)
-                plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
-            n = sum(int(x.get("Actual Rows", 0) * x.get("Actual Loops", 1)) for x in _nodes(plan) if x.get("Relation Name") == "records")
-            site = re.search(r"pipeshub:(\S+)", sql)
-            read[site.group(1) if site else sql[:40]] = read.get(site.group(1) if site else sql[:40], 0) + n
+                for t, sql, args in statements:
+                    if t != tx:
+                        continue
+                    body = sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper()
+                    if "kg.records" not in sql or not body.startswith(("SELECT", "WITH")) or "SET_CONFIG(" in body[:200]:
+                        await con.execute(sql, *args) if args else await con.execute(sql)
+                        continue
+                    plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
+                    # the rows a scan examined: those it returned and those its filter (or a bitmap's recheck) rejected, so a scan that reads everything and keeps nothing counts
+                    n = sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0) + x.get("Rows Removed by Index Recheck", 0)) * x.get("Actual Loops", 1))
+                            for x in _nodes(plan) if x.get("Relation Name") == "records")
+                    site = re.search(r"pipeshub:(\S+)", sql)
+                    read[site.group(1) if site else sql[:40]] = read.get(site.group(1) if site else sql[:40], 0) + n
     finally:
         await con.close()
     return read
+
+
+# The statements that read a node's children for its page, total and undecided rows: what this test holds to about a page whatever the width. (The start, its trail and
+# the hidden rows are read by their keys; with no statistics for a new organisation the planner may read them otherwise, which the plan gate covers.)
+CHILD_READS = {"kg.browse_once", "kg.browse_undecided_probe", "kg.browse_undecided", "kg.browse_count", "kg.listing_page", "kg.browse_children_held", "kg.browse_classes"}
 
 
 async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_whatever_its_width(pg_db, monkeypatch) -> None:
@@ -1096,17 +1109,17 @@ async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_wha
         p, org = prov(pg_db), new_org()
         kids = [f"c{i:04d}" for i in range(width)]
         await seed_folder(p, pg_db, org, width, readable_kids=kids)
-        ran: list[tuple[str, tuple]] = []
+        ran: list[tuple[int, str, tuple]] = []
 
         async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
-            ran.append((sql, args))
+            ran.append((id(self), sql, args))
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
         page = await browse(p, org, "fold", ["fold", *kids], limit=10)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
         read[width] = await _children_rows_read(org, ran)
-    small, large = sum(read[300].values()), sum(read[3000].values())
+    small, large = (sum(v for k, v in read[w].items() if k in CHILD_READS) for w in (300, 3000))
     assert large < small + 50, read      # ten times the children, about the same reads
 
 
