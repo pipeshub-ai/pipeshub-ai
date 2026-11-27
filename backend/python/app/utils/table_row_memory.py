@@ -7,13 +7,15 @@ row and the row's cells: a row whose digest is found keeps its text, and only th
 from the stored table that shares the most rows with it, so two tables with an equal row each keep their own wording.
 
 A delivery offers the rows (``offer_previous_rows``); they are read from the stored record only when a table first asks
-(``previous_row_texts``), once; the delivery withdraws them when it ends (``end_previous_rows``).
+(``previous_row_texts``), once; the delivery withdraws them when it ends (``end_previous_rows``). With ``USE_PARSING_SERVICE`` the
+parse request carries them (``encode_stored_tables``), and the parsing service offers them for that parse.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Optional
 
@@ -25,7 +27,7 @@ if TYPE_CHECKING:
 
     from app.models.blocks import BlocksContainer
 
-#: Where a table row block keeps its digest. Left out of the block's content hashes (``without_row_digest``).
+#: Where a table row block keeps its digest. Left out of the block's content hashes (``hashed_block_data``).
 ROW_DIGEST_KEY = "row_digest"
 # Changing it makes every stored digest a miss: the next update of each table describes its rows again.
 _DIGEST_VERSION = b"table-row-v2"
@@ -56,11 +58,16 @@ def with_row_digest(data: dict, digests: Sequence[Optional[str]], i: int) -> dic
     return data
 
 
-def without_row_digest(data: object) -> object:
-    """*data* as the content hashes read it: without the digest, so a row's id and fingerprint are what they were before rows
-    carried one, and a row that gains it keeps its id."""
-    if isinstance(data, dict) and ROW_DIGEST_KEY in data:
-        return {k: v for k, v in data.items() if k != ROW_DIGEST_KEY}
+#: Where a table row sits, not what it says. Left out of its content hash, so an inserted or deleted row leaves every other row's
+#: id alone; equal rows are still told apart, by occurrence (``BlockIdentity``), and a kept row's point is told its new place.
+_ROW_POSITION_KEYS = frozenset({"row_number", "row_end_number"})
+
+
+def hashed_block_data(data: object) -> object:
+    """*data* as the content hashes read it. A table row's leaves out its digest (so a row that gains one keeps its id) and its
+    position (``row_number``, Excel's ``row_end_number``); any other block's is *data* itself."""
+    if isinstance(data, dict) and (ROW_DIGEST_KEY in data or "row_natural_language_text" in data):
+        return {k: v for k, v in data.items() if k != ROW_DIGEST_KEY and k not in _ROW_POSITION_KEYS}
     return data
 
 
@@ -104,6 +111,48 @@ class PreviousRows:
                     )
                     self._texts = []
             return self._texts
+
+    @classmethod
+    def already_read(cls, tables: list[StoredTable], logger: Logger, record_id: str) -> PreviousRows:
+        """Rows read elsewhere and handed over: the parsing service is sent them with the file it parses."""
+        rows = cls(_nothing_to_load, logger, record_id)
+        rows._texts = tables
+        return rows
+
+
+async def _nothing_to_load() -> None:
+    return None
+
+
+#: The most stored-row bytes a parse request carries to the parsing service. A larger set is not sent, and its tables are
+#: described as on a first index. Only described rows carry a digest (``MAX_TABLE_ROWS_FOR_LLM`` per record), so it is rarely
+#: reached.
+MAX_SENT_ROW_BYTES = 8 * 1024 * 1024
+
+
+def encode_stored_tables(tables: list[StoredTable]) -> Optional[bytes]:
+    """*tables* as a parse request carries them, or ``None`` when they are over ``MAX_SENT_ROW_BYTES``."""
+    raw = json.dumps(tables, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return raw if len(raw) <= MAX_SENT_ROW_BYTES else None
+
+
+def decode_stored_tables(raw: bytes) -> Optional[list[StoredTable]]:
+    """The tables ``encode_stored_tables`` wrote, or ``None`` for anything else (too large, not JSON, another shape)."""
+    if len(raw) > MAX_SENT_ROW_BYTES:
+        return None
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the decoder allows, well under the size cap
+        return None
+    if not isinstance(value, list) or not all(_is_stored_table(table) for table in value):
+        return None
+    return value
+
+
+def _is_stored_table(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(texts, list) and all(isinstance(text, str) for text in texts) for texts in value.values()
+    )
 
 
 _offered: ContextVar[Optional[PreviousRows]] = ContextVar("previous_table_rows", default=None)

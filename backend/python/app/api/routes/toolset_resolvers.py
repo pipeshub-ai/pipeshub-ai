@@ -20,6 +20,7 @@ from app.config.redaction import (
     REDACTED_PLACEHOLDER,
     hide_secrets_by_default,
 )
+from app.utils.user_lookup import raise_if_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,7 @@ async def load_instances_for_mutation(
     except HTTPException:
         raise
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to access toolset instances. Please try again or contact support."

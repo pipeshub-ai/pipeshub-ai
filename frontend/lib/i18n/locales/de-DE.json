@@ -2450,6 +2450,8 @@
       "configSaveErrorFallback": "Modellkonfiguration konnte nicht gespeichert werden",
       "configSaveOutboundError": "PipesHub kann diesen Modellanbieter vom Container aus nicht erreichen. Cloud-Anbieter benötigen ausgehenden Internetzugang — siehe deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configSaveTimeoutError": "Zeitüberschreitung bei der Modellprüfung. Cloud-Anbieter benötigen ausgehenden Internetzugang vom PipesHub-Container — siehe deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveCredentialReentry": "Geben Sie die Zugangsdaten erneut ein, um diesen neuen Endpunkt zu verwenden.",
+      "configForwardingCredentialsCleared": "Die Weiterleitungs-Zugangsdaten wurden entfernt, weil sich der Endpunkt geändert hat. Fügen Sie sie unter Identitätsweiterleitung erneut hinzu.",
       "configNoConfigRequired": "Für diesen Anbieter ist keine Konfiguration erforderlich.",
       "configDefaultModelNotice": "\"{{modelName}}\" wird vom System standardmäßig verwendet.",
       "configSectionModelConfiguration": "Modellkonfiguration",
@@ -2565,6 +2567,7 @@
       "rotateCredentialsPlaceholder": "Neuer API-Schlüssel",
       "rotateCredentialsSave": "Schlüssel speichern",
       "rotateCredentialsFailed": "Schlüssel konnte nicht aktualisiert werden",
+      "connectionEndpointsDiffer": "Diese Modelle der Verbindung verwenden einen anderen Endpunkt als {{reference}}: {{models}}. Stellen Sie alle Modelle der Verbindung auf denselben Endpunkt ein und versuchen Sie es dann erneut.",
       "identity": {
         "menuItem": "Identitätsweiterleitung",
         "title": "Identitätsweiterleitung",

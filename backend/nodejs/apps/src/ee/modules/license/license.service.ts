@@ -201,8 +201,17 @@ const readUpgrade = async (
 };
 
 /**
+ * How long before the upgrade record a connectors' report may be dated and still count as this boot's: the
+ * connectors and this service start together, and either may finish first.
+ */
+export const AFFECTED_REPORT_SKEW_MS = 5 * 60 * 1000;
+
+/**
  * The upgrade record, made at the first check with enforcement on. Its
- * `affected` is filled in once, from the first answer the connectors give.
+ * `affected` is filled in once, from the first answer the connectors give for
+ * this boot. `true` (the grace stands) is taken from any report; `false` only
+ * from one checked at or after the upgrade, so a report left from an earlier
+ * boot, before connectors were added, cannot take the grace away.
  */
 async function upgradeRecord(
   store: LicenseStore,
@@ -217,8 +226,18 @@ async function upgradeRecord(
   if (record.affected === null) {
     const reported = (await store.read(INSTALL_AFFECTED_KEY)) as {
       affected?: unknown;
+      checkedAt?: unknown;
     } | null;
-    if (typeof reported?.affected === 'boolean') {
+    const checkedAt =
+      typeof reported?.checkedAt === 'string'
+        ? Date.parse(reported.checkedAt)
+        : Number.NaN;
+    const thisBoot =
+      checkedAt >= Date.parse(record.upgradedAt) - AFFECTED_REPORT_SKEW_MS;
+    if (
+      reported?.affected === true ||
+      (reported?.affected === false && thisBoot)
+    ) {
       record.affected = reported.affected;
       changed = true;
     }

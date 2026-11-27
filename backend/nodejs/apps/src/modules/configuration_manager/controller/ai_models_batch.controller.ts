@@ -24,12 +24,17 @@ import {
 } from '../services/kafka_events.service';
 import {
   AiModelsConfigRepository,
+  AiModelsWriteAborted,
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
-import { AIModelConfiguration } from '../types/ai-models.types';
+import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
 import {
   AI_PUBLIC_CONFIG_KEYS,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationsDiffer,
+  connectionEndpointsDifferBody,
+  CREDENTIAL_REENTRY_REQUIRED,
   pickAiModelCredentials,
 } from '../utils/maskConfigSecrets';
 import {
@@ -161,13 +166,14 @@ export function discoverAIModels(
           return;
         }
         if (provider && provider !== found.model.provider) {
-          res.status(400).json({ status: 'error', message: 'provider does not match saved model' });
+          res.status(400).json({ status: 'error', message: 'Provider does not match saved model' });
           return;
         }
         provider = found.model.provider;
         // Stored credentials must stay on the saved connection. A request
         // endpoint here would send the saved API key to a different host.
-        delete configuration.endpoint;
+        for (const key of AI_MODEL_DESTINATION_KEYS)
+          Reflect.deleteProperty(configuration, key);
         configuration = mergeAiModelCredentials(configuration, found.model.configuration);
       }
       const options: AICommandOptions = {
@@ -225,17 +231,39 @@ export function batchAddAIModels(
         req as AiModelsSaver,
         [modelType],
       );
-      if (requestedConnectionId) {
-        const stored = await repo.read();
-        const joinable = AI_MODEL_TYPES.some((type) =>
-          (stored?.[type] ?? []).some(
-            (entry) => entry.connectionId === requestedConnectionId && entry.provider === provider,
+      const connectionMembers = (
+        stored: AIModelsConfig | null,
+      ): AIModelConfiguration[] =>
+        AI_MODEL_TYPES.flatMap((type) =>
+          (stored?.[type] ?? []).filter(
+            (entry) => entry.connectionId === requestedConnectionId,
           ),
         );
-        if (!joinable) {
+      // A connection shares one key, so a later rotation would send it to this endpoint too.
+      const joinsOtherEndpoint = (members: AIModelConfiguration[]): boolean =>
+        members.some((entry) =>
+          aiModelDestinationsDiffer(
+            configuration,
+            entry.configuration,
+            provider,
+          ),
+        );
+      if (requestedConnectionId) {
+        const members = connectionMembers(await repo.read());
+        if (!members.some((entry) => entry.provider === provider)) {
           res.status(400).json({
             status: 'error',
             message: 'connectionId does not match a saved connection for this provider',
+          });
+          return;
+        }
+        if (joinsOtherEndpoint(members)) {
+          // No credential fixes this: the endpoint itself differs.
+          res.status(400).json({
+            status: 'error',
+            error_code: CREDENTIAL_REENTRY_REQUIRED.error_code,
+            message:
+              "This connection uses a different endpoint. Use the connection's endpoint, or add these models as a new connection.",
           });
           return;
         }
@@ -314,34 +342,60 @@ export function batchAddAIModels(
           return;
         }
         const modelKey = randomUUID();
-        await repo.mutate((aiModels) => {
-          const bucket = aiModels[modelType] ?? [];
-          aiModels[modelType] = bucket;
-          // LLM: the first model of an empty type becomes default even if the
-          // chosen one failed. Embeddings do not: only the model checked with
-          // becomesActive may take over the vector store.
-          const makeDefault =
-            modelType === 'embedding'
-              ? model.model === embeddingActiveId
-              : isDefault || bucket.length === 0;
-          if (makeDefault) {
-            for (const entry of bucket) {
-              entry.isDefault = false;
+        const wrote = await repo
+          .mutate((aiModels) => {
+            // Another save can move or delete the connection during the check.
+            if (requestedConnectionId) {
+              const members = connectionMembers(aiModels);
+              if (members.length === 0 || joinsOtherEndpoint(members)) {
+                throw new AiModelsWriteAborted();
+              }
             }
-          }
-          const entry: AIModelConfiguration = {
-            provider,
-            configuration: modelConfiguration,
-            modelKey,
-            connectionId,
-            isMultimodal: model.isMultimodal,
-            isDefault: makeDefault,
-            isReasoning: model.isReasoning,
-            contextLength: model.contextLength,
-            ...(model.modelFriendlyName ? { modelFriendlyName: model.modelFriendlyName } : {}),
-          };
-          bucket.push(entry);
-        });
+            const bucket = aiModels[modelType] ?? [];
+            aiModels[modelType] = bucket;
+            // LLM: the first model of an empty type becomes default even if the
+            // chosen one failed. Embeddings do not: only the model checked with
+            // becomesActive may take over the vector store.
+            const makeDefault =
+              modelType === 'embedding'
+                ? model.model === embeddingActiveId
+                : isDefault || bucket.length === 0;
+            if (makeDefault) {
+              for (const entry of bucket) {
+                entry.isDefault = false;
+              }
+            }
+            const entry: AIModelConfiguration = {
+              provider,
+              configuration: modelConfiguration,
+              modelKey,
+              connectionId,
+              isMultimodal: model.isMultimodal,
+              isDefault: makeDefault,
+              isReasoning: model.isReasoning,
+              contextLength: model.contextLength,
+              ...(model.modelFriendlyName
+                ? { modelFriendlyName: model.modelFriendlyName }
+                : {}),
+            };
+            bucket.push(entry);
+          })
+          .then(
+            () => true,
+            (error: unknown) => {
+              if (error instanceof AiModelsWriteAborted) return false;
+              throw error;
+            },
+          );
+        if (!wrote) {
+          writeSse(res, 'progress', {
+            model: model.model,
+            status: 'failed',
+            message:
+              'The connection changed while this model was being checked. Reload it and try again.',
+          });
+          return;
+        }
         saved += 1;
         writeSse(res, 'progress', {
           model: model.model,
@@ -416,6 +470,12 @@ export function rotateConnectionCredentials(
         res.status(404).json({ status: 'error', message: 'Connection not found' });
         return;
       }
+      // One key for every member, checked against one endpoint: refuse before it is sent anywhere.
+      const spansEndpoints = connectionEndpointsDifferBody(members);
+      if (spansEndpoints) {
+        res.status(400).json(spansEndpoints);
+        return;
+      }
       const merged = mergeAiModelCredentials(incoming, sample.entry.configuration);
       const health = await healthCheckModel(
         appConfig,
@@ -436,17 +496,34 @@ export function rotateConnectionCredentials(
         return;
       }
       let updated = 0;
-      await repo.mutate((aiModels) => {
-        for (const modelType of AI_MODEL_TYPES) {
-          for (const entry of aiModels[modelType] ?? []) {
-            if (entry.connectionId !== connectionId) {
-              continue;
+      // Typed by assertion: it is set inside the callback, so TS must not narrow it to null.
+      let refusal = null as Record<string, unknown> | null;
+      try {
+        await repo.mutate((aiModels) => {
+          updated = 0;
+          const current: { modelType: string; entry: AIModelConfiguration }[] =
+            [{ modelType: sample.modelType, entry: sample.entry }];
+          for (const modelType of AI_MODEL_TYPES) {
+            for (const entry of aiModels[modelType] ?? []) {
+              if (entry.connectionId === connectionId)
+                current.push({ modelType, entry });
             }
+          }
+          // A member moved between the read and this write.
+          refusal = connectionEndpointsDifferBody(current);
+          if (refusal) throw new AiModelsWriteAborted();
+          for (const { entry } of current.slice(1)) {
             entry.configuration = mergeAiModelCredentials(incoming, entry.configuration);
             updated += 1;
           }
+        });
+      } catch (error) {
+        if (refusal && error instanceof AiModelsWriteAborted) {
+          res.status(400).json(refusal);
+          return;
         }
-      });
+        throw error;
+      }
       res.status(200).json({ status: 'success', connectionId, updated });
     } catch (error) {
       next(error);

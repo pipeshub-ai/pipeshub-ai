@@ -5753,7 +5753,7 @@ class TestUpdateToolsetInstanceRoute:
         cs = AsyncMock()
 
         call_count = 0
-        async def mock_get(path, default=None, use_cache=True):
+        async def mock_get(path, default=None, use_cache=True, **_kw):
             nonlocal call_count
             if "endpoints" in path:
                 # Frontend config with nested dict
@@ -5784,7 +5784,7 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
 
-        async def mock_get(path, default=None, use_cache=True):
+        async def mock_get(path, default=None, use_cache=True, **_kw):
             if "endpoints" in path:
                 raise Exception("config fail")
             return default or []
@@ -6253,19 +6253,26 @@ class TestRemoveToolsetCredentialsRoute:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_remove_credentials_delete_fails(self) -> None:
-        """Cover lines 2165-2166."""
+    @pytest.mark.parametrize(
+        ("error", "status"),
+        [(Exception("fail"), 500), (ConnectionError("store unreachable"), 503)],
+    )
+    async def test_remove_credentials_delete_fails(self, error: Exception, status: int) -> None:
+        """A failed delete is never a success: a store that can't answer is a 503, anything else a 500."""
         from app.api.routes.toolsets import remove_toolset_credentials
         cs = AsyncMock()
-        cs.delete_config = AsyncMock(side_effect=Exception("fail"))
+        cs.delete_config = AsyncMock(side_effect=error)
 
         req = _make_request()
 
         with patch("app.connectors.core.base.token_service.startup_service.startup_service") as mock_ss:
             mock_ss.get_toolset_token_refresh_service.return_value = None
-            result = await remove_toolset_credentials("i1", req, cs)
+            with pytest.raises(HTTPException) as exc:
+                await remove_toolset_credentials("i1", req, cs)
 
-        assert result["status"] == "success"  # Still returns success
+        assert exc.value.status_code == status
+        if status == 500:
+            assert exc.value.detail == "Failed to remove credentials."
 
 
 class TestReauthenticateToolsetInstanceRoute:

@@ -226,6 +226,9 @@ column graph.stats_records.org_id type=text notnull=true identity= generated= de
 column graph.stats_records.record_id type=text notnull=true identity= generated= default=-
 column graph.stats_records.record_type type=text notnull=true identity= generated= default=-
 column graph.stats_records.sid type=text notnull=false identity= generated= default=-
+column graph.stats_sweeps.after type=text notnull=true identity= generated= default=-
+column graph.stats_sweeps.done type=boolean notnull=true identity= generated= default=false
+column graph.stats_sweeps.org_id type=text notnull=true identity= generated= default=-
 column harness.admission_quotas.count type=integer notnull=true identity= generated= default=-
 column harness.admission_quotas.holds type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column harness.admission_quotas.key type=text notnull=true identity= generated= default=-
@@ -951,6 +954,7 @@ column kg.scope_members.app_sk type=bigint notnull=false identity= generated= de
 column kg.scope_members.gtype type=text notnull=true identity= generated= default=-
 column kg.scope_members.leaf type=boolean notnull=true identity= generated= default=false
 column kg.scope_members.node_group type=bigint notnull=false identity= generated= default=-
+column kg.scope_members.node_parent type=bigint notnull=false identity= generated= default=-
 column kg.scope_members.node_sk type=bigint notnull=true identity= generated= default=-
 column kg.scope_members.org_id type=text notnull=true identity= generated= default=-
 column kg.scope_members.parent_held type=boolean notnull=true identity= generated= default=false
@@ -1449,6 +1453,9 @@ constraint graph.stats_counts stats_counts_pkey p def=02d2b4a38fdf2a926235d52957
 constraint graph.stats_records org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint graph.stats_records org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint graph.stats_records stats_records_pkey p def=57049586eb6364f8fe3932dbfc7e8425
+constraint graph.stats_sweeps org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.stats_sweeps org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_sweeps stats_sweeps_pkey p def=23790d7e3b152b2426b0cd980c7b2821
 constraint harness.admission_quotas admission_quotas_count_check c def=a09c734f4fdf6c0b6c5b5fd6ebe54b83
 constraint harness.admission_quotas admission_quotas_pkey p def=9006271a2fad6f11654dbaee87f8a232
 constraint harness.admission_quotas org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -1980,8 +1987,8 @@ func kernel.allow_vetted_write_op(regprocedure,regclass,text,name[],name[],name,
 func kernel.annotate_function(regprocedure,text,regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=387b680675daab47ab27aed7509546b9 ext=-
 func kernel.apply_rls(regclass,text,boolean,boolean,text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=916adc3ea995abf19c362ef1c52a4224 ext=-
 func kernel.apply_rls_partition(regclass,regclass,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=11c43c9acfff84c19685af9a65f2ddb8 ext=-
-func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=162d140f491f16e476f7a0f9df464d0a ext=-
-func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=a9359f45061785e9af50b8da0c38e054 ext=-
+func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=cc876dc61477062d7871f416a9a653b6 ext=-
+func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=75d08837d920da2585b2a05c27d5a707 ext=-
 func kernel.declare_extension_schema(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b9da3c6332da59a2fbc1ddb6040080c5 ext=-
 func kernel.exempt_constraint(regclass,name,text,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=32c4a15e8a767e354922828a28af36e8 ext=-
 func kernel.exempt_trigger(regprocedure,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ba198108fb9374224c91da29e844c153 ext=-
@@ -1992,6 +1999,7 @@ func kernel.has_extension(text) owner=pipeshub_owner secdef=false leakproof=fals
 func kernel.mark_person(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b484b2534a793edfa2ae9602b73116a0 ext=-
 func kernel.org_lineage(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=13472cd4766a802b66ccfd6b2a167682 ext=-
 func kernel.org_parent_ids(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=784c5292fdf530dd3ed72a8f021e7f2e ext=-
+func kernel.org_writes_held(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=8737922293d78caae4dadbd30b399e32 ext=-
 func kernel.pg_major() owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, pg_temp body=6925a6b0331dc612469f3d602ea42f17 ext=-
 func kernel.postgres_store_epoch() owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=99fdf6eb1e3d20d978c618b85d8c83ba ext=-
 func kernel.profile_epoch() owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=032994c6311412f0f44ca0a3e09466fd ext=-
@@ -2017,16 +2025,17 @@ func kg.stamp_change() owner=pipeshub_owner secdef=false leakproof=false volatil
 func kg.w_analyze_request(bigint) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7c519f6a2a4cec92038c04d99a5534f7 ext=-
 func kg.w_app_cross_set(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d39fe554581dafffacce0dee83a7b721 ext=-
 func kg.w_app_facts_set(bigint,boolean,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e81274fd2cfe9af69cd104b6ffe729dd ext=-
-func kg.w_changes_ack(integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=bfadbeadb7de83931dceecc51cadfc85 ext=-
-func kg.w_changes_delete(bigint[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=70e46a73c957e0ce5923e51c6fd75ecd ext=-
+func kg.w_changes_ack(integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f702fefb33f1933c0798a2858ed2ba7c ext=-
+func kg.w_changes_delete(bigint[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=737a31c3452c58c01cdf988f546c231c ext=-
 func kg.w_class_literals_set(bigint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=728f7dcc6df209ed77f031357df684c7 ext=-
 func kg.w_classes_set(bigint[],bigint[],bigint[],jsonb[],bytea[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=92026c685bb557cbb85215fb74fa6c08 ext=-
 func kg.w_closure_delete(bigint[],bigint[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=825bb285be0d5e32b91be5b362cc038e ext=-
 func kg.w_closure_set(bigint[],bigint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7672cf64c7dbee24a7eee45c5b40a796 ext=-
 func kg.w_counts_add(bigint[],smallint[],bigint[],smallint[],boolean[],text[],text[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=8981284ce85e1d373ca9167918d7ab61 ext=-
 func kg.w_counts_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=4c02df341628d49cf3e768e476f3416b ext=-
-func kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2cec3f0aa73701b481ac165798516013 ext=-
+func kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=553a45ab631cf173e51e51324e74ee98 ext=-
 func kg.w_grant_marks_set(bigint[],bigint[],text[],boolean[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6a5abbf0a8471ca3b3e2e735386ad885 ext=-
+func kg.w_grant_parent_set(bigint[],bigint[],text[],bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fa7aeca54ef4d2f48147e0537dc1d9de ext=-
 func kg.w_grants_delete(bigint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=70bb96316f1e1e28b2210034e4a2bf70 ext=-
 func kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=763e59b905bd196b412d66b8dda38411 ext=-
 func kg.w_kb_listing_set(bigint[],smallint[],text[],smallint[],text[],text[],bigint[],bigint[],bigint[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=1cb0ca8bee4abf467efd490384d242a4 ext=-
@@ -2037,20 +2046,21 @@ func kg.w_nodes_upsert(smallint[],text[]) owner=pipeshub_vetted_kg secdef=true l
 func kg.w_pc_top_set(bigint[],smallint[],text[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ef62934777bf0a90bfc1a97b5b1da7a9 ext=-
 func kg.w_projection_set(bigint,integer,text,text,text,timestamp with time zone) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2e71bdff7589756a237e177947d0fdcf ext=-
 func kg.w_queue_add(bigint,bigint,text,text,boolean) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=b05070a103e3b9bc5ebba0ff7a18b405 ext=-
-func kg.w_queue_done(bigint,integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3d1de96723a35ee4c4bd00f95e2edeea ext=-
+func kg.w_queue_done(bigint,integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=e79518d50eda22eeb8850fe69258e68a ext=-
 func kg.w_queue_release(bigint,text) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f4738c5680101d255c4271ae22f91add ext=-
-func kg.w_queue_touch(bigint,bigint,text,integer,text,integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=4cffb10bf1e828cbbb3963dc5da88e85 ext=-
+func kg.w_queue_touch(bigint,bigint,text,integer,text,integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c244627c700567f90033c8abf8abe537 ext=-
 func kg.w_r13_set(bigint[],smallint[],text[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f0c2d2ac4cc0c25014eebd361bdf6557 ext=-
 func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ffd03e3d4587772a450530f01b8e3a1d ext=-
 func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d088440ca92905c5ff0ba01d133d47b2 ext=-
 func kg.w_scopes_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=552aaea95e92c5484d2a129b7229fa93 ext=-
 func kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=9737197d1910cc67bc402d68cc422187 ext=-
-func kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=024183374fdf6da5fb25d5547de2000e ext=-
+func kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=07dfd059280826094b502e969bed24b0 ext=-
 func kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=99d501bfb5e69adbf628a2cc038ef5a4 ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+func platform.kv_access_path(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=ef194eedc233b5b0a1afca5337f27086 ext=-
 func platform.kv_admin_or_credential(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=b86e9c8a9898ff8f0fd0a00639f98534 ext=-
 func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=40839fc0adbfc81fb40c169d7372fb4f ext=-
 func platform.kv_outside(text,text,timestamp with time zone) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, pg_temp body=da3fbdc19817fc5f91e2cb37c013aba4 ext=-
@@ -2215,6 +2225,7 @@ funcacl kg.w_counts_add(bigint[],smallint[],bigint[],smallint[],boolean[],text[]
 funcacl kg.w_counts_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[],integer) pipeshub_connectors EXECUTE
 funcacl kg.w_grant_marks_set(bigint[],bigint[],text[],boolean[],bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_grant_parent_set(bigint[],bigint[],text[],bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_grants_delete(bigint[],bigint[],text[]) pipeshub_connectors EXECUTE
 funcacl kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) pipeshub_connectors EXECUTE
 funcacl kg.w_kb_listing_set(bigint[],smallint[],text[],smallint[],text[],text[],bigint[],bigint[],bigint[],smallint[],boolean[]) pipeshub_connectors EXECUTE
@@ -2239,6 +2250,11 @@ funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_connectors EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_indexing EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_kv EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_node EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_query EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_connectors EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_indexing EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_kv EXECUTE
@@ -2360,6 +2376,7 @@ index graph.stats_counts_pkey on graph.stats_counts unique=true exclusion=false 
 index graph.stats_records_app on graph.stats_records unique=false exclusion=false valid=true def=bbc46ea3c027726fa30a53bcb86a249c
 index graph.stats_records_pkey on graph.stats_records unique=true exclusion=false valid=true def=35dc0d0c5c7079f82c7a9fbdf5c38a96
 index graph.stats_records_sid on graph.stats_records unique=false exclusion=false valid=true def=aabcd20a1acae58445bf5ba7c26456ef
+index graph.stats_sweeps_pkey on graph.stats_sweeps unique=true exclusion=false valid=true def=6161c0dce0aa9ca4954108d3fd3b55ff
 index harness.admission_quotas_pkey on harness.admission_quotas unique=true exclusion=false valid=true def=599a6243a8cb92eee8ba68839280bfb1
 index harness.admission_receipts_by_age on harness.admission_receipts unique=false exclusion=false valid=true def=a139248204751735c2ce2ce876db0d08
 index harness.admission_receipts_by_session on harness.admission_receipts unique=false exclusion=false valid=true def=9e4d528b22fe993ba8215491d8ab3d99
@@ -2585,7 +2602,7 @@ index kg.scope_classes_pkey on kg.scope_classes unique=true exclusion=false vali
 index kg.scope_members_by_app on kg.scope_members unique=false exclusion=false valid=true def=3478709a7055d29344ba2740614912e0
 index kg.scope_members_by_node on kg.scope_members unique=false exclusion=false valid=true def=bdceb2383f884502c22edff6bf0e30d7
 index kg.scope_members_pkey on kg.scope_members unique=true exclusion=false valid=true def=4bdea6ca4d0ddcd117fab409da9bd74d
-index kg.scope_members_tops on kg.scope_members unique=false exclusion=false valid=true def=2d4308a01fb4ace050f6d6774a517126
+index kg.scope_members_tops on kg.scope_members unique=false exclusion=false valid=true def=714505c74620f0dc66a809c035e643af
 index kg.scopes_app on kg.scopes unique=false exclusion=false valid=true def=753547d37e42392afe81e6a25977340e
 index kg.scopes_pkey on kg.scopes unique=true exclusion=false valid=true def=92c81946c98bf57da079ba68f85489b7
 index oauth.access_tokens_by_actor on oauth.access_tokens unique=false exclusion=false valid=true def=bc3d7e0515e91dc35794e4be69c871f8
@@ -2791,6 +2808,7 @@ pin kg.w_counts_add(bigint[],smallint[],bigint[],smallint[],boolean[],text[],tex
 pin kg.w_counts_delete(bigint[]) kg.counts delete key=id set=- txn=- max=5000
 pin kg.w_fence_rows(bigint[],smallint[],text[],smallint[],bigint[],integer) kg.records upsert key=- set=fence_job txn=- max=5000
 pin kg.w_grant_marks_set(bigint[],bigint[],text[],boolean[],bigint[]) kg.scope_members update key=- set=- txn=- max=5000
+pin kg.w_grant_parent_set(bigint[],bigint[],text[],bigint[]) kg.scope_members update key=- set=- txn=- max=5000
 pin kg.w_grants_delete(bigint[],bigint[],text[]) kg.scope_members delete key=principal_sk,node_sk,gtype set=- txn=- max=5000
 pin kg.w_grants_set(bigint[],bigint[],text[],text[],bigint[],boolean[]) kg.scope_members upsert key=- set=role,app_sk,leaf txn=- max=5000
 pin kg.w_kb_listing_set(bigint[],smallint[],text[],smallint[],text[],text[],bigint[],bigint[],bigint[],smallint[],boolean[]) kg.records upsert key=- set=indexing_status,connector_name,doc_created_ms,doc_updated_ms,file_size,file_kind,kb_odd txn=- max=5000
@@ -2874,6 +2892,9 @@ policy graph.stats_counts restore_insert cmd=a permissive=true roles=pipeshub_re
 policy graph.stats_records backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy graph.stats_records org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_records restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.stats_sweeps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_sweeps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.stats_sweeps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.admission_quotas backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.admission_quotas import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.admission_quotas jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
@@ -3275,10 +3296,10 @@ policy platform.docstore_keymap backup_read cmd=r permissive=true roles=pipeshub
 policy platform.docstore_keymap import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.docstore_keymap org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.docstore_keymap restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
-policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR (expires_at <= now()) OR platform.kv_outside(key, 'delete'::text, expires_at)) check=-
-policy platform.kv_entries kv_insert cmd=a permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=- check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'insert'::text, expires_at))
-policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, false) OR platform.kv_outside(key, 'read'::text, expires_at)) check=-
-policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at)) check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at))
+policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR (expires_at <= now()) OR platform.kv_outside(platform.kv_access_path(key), 'delete'::text, expires_at)) check=-
+policy platform.kv_entries kv_insert cmd=a permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=- check=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'insert'::text, expires_at))
+policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), false) OR platform.kv_outside(platform.kv_access_path(key), 'read'::text, expires_at)) check=-
+policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at)) check=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at))
 policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.mail_log import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -3390,6 +3411,7 @@ rel graph.stats_changes kind=r owner=pipeshub_owner rls=true force=true options=
 rel graph.stats_changes_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
 rel graph.stats_counts kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
 rel graph.stats_records kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
+rel graph.stats_sweeps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel harness.admission_quotas kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel harness.admission_receipts kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel harness.agent_erasures kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
@@ -3739,6 +3761,12 @@ relacl graph.stats_records pipeshub_connectors UPDATE grantable=false
 relacl graph.stats_records pipeshub_indexing SELECT grantable=false
 relacl graph.stats_records pipeshub_query SELECT grantable=false
 relacl graph.stats_records pipeshub_restore INSERT grantable=false
+relacl graph.stats_sweeps pipeshub_backup SELECT grantable=false
+relacl graph.stats_sweeps pipeshub_connectors DELETE grantable=false
+relacl graph.stats_sweeps pipeshub_connectors INSERT grantable=false
+relacl graph.stats_sweeps pipeshub_connectors SELECT grantable=false
+relacl graph.stats_sweeps pipeshub_connectors UPDATE grantable=false
+relacl graph.stats_sweeps pipeshub_restore INSERT grantable=false
 relacl harness.admission_quotas pipeshub_backup SELECT grantable=false
 relacl harness.admission_quotas pipeshub_import DELETE grantable=false
 relacl harness.admission_quotas pipeshub_import INSERT grantable=false
@@ -5291,6 +5319,7 @@ trigger graph.nodes stats_nodes_delete enabled=A function=graph.stats_log_change
 trigger graph.nodes stats_nodes_insert enabled=A function=graph.stats_log_change()
 trigger graph.nodes stats_nodes_update enabled=A function=graph.stats_log_change()
 trigger graph.stats_apps graph_stats_apps_restore enabled=O function=graph.stats_app_restored()
+trigger graph.stats_sweeps graph_stats_sweeps_restore enabled=O function=graph.stats_app_restored()
 trigger identity.org_auth_config docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.org_logos docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.slug_counters docstore_change_log enabled=O function=platform.docstore_log_change()

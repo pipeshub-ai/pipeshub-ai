@@ -35,9 +35,11 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
-import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
-import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
+import {
+  normalizeOrgId,
+  setMetricCollectionEnabled,
+} from '../../../libs/services/telemetry/telemetry-impl';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
   readMembership,
@@ -119,6 +121,7 @@ import {
   WebSearchProviderConfiguration,
   canSearch,
 } from '../types/web-search.types';
+import { getCurrentOrgId } from '../../../libs/context/orgContext';
 import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
@@ -128,6 +131,12 @@ import {
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
+  hasForwardingCredentials,
+  reusesSavedAiModelCredentials,
+  withoutForwardingCredentials,
   maskWebSearchProvider,
   maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
@@ -3661,6 +3670,24 @@ export const addAIModelProvider =
     }
   };
 
+function destinationHost(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  provider: unknown,
+): string | undefined {
+  // A key the request leaves out is unchanged, so it is never the moved one.
+  const key = AI_MODEL_DESTINATION_KEYS.find(
+    (k) =>
+      k in incoming &&
+      aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
+  );
+  try {
+    return new URL(String(incoming[key as string])).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export const updateAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3747,11 +3774,62 @@ export const updateAIModelProvider =
         return;
       }
 
+      // Saved credentials are restored below, so a new destination must come
+      // with credentials typed again or they would be sent to it.
+      const savedConfiguration: Record<string, unknown> = stored ?? {};
+      const destinationChanged = aiModelDestinationChanged(
+        incoming,
+        savedConfiguration,
+        targetModel.provider,
+      );
+      const reusesCredentials = reusesSavedAiModelCredentials(
+        incoming,
+        savedConfiguration,
+      );
+      // The save keeps the stored provider, so a check run as another provider
+      // would not describe what is saved.
+      if (
+        targetModel.provider &&
+        String(provider).toLowerCase() !== targetModel.provider.toLowerCase()
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Provider does not match saved model',
+        });
+        return;
+      }
+
+      const securityContext: Record<string, unknown> = {
+        orgId: getCurrentOrgId(),
+        userId: req.user?.userId,
+        modelKey,
+        host: destinationChanged
+          ? destinationHost(incoming, savedConfiguration, targetModel.provider)
+          : undefined,
+      };
+      if (destinationChanged && reusesCredentials) {
+        logger.warn('AI model destination change refused', {
+          securityEvent: 'model_destination_change_refused',
+          ...securityContext,
+        });
+        res.status(400).json({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        });
+        return;
+      }
+
       // GET only returns the public allowlist, so the client can only send back
       // keys it retyped. Restore the rest from storage before the health check.
+      // Forwarding credentials are not retyped, so a new destination does not get them.
+      const restorable = (
+        saved: Record<string, unknown>,
+      ): Record<string, unknown> =>
+        destinationChanged ? withoutForwardingCredentials(saved) : saved;
       const mergedConfiguration = mergeAiModelCredentials(
         configuration,
-        targetModel.configuration as Record<string, unknown>,
+        restorable(targetModel.configuration as Record<string, unknown>),
       );
 
       const healthCheckPayload: Record<string, unknown> = {
@@ -3849,18 +3927,46 @@ export const updateAIModelProvider =
 
       const modelFriendlyName = configuration.modelFriendlyName;
       let saved: AIModelsConfig;
+      // Set inside the mutate callback, so assert boolean to stop narrowing to false.
+      let forwardingCredentialsCleared = false as boolean;
+      let movedDuringCheck = false as boolean;
       try {
         saved = await aiModelsRepository(keyValueStoreService, save, req, [
           targetModelType,
         ]).mutate((latest) => {
+          movedDuringCheck = false;
           const current = findModelEntry(latest, modelKey);
           if (!current || current.modelType !== targetModelType) {
             throw new AiModelsWriteAborted();
           }
           // A credential rotation can land during the health check; keep its keys.
+          const latestSaved =
+            (current.model.configuration as
+              Record<string, unknown> | undefined) ?? {};
+          // Another save can also move the model during the check. Its stored
+          // credentials belong to that endpoint, which this check never used,
+          // so compare against the latest document, not the earlier read.
+          const latestDestinationChanged = aiModelDestinationChanged(
+            incoming,
+            latestSaved,
+            current.model.provider,
+          );
+          // The check ran against the endpoint read before it, which also
+          // covers a request that leaves the endpoint out.
+          if (
+            aiModelDestinationsDiffer(savedConfiguration, latestSaved) ||
+            (latestDestinationChanged &&
+              reusesSavedAiModelCredentials(incoming, latestSaved))
+          ) {
+            movedDuringCheck = true;
+            throw new AiModelsWriteAborted();
+          }
+          const moved = destinationChanged || latestDestinationChanged;
+          forwardingCredentialsCleared =
+            moved && hasForwardingCredentials(latestSaved);
           current.model.configuration = mergeAiModelCredentials(
             configuration,
-            current.model.configuration as Record<string, unknown>,
+            moved ? withoutForwardingCredentials(latestSaved) : latestSaved,
           );
           current.model.isMultimodal = isMultimodal;
           current.model.isDefault = isDefault;
@@ -3878,6 +3984,19 @@ export const updateAIModelProvider =
           }
         });
       } catch (error) {
+        if (error instanceof AiModelsWriteAborted && movedDuringCheck) {
+          logger.warn('AI model destination change refused', {
+            securityEvent: 'model_destination_change_refused',
+            ...securityContext,
+            reason: 'moved_during_check',
+          });
+          res.status(409).json({
+            status: 'error',
+            message:
+              'This model was moved to another endpoint while it was being checked. Reload it and enter the credentials again.',
+          });
+          return;
+        }
         if (error instanceof AiModelsWriteAborted) {
           res.status(404).json({
             status: 'error',
@@ -3888,6 +4007,12 @@ export const updateAIModelProvider =
         throw error;
       }
       const updatedModel = findModelEntry(saved, modelKey)?.model ?? targetModel;
+      if (destinationChanged) {
+        logger.warn('AI model destination changed', {
+          securityEvent: 'model_destination_changed',
+          ...securityContext,
+        });
+      }
 
       const event: Event =
         targetModelType === 'embedding'
@@ -3918,6 +4043,9 @@ export const updateAIModelProvider =
           contextLength: modelForResponse.contextLength,
           isMultimodal: modelForResponse.isMultimodal,
           isReasoning: modelForResponse.isReasoning,
+          ...(forwardingCredentialsCleared
+            ? { forwardingCredentialsCleared: true }
+            : {}),
         },
       });
     } catch (error: any) {
