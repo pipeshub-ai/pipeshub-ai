@@ -13,6 +13,7 @@ import { AGENT_KEY as KEY, CONVERSATION_ROUTES, ConversationRoute, urlOf } from 
 import { ACTORS as WORLD, ActorName as WorldActor, Env, NOT_FOUND as WORLD_NOT_FOUND, ORG, Seed as World, buildRouters, seed } from '../helpers/conversation-world'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { linkSlackAccounts, slackCallerRequest, unlinkSlackAccounts, userRow } from '../helpers/slack-callers'
 
 // The agent-kind rows of the shared actor world: A owner, B write, C read, P project viewer, D stranger, E other org.
 const ACTOR_OF = { owner: 'A', write: 'B', read: 'C', projectViewer: 'P', stranger: 'D', crossOrg: 'E' } as const
@@ -178,7 +179,11 @@ describe('agent conversation routes: guard decisions through the router', () => 
 
   describe('internal stream route', () => {
     const route = ROUTES.find((r) => r.id === 'A3')!
-    const scopedRequest = (email: string): Record<string, unknown> => ({ tokenPayload: { email, orgId: String(ORG) } })
+    /** The Slack bot's token for a workspace member linked to the actor of the same name. */
+    const scopedRequest = (slackUserId: string): Record<string, unknown> => slackCallerRequest(slackUserId, String(ORG))
+    const linkActors = () =>
+      linkSlackAccounts(String(ORG), { U0OWNER: String(ACTORS.owner.userId), U0STRANGER: String(ACTORS.stranger.userId) })
+    afterEach(() => unlinkSlackAccounts())
     /** Hydration resolves the deployment's only org before it looks up the user. Stub after `seedWorld()`, which restores sinon. */
     const soleOrg = (): void => {
       sinon.stub(Org, 'find').returns({ limit: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves([{ _id: ORG }]) } as never)
@@ -194,8 +199,9 @@ describe('agent conversation routes: guard decisions through the router', () => 
     it('a scoped token is hydrated to its user before the guard, and the owner streams', async () => {
       const w = seedWorld({ projectId: undefined, projectVisibility: undefined })
       soleOrg()
-      sinon.stub(Users, 'findOne').resolves(dbUser('owner') as never)
-      const p = invoke(route, urlOf(route, { conversationId: w.ids.agent, messageId: w.messageIds.agent }), scopedRequest('owner@example.com'))
+      await linkActors()
+      sinon.stub(Users, 'findOne').callsFake((() => userRow(dbUser('owner'))) as never)
+      const p = invoke(route, urlOf(route, { conversationId: w.ids.agent, messageId: w.messageIds.agent }), scopedRequest('U0OWNER'))
       for (let i = 0; i < 20 && w.ai.streamCalls.length === 0; i += 1) await settle()
       w.ai.send('RUN_FINISHED', finalAnswer('ok'))
       w.ai.finish()
@@ -208,8 +214,9 @@ describe('agent conversation routes: guard decisions through the router', () => 
     it('a scoped token for another user in the org gets a JSON 404 and no turn', async () => {
       const w = seedWorld()
       soleOrg()
-      sinon.stub(Users, 'findOne').resolves(dbUser('stranger') as never)
-      const out = await invoke(route, urlOf(route, { conversationId: w.ids.agent, messageId: w.messageIds.agent }), scopedRequest('stranger@example.com'))
+      await linkActors()
+      sinon.stub(Users, 'findOne').callsFake((() => userRow(dbUser('stranger'))) as never)
+      const out = await invoke(route, urlOf(route, { conversationId: w.ids.agent, messageId: w.messageIds.agent }), scopedRequest('U0STRANGER'))
       assertOutcome(out, NOT_FOUND, 'A3 stranger')
       nothingHappened(w)
     })
