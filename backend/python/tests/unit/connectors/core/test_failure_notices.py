@@ -326,7 +326,7 @@ async def test_the_owner_is_told_even_when_switching_off_stops_the_sync_doing_it
 
 async def test_the_owner_is_told_even_when_the_sync_is_stopped_while_the_event_is_published() -> None:
     """The consumer can act on appDisabled before the broker acknowledges sending it."""
-    service, _graph, producer = _service()
+    service, graph, producer = _service()
     published, release = asyncio.Event(), asyncio.Event()
     send = producer.send_message
 
@@ -345,5 +345,7 @@ async def test_the_owner_is_told_even_when_the_sync_is_stopped_while_the_event_i
         await sync
     release.set()
     await asyncio.gather(*service._switch_off_tasks)
+    graph.update_node.assert_awaited_once()
+    assert graph.update_node.await_args.args[2]["isAuthenticated"] is False
     assert len(_notices(producer)) == 1
     assert service.told_switched_off_recently("c1") is True
