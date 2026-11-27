@@ -6,6 +6,7 @@
 import { expect } from 'chai';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { load as loadYaml } from 'js-yaml';
 import sinon from 'sinon';
 import { scheduleCreateArgumentsSchema } from '../../../src/modules/agent-harness/contracts/generated/ext/pipeshub/api/schedule-create-arguments';
 import { InMemoryScheduleStore } from '../../../src/modules/agent-harness/adapters/in-memory-schedules';
@@ -646,14 +647,15 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     expect(w.marked).to.have.length(1);
   });
 
-  it('made but not noted (a crash between): a repeat answers it and notes it then', async () => {
+  it('a lost audit fact changes nothing: a repeat still answers the schedule, and after a delete is refused', async () => {
     const w = world();
     w.events.push(...approvedCall());
-    await w.call(body());
+    const id = ((await w.call(body())).body as { schedule: { id: string } }).schedule.id;
     w.events.splice(w.events.findIndex((e) => e.type === SCHEDULE_CREATED_EVENT), 1);
-    w.marked.length = 0;
-    expect((await w.call(body())).status).to.equal(200);
-    expect(w.marked).to.have.length(1);
+    expect(await w.call(body())).to.deep.include({ status: 200 });
+    await w.schedules.delete(alice, id);
+    expect(await w.call(body())).to.deep.equal({ status: 409, code: 'HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED' });
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(0);
   });
 
   it('AP-06: an edited call is made with the edited arguments only', async () => {
@@ -704,6 +706,33 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       // A valid shape passes to the approval check (no decision here: 403); an invalid one never gets that far.
       expect(answer.status, vector.name).to.equal(vector.valid ? 403 : 400);
     }
+  });
+
+  it('the OpenAPI component of the arguments holds the contract’s own constraints', () => {
+    const KEPT = ['minLength', 'maxLength', 'pattern', 'enum', 'required', 'additionalProperties', 'minItems', 'maxItems', 'uniqueItems'];
+    const constraints = (schema: Record<string, unknown>): unknown => {
+      const out: Record<string, unknown> = {};
+      for (const key of KEPT) if (schema[key] !== undefined) out[key] = schema[key];
+      if (schema['const'] !== undefined) out['enum'] = [schema['const']];
+      const props = schema['properties'] as Record<string, Record<string, unknown>> | undefined;
+      if (props !== undefined) {
+        out['properties'] = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, constraints(v)]));
+      }
+      if (schema['items'] !== undefined) out['items'] = constraints(schema['items'] as Record<string, unknown>);
+      const branches = (schema['anyOf'] ?? schema['oneOf']) as Array<Record<string, unknown>> | undefined;
+      if (branches !== undefined) out['anyOf'] = branches.map(constraints);
+      return out;
+    };
+    const root = resolve(__dirname, '../../../../../..');
+    const contract = JSON.parse(
+      readFileSync(resolve(root, 'contracts/harness/ext/pipeshub/api/schedule-create-arguments.schema.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    const openapi = loadYaml(
+      readFileSync(resolve(__dirname, '../../../src/modules/api-docs/pipeshub-openapi.yaml'), 'utf8'),
+    ) as { components: { schemas: Record<string, Record<string, unknown>> } };
+    const component = openapi.components.schemas['AgentHarnessScheduleCreateArguments'];
+    expect(component).to.not.equal(undefined);
+    expect(constraints(component!)).to.deep.equal(constraints(contract));
   });
 
   it('a malformed body is a 400 that names nothing of it', async () => {

@@ -3,11 +3,7 @@ import { z, ZodError } from 'zod';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { HarnessAuthority } from '../application/harness-authority';
-import {
-  harnessLogMeta,
-  HarnessLogger,
-  silentHarnessLogger,
-} from '../application/harness-log';
+import { HarnessLogger, silentHarnessLogger } from '../application/harness-log';
 import {
   ChatScheduleService,
   type ScheduleToolArguments,
@@ -93,25 +89,9 @@ export class AgentHarnessChatScheduleController {
       logAuthorityRefusal(this.logger, req, error);
     }
     if (error instanceof ZodError || error instanceof ContractZodError) {
-      this.logger.warn(
-        'schedule.chat_refused',
-        harnessLogMeta('schedule.chat_refused', {
-          orgId: req.harnessAttempt?.orgId,
-          runId: req.harnessAttempt?.runId,
-          reason: 'invalid_request',
-        }),
-      );
       return new BadRequestError('Invalid schedule request');
     }
     if (error instanceof HarnessScheduleRefusedError) {
-      this.logger.warn(
-        'schedule.chat_refused',
-        harnessLogMeta('schedule.chat_refused', {
-          orgId: req.harnessAttempt?.orgId,
-          runId: req.harnessAttempt?.runId,
-          reason: error.code,
-        }),
-      );
       return scheduleHttpError(error);
     }
     return transportError(error);

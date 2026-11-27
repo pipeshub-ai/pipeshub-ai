@@ -150,6 +150,19 @@ export interface AgentSchedule {
   updatedAt: number;
 }
 
+/**
+ * What a deleted chat-made schedule leaves in its store, under its own id (ADR-SCH-01 D3): the approval that made it
+ * is spent, so a repeat of it can never insert that id again. Ids and times only, never its name, ask or trigger;
+ * no read of schedules ever answers it; erasing its person or org removes it.
+ */
+export const SCHEDULE_TOMBSTONE_STATUS = 'deleted';
+
+export const scheduleApprovalUsed = (): HarnessScheduleRefusedError =>
+  new HarnessScheduleRefusedError(
+    'SCHEDULE_APPROVAL_USED',
+    'The schedule this approval set up was deleted; it is not made again',
+  );
+
 /** The chat turn and the approved call a schedule was made from. */
 export interface ScheduleOrigin {
   conversationId: string;

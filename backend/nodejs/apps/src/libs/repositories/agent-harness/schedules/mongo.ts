@@ -7,6 +7,8 @@ import {
   type FiringOutcome,
   type RunTriggerContext,
   type ScheduleFiring,
+  scheduleApprovalUsed,
+  SCHEDULE_TOMBSTONE_STATUS,
   type ScheduleStatus,
   WATCH_GRACE_MS,
 } from '../../../../modules/agent-harness/domain/schedules';
@@ -32,6 +34,10 @@ import {
   ScheduleDocument,
   ScheduleFiringDocument,
 } from './schema/schedules.schema';
+import type { ScheduleTombstoneDocument } from './document';
+
+/** Every read of schedules leaves out the tombstones deleted chat-made schedules leave (ADR-SCH-01 D3). */
+const LIVE = { status: { $ne: SCHEDULE_TOMBSTONE_STATUS } } as const;
 
 const isDuplicateKey = (error: unknown): boolean =>
   typeof error === 'object' &&
@@ -58,6 +64,8 @@ export async function toSchedule(
   } = structuredClone(document);
   return {
     ...rest,
+    // Reads never answer a tombstone (`deleted`), so what is read is a schedule's own status.
+    status: rest.status as ScheduleStatus,
     input:
       input === null
         ? null
@@ -149,15 +157,48 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     limits: ScheduleLimits,
   ): Promise<AgentSchedule> {
     const sealed = await scheduleDocument(this.inputs, schedule);
+    await this.inserted(schedule, () => this.insert(sealed, schedule, limits));
+    return structuredClone(schedule);
+  }
+
+  /** A duplicate id that is a tombstone: the approval that would make it again is spent. */
+  private async inserted(
+    schedule: AgentSchedule,
+    insert: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await insert();
+    } catch (error) {
+      if (
+        isDuplicateKey(error) &&
+        (await AgentScheduleModel.exists({
+          _id: schedule.id,
+          orgId: schedule.orgId,
+          status: SCHEDULE_TOMBSTONE_STATUS,
+        }).read('primary')) !== null
+      ) {
+        throw scheduleApprovalUsed();
+      }
+      throw error;
+    }
+  }
+
+  private async insert(
+    sealed: ScheduleDocument,
+    schedule: AgentSchedule,
+    limits: ScheduleLimits,
+  ): Promise<void> {
     await inMongoTransaction(async (session) => {
       // One after the other: the first operation of a transaction starts it, and two sent at once (driver 7)
       // both try to, which the server refuses.
       const org = await AgentScheduleModel.countDocuments({
         orgId: schedule.orgId,
+        ...LIVE,
       }).session(session);
       const actor = await AgentScheduleModel.countDocuments({
         orgId: schedule.orgId,
         actorId: schedule.actorId,
+        ...LIVE,
       }).session(session);
       if (org >= limits.perOrg || actor >= limits.perActor) {
         throw new HarnessScheduleRefusedError(
@@ -186,13 +227,13 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
         session,
       });
     });
-    return structuredClone(schedule);
   }
 
   async get(orgId: string | null, id: string): Promise<AgentSchedule | null> {
     const found = await AgentScheduleModel.findOne({
       _id: id,
       ...(orgId !== null ? { orgId } : {}),
+      ...LIVE,
     })
       .read('primary')
       .lean<ScheduleDocument>();
@@ -207,6 +248,7 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     const found = await AgentScheduleModel.find({
       orgId,
       ...(filter.actorId !== undefined ? { actorId: filter.actorId } : {}),
+      ...LIVE,
     })
       .sort({ createdAt: -1 })
       .limit(limit)
@@ -259,13 +301,34 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     return updated === null ? null : toSchedule(this.inputs, updated);
   }
 
+  /** A chat-made schedule leaves its tombstone in the same write (ADR-SCH-01 D3); any other goes. */
   async delete(orgId: string, id: string): Promise<boolean> {
     return inMongoTransaction(async (session) => {
-      const removed = await AgentScheduleModel.deleteOne(
-        { _id: id, orgId },
-        { session },
-      );
-      if (removed.deletedCount === 0) return false;
+      const found = await AgentScheduleModel.findOne(
+        { _id: id, orgId, ...LIVE },
+        { actorId: 1, origin: 1 },
+      )
+        .session(session)
+        .lean<Pick<ScheduleDocument, '_id' | 'actorId' | 'origin'>>();
+      if (found === null) return false;
+      if (found.origin !== undefined) {
+        const now = await this.time.read();
+        const tombstone: ScheduleTombstoneDocument = {
+          _id: id,
+          orgId,
+          actorId: found.actorId,
+          status: SCHEDULE_TOMBSTONE_STATUS,
+          origin: found.origin,
+          input: null,
+          deletedAt: now,
+        };
+        // A replace runs no validators: the tombstone keeps none of a schedule's required content.
+        await AgentScheduleModel.replaceOne({ _id: id, orgId }, tombstone, {
+          session,
+        });
+      } else {
+        await AgentScheduleModel.deleteOne({ _id: id, orgId }, { session });
+      }
       await AgentScheduleFiringModel.deleteMany(
         { orgId, scheduleId: id },
         { session },

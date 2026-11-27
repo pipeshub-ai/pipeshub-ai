@@ -27,7 +27,8 @@ export interface ScheduleDocument {
   trigger: ScheduleTrigger;
   maxCostUsd?: number;
   deadlineS: number;
-  status: ScheduleStatus;
+  /** `deleted` only on a tombstone (ScheduleTombstoneDocument), which no read answers. */
+  status: ScheduleStatus | 'deleted';
   statusReason: string | null;
   nextFireAt: number | null;
   webhookTokenHash: string | null;
@@ -36,8 +37,24 @@ export interface ScheduleDocument {
   overlap?: OverlapPolicy;
   notify?: NotifyChannel[];
   origin?: ScheduleOrigin;
+  /** A tombstone's (ScheduleTombstoneDocument) only. */
+  deletedAt?: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * A deleted chat-made schedule's tombstone (ADR-SCH-01 D3), in the schedules' own collection or table under the
+ * schedule's id: what keeps a spent approval from inserting it again. Ids, its origin and when it went; no content.
+ */
+export interface ScheduleTombstoneDocument {
+  _id: string;
+  orgId: string;
+  actorId: string;
+  status: 'deleted';
+  origin: ScheduleOrigin;
+  input: null;
+  deletedAt: number;
 }
 
 /**

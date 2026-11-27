@@ -7,6 +7,7 @@ import {
   type FiringOutcome,
   type RunTriggerContext,
   type ScheduleFiring,
+  scheduleApprovalUsed,
   type ScheduleStatus,
   WATCH_GRACE_MS,
 } from '../domain/schedules';
@@ -24,6 +25,11 @@ const slotOf = (
 /** The reference schedule store; the Mongo store passes the same contract. */
 export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
   private readonly schedules = new Map<string, AgentSchedule>();
+  /** Deleted chat-made schedules' ids (ADR-SCH-01 D3), with whose they were: an id here is never inserted again. */
+  private readonly tombstones = new Map<
+    string,
+    { orgId: string; actorId: string }
+  >();
   private readonly firingsById = new Map<string, ScheduleFiring>();
   private readonly slots = new Map<string, string>();
   private readonly checkedAt = new Map<string, number>();
@@ -42,6 +48,7 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     const org = [...this.schedules.values()].filter(
       (s) => s.orgId === schedule.orgId,
     );
+    if (this.tombstones.has(schedule.id)) throw scheduleApprovalUsed();
     if (this.schedules.has(schedule.id)) {
       throw new Error('A schedule with this id exists');
     }
@@ -136,6 +143,13 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
   async delete(orgId: string, id: string): Promise<boolean> {
     const found = this.schedules.get(id);
     if (found?.orgId !== orgId) return false;
+    if (found.origin !== undefined) {
+      this.tombstones.set(id, { orgId, actorId: found.actorId });
+    }
+    return this.drop(orgId, id);
+  }
+
+  private drop(orgId: string, id: string): boolean {
     this.schedules.delete(id);
     for (const firing of [...this.firingsById.values()]) {
       if (firing.orgId === orgId && firing.scheduleId === id) {
@@ -472,13 +486,16 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     return this.removeAll((s) => s.orgId === orgId);
   }
 
+  /** Erasure leaves nothing, a tombstone included. */
   private async removeAll(
-    match: (s: AgentSchedule) => boolean,
+    match: (s: { orgId: string; actorId: string }) => boolean,
   ): Promise<number> {
     let count = 0;
     for (const schedule of [...this.schedules.values()]) {
-      if (match(schedule) && (await this.delete(schedule.orgId, schedule.id)))
-        count += 1;
+      if (match(schedule) && this.drop(schedule.orgId, schedule.id)) count += 1;
+    }
+    for (const [id, tombstone] of [...this.tombstones]) {
+      if (match(tombstone)) this.tombstones.delete(id);
     }
     return count;
   }

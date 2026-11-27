@@ -24,6 +24,7 @@ import {
 } from './harness-log';
 import type {
   CreateScheduleRequest,
+  ScheduleView,
   ScheduleService,
   ScheduleTemplate,
   ScheduleTriggerRequest,
@@ -31,7 +32,7 @@ import type {
 
 /** The platform tool a harness run proposes a schedule with (ADR-SCH-01 D2). */
 export const SCHEDULE_CREATE_TOOL_ID = 'pipeshub@schedules/create';
-/** Node's note in the run's journal that an approval made its schedule: the approval is spent. */
+/** Node's audit fact in the run's journal of the schedule an approval made; single use is the store's, not this. */
 export const SCHEDULE_CREATED_EVENT = 'x.pipeshub.schedule.created';
 
 /** Where Node notes that an approval made its schedule. */
@@ -200,8 +201,9 @@ function approvalOf(
  * arguments they approved (the edited ones, when they edited it). Then it is
  * the run's person's schedule, made through `ScheduleService.create` with
  * every check the Schedules page's create makes, their authority re-read as a
- * firing re-reads it. One decision makes one schedule, once: Node notes it in
- * the run's journal, so a schedule its person deleted is never made again.
+ * firing re-reads it. One decision makes one schedule, once: its id derives from
+ * the decision, and deleting it leaves a tombstone under that id in the
+ * schedule store, so a schedule its person deleted is never made again.
  */
 export class ChatScheduleService {
   private readonly logger: HarnessLogger;
@@ -222,22 +224,7 @@ export class ChatScheduleService {
     this.assertApproved(run, events, request);
     const id = chatScheduleId(orgId, request.interactionId);
     const made = await this.existing(orgId, id, request.interactionId);
-    const spent = events.some(
-      (event) =>
-        event.type === SCHEDULE_CREATED_EVENT &&
-        event.data?.['interactionId'] === request.interactionId,
-    );
-    if (made !== null) {
-      // Made, but the note was lost (a crash between the two): note it now, so a deletion cannot be undone.
-      if (!spent) await this.mark(run, attemptId, request.interactionId, id);
-      return { schedule: view(made), created: false };
-    }
-    if (spent) {
-      throw new HarnessScheduleRefusedError(
-        'SCHEDULE_APPROVAL_USED',
-        'The schedule this approval set up was deleted; it is not made again',
-      );
-    }
+    if (made !== null) return { schedule: view(made), created: false };
     const actor = await this.options.actors.authorize(orgId, run.actorId);
     if ('refused' in actor) {
       throw new HarnessScheduleRefusedError(
@@ -251,8 +238,9 @@ export class ChatScheduleService {
       runId,
       interactionId: request.interactionId,
     };
+    let created: ScheduleView;
     try {
-      await this.options.schedules.create(
+      ({ schedule: created } = await this.options.schedules.create(
         {
           orgId,
           userId: run.actorId,
@@ -263,15 +251,14 @@ export class ChatScheduleService {
         },
         scheduleRequest(run, request.arguments),
         { id, origin },
-      );
+      ));
     } catch (error) {
-      // Two requests of one decision raced: the other one made it.
+      // The store's insert under the id this decision derives is what makes it once: a live schedule there is the
+      // one a racing request made; a tombstone (SCHEDULE_APPROVAL_USED) is one its person deleted.
       const raced = await this.existing(orgId, id, request.interactionId);
       if (raced !== null) return { schedule: view(raced), created: false };
       throw error;
     }
-    const created = await this.options.store.get(orgId, id);
-    if (created === null) throw new HarnessNotFoundError();
     await this.mark(run, attemptId, request.interactionId, id);
     this.logger.info(
       'schedule.created_from_chat',
@@ -283,19 +270,41 @@ export class ChatScheduleService {
         trigger: created.trigger.kind,
       }),
     );
-    return { schedule: view(created), created: true };
+    return {
+      schedule: {
+        id: created.id,
+        name: created.name,
+        status: created.status,
+        trigger: created.trigger,
+        nextFireAt: created.nextFireAt,
+      },
+      created: true,
+    };
   }
 
-  private mark(
+  /** The audit fact of what the decision made; nothing depends on it, so a failure to journal it is only logged. */
+  private async mark(
     run: HarnessRun,
     attemptId: string,
     interactionId: string,
     scheduleId: string,
   ): Promise<void> {
-    return this.options.marks.record(run, attemptId, {
-      interactionId,
-      scheduleId,
-    });
+    try {
+      await this.options.marks.record(run, attemptId, {
+        interactionId,
+        scheduleId,
+      });
+    } catch (error) {
+      this.logger.warn(
+        'schedule.created_from_chat_unjournaled',
+        harnessLogMeta('schedule.created_from_chat_unjournaled', {
+          orgId: run.orgId,
+          runId: run.runId,
+          scheduleId,
+          errorType: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+    }
   }
 
   private async existing(

@@ -142,6 +142,69 @@ export function describeScheduleStoreContract(
       expect(await f.store.get(ORG, schedule.id)).to.deep.include({ status: 'disabled', statusReason: 'ran_once' });
     });
 
+    const ORIGIN = { conversationId: 'ses-1', runId: 'run-1', interactionId: 'ix.approve.k1' };
+    const refusal = (error: unknown): string | undefined => (error as HarnessScheduleRefusedError).code;
+
+    it('SCH-01: a deleted chat-made schedule leaves a tombstone no read answers, and frees its quota', async () => {
+      const webhook = { kind: 'webhook' as const, coalesceS: 300, auth: 'signature' as const };
+      const due = await f.store.create(aSchedule({ id: 'sch_tomb_cron', origin: ORIGIN }), LIMITS);
+      const hook = await f.store.create(aSchedule({ id: 'sch_tomb_hook', origin: ORIGIN, trigger: webhook }), LIMITS);
+      for (const schedule of [due, hook]) expect(await f.store.delete(ORG, schedule.id)).to.equal(true);
+      for (const id of [due.id, hook.id]) {
+        expect(await f.store.get(ORG, id)).to.equal(null);
+        expect(await f.store.get(null, id)).to.equal(null);
+        expect(await f.store.delete(ORG, id)).to.equal(false);
+        expect(
+          await f.store.setStatus(ORG, id, { from: ['active', 'paused', 'disabled'], to: 'paused', reason: 'by_actor', nextFireAt: null }, T0),
+        ).to.equal(null);
+        expect(await f.store.setAgentVersion(ORG, id, 2, T0)).to.equal(null);
+      }
+      expect(await f.store.list(ORG, { actorId: ALICE }, 10)).to.deep.equal([]);
+      expect(await f.store.list(ORG, {}, 10)).to.deep.equal([]);
+      expect(await f.store.dueCron(T0 + 365 * 86_400_000, 10)).to.deep.equal([]);
+      expect(await f.store.eventSchedules(ORG, 'webhook')).to.deep.equal([]);
+      expect(await f.store.hasActive('webhook')).to.equal(false);
+      expect(await f.store.firings(ORG, due.id, 10)).to.deep.equal([]);
+      await f.store.create(aSchedule(), { perActor: 1, perOrg: 1 });
+    });
+
+    it('SCH-01: a tombstone’s id is never inserted again; a schedule made elsewhere leaves none', async () => {
+      const made = await f.store.create(aSchedule({ id: 'sch_tomb_used', origin: ORIGIN }), LIMITS);
+      await f.store.delete(ORG, made.id);
+      const again = await f.store.create(aSchedule({ id: made.id, origin: ORIGIN }), LIMITS).catch((e: unknown) => e);
+      expect(refusal(again)).to.equal('SCHEDULE_APPROVAL_USED');
+      expect(await f.store.get(ORG, made.id)).to.equal(null);
+      const plain = await f.store.create(aSchedule({ id: 'sch_plain_1' }), LIMITS);
+      await f.store.delete(ORG, plain.id);
+      expect((await f.store.create(aSchedule({ id: plain.id }), LIMITS)).id).to.equal(plain.id);
+    });
+
+    it('SCH-01: erasing the person or the org removes the tombstone too', async () => {
+      for (const erase of [() => f.store.eraseUser(ORG, ALICE), () => f.store.eraseOrg(ORG)]) {
+        const made = await f.store.create(aSchedule({ id: 'sch_tomb_erased', origin: ORIGIN }), LIMITS);
+        await f.store.delete(ORG, made.id);
+        await erase();
+        expect((await f.store.create(aSchedule({ id: made.id, origin: ORIGIN }), LIMITS)).id).to.equal(made.id);
+        await f.store.eraseOrg(ORG);
+      }
+    });
+
+    it('SCH-01: a create, a delete and a create of one approval at once never make it twice', async () => {
+      const id = 'sch_tomb_race';
+      const [first, deleted, second] = await Promise.allSettled([
+        f.store.create(aSchedule({ id, origin: ORIGIN }), LIMITS),
+        f.store.delete(ORG, id),
+        f.store.create(aSchedule({ id, origin: ORIGIN }), LIMITS),
+      ]);
+      const live = await f.store.list(ORG, {}, 10);
+      expect(live.length).to.be.at.most(1);
+      expect([first, second].filter((r) => r.status === 'fulfilled').length).to.be.at.most(1);
+      if (deleted?.status === 'fulfilled' && deleted.value) expect(live).to.deep.equal([]);
+      await f.store.delete(ORG, id);
+      const later = await f.store.create(aSchedule({ id, origin: ORIGIN }), LIMITS).catch((e: unknown) => e);
+      expect(refusal(later)).to.equal('SCHEDULE_APPROVAL_USED');
+    });
+
     it('SCH-01: a schedule keeps its chat origin; a second create under its id makes nothing', async () => {
       const origin = { conversationId: 'ses-1', runId: 'run-1', interactionId: 'ix.approve.k1' };
       const schedule = await f.store.create(aSchedule({ id: 'sch_chat_1', origin }), LIMITS);
