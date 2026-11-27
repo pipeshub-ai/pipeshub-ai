@@ -244,7 +244,7 @@ async def test_the_purge_tries_every_key_then_raises(monkeypatch: pytest.MonkeyP
     _seed(config, _instance())
     config.values[STATE] = {"instanceId": INST}
     with pytest.raises(ConfigKeyNotDeletedError):
-        await mcp_lifecycle.purge_instance_credentials(config, INST)
+        await mcp_lifecycle.purge_instance_credentials(config, _instance())
     assert USER_CRED in config.values
     assert {USER_DCR, SHARED_DCR, STATE}.isdisjoint(config.values)
 
@@ -255,7 +255,7 @@ async def test_a_failed_credentials_listing_propagates(monkeypatch: pytest.Monke
     _seed(config, _instance())
     config.values[STATE] = {"instanceId": INST}
     with pytest.raises(ConnectionError):
-        await mcp_lifecycle.purge_instance_credentials(config, INST)
+        await mcp_lifecycle.purge_instance_credentials(config, _instance())
     assert {SHARED_DCR, STATE}.isdisjoint(config.values)  # what could be found is still removed
 
 
@@ -281,7 +281,7 @@ async def test_deleting_an_instance_survives_a_failed_credentials_listing(monkey
 
 
 async def test_a_bug_in_the_purge_is_a_500_and_the_record_stays(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def boom(*_: object) -> None:
+    async def boom(*_: object, **__: object) -> None:
         raise ValueError("bug")
 
     config = Picky()
@@ -353,7 +353,7 @@ async def test_an_unlistable_sign_in_states_prefix_still_removes_the_credentials
     config = StatesUnlistable()
     _seed(config, _instance())
     with pytest.raises(ConnectionError):
-        await mcp_lifecycle.purge_instance_credentials(config, INST)
+        await mcp_lifecycle.purge_instance_credentials(config, _instance())
     assert {USER_CRED, USER_DCR, SHARED_DCR}.isdisjoint(config.values)
 
 

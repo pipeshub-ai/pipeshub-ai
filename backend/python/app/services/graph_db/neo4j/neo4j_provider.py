@@ -80,6 +80,7 @@ from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.core.org_context import (
     MissingOrgContext,
     for_org,
+    org_optional,
     spawn_detached,
     spawn_in_request,
 )
@@ -6845,19 +6846,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="get_user_by_source_id")
             return None
 
+    @org_optional
     async def get_user_by_user_id(
         self,
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
-        """Get user by user ID. Memoized for the current chat turn (see
-        `app.utils.turn_memo`): a turn looked the same user up about twenty
-        times. Each caller gets its own copy, so one caller's edits stay its own."""
+        """Get user by user ID; with ``org_id``, only a user of that organisation.
+        Memoized for the current chat turn (see `app.utils.turn_memo`): a turn
+        looked the same user up about twenty times. Each caller gets its own
+        copy, so one caller's edits stay its own."""
+        if org_id == "":
+            return None  # an empty organisation matches no user
         from app.utils.turn_memo import memo
 
         try:
-            user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
+            user = await memo(
+                ("user_by_user_id", user_id, org_id), lambda: self._get_user_by_user_id(user_id, org_id)
+            )
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
@@ -6865,15 +6873,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
         return copy.deepcopy(user)
 
-    async def _get_user_by_user_id(self, user_id: str) -> dict | None:
-        query = """
-        MATCH (u:User {userId: $user_id})
-        RETURN u {.*} AS u
+    async def _get_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict | None:
+        scoped = org_id is not None
+        org_filter = "WHERE u.orgId = $org_id" if scoped else ""
+        query = f"""
+        MATCH (u:User {{userId: $user_id}})
+        {org_filter}
+        RETURN u {{.*}} AS u
         LIMIT 1
         """
         results = await self.client.execute_query(
             query,
-            parameters={"user_id": user_id},
+            parameters={"user_id": user_id, **({"org_id": org_id} if scoped else {})},
             plain=True,
         )
         if results:

@@ -109,13 +109,18 @@ export function withCitations(journal: GoldenJournal, citations: unknown[]): Gol
 }
 
 /** A finished conversation the way `HarnessConversationReader` returns it. */
-export function finishedConversation(sessionId: string, citations: unknown[]): Record<string, unknown> {
+export function finishedConversation(
+  sessionId: string,
+  citations: unknown[],
+  runId?: string,
+): Record<string, unknown> {
   return {
     _id: sessionId,
     messages: [
       { messageType: 'user_query', content: 'q', citations: [] },
       {
         messageType: 'bot_response',
+        ...(runId !== undefined ? { runId } : {}),
         content: 'The answer [1] [2].',
         citations: citations.map((citationData, index) => ({
           citationId: `citation-doc-${String(index)}`,

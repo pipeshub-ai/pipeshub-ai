@@ -309,7 +309,8 @@ _KNOWLEDGE_PUBLICATIONS = "/api/v1/knowledge/publications"
 _NOT_THE_OWNER = "only an owner of the container or an org admin"
 
 
-_HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") == "true"
+# Masked unless the stack sets HIDE_SECRET_CONFIG=false, as the product defaults.
+_HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") != "false"
 
 
 def _secrets(name: str, module: str, path: str, shown: str, hidden: tuple[str, ...], *,
@@ -463,7 +464,7 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              params={"search": "{toolset_name}"}),
     _secrets("get_toolset_instance", "api/routes/toolsets.py", f"{_TOOLSETS}/instances/{{toolset}}",
              "{toolset_name}", ('"auth":', "{toolset_key}"), admin_sees='"auth":'),
-    # The admin is shown the client id, and the secret too unless HIDE_SECRET_CONFIG=true.
+    # The admin is shown the client id, and the secret too only when HIDE_SECRET_CONFIG=false.
     # Compose passes the same shell variable to the stack, and no test dotenv file sets it.
     _secrets("list_toolset_oauth_configs", "api/routes/toolsets.py",
              f"{_TOOLSETS}/oauth-configs/{OAUTH_TOOLSET_TYPE}", "{toolset_oauth_name}",

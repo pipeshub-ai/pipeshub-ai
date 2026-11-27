@@ -65,6 +65,11 @@ class TestHttpStatusCodeClassification:
         result = MessageErrorClassifier.classify_by_http_status(408)
         assert result == MessageErrorType.TRANSIENT
 
+    def test_classify_by_http_status_retryable_409(self) -> None:
+        """Test that 409 (connector unusable until reconnected) is transient."""
+        result = MessageErrorClassifier.classify_by_http_status(409)
+        assert result == MessageErrorType.TRANSIENT
+
     def test_classify_by_http_status_retryable_429(self):
         """Test that 429 Too Many Requests is transient."""
         result = MessageErrorClassifier.classify_by_http_status(429)

@@ -677,6 +677,109 @@ def select_model_name(
     return model_name
 
 
+# Providers whose servers take no key. A blank key becomes a placeholder because
+# the OpenAI-style SDKs fall back to OPENAI_API_KEY from the environment when
+# given None, and the Google SDKs do so for a blank string too.
+KEYLESS_PROVIDERS = frozenset({"ollama", "lmStudio", "openAICompatible", "litellmProxy"})
+# Providers that authenticate some other way (cloud credentials) or run locally.
+NON_KEY_PROVIDERS = frozenset(
+    {"bedrock", "vertexAI", "default", "sentenceTransformers", "huggingFace", "whisper"}
+)
+_KEYLESS_PLACEHOLDER = "not-needed"
+# Multimodal providers whose SDKs read a key from the environment on a blank key.
+AMBIENT_MULTIMODAL_PROVIDERS = frozenset({"gemini", "cohere"})
+
+
+def _ambient_cloud_credentials_allowed(model_config: Mapping[str, Any]) -> bool:
+    # Imported here: edition_services pulls in connector and graph code that
+    # every service using this module should not have to load.
+    from app.edition_services import ambient_cloud_credentials_allowed
+
+    return ambient_cloud_credentials_allowed(model_config)
+
+
+# Providers whose SDK, given a blank key, reads a key from this server's environment
+# (OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, FIREWORKS_API_KEY,
+# TOGETHER_API_KEY, OLLAMA_API_KEY) and sends it to the model's configured endpoint,
+# with the hosts that key belongs to. No hosts: the endpoint is whatever the admin
+# typed (an Azure resource), so it is never the key's own.
+_SERVER_KEY_HOSTS: dict[str, tuple[str, ...]] = {
+    "openAI": ("api.openai.com",),
+    # Gateways read OPENAI_API_KEY too, so only OpenAI's own host may get it.
+    "openAICompatible": ("api.openai.com",),
+    "litellmProxy": ("api.openai.com",),
+    "fireworks": ("api.fireworks.ai",),
+    "together": ("api.together.xyz", "api.together.ai"),
+    "ollama": ("ollama.com",),
+    "azureOpenAI": (),
+    "azureAI": (),
+}
+
+
+# Providers built on the OpenAI SDK with a fixed base URL of their own: a blank key makes
+# the SDK send OPENAI_API_KEY to that host, which never owns it.
+_FIXED_FOREIGN_HOST_PROVIDERS = frozenset({"openRouter", "minimax"})
+
+
+def _server_key_would_leave(provider: str, configuration: Mapping[str, Any]) -> bool:
+    """True when a blank key would send this server's key to a host that is not the provider's own.
+
+    A blank endpoint is the SDK's default host or the one this server's environment
+    names. Otherwise only https on the provider's host or a subdomain of it (OpenAI's
+    regional hosts) is its own; the trailing-dot form counts, and an endpoint that does
+    not parse does not.
+    """
+    if provider in _FIXED_FOREIGN_HOST_PROVIDERS:
+        return True
+    hosts = _SERVER_KEY_HOSTS.get(provider)
+    endpoint = str(configuration.get("endpoint") or "").strip()
+    if hosts is None or not endpoint:
+        return False
+    try:
+        parsed = urlparse(endpoint)
+        host = (parsed.hostname or "").lower().removesuffix(".")
+    except ValueError:
+        return True
+    return parsed.scheme.lower() != "https" or not any(host == h or host.endswith(f".{h}") for h in hosts)
+
+
+def vetted_model_configuration(
+    provider: str, configuration: Mapping[str, Any], model_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a copy of ``configuration`` whose ``apiKey`` is safe to hand to an SDK.
+
+    ``model_config`` is the model entry the edition decides on. When server
+    credentials are allowed for it a blank key passes through unchanged, so the
+    SDK reads its own environment fallback, but only toward the provider's own
+    host: an endpoint anywhere else never gets the server's key, whatever the
+    policy. Otherwise, as when no entry is given, key-based providers with a
+    blank key are refused and keyless ones get a placeholder. Providers with no
+    key field pass unchanged.
+    """
+    result = dict(configuration)
+    if provider in NON_KEY_PROVIDERS:
+        return result
+    key = result.get("apiKey")
+    if isinstance(key, str) and key.strip():
+        return result
+    leaves = _server_key_would_leave(provider, result)
+    if not leaves and model_config is not None and _ambient_cloud_credentials_allowed(model_config):
+        return result
+    # ``openAI`` pointed at another host gets the placeholder too: that endpoint may need no key.
+    if provider in KEYLESS_PROVIDERS or (provider == "openAI" and leaves):
+        result["apiKey"] = _KEYLESS_PLACEHOLDER
+        return result
+    raise ValueError("Save an API key for this model.")
+
+
+def _ollama_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    # The Ollama SDK adds OLLAMA_API_KEY from the environment unless an authorization
+    # header is set; a key is blank here only when the server's own is allowed for its host.
+    if not configuration.get("apiKey"):
+        return {}
+    return {"headers": {"Authorization": f"Bearer {configuration['apiKey']}"}}
+
+
 def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, Any]:
     """``AsyncOpenAI`` kwargs, including a guarded client when a base URL is set."""
     kwargs: dict[str, Any] = {}
@@ -716,6 +819,7 @@ def _get_embedding_model_impl(
         is_default=is_default,
         empty_error="No embedding model configured",
     )
+    configuration = vetted_model_configuration(provider, configuration, config)
 
     logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
@@ -833,6 +937,7 @@ def _get_embedding_model_impl(
         return _guard_clients(OllamaEmbeddings(
             model=model_name,
             base_url=ollama_embedding_url,
+            client_kwargs=_ollama_client_kwargs(configuration),
         ), _OWN_CLIENTS, ollama_embedding_url)
 
     elif provider == EmbeddingProvider.OPENAI.value:
@@ -2068,6 +2173,7 @@ def _get_generator_model_impl(
         model_name = model_names[0]
     elif not is_default and model_name not in model_names:
         raise ValueError(f"Model name {model_name} not found in {configured_model}")
+    configuration = vetted_model_configuration(provider, configuration, config)
 
     # Resolved once per call from the process-wide learned-facts snapshot
     # (see `app/utils/llm_api_mode_store.py`) and threaded explicitly into
@@ -2351,6 +2457,7 @@ def _get_generator_model_impl(
             # tool-call JSON (legitimate calls repeat tokens intentionally).
             repeat_penalty=1.0,
             top_p=1.0,
+            client_kwargs=_ollama_client_kwargs(configuration),
         )
         if context_length:
             ollama_kwargs["num_ctx"] = int(context_length)
@@ -3046,6 +3153,7 @@ def get_image_generation_model(
     builder = _IMAGE_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported image generation provider: {provider}")
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
@@ -3430,6 +3538,7 @@ def get_tts_model(
     builder = _TTS_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported TTS provider: {provider}")
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
@@ -4101,6 +4210,7 @@ def get_stt_model(
     builder = _STT_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported STT provider: {provider}")
+    configuration = vetted_model_configuration(provider, configuration, config)
     adapter = builder(configuration, model_name)
     adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter

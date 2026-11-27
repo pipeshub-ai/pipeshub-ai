@@ -114,6 +114,29 @@ describe('entity search controller', () => {
     expect(error.message).to.contain('local file storage')
   })
 
+  // A proxy's HTML page in front of the AI service: the command keeps the status and drops the body.
+  for (const status of [413, 501, 503]) {
+    it(`keeps the status of a ${status} whose body was not JSON`, async () => {
+      answer(status, undefined)
+      const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+      expect(error.statusCode).to.equal(status)
+    })
+  }
+
+  it('keeps the Retry-After of a 503 whose body was not JSON', async () => {
+    execute.resolves({ statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' } })
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(503)
+    expect(error.metadata.retryAfter).to.equal('5')
+  })
+
+  it('answers a 200 with no body as our failure', async () => {
+    answer(200, undefined)
+    const { error } = await run(grepRecords(appConfig), { pattern: 'x' })
+    expect(error.statusCode).to.equal(500)
+    expect(error.message).to.equal('Failed to get response from AI service')
+  })
+
   it('forwards a search narrowed to person or organization, refuses expanding them with 400 before the AI service is called, and forwards named_entity, as the routes chain them', async () => {
     // the validator then the controller, in the order es.routes.ts mounts them; the extraction flag is read only by the AI service
     const route = async (schema: any, handler: any, body: any) => {

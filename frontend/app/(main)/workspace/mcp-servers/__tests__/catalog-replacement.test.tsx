@@ -143,6 +143,6 @@ describe('the admin catalog in this edition', () => {
     renderCatalog([OFFICIAL], []);
     const notice = screen.getByTestId('enterprise-feature-notice');
     expect(notice.textContent).toContain("People's own MCP servers");
-    expect(notice.textContent).toContain('Available in EE');
+    expect(notice.textContent).toContain('Available in Enterprise');
   });
 });

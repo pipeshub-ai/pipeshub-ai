@@ -11,6 +11,8 @@ import {
 import { processUploadsInBackground, uploadFileToSignedUrl, UPLOAD_STORAGE_CONCURRENCY } from '../../../../src/modules/knowledge_base/utils/utils';
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
 
+const TEST_GRANT_SCOPE = { secret: 'test-scoped-secret', userId: 'user-1' }
+
 describe('Knowledge Base Utils', () => {
   afterEach(() => {
     sinon.restore()
@@ -290,7 +292,7 @@ describe('Knowledge Base Utils', () => {
   describe('processUploadsInBackground', () => {
     const makePlaceholder = (over: any = {}): PlaceholderResultWithMetadata => ({
       placeholderResult: {
-        documentId: over.documentId || 'doc-1',
+        documentId: over.documentId || `doc-${over.key || 'key-1'}`,
         documentName: over.documentName || 'test.pdf',
         upload: over.upload,
       },
@@ -322,7 +324,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(ConnectorServiceCommand.prototype.execute.calledOnce).to.be.true
@@ -343,7 +345,7 @@ describe('Knowledge Base Utils', () => {
           makePlaceholder({ key: 'key-fail', filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload timeout')) }),
           makePlaceholder({ key: 'key-ok', filePath: '/uploads/ok.pdf' }),
         ],
-        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(failed(publish).some((e: any) => e.stage === 'upload')).to.be.true
@@ -359,7 +361,7 @@ describe('Knowledge Base Utils', () => {
 
       const counts = await processUploadsInBackground(
         [makePlaceholder({ filePath: '/uploads/fail.pdf', upload: () => Promise.reject(new Error('Upload failed')) })],
-        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(failed(publish)).to.have.length(1)
@@ -374,7 +376,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(counts).to.deep.equal({ succeeded: 0, failed: 0 })
@@ -390,7 +392,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(failed(publish)).to.have.length(1)
@@ -407,7 +409,7 @@ describe('Knowledge Base Utils', () => {
       const publish = sinon.stub()
 
       const counts = await processUploadsInBackground(
-        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish,
+        [makePlaceholder()], 'org-1', 'kb-1', Date.now(), PY, { authorization: 'Bearer token' }, loggerInstance, publish, TEST_GRANT_SCOPE,
       )
 
       expect(failed(publish)).to.have.length(0)
@@ -521,7 +523,7 @@ describe('Knowledge Base Utils - coverage', () => {
     } = {}): PlaceholderResultWithMetadata {
       return {
         placeholderResult: {
-          documentId: options.documentId || 'doc-1',
+          documentId: options.documentId || `doc-${options.key || 'key-1'}`,
           documentName: options.documentName || 'test.pdf',
           upload: options.upload,
         },
@@ -565,7 +567,7 @@ describe('Knowledge Base Utils - coverage', () => {
         PY_URL,
         { Authorization: 'Bearer test' },
         mockLogger,
-        publish,
+        publish, TEST_GRANT_SCOPE,
       )
 
       const fe = failedEvents()
@@ -585,7 +587,7 @@ describe('Knowledge Base Utils - coverage', () => {
         PY_URL,
         {},
         mockLogger,
-        publish,
+        publish, TEST_GRANT_SCOPE,
       )
 
       // The caller writes the batch line, from the same totals as its `done` summary.
@@ -611,7 +613,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(failedEvents()).to.have.length(0)
@@ -635,7 +637,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(failedEvents()).to.have.length(1)
@@ -658,7 +660,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(failedEvents()).to.have.length(1)
@@ -681,7 +683,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(counts.failed).to.be.greaterThan(0)
@@ -708,7 +710,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const stages = failedEvents().map((e: any) => e.stage)
@@ -742,7 +744,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const fe = failedEvents()
@@ -778,7 +780,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(successEvents()).to.have.length(1)
@@ -806,7 +808,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const se = successEvents()
@@ -835,7 +837,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const se = successEvents()
@@ -860,7 +862,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const fe = failedEvents()
@@ -884,7 +886,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(successEvents()).to.have.length(1)
@@ -898,7 +900,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         expect(counts).to.deep.equal({ succeeded: 0, failed: 0 })
@@ -927,7 +929,7 @@ describe('Knowledge Base Utils - coverage', () => {
           PY_URL,
           {},
           mockLogger,
-          publish,
+          publish, TEST_GRANT_SCOPE,
         )
 
         const reasons = failedEvents().map((e: any) => e.reason)

@@ -295,7 +295,7 @@ describe('McpFlowNode tool approvals', () => {
 
     const ee = screen.getByTestId('mcp-agent-approvals-ee');
     expect(ee.textContent).toContain('Tool approvals per agent');
-    expect(ee.textContent).toContain('Available in EE');
+    expect(ee.textContent).toContain('Available in Enterprise');
     expect(screen.queryByRole('button', { name: 'Tool approvals' })).toBeNull();
   });
 });

@@ -14,6 +14,7 @@ from typing import Any, Generic, TypeVar
 
 from app import edition
 from app.config.key_value_store import KeyValueStore, decode_for_compare
+from app.core.db import notify
 from app.services.pg_runtime import KV_CHANNEL, PgListener, RuntimeDb, listen_dsn
 from app.utils.logger import create_logger
 
@@ -58,9 +59,6 @@ ORDER BY key"""
 _PURGE = """/* pipeshub:kv.purge */
 DELETE FROM platform.kv_entries WHERE expires_at <= now()
 AND key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)"""
-_NOTIFY = (
-    "/* pipeshub:kv.notify */ SELECT pg_notify('pipeshub_kv_changed', $1)"  # KV_CHANNEL
-)
 
 
 def _prefix_end(prefix: str) -> str | None:
@@ -278,7 +276,7 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             db = await self._rt.db()
             async with db.runtime_uow(write=True) as tx:
-                await tx.execute(_NOTIFY, payload)
+                await notify(tx, KV_CHANNEL, payload)
         except Exception as e:
             logger.error("Failed to publish change for %s: %s", key, e)
 

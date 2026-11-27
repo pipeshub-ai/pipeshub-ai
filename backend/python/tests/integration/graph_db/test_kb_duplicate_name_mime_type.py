@@ -30,6 +30,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.upload_grant import GrantedDocument
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -80,12 +81,13 @@ class _Kb:
             "mimeType": mime_type, "sizeInBytes": 10, "webUrl": f"/record/{key}",
         }
         files = [{"record": record, "fileRecord": file_record, "filePath": name, "lastModified": now}]
+        granted = {key: GrantedDocument(key, mime_type, "")}
         self.records.append(key)
         if folder is None:
-            result = await self.service.upload_records_to_kb(self.kb_id, self.user_id, self.org_id, files)
+            result = await self.service.upload_records_to_kb(self.kb_id, self.user_id, self.org_id, files, granted)
         else:
             result = await self.service.upload_records_to_folder(
-                self.kb_id, folder, self.user_id, self.org_id, files
+                self.kb_id, folder, self.user_id, self.org_id, files, granted
             )
         assert result.get("success") is True, result
         return {"id": key, **result}

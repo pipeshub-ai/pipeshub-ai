@@ -2054,12 +2054,14 @@ func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproo
 func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=d088440ca92905c5ff0ba01d133d47b2 ext=-
 func kg.w_scopes_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=552aaea95e92c5484d2a129b7229fa93 ext=-
 func kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=9737197d1910cc67bc402d68cc422187 ext=-
+func kg.w_stamps_r13_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],boolean[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=46e864a0ddff2fe9ca18802abfa5c0e7 ext=-
 func kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=07dfd059280826094b502e969bed24b0 ext=-
 func kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=99d501bfb5e69adbf628a2cc038ef5a4 ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+func platform.kv_access_path(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=ef194eedc233b5b0a1afca5337f27086 ext=-
 func platform.kv_admin_or_credential(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=b86e9c8a9898ff8f0fd0a00639f98534 ext=-
 func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=40839fc0adbfc81fb40c169d7372fb4f ext=-
 func platform.kv_outside(text,text,timestamp with time zone) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, pg_temp body=da3fbdc19817fc5f91e2cb37c013aba4 ext=-
@@ -2243,12 +2245,18 @@ funcacl kg.w_records_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
 funcacl kg.w_scopes_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
+funcacl kg.w_stamps_r13_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],boolean[],integer) pipeshub_connectors EXECUTE
 funcacl kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) pipeshub_connectors EXECUTE
 funcacl kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) pipeshub_connectors EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_finish(bigint,text) pipeshub_owner EXECUTE
 funcacl platform.job_start(text) pipeshub_owner EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_connectors EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_indexing EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_kv EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_node EXECUTE
+funcacl platform.kv_access_path(text) pipeshub_query EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_connectors EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_indexing EXECUTE
 funcacl platform.kv_admin_or_credential(text) pipeshub_kv EXECUTE
@@ -2823,6 +2831,7 @@ pin kg.w_records_delete(bigint[]) kg.records delete key=sk set=- txn=- max=5000
 pin kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) kg.records upsert key=- set=coll,id,kind,app_sk,group_sk,parent_sk,rule,model,vrid,name,name_key,updated_ms,created_ms,size_bytes,record_type,origin,external_id,deleted,placeholder,granted txn=- max=5000
 pin kg.w_scopes_delete(bigint[]) kg.scopes delete key=sk set=- txn=- max=5000
 pin kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) kg.scopes upsert key=- set=kind,app_sk,restricted,rule_restricted,needs_grant,deleted txn=- max=5000
+pin kg.w_stamps_r13_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],boolean[],integer) kg.records upsert key=- set=path,class_id,self_lit,seed,own_grant,under_deleted,legacy_reason,leaf,r13 txn=- max=5000
 pin kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[],integer) kg.records upsert key=- set=path,class_id,self_lit,seed,own_grant,under_deleted,legacy_reason,leaf txn=- max=5000
 pin kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) kg.records upsert key=- set=deleted_ms,delete_batch txn=- max=5000
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
@@ -3292,10 +3301,10 @@ policy platform.docstore_keymap backup_read cmd=r permissive=true roles=pipeshub
 policy platform.docstore_keymap import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.docstore_keymap org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.docstore_keymap restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
-policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR (expires_at <= now()) OR platform.kv_outside(key, 'delete'::text, expires_at)) check=-
-policy platform.kv_entries kv_insert cmd=a permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=- check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'insert'::text, expires_at))
-policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, false) OR platform.kv_outside(key, 'read'::text, expires_at)) check=-
-policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at)) check=(platform.kv_may(key, true) OR platform.kv_outside(key, 'update'::text, expires_at))
+policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR (expires_at <= now()) OR platform.kv_outside(platform.kv_access_path(key), 'delete'::text, expires_at)) check=-
+policy platform.kv_entries kv_insert cmd=a permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=- check=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'insert'::text, expires_at))
+policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), false) OR platform.kv_outside(platform.kv_access_path(key), 'read'::text, expires_at)) check=-
+policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at)) check=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at))
 policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.mail_log import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))

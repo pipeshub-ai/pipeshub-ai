@@ -78,5 +78,27 @@ describe('EnterpriseFeatureNotice', () => {
     );
     const link = screen.getByRole('link', { name: 'Talk to sales' });
     expect(link.getAttribute('href')).toBe('mailto:sales@pipeshub.com');
+    // The given action replaces the default link, so the notice offers one next step.
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+  });
+
+  it('links to the Enterprise Edition page when it is given no action', () => {
+    render(
+      <Theme>
+        <EnterpriseFeatureNotice title="SAML" description="Sign in through your identity provider." />
+      </Theme>
+    );
+    const link = screen.getByRole('link', { name: en.workspace.enterprise.seeWhatsInEnterprise });
+    // next/link adds the app's trailing slash only under its own config, which tests don't load.
+    expect(link.getAttribute('href')?.replace(/\/$/, '')).toBe('/workspace/enterprise');
+  });
+
+  it('offers no next step when told to show none', () => {
+    render(
+      <Theme>
+        <EnterpriseFeatureNotice title="SAML" description="Sign in through your identity provider." action={null} />
+      </Theme>
+    );
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });

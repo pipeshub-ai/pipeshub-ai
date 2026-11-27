@@ -271,29 +271,43 @@ async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], l
 
 @pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_generic_plan_of_the_page_reads_an_index_range_of_about_a_page_in_every_case(pg_db) -> None:
-    """The plan a prepared statement takes from its sixth run, forced: a hub, many anchors, a cursor in the middle, a direction with no edges, a first page."""
+    """The plan a prepared statement takes from its sixth run, forced: a hub, many anchors, a cursor in the middle, a direction with no edges, a first page.
+    Fresh: this org's edges have no statistics, and the partitioned table's (which autovacuum never refreshes) say ids repeat, as they do when taken while the
+    graph was a few nodes: a scan of the other direction's index for the anchor (PostgreSQL 18 skips its leading columns) and a sort of every edge look as cheap as a page."""
     org = new_org()
-    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
-                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
-    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || (g % 3000), 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
-                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g ON CONFLICT DO NOTHING", org)
-    mid = cg._cursor({"anchor": "hub", "dir": "inbound", "coll": "blocks", "key": "c090000", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
-    many = [f"x{i}" for i in range(0, 3000, 150)]
-    mid_many = cg._cursor({"anchor": many[7], "dir": "outbound", "coll": "blocks", "key": "y100", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
-    cases = {"hub first page": (["hub"], False, True, ""), "hub mid-cursor": (["hub"], False, True, mid), "hub, both directions": (["hub"], True, True, ""),
-             "many anchors first page": (many, True, False, ""), "many anchors mid-cursor": (many, True, True, mid_many), "a direction with no edges": (["hub"], True, False, mid),
-             "anchors that have no edges": (["nothing", "nowhere"], True, True, "")}
-    for state in ("fresh", "analysed"):
-        if state == "analysed":
+    try:
+        skewed = ("from_coll", "from_id", "to_coll", "to_id")
+        try:
+            for c in skewed:
+                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} SET (n_distinct_inherited = 1)")      # the partitioned table's statistics only: the option does not reach a partition
             await _admin("ANALYZE graph.edges")
-        for name, (anchors, out, inn, after) in cases.items():
-            plan, shape = await _generic_plan(pg_db, org, anchors, ["CALLS"], 200, out=out, inn=inn, after=after)
-            root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
-            touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
-            assert "Seq Scan on" not in plan and not plan_gate.unkeyed(shape, "edges", r"\b(from_id|to_id)\)?(::text)? = |ROW\("), (state, name, plan)
-            assert touched < 4000, (state, name, touched, plan)
-            if after:
-                assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan
+        finally:
+            for c in skewed:
+                await _admin(f"ALTER TABLE graph.edges ALTER COLUMN {c} RESET (n_distinct_inherited)")
+        await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
+                     "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g", org)
+        await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'x' || (g % 3000), 'blocks', 'y' || ((g * 7) % 20000), 'CALLS', "
+                     "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 120000) g ON CONFLICT DO NOTHING", org)
+        mid = cg._cursor({"anchor": "hub", "dir": "inbound", "coll": "blocks", "key": "c090000", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
+        many = [f"x{i}" for i in range(0, 3000, 150)]
+        mid_many = cg._cursor({"anchor": many[7], "dir": "outbound", "coll": "blocks", "key": "y100", "rel": "CALLS", "edge_coll": "nodeRelations", "ekey": "CALLS"})
+        cases = {"hub first page": (["hub"], False, True, ""), "hub mid-cursor": (["hub"], False, True, mid), "hub, both directions": (["hub"], True, True, ""),
+                 "many anchors first page": (many, True, False, ""), "many anchors mid-cursor": (many, True, True, mid_many), "a direction with no edges": (["hub"], True, False, mid),
+                 "anchors that have no edges": (["nothing", "nowhere"], True, True, "")}
+        for state in ("fresh", "analysed"):
+            if state == "analysed":
+                await _admin("ANALYZE graph.edges")
+            for name, (anchors, out, inn, after) in cases.items():
+                plan, shape = await _generic_plan(pg_db, org, anchors, ["CALLS"], 200, out=out, inn=inn, after=after)
+                root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+                touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
+                scanned = [int(m) for m in re.findall(r"Index Scan .*rows=(\d+)", plan)]
+                assert "Seq Scan on" not in plan and not plan_gate.unkeyed(shape, "edges", r"\b(from_id|to_id)\)?(::text)? = |ROW\("), (state, name, plan)
+                assert touched < 4000 and max(scanned, default=0) <= 2 * 200, (state, name, touched, scanned, plan)     # no scan reads the hub's edges to sort them
+                if after:
+                    assert re.search(r"Index Cond: .*ROW\(", plan), plan                                              # the cursor is a bound of the index scan
+    finally:
+        await _admin("ANALYZE graph.edges")         # the next tests plan with the true statistics, whatever failed here
 
 
 async def test_the_page_runs_on_its_generic_plan_from_the_first_run(pg_db) -> None:
@@ -325,7 +339,7 @@ async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_
     await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || g, 'blocks', 'hub', 'CALLS', "
                  "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 100) g", org)
     p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
-    names = ("enable_bitmapscan", "enable_seqscan", "max_parallel_workers_per_gather", "plan_cache_mode")
+    names = ("enable_bitmapscan", "enable_seqscan", "max_parallel_workers_per_gather", "plan_cache_mode", "enable_sort", "jit")
     with _bound(org):
         t = await p.begin_transaction([], [])
     try:

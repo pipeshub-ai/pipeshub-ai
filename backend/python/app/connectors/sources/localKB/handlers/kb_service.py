@@ -1,8 +1,11 @@
 import asyncio
 import base64
 import json
+import re
 import uuid
 import weakref
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
 from app.config.constants.arangodb import (
@@ -48,6 +51,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.connectors.sources.localKB.upload_grant import GrantedDocument
 from app.harness.knowledge.service import KnowledgePublications, container_id
 from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
@@ -306,6 +310,58 @@ def _browse_failure(result: object, missing: str, action: str) -> dict:
     if _provider_refusal_code(result) == 404:
         return {"success": False, "code": 404, "reason": missing}
     return {"success": False, "code": 500, "reason": action_failed(action)}
+
+
+# What a user chooses about their own upload. Everything else on the record (keys, ids, org, connector,
+# storage document, paths, URLs, type, origin, revision, delete state, access rule, uploader) comes from the
+# signed grant (key, document, MIME type, extension) or is computed by the server; any other key in the body
+# is ignored. These fields only describe the user's own file, so they are normalised, never a reason to refuse
+# an upload: only a name that is empty once cleaned makes a file unusable.
+MAX_UPLOAD_NAME = 255  # the length the API allows for a KB or folder name (api/models.py)
+_MAX_UPLOAD_SIZE = 1 << 42
+_MAX_UPLOAD_TIME = 1 << 53
+_UPLOAD_EXTENSION = re.compile(r"[A-Za-z0-9_+-]{1,32}")
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+class UnusableUploadError(ValueError):
+    """The file has no usable name."""
+
+
+def _clean_upload_name(record_dict: dict, file_dict: dict) -> str:
+    name = file_dict.get("name") if file_dict.get("name") is not None else record_dict.get("recordName")
+    if not isinstance(name, str):
+        raise UnusableUploadError("file has no name")
+    name = _CONTROL_CHARS.sub("", name).strip()[:MAX_UPLOAD_NAME].strip()
+    if not name:
+        raise UnusableUploadError("file name is empty")
+    return name
+
+
+def _upload_extension(granted_extension: str) -> Optional[str]:
+    """The extension the gateway computed from the file name (it sends the name without it), cleaned: no leading
+    dot, lower-case, and none if outside the safe pattern. The body's own extension is never used."""
+    extension = granted_extension.lstrip(".").lower()
+    return extension if _UPLOAD_EXTENSION.fullmatch(extension) else None
+
+
+def _upload_time(value: Any, default: int) -> int:  # noqa: ANN401
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or not 0 <= value <= _MAX_UPLOAD_TIME:
+        return default
+    return int(value)
+
+
+def checked_upload_fields(record_dict: dict, file_dict: dict, now: int) -> dict[str, Any]:
+    """The only fields of an uploaded file taken from the body (name, size, times), normalised. Raises
+    UnusableUploadError for a file with no usable name; nothing else is a reason to refuse."""
+    name = _clean_upload_name(record_dict, file_dict)
+    size = record_dict.get("sizeInBytes", file_dict.get("sizeInBytes"))
+    return {
+        "name": name,
+        "size": size if type(size) is int and 0 <= size <= _MAX_UPLOAD_SIZE else None,
+        "source_created": _upload_time(record_dict.get("sourceCreatedAtTimestamp"), now),
+        "source_modified": _upload_time(record_dict.get("sourceLastModifiedTimestamp"), now),
+    }
 
 
 # The duplicate-name check reads the parent's names, then the write lands several
@@ -3395,13 +3451,34 @@ class KnowledgeBaseService:
         }
 
     # Convenience methods that call the unified upload method
-    async def upload_records_to_kb(self, kb_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
-        """Upload to KB root"""
-        return await self._upload_records(kb_id, user_id, org_id, files, parent_folder_id=None)
+    async def upload_records_to_kb(
+        self, kb_id: str, user_id: str, org_id: str, files: list[dict], granted_documents: Mapping[str, GrantedDocument]
+    ) -> Dict:
+        """Upload to KB root. ``granted_documents`` is the gateway's signed ``{record key: GrantedDocument}``."""
+        return await self._upload_records(
+            kb_id, user_id, org_id, files, parent_folder_id=None, granted_documents=granted_documents
+        )
 
-    async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
+    async def upload_records_to_folder(
+        self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: list[dict], granted_documents: Mapping[str, GrantedDocument]
+    ) -> Dict:
         """Upload to specific folder"""
-        return await self._upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
+        return await self._upload_records(
+            kb_id, user_id, org_id, files, parent_folder_id=folder_id, granted_documents=granted_documents
+        )
+
+    @staticmethod
+    def _ungranted_files(files: list[dict], granted: Mapping[str, GrantedDocument]) -> list[str]:
+        """Files whose record key the grant does not name, or that reuse a key already used."""
+        bad: list[str] = []
+        used: set = set()
+        for file_data in files:
+            key = ((file_data or {}).get("record") or {}).get("_key")
+            if not isinstance(key, str) or key not in granted or key in used:
+                bad.append((file_data or {}).get("filePath") or "")
+            else:
+                used.add(key)
+        return bad
 
     async def _get_storage_url(self) -> str:
         """Resolve the storage endpoint used to build upload signed-url routes."""
@@ -3420,13 +3497,41 @@ class KnowledgeBaseService:
         parent_folder_id: Optional[str],
         storage_url: str,
         uploaded_by: Optional[str] = None,
+        org_id: Optional[str] = None,
+        granted_documents: Mapping[str, GrantedDocument] = MappingProxyType({}),
     ) -> FileRecord:
-        """Build a KB file FileRecord from the (record, fileRecord) dicts the client
-        sends. `from_arango_record` already handles the KB-upload dict shape; we then
-        set the KB anchoring fields the client doesn't send and the signed-url route
-        the indexing consumer uses to fetch the blob."""
-        frec = FileRecord.from_arango_record(
-            arango_base_file_record=file_dict, arango_base_record=record_dict
+        """Build a KB file FileRecord from the upload grant and the few descriptive fields
+        taken from the (record, fileRecord) dicts in the body, then set the KB anchoring
+        fields and the signed-url route the indexing consumer uses to fetch the blob."""
+        key = record_dict.get("_key")
+        if not org_id:
+            raise ValueError("an upload record needs the caller's org")
+        granted = granted_documents.get(key) if isinstance(key, str) else None
+        if not granted or not granted.document_id:
+            # Never build a record the gateway did not create, or point one at a storage document it did not make.
+            raise ValueError("record is not named by the upload grant")
+        now = get_epoch_timestamp_in_ms()
+        chosen = checked_upload_fields(record_dict, file_dict, now)
+        # Allowlist: the record is built from the grant, the server and the few validated fields the user chose.
+        frec = FileRecord(
+            id=key,
+            org_id=org_id,
+            record_name=chosen["name"],
+            record_type=RecordType.FILE,
+            external_record_id=granted.document_id,
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id=kb_id,
+            mime_type=granted.mime_type,
+            weburl=f"/record/{key}",
+            created_at=now,
+            updated_at=now,
+            source_created_at=chosen["source_created"],
+            source_updated_at=chosen["source_modified"],
+            size_in_bytes=chosen["size"],
+            extension=_upload_extension(granted.extension),
+            is_file=True,
         )
         frec.connector_id = kb_id
         frec.external_record_group_id = kb_id
@@ -3442,7 +3547,10 @@ class KnowledgeBaseService:
         frec.is_placeholder = False
         frec.is_internal = False
         frec.is_file = True
-        frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
+        # Node's missing-lastModified fallback reads the clock it stamps createdAtTimestamp off,
+        # before the storage upload; ``now`` comes after that upload.
+        received_at = _upload_time(record_dict.get("createdAtTimestamp"), now)
+        frec.source_timestamp_origin = upload_origin(frec.source_created_at, received_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"
@@ -3489,6 +3597,8 @@ class KnowledgeBaseService:
         analysis: Dict,
         storage_url: str,
         user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        granted_documents: Mapping[str, GrantedDocument] = MappingProxyType({}),
     ) -> tuple[List[FileRecord], List[Dict], List[str]]:
         """Build file FileRecords, deduplicating by name per destination folder (mirrors
         the provider's _create_files_batch skip logic). Returns (records, skipped, failed)."""
@@ -3519,8 +3629,11 @@ class KnowledgeBaseService:
             for file_data in group:
                 file_rec = file_data.get("fileRecord") or {}
                 record = file_data.get("record") or {}
-                file_name = gp._normalize_name(file_rec.get("name") or record.get("recordName")) or ""
-                mime_type = self._file_mime_type(record, file_rec)
+                file_name = gp._normalize_name(
+                    checked_upload_fields(record, file_rec, get_epoch_timestamp_in_ms())["name"]
+                ) or ""
+                granted = granted_documents.get(record.get("_key"))
+                mime_type = granted.mime_type if granted else self._file_mime_type(record, file_rec)
                 key = (file_name.lower(), str(mime_type or ""))
                 variants = gp._normalized_name_variants_lower(file_name)
                 conflict = any((v, str(mime_type or "")) in existing_name_mime for v in variants) or key in seen
@@ -3537,7 +3650,8 @@ class KnowledgeBaseService:
                     record["recordName"] = file_name
                 file_records.append(
                     self._build_kb_file_record(
-                        kb_id, record, file_rec, parent_id, storage_url, uploaded_by=user_id
+                        kb_id, record, file_rec, parent_id, storage_url, uploaded_by=user_id,
+                        org_id=org_id, granted_documents=granted_documents,
                     )
                 )
         return file_records, skipped_files, failed_files
@@ -3559,7 +3673,8 @@ class KnowledgeBaseService:
         return record
 
     async def _upload_records(
-        self, kb_id: str, user_id: str, org_id: str, files: List[Dict], parent_folder_id: Optional[str]
+        self, kb_id: str, user_id: str, org_id: str, files: list[dict], parent_folder_id: Optional[str],
+        granted_documents: Mapping[str, GrantedDocument],
     ) -> Dict:
         """Create uploaded files (and any inferred folders) through the shared processor.
 
@@ -3572,6 +3687,24 @@ class KnowledgeBaseService:
         gp = self.graph_provider
         upload_type = "folder" if parent_folder_id else "KB root"
         try:
+            if (ungranted := self._ungranted_files(files, granted_documents)):
+                self.logger.warning(
+                    f"Upload to KB {kb_id} refused: {len(ungranted)} file(s) are not named by the upload grant"
+                )
+                return {"success": False, "code": 403, "reason": "Upload is not authorised"}
+            # A file with no usable name fails on its own; the rest of the batch goes ahead.
+            unusable: list[str] = []
+            usable: list[dict] = []
+            now = get_epoch_timestamp_in_ms()
+            for file_data in files:
+                try:
+                    checked_upload_fields(file_data.get("record") or {}, file_data.get("fileRecord") or {}, now)
+                    usable.append(file_data)
+                except UnusableUploadError:
+                    unusable.append(file_data.get("filePath") or "")
+            if files and not usable:
+                return {"success": False, "code": 400, "reason": "None of the files in this upload has a usable name"}
+            files = usable
             validation = await gp._validate_upload_context(
                 kb_id=kb_id, user_id=user_id, org_id=org_id, parent_folder_id=parent_folder_id
             )
@@ -3594,7 +3727,8 @@ class KnowledgeBaseService:
                 gp._populate_file_destinations(analysis, folder_map)
 
                 file_records, skipped_files, failed_files = await self._build_upload_file_records(
-                    kb_id, files, analysis, storage_url, user_id=user_id
+                    kb_id, files, analysis, storage_url, user_id=user_id,
+                    org_id=org_id, granted_documents=granted_documents,
                 )
 
                 entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
@@ -3608,7 +3742,7 @@ class KnowledgeBaseService:
             result = {
                 "total_created": len(file_records),
                 "folders_created": len(new_folder_records),
-                "failed_files": failed_files,
+                "failed_files": [*unusable, *failed_files],
                 "skipped_files": skipped_files,
             }
             return {
@@ -3617,7 +3751,7 @@ class KnowledgeBaseService:
                 "totalCreated": len(file_records),
                 "foldersCreated": len(new_folder_records),
                 "createdFolders": [{"id": fr.id} for fr in new_folder_records],
-                "failedFiles": failed_files,
+                "failedFiles": [*unusable, *failed_files],
                 "skippedFiles": skipped_files,
                 "kbId": kb_id,
                 "parentFolderId": parent_folder_id,
