@@ -70,13 +70,13 @@ from app.api.middlewares.auth import (
     require_service_token,
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
+from app.api.middlewares.person_caller import refuse_unless_a_person
 from app.api.middlewares.request_log import (
     add_request_log_fields,
     bind_request_log_fields,
     mark_request_failure,
     path_log_fields,
 )
-from app.api.middlewares.person_caller import refuse_unless_a_person
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_graph_provider,
