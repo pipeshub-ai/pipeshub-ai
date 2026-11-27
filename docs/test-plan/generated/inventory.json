@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2049,
- "claimedTestFiles": 3986,
- "claimedTests": 42842,
+ "claimedTestFiles": 3996,
+ "claimedTests": 42943,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3257
+  "unit": 3267
  },
  "components": [
   {
@@ -2772,7 +2772,7 @@
    "name": "Journal, execution store, outbox and sweepers",
    "status": "built",
    "files": 149,
-   "tests": 962,
+   "tests": 963,
    "filesByLevel": {
     "cohesion": 3,
     "component": 1,
@@ -2786,7 +2786,7 @@
     "component": 17,
     "contract": 171,
     "fault": 1,
-    "integration": 190,
+    "integration": 191,
     "unit": 573
    },
    "markers": {
@@ -3560,7 +3560,7 @@
      "markers": [
       "integration"
      ],
-     "tests": 2
+     "tests": 3
     },
     {
      "path": "backend/python/tests/unit/connectors/core/test_sync_point_rekey.py",
@@ -3733,7 +3733,7 @@
    "name": "Projection, live bus and streaming",
    "status": "built",
    "files": 110,
-   "tests": 646,
+   "tests": 655,
    "filesByLevel": {
     "cohesion": 1,
     "component": 5,
@@ -3746,7 +3746,7 @@
     "component": 30,
     "contract": 39,
     "integration": 21,
-    "unit": 554
+    "unit": 563
    },
    "markers": {
     "integration": 1
@@ -4088,7 +4088,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/projection/stream-service.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 32
+     "tests": 41
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/projection/stream.http.test.ts",
@@ -17236,15 +17236,15 @@
    "id": "LEG",
    "name": "Legacy query path (today's loop)",
    "status": "built (reference and kill-switch target)",
-   "files": 793,
-   "tests": 17756,
+   "files": 796,
+   "tests": 17805,
    "filesByLevel": {
     "contract": 6,
     "integration": 3,
     "integration-docker": 1,
     "live": 6,
     "replay": 1,
-    "unit": 776
+    "unit": 779
    },
    "testsByLevel": {
     "contract": 88,
@@ -17252,7 +17252,7 @@
     "integration-docker": 19,
     "live": 39,
     "replay": 7,
-    "unit": 17586
+    "unit": 17635
    },
    "markers": {
     "ai_agents": 6,
@@ -19461,6 +19461,12 @@
      "level": "unit",
      "markers": [],
      "tests": 236
+    },
+    {
+     "path": "backend/python/tests/unit/agents/actions/test_storage_search_connection_limit.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 17
     },
     {
      "path": "backend/python/tests/unit/agents/actions/test_storage_search_parse_equivalence.py",
@@ -21710,7 +21716,7 @@
      "path": "backend/python/tests/unit/api/routes/test_record_access_route.py",
      "level": "unit",
      "markers": [],
-     "tests": 20
+     "tests": 21
     },
     {
      "path": "backend/python/tests/unit/api/routes/test_records_read.py",
@@ -21929,16 +21935,28 @@
      "tests": 50
     },
     {
+     "path": "backend/python/tests/unit/api/test_connection_limit_route_walk.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 4
+    },
+    {
      "path": "backend/python/tests/unit/api/test_connection_limit_routes.py",
      "level": "unit",
      "markers": [],
-     "tests": 66
+     "tests": 83
     },
     {
      "path": "backend/python/tests/unit/api/test_framework_behaviour.py",
      "level": "unit",
      "markers": [],
      "tests": 12
+    },
+    {
+     "path": "backend/python/tests/unit/api/test_grep_below_app_limit.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 10
     },
     {
      "path": "backend/python/tests/unit/api/test_mcp_route_scopes.py",
@@ -22692,15 +22710,15 @@
    "id": "FEC",
    "name": "Frontend chat surfaces",
    "status": "built",
-   "files": 504,
-   "tests": 4557,
+   "files": 506,
+   "tests": 4565,
    "filesByLevel": {
     "e2e-browser": 77,
-    "unit": 427
+    "unit": 429
    },
    "testsByLevel": {
     "e2e-browser": 327,
-    "unit": 4230
+    "unit": 4238
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -22806,7 +22824,7 @@
      "path": "frontend/app/(main)/chat/__tests__/chat-share-adapter.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 12
+     "tests": 14
     },
     {
      "path": "frontend/app/(main)/chat/__tests__/cmdui2-new-chat-engine.test.tsx",
@@ -23389,6 +23407,12 @@
      "level": "unit",
      "markers": [],
      "tests": 16
+    },
+    {
+     "path": "frontend/app/(main)/chat/compare/__tests__/restore-agent.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 2
     },
     {
      "path": "frontend/app/(main)/chat/components/__tests__/actresults-activity-steps.test.tsx",
@@ -24780,7 +24804,7 @@
      "path": "frontend/lib/api/__tests__/user-facing-message.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 9
+     "tests": 12
     },
     {
      "path": "frontend/lib/auth/__tests__/desktop-oauth.test.ts",
@@ -25237,6 +25261,12 @@
      "level": "unit",
      "markers": [],
      "tests": 4
+    },
+    {
+     "path": "frontend/lib/utils/__tests__/safe-redirect-url.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 1
     },
     {
      "path": "frontend/lib/utils/__tests__/safe-return-to.test.ts",
@@ -25736,15 +25766,15 @@
    "id": "FEA",
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
-   "files": 293,
-   "tests": 2133,
+   "files": 298,
+   "tests": 2167,
    "filesByLevel": {
     "e2e-browser": 15,
-    "unit": 278
+    "unit": 283
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2080
+    "unit": 2114
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -26357,7 +26387,7 @@
      "path": "frontend/app/(main)/workspace/components/__tests__/enterprise-placeholder-page.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 5
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/components/__tests__/entity-data-table.test.tsx",
@@ -26828,7 +26858,25 @@
      "tests": 6
     },
     {
+     "path": "frontend/app/(main)/workspace/enterprise/__tests__/enterprise-feature-pages.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 4
+    },
+    {
+     "path": "frontend/app/(main)/workspace/enterprise/__tests__/enterprise-overview-page.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 13
+    },
+    {
      "path": "frontend/app/(main)/workspace/general/__tests__/data-collection.stub.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 2
+    },
+    {
+     "path": "frontend/app/(main)/workspace/general/__tests__/edition-section.test.tsx",
      "level": "unit",
      "markers": [],
      "tests": 2
@@ -26837,7 +26885,7 @@
      "path": "frontend/app/(main)/workspace/general/__tests__/general-page.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 12
+     "tests": 15
     },
     {
      "path": "frontend/app/(main)/workspace/general/__tests__/logo-url.test.ts",
@@ -26916,6 +26964,12 @@
      "level": "unit",
      "markers": [],
      "tests": 7
+    },
+    {
+     "path": "frontend/app/(main)/workspace/mail/__tests__/smtp-configure-panel.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 2
     },
     {
      "path": "frontend/app/(main)/workspace/mcp-access/__tests__/page.test.tsx",
@@ -27194,6 +27248,12 @@
      "tests": 5
     },
     {
+     "path": "frontend/app/(main)/workspace/sidebar/__tests__/enterprise-sidebar-entry.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 3
+    },
+    {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-ai-accounts-visibility.test.tsx",
      "level": "unit",
      "markers": [],
@@ -27215,7 +27275,7 @@
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-enterprise-items.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 4
+     "tests": 6
     },
     {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-harness-beta.test.tsx",
