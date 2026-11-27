@@ -110,3 +110,12 @@ async def backfill(g: IGraphDBProvider, logger: Any) -> int:  # noqa: ANN401
     """The start-up backfill, and forget what this process knew of the marker."""
     ops._SCOPED_ORGS.clear()
     return await run_code_path_scope_backfill(g, logger)
+
+
+async def records_at(g: IGraphDBProvider, org_id: str, connector_id: str, world: dict[str, Any], repo: str) -> list[str]:
+    """The records the tools resolve ``PATH`` to in ``repo`` (in the caller's org context), as resolve_symbol asks."""
+    from app.agents.actions.code_graph.ops import RecordAccess, _choose_records, _records_for_path
+    access = RecordAccess(g, org_id, world["user_id"])
+    ids, _ = await _records_for_path(g, org_id, PATH, choose=lambda keys: _choose_records(
+        g, org_id, keys, connector_id, file_path=PATH, repo=repo, access=access, ambiguous_ok=True), connector_id=connector_id, repo=repo)
+    return sorted(ids)

@@ -30,12 +30,14 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
+    SCOPE_FIELDS,
     PgBase,
     _arango,
     _doc,
     _j,
     _node,
     _pgbool,
+    sync_code_file_scope,
 )
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -104,6 +106,7 @@ async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
                     THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
                 ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
                      org, _RECORDS, _j(rows), dropped, insert_only)
+    await sync_code_file_scope(tx, org, [i for i in by_id if any(f in by_id[i] for f in SCOPE_FIELDS)])
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT

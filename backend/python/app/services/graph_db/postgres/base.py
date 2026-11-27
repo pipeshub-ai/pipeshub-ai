@@ -347,6 +347,20 @@ def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "
     return sql, args
 
 
+# A code file carries its record's connector and record group (the scoped path lookup reads them): a write that changes them on a record
+# changes them on its code file in the same transaction.
+SCOPE_FIELDS = ("connectorId", "recordGroupId")
+_SYNC_CODE_FILE_SCOPE = """/* pipeshub:graph.sync_code_file_scope */ UPDATE graph.nodes c
+    SET doc = c.doc || jsonb_build_object('connectorId', r.doc->'connectorId', 'recordGroupId', r.doc->'recordGroupId')
+    FROM graph.nodes r WHERE c.org_id = $1 AND c.coll = 'codeFiles' AND c.id = ANY($2::text[]) AND r.org_id = $1 AND r.coll = 'records' AND r.id = c.id
+      AND (c.doc->'connectorId' IS DISTINCT FROM r.doc->'connectorId' OR c.doc->'recordGroupId' IS DISTINCT FROM r.doc->'recordGroupId')"""
+
+
+async def sync_code_file_scope(tx: Tx, org: str, record_ids: list[str]) -> None:
+    if record_ids:
+        await tx.execute(_SYNC_CODE_FILE_SCOPE, org, sorted(set(record_ids)))
+
+
 def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] | None:
     """The vetted read (graph_0003) that serves a lookup by an indexed key of the document, as ``(function, its leading arguments)``, or None when the
     filters name none of them (or exceed what the function accepts). Row-level security hides the expression indexes (graph_0001) from a plain statement."""

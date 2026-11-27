@@ -96,3 +96,27 @@ async def test_rows_written_before_the_scope_are_filled_and_a_backfill_cut_short
 async def test_a_repo_key_is_the_casefolded_last_segment() -> None:
     from app.models.entities import repo_key
     assert repo_key("Acme/Straße") == "strasse" and repo_key("solo") == "solo" and repo_key("a/") == "" and repo_key(None) is None
+
+
+@pytest.mark.parametrize("how", ["batch_update_nodes", "update_node", "batch_upsert_nodes"])
+async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only(pg_provider, how) -> None:
+    """The scoped lookup reads the code file's copy of its record's group: every write that moves the record moves the copy with it."""
+    org, connector = new_org(), "conn-code"
+    with ctx(org):
+        world = await world_of.write_world(pg_provider, org, connector, 5)
+    await world_of.backfill(pg_provider, LOG)
+    moved, new_group = world["records"][3], world["groups"][4][1]
+    with ctx(org):
+        if how == "batch_update_nodes":
+            await pg_provider.batch_update_nodes([{"id": moved, "recordGroupId": new_group}], "records")
+        elif how == "update_node":
+            await pg_provider.update_node(moved, "records", {"recordGroupId": new_group})
+        else:
+            doc = await pg_provider.get_document(moved, "records")
+            await pg_provider.batch_upsert_nodes([{**doc, "recordGroupId": new_group}], "records")
+        scoped = {repo: await world_of.records_at(pg_provider, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")}
+    assert scoped == {"acme/repo3": [], "acme/repo4": sorted([moved, world["records"][4]])}, scoped
+    ops._SCOPED_ORGS.clear()
+    await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'syncPoints'", org)          # the org-wide lookup, as the oracle
+    with ctx(org):
+        assert {repo: await world_of.records_at(pg_provider, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
