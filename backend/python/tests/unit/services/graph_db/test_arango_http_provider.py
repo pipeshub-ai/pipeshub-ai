@@ -19350,6 +19350,14 @@ class TestArangoPersonMigrationAndReaper:
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
 
     @pytest.mark.asyncio
+    async def test_reaper_raises_a_conflict_so_its_caller_runs_it_again(self, connected_provider) -> None:
+        """A write-write conflict (1200) removed nothing and aborted the caller's stream transaction: reported as 0 (success) the caller would commit it."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=ArangoQueryError("Query failed", 409, '{"errorNum": 1200}'))
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
+
+    @pytest.mark.asyncio
     async def test_reaper_only_touches_flagged_edges(self, connected_provider):
         """A real app member's membership edge must never be a candidate."""
         calls = self._script(connected_provider, [0])

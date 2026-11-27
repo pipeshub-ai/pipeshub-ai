@@ -284,21 +284,109 @@ async def test_the_reaper_keeps_a_collaborator_whose_grant_commits_while_it_deci
     w, g = world, world.graph
     ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
     tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
-    committed = False
-    try:
-        assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
-                                            "createdAtTimestamp": TS}], collection="permission", transaction=tid)
-        await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
-        reap = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
-        await asyncio.sleep(1.0)      # the reaper decides (or waits on the writer's lock) while the grant is uncommitted
-        await g.commit_transaction(tid)
-        committed = True
-        await reap
-    finally:
-        if not committed:
-            await g.rollback_transaction(tid)
+    assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
+                                        "createdAtTimestamp": TS}], collection="permission", transaction=tid)
+    await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
+    await _reap_while(w, tid)      # the reaper decides, waits on the writer's lock or loses to it (and runs again) while the grant is uncommitted
     if hasattr(g, "client"):
         rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
     else:
         rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
     assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def _edges_to_app(w: _World) -> dict[str, bool]:
+    """Each principal holding a membership of the App, by its plain id, with the membership's external flag."""
+    g = w.graph
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u)-[r:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id, r.isExternalUser AS ext", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key, ext: e.isExternalUser}", {"app": f"apps/{w.sid(APP)}"})
+    return {w.plain(r["id"]): bool(r["ext"]) for r in rows}
+
+
+async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool = False) -> None:
+    """Run the reaper while the writer's transaction is open, then commit the writer. A reaper that loses to the writer raises a write conflict (its
+    transaction, if it had one, is rolled back) and runs again once the writer has committed, as its caller does; one that returns has its
+    transaction committed. It never returns after a conflict."""
+    g = w.graph
+
+    async def once() -> None:
+        rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"]) if reaper_in_transaction else None
+        try:
+            await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
+        except Exception as e:
+            if rid:
+                await g.rollback_transaction(rid)
+            assert g.is_write_conflict(e), e
+            raise
+        if rid:
+            await g.commit_transaction(rid)
+    reap = asyncio.create_task(once())
+    await asyncio.sleep(1.0)
+    await g.commit_transaction(writer_tid)
+    try:
+        await reap
+    except Exception:      # a conflict: the caller's retry, now that the writer has committed
+        await once()
+
+
+@pytest.mark.parametrize("in_transaction", [False, True], ids=["alone", "in_transaction"])
+async def test_the_reaper_in_its_caller_s_transaction_never_commits_after_a_conflict(world: _World, in_transaction: bool) -> None:
+    """As connectors run it (inside the store's transaction): a writer grants ext-own-gone a record and ensures its membership while the reaper runs.
+    The reaper either waits and sees the grant, or raises the conflict and is run again; its transaction commits only after a reaper that returned."""
+    w, g = world, world.graph
+    ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
+    tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
+    assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
+                                        "createdAtTimestamp": TS}], collection="permission", transaction=tid)
+    await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
+    await _reap_while(w, tid, reaper_in_transaction=in_transaction)
+    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def test_the_reaper_keeps_a_membership_made_ordinary_while_it_runs(world: _World) -> None:
+    """ext-own-gone's flagged membership is made an ordinary one (the user joined the App) in a transaction still open while the reaper runs: the
+    reaper decides on the flag as it is committed, so the ordinary membership stays."""
+    w, g = world, world.graph
+    ext = w.sid("ext-own-gone")
+    tid = await g.begin_transaction(["users", "apps"], ["userAppRelation"])
+    if hasattr(g, "client"):
+        await g.client.execute_query("MATCH (:User {id: $u})-[r:USER_APP_RELATION]->(:App {id: $app}) SET r.isExternalUser = false",
+                                     parameters={"u": ext, "app": w.sid(APP)}, txn_id=tid)
+    else:
+        await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._from == @u AND e._to == @app UPDATE e WITH {isExternalUser: false} IN userAppRelation",
+                                        {"u": f"users/{ext}", "app": f"apps/{w.sid(APP)}"}, txn_id=tid)
+    await _reap_while(w, tid)
+    edges = await _edges_to_app(w)
+    assert edges.get("ext-own-gone") is False and "ext-own-live" in edges
+
+
+async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(world: _World) -> None:
+    """A person held on the App only by its flagged membership, and a writer that grants it a record while the reaper runs (it takes the person,
+    as the processor's principal lookup does, then writes the grant). The reaper may drop the membership it could not see a grant for, but never the
+    person the committed grant comes from."""
+    from app.models.entities import Person
+    w, g = world, world.graph
+    email = f"pers-{w.run}@example.com"
+    pid = await g.upsert_person_by_email(Person(email=email, org_id=w.org), raise_on_error=True)
+    try:
+        await g.ensure_app_membership(pid, "person", w.sid(APP), is_external=True)
+        tid = await g.begin_transaction(["records", "apps", "person"], ["permission", "person"])
+        assert await g.upsert_person_by_email(Person(email=email, org_id=w.org), transaction=tid, raise_on_error=True) == pid
+        assert await g.batch_create_edges([{"from_id": pid, "from_collection": "person", "to_id": w.sid("r-own-live"), "to_collection": "records", "type": "USER",
+                                            "role": "READER", "createdAtTimestamp": TS}], collection="permission", transaction=tid)
+        await _reap_while(w, tid)
+        if hasattr(g, "client"):
+            left = await g.client.execute_query("MATCH (p:Person {id: $p})-[:PERMISSION]->(:Record {id: $r}) RETURN p.id AS id", parameters={"p": pid, "r": w.sid("r-own-live")})
+        else:
+            left = await g.http_client.execute_aql("FOR p IN person FILTER p._key == @p FOR e IN permission FILTER e._from == p._id AND e._to == @r RETURN p._key",
+                                                   {"p": pid, "r": f"records/{w.sid('r-own-live')}"})
+        assert len(left) == 1
+    finally:
+        if hasattr(g, "client"):
+            await g.client.execute_query("MATCH (p:Person {id: $p}) DETACH DELETE p", parameters={"p": pid})
+        else:
+            await g.http_client.execute_aql("FOR e IN permission FILTER e._from == @p REMOVE e IN permission", {"p": f"person/{pid}"})
+            await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._from == @p REMOVE e IN userAppRelation", {"p": f"person/{pid}"})
+            await g.http_client.execute_aql("FOR p IN person FILTER p._key == @p REMOVE p IN person", {"p": pid})

@@ -4972,19 +4972,32 @@ class TestResolvePrincipal:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_existing_person(self):
+        """The grant writer takes the person through the upsert (its lock, held to the commit), which finds it and changes nothing."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
         tx_store.get_person_by_email = AsyncMock(
             return_value=Person(id="person-9", email="out@x.io")
         )
-        tx_store.upsert_person_by_email = AsyncMock()
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-9")
 
         assert await proc._resolve_principal("out@x.io", tx_store) == (
             "person-9", CollectionNames.PEOPLE.value
         )
-        tx_store.upsert_person_by_email.assert_not_awaited()
+        tx_store.upsert_person_by_email.assert_awaited_once()
+        assert tx_store.upsert_person_by_email.await_args.args[0].email == "out@x.io"
         tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_an_existing_person_found_without_create_is_only_read(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=Person(id="person-9", email="out@x.io"))
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store, create_if_missing=False) == ("person-9", CollectionNames.PEOPLE.value)
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):

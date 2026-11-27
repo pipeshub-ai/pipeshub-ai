@@ -967,12 +967,19 @@ class LookupsMixin(PgBase):
             people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
             if not people:
                 return 0
+            # Each person's email lock first (upsert_person_by_email's, which a writer of a grant from the person holds to its commit), then the
+            # edges in a statement of its own: a grant committed by then keeps the person, and a writer that comes later finds it gone and creates it.
+            await tx.execute("""/* pipeshub:graph.reap_lock_persons */ SELECT pg_advisory_xact_lock(hashtextextended('person:' || $1 || ':' || e.email, 0))
+                FROM (SELECT DISTINCT p.doc->>'email' AS email FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = 'person' AND p.id = ANY($2::text[])
+                  AND p.doc->>'email' IS NOT NULL ORDER BY 1) e""", org, people)
             return await tx.fetchval("""/* pipeshub:graph.reap_stranded_persons */ WITH d AS (DELETE FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = 'person' AND p.id = ANY($2::text[])
                 AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = p.org_id AND ((e.from_coll = 'person' AND e.from_id = p.id) OR (e.to_coll = 'person' AND e.to_id = p.id)))
                 RETURNING 1) SELECT count(*) FROM d""", org, people)
         try:
             return await self._q(go, transaction, write=True)
         except Exception as e:
+            if self.is_write_conflict(e):
+                raise      # the caller's transaction is aborted: raised, so it runs again
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="reap_stale_external_app_relations", connector_id=connector_id)
             return 0

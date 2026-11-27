@@ -3,6 +3,7 @@ the user's own groups do. Both reads of a viewer's grants follow it: the read of
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -113,3 +114,78 @@ async def test_the_reaper_keeps_a_collaborator_whose_grant_commits_while_it_deci
                 await p.rollback_transaction(tid)
         kept = await pg_db.run(lambda tx: tx.fetch("SELECT from_id FROM graph.edges WHERE org_id = $1 AND coll = 'userAppRelation' AND to_id = 'app1'", org))
     assert [r["from_id"] for r in kept] == ["x2"]
+
+
+async def _world_x(p, org: str) -> None:
+    await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+    await p.batch_upsert_nodes([{"_key": "r1", "recordName": "r1", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+
+
+async def _reap_while(p, writer_tid: str, *, in_transaction: bool = False) -> None:
+    """The reaper runs while the writer's transaction is open; the writer commits; the reaper's own transaction (if any) commits only after a reaper that returned."""
+    async def once() -> None:
+        rid = await p.begin_transaction([], []) if in_transaction else None
+        try:
+            await p.reap_stale_external_app_relations("app1", transaction=rid)
+        except Exception as e:
+            if rid:
+                await p.rollback_transaction(rid)
+            assert p.is_write_conflict(e), e
+            raise
+        if rid:
+            await p.commit_transaction(rid)
+    reap = asyncio.create_task(once())
+    await asyncio.sleep(1.0)
+    await p.commit_transaction(writer_tid)
+    try:
+        await reap
+    except Exception:
+        await once()
+
+
+async def _app_edges(pg_db, org: str) -> dict[str, object]:
+    rows = await pg_db.run(lambda tx: tx.fetch("SELECT from_id, doc->'isExternalUser' AS ext FROM graph.edges WHERE org_id = $1 AND coll = 'userAppRelation' AND to_id = 'app1'", org))
+    return {r["from_id"]: json.loads(r["ext"]) if isinstance(r["ext"], str) else r["ext"] for r in rows}
+
+
+async def test_the_reaper_in_its_caller_s_transaction_keeps_a_collaborator_granted_while_it_runs(pg_db) -> None:
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _world_x(p, org)
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com"}], "users")
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        tid = await p.begin_transaction([], [])
+        await p.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission", transaction=tid)
+        await p.ensure_app_membership("x2", "users", "app1", is_external=True, transaction=tid)
+        await _reap_while(p, tid, in_transaction=True)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}
+
+
+async def test_the_reaper_keeps_a_membership_made_ordinary_while_it_runs(pg_db) -> None:
+    """x2's flagged membership is made an ordinary one in a transaction still open while the reaper runs: the reaper decides on the committed flag."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _world_x(p, org)
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com"}], "users")
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        tid = await p.begin_transaction([], [])
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=False, syncState="COMPLETED", lastSyncUpdate=2)], "userAppRelation", transaction=tid)
+        await _reap_while(p, tid)
+        assert await _app_edges(pg_db, org) == {"x2": False}
+
+
+async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(pg_db) -> None:
+    """A person held on the App only by its flagged membership. A writer takes the person (upsert_person_by_email, as the processor's principal lookup
+    does for a grant) and grants it a record while the reaper runs. The reaper may drop the membership, never the person the committed grant comes from."""
+    from app.models.entities import Person
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _world_x(p, org)
+        pid = await p.upsert_person_by_email(Person(email="pers@example.com", org_id=org), raise_on_error=True)
+        await p.ensure_app_membership(pid, "person", "app1", is_external=True)
+        tid = await p.begin_transaction([], [])
+        assert await p.upsert_person_by_email(Person(email="pers@example.com", org_id=org), transaction=tid, raise_on_error=True) == pid
+        await p.batch_create_edges([_perm(pid, "person", "r1", "records")], "permission", transaction=tid)
+        await _reap_while(p, tid)
+        held = await pg_db.run(lambda tx: tx.fetch("SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND id = $2", org, pid))
+    assert len(held) == 1
