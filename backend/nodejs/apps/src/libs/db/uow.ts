@@ -141,6 +141,8 @@ const BEGIN: Record<Isolation, string> = {
  * One statement, one round trip. `pre` reads the role before the switch (the guard); the LATERAL is correlated
  * to it so it runs after. The fence column is selected so the planner cannot drop the call.
  * The login needs USAGE/EXECUTE on the fence function, because the statement is checked before the role switch.
+ * JIT is off in every unit: its statements read rows by key, and a key list's estimate passes jit_above_cost at a few thousand keys,
+ * where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration is not ours).
  */
 function prologueSql(fence: string | undefined): string {
   return `WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
@@ -148,7 +150,7 @@ SELECT pre.r, s.fence, s.ts FROM pre, LATERAL (
   SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
          set_config('app.user_id', $4, true), set_config('statement_timeout', $5, true),
          set_config('lock_timeout', $6, true), set_config('plan_cache_mode', $7, true),
-         set_config('work_mem', $8, true),
+         set_config('work_mem', $8, true), set_config('jit', 'off', true),
          now()::text AS ts,
          ${fence ? `CASE WHEN $9::boolean THEN ${fence}($10::int) END` : 'NULL::int'} AS fence
   WHERE pre.r IS NOT NULL) s`;

@@ -2,8 +2,9 @@
 
 ``graph.stats_records`` holds, per counted record and per app that counts it, the key it is counted under (record type, indexing, extraction and entities state), and
 ``graph.stats_counts`` those rows summed per (app, key). A trigger logs every write that may change them (``graph.stats_changes``); :func:`run`, a phase of the kg worker
-in the connectors service, recounts what the log names (:func:`drain`; until an app is counted whole there is nothing to recount, and the log is dropped) and counts
-each app whole once (:func:`seed`). Both hold the org's stats lock, so they never interleave. :func:`read` answers from the counts plus the change of the records still
+in the connectors service, recounts what the log names (:func:`drain`; until the first count starts there is nothing to recount, and the log is dropped) and
+counts the organisation whole once (:func:`seed`: its records in pages from a checkpoint, every app counted whole when the last page commits). Both hold the org's stats
+lock, so they never interleave. :func:`read` answers from the counts plus the change of the records still
 logged, all in one snapshot: the walk's answer at that snapshot. It answers None (the caller walks) for an app not counted whole yet, while a record group or an app is
 logged (they move whole subtrees), or while more than ``CAP`` records are logged.
 
@@ -28,8 +29,8 @@ if TYPE_CHECKING:
 CAP = 5000              # logged records a read corrects for, and records one apply recounts
 LOG_ROWS = 200          # log rows one drain unit takes
 DROP_ROWS = 5000        # log rows one statement drops while no app is counted whole
-UNITS_PER_PASS = 25     # drain units one pass runs for an org
-SEED_PARTS = 16         # statements one seed splits an app's records into (the hash mask in SEED_KB / SEED_CONNECTOR)
+UNITS_PER_PASS = 25     # drain units, and units of the first count, one pass runs for an org
+PAGE = CAP              # records one unit of the first count recounts (one apply chunk)
 KB = Connectors.KNOWLEDGE_BASE.value
 
 _LOCK = "/* pipeshub:graph.stats_lock */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))"
@@ -68,7 +69,8 @@ ADD_COUNTS = """/* pipeshub:graph.stats_add_counts */ INSERT INTO graph.stats_co
     ON CONFLICT (org_id, app_id, record_type, indexing, extraction, entities) DO UPDATE SET n = c.n + excluded.n"""
 PENDING = "/* pipeshub:graph.stats_pending */ SELECT id, keys FROM graph.stats_changes WHERE org_id = $1 ORDER BY id LIMIT $2"
 DONE = "/* pipeshub:graph.stats_done */ DELETE FROM graph.stats_changes WHERE org_id = $1 AND id = ANY($2::bigint[])"
-ANY_SEEDED = "/* pipeshub:graph.stats_any_seeded */ SELECT EXISTS (SELECT 1 FROM graph.stats_apps WHERE org_id = $1)"
+COUNTING = """/* pipeshub:graph.stats_counting */ SELECT EXISTS (SELECT 1 FROM graph.stats_sweeps WHERE org_id = $1)
+    OR EXISTS (SELECT 1 FROM graph.stats_apps WHERE org_id = $1)"""
 DROP = """/* pipeshub:graph.stats_drop */ WITH d AS (DELETE FROM graph.stats_changes WHERE org_id = $1
     AND id IN (SELECT id FROM graph.stats_changes WHERE org_id = $1 ORDER BY id LIMIT $2) RETURNING 1) SELECT count(*) FROM d"""
 BY_SID = "/* pipeshub:graph.stats_by_sid */ SELECT DISTINCT record_id FROM graph.stats_records WHERE org_id = $1 AND sid = ANY($2::text[])"
@@ -84,39 +86,18 @@ SUBTREE = """/* pipeshub:graph.stats_subtree */ WITH RECURSIVE g(id, depth) AS (
     SELECT e.from_id AS id FROM (SELECT DISTINCT id FROM g) g CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
         AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = g.id OFFSET 0) e
     UNION SELECT e.from_id FROM unnest($3::text[]) a JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = a"""
-# A whole app, by the walk of lookups.STATS_KB / STATS_CONNECTOR, one row per record: one sixteenth of its records ($4, by a hash of the id) a statement, so that
-# a connector of millions stays within the service's statement budget.
-SEED_KB = """/* pipeshub:graph.stats_seed_kb */ INSERT INTO graph.stats_records (org_id, record_id, app_id, record_type, indexing, extraction, entities, sid)
-    WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2
-        AND (hashtext(e.from_id) & 15) = $4)
-    SELECT $1, n.id, $2, coalesce(n.doc->>'recordType', ''), coalesce(n.doc->>'indexingStatus', ''), coalesce(n.doc->>'extractionStatus', ''), coalesce(s.doc->>'status', ''), n.sid
-    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
-    CROSS JOIN LATERAL (SELECT x.id, x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
-        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
-    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
-    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
-      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])"""
-SEED_CONNECTOR = """/* pipeshub:graph.stats_seed_connector */ INSERT INTO graph.stats_records (org_id, record_id, app_id, record_type, indexing, extraction, entities, sid)
-    WITH RECURSIVE g(id, depth) AS (
-      SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' AND e.to_id = $2
-      UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-        AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
-    r AS (SELECT DISTINCT e.from_id AS id FROM (SELECT DISTINCT id FROM g) g CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1
-        AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = g.id AND (hashtext(e.from_id) & 15) = $4 OFFSET 0) e)
-    SELECT $1, n.id, $2, coalesce(n.doc->>'recordType', ''), coalesce(n.doc->>'indexingStatus', ''), coalesce(n.doc->>'extractionStatus', ''), coalesce(s.doc->>'status', ''), n.sid
-    FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
-    CROSS JOIN LATERAL (SELECT x.id, x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
-        WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
-    LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
-    WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
-      AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])"""
-SEED_CLEAR = "/* pipeshub:graph.stats_seed_clear */ DELETE FROM graph.stats_records WHERE org_id = $1 AND app_id = $2"
-SEED_COUNTS_CLEAR = "/* pipeshub:graph.stats_seed_counts_clear */ DELETE FROM graph.stats_counts WHERE org_id = $1 AND app_id = $2"
-SEED_COUNTS = """/* pipeshub:graph.stats_seed_counts */ INSERT INTO graph.stats_counts (org_id, app_id, record_type, indexing, extraction, entities, n)
-    SELECT $1, $2, record_type, indexing, extraction, entities, count(*) FROM graph.stats_records WHERE org_id = $1 AND app_id = $2
-    GROUP BY record_type, indexing, extraction, entities"""
+# The organisation's first count (seed) in pages: the PAGE smallest record ids after $2 among its records and the records kept rows still name (a record gone since its
+# rows were kept is recounted to none). Each side is a range of its primary key in its order, under kg.reader.seeks, so a page costs its own rows whatever the size of
+# a connector; a record counted twice (both sides) is one id.
+SWEEP_PAGE = """/* pipeshub:graph.stats_sweep_page */ SELECT id FROM (
+    (SELECT n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.id > $2 ORDER BY n.id LIMIT $3)
+    UNION (SELECT DISTINCT s.record_id FROM graph.stats_records s WHERE s.org_id = $1 AND s.record_id > $2 ORDER BY s.record_id LIMIT $3)) p ORDER BY id LIMIT $3"""
+SWEEP = "/* pipeshub:graph.stats_sweep */ SELECT after, done FROM graph.stats_sweeps WHERE org_id = $1"
+SWEEP_SET = """/* pipeshub:graph.stats_sweep_set */ INSERT INTO graph.stats_sweeps (org_id, after, done) VALUES ($1, $2, $3)
+    ON CONFLICT (org_id) DO UPDATE SET after = excluded.after, done = excluded.done"""
+MARK_ALL = """/* pipeshub:graph.stats_mark_all */ INSERT INTO graph.stats_apps (org_id, app_id) SELECT $1, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
+    ON CONFLICT DO NOTHING"""
 SEED_MARK = "/* pipeshub:graph.stats_seed_mark */ INSERT INTO graph.stats_apps (org_id, app_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-APP_TYPE = "/* pipeshub:graph.stats_app_type */ SELECT n.doc->>'type' AS type FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2"
 UNSEEDED = """/* pipeshub:graph.stats_unseeded */ SELECT n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
     AND NOT EXISTS (SELECT 1 FROM graph.stats_apps a WHERE a.org_id = $1 AND a.app_id = n.id) ORDER BY n.id LIMIT $2"""
 SEEDED = "/* pipeshub:graph.stats_seeded */ SELECT EXISTS (SELECT 1 FROM graph.stats_apps WHERE org_id = $1 AND app_id = $2)"
@@ -158,9 +139,10 @@ async def drain(db: KernelDB, org: str) -> int | None:
     async def go(tx: Tx) -> int | None:
         if not await _locked(tx, org):
             return None
-        if not await tx.fetchval(ANY_SEEDED, org):
-            # Nothing is read from the counts, and each app's first count (seed) reads the graph after this unit commits (it takes the same lock): the log, every
-            # row of a new install's or a restore's whole graph, names nothing that count will miss. Recounted, it was the whole org a record at a time first.
+        if not await tx.fetchval(COUNTING, org):
+            # Nothing is read from the counts, and the first count (seed) has not started: every page of it reads the graph after this unit commits (it takes the same
+            # lock), so the log, every row of a new install's or a restore's whole graph, names nothing that count will miss. Once it has started, a record written
+            # behind its page is counted only through the log, which is then recounted.
             # One batch a unit, so a unit (and the lock) stays bounded; run does not count an app while a full batch says more is left.
             return await tx.fetchval(DROP, org, DROP_ROWS)
         rows = await tx.fetch(PENDING, org, LOG_ROWS)
@@ -186,24 +168,31 @@ async def drain(db: KernelDB, org: str) -> int | None:
 
 
 async def seed(db: KernelDB, org: str, app_id: str) -> bool:
-    """Count one app whole: its rows and counts become what the walk counts now, with the mark that they can be read. False when another unit holds the org."""
+    """One unit of the organisation's first count: the next ``PAGE`` records recounted from the checkpoint (graph.stats_sweeps), and once the last page commits every app
+    counted whole. After that an app not counted yet (made since) is counted whole as it is: every record it counts was written, and logged, after the count began.
+    False when another unit holds the org."""
     async def go(tx: Tx) -> bool:
         if not await _locked(tx, org):
             return False
-        is_kb = await tx.fetchval(APP_TYPE, org, app_id) == KB
-        await tx.execute(SEED_CLEAR, org, app_id)
-        for part in range(SEED_PARTS):
-            await tx.execute(SEED_KB if is_kb else SEED_CONNECTOR, org, app_id, FOLDER_MIME_TYPES, part)
-        await tx.execute(SEED_COUNTS_CLEAR, org, app_id)
-        await tx.execute(SEED_COUNTS, org, app_id)
-        await tx.execute(SEED_MARK, org, app_id)
+        at = await tx.fetchrow(SWEEP, org)
+        if at is not None and at["done"]:
+            await tx.execute(SEED_MARK, org, app_id)
+            return True
+        after = "" if at is None else at["after"]
+        async with seeks(tx):
+            ids = [r["id"] for r in await tx.fetch(SWEEP_PAGE, org, after, PAGE)]
+        await _apply(tx, org, ids)
+        if len(ids) < PAGE:
+            await tx.execute(MARK_ALL, org)
+        await tx.execute(SWEEP_SET, org, ids[-1] if ids else after, len(ids) < PAGE)
         return True
     with bind(_ctx(org)):
         return await db.run(go, write=True)
 
 
 async def run(db: KernelDB, org: str, *, stop: asyncio.Event | None = None) -> int:
-    """One pass over an org: drain its log (at most ``UNITS_PER_PASS`` units), then count whole one app not counted yet. The log rows and apps done."""
+    """One pass over an org: drain its log (at most ``UNITS_PER_PASS`` units), then at most as many units of counting whole an app not counted yet. The log rows and
+    units done."""
     done = n = 0
     for _ in range(UNITS_PER_PASS):
         if stop is not None and stop.is_set():
@@ -216,12 +205,14 @@ async def run(db: KernelDB, org: str, *, stop: asyncio.Event | None = None) -> i
             break
     if n >= DROP_ROWS:
         return done             # the log is being dropped and more may be left: an app counted now would have the rest recounted, a record at a time
-    with bind(_ctx(org)):
-        apps = [r["id"] for r in await db.run(lambda tx: tx.fetch(UNSEEDED, org, 1))]
-    for app_id in apps:
+    for _ in range(UNITS_PER_PASS):
         if stop is not None and stop.is_set():
             break
-        done += await seed(db, org, app_id)
+        with bind(_ctx(org)):
+            apps = [r["id"] for r in await db.run(lambda tx: tx.fetch(UNSEEDED, org, 1))]
+        if not apps or not await seed(db, org, apps[0]):
+            break
+        done += 1
     return done
 
 

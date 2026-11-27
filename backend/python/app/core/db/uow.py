@@ -97,12 +97,14 @@ ABORT_TIMEOUT_S = 5.0
 # A role other than 'none' here is a session-level SET ROLE left behind by an earlier client.
 # The statement is parsed as the LOGIN, which holds no privileges until the switch, so only write UoWs (which call the
 # fence function) reference ``kernel``; the login needs USAGE on that schema and EXECUTE on the fence for them.
+# JIT is off in every unit: its statements read rows by key, and the planner's estimate for a list of keys (or a plan with nodes disabled) passes
+# jit_above_cost at a few thousand keys, where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration and roles are not ours to change).
 _PROLOGUE = """
 WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
 SELECT pre.r, now() AS started{fence_out} FROM pre, LATERAL (
   SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
          set_config('statement_timeout', $4, true), set_config('lock_timeout', $5, true),
-         set_config('plan_cache_mode', $6, true),
+         set_config('plan_cache_mode', $6, true), set_config('jit', 'off', true),
          CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END{fence}
   WHERE pre.r IS NOT NULL) s
 """

@@ -13,6 +13,7 @@ import asyncpg
 import pytest
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
+from app.core.db.uow import Tx
 from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.reader import seeks
@@ -231,6 +232,140 @@ async def test_the_live_rows_read_each_node_and_link_by_its_key_with_no_statisti
             assert plan_gate.scans(ran, "edges"), state
             if bad := plan_gate.violations(ran, LIVE_KEYS):
                 pytest.fail(f"{state}: not a read by key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
+    finally:
+        await _admin(RESTORE_GRAPH)
+
+
+BULK = 200          # records of the world's connector beyond world()'s, under group "low": past a page many times over at PAGE below
+PAGE = 3
+
+
+async def bulk(w: World, pg_db) -> None:
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'm' || g,
+        jsonb_build_object('recordType', 'FILE', 'indexingStatus', CASE WHEN g % 3 = 0 THEN 'COMPLETED' ELSE 'QUEUED' END) FROM generate_series(1, $2::int) g""",
+                                          w.org, BULK), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'belongsTo', 'records', 'm' || g,
+        'recordGroups', 'low' FROM generate_series(1, $2::int) g""", w.org, BULK), write=True)
+
+
+@pytest.fixture
+def paged(monkeypatch) -> dict[str, list]:
+    """PAGE records a unit of the first count; records each statement of graph.stats_* (its rows) and each apply (its ids)."""
+    monkeypatch.setattr(connector_stats, "PAGE", PAGE, raising=False)
+    seen: dict[str, list] = {"rows": [], "applied": []}
+    run, apply = Tx._run, connector_stats._apply
+
+    async def counted(self, op, sql, *args, **kw):  # noqa: ANN202
+        out = await run(self, op, sql, *args, **kw)
+        if "pipeshub:graph.stats" in sql[:60]:
+            n = len(out) if isinstance(out, list) else int(out.rsplit(" ", 1)[-1]) if isinstance(out, str) and out[-1:].isdigit() else 0
+            seen["rows"].append((sql[3:40], n))
+        return out
+
+    async def applied(tx, org, ids):  # noqa: ANN202
+        await apply(tx, org, ids)
+        seen["applied"].append(list(ids))
+    monkeypatch.setattr(Tx, "_run", counted)
+    monkeypatch.setattr(connector_stats, "_apply", applied)
+    return seen
+
+
+async def test_the_first_count_runs_one_page_a_unit_and_marks_the_apps_when_the_last_commits(w: World, pg_db, paged) -> None:
+    """Every unit of the first count recounts one page: no statement reads or writes more rows than a page's records give (two apps a record at most), however large the
+    connector; no app is read from the counts before the last page commits; then both are, with the walk's numbers. The 16-part count wrote a sixteenth of the connector
+    a statement and marked the app in its one unit."""
+    await world(w, pg_db)
+    await bulk(w, pg_db)
+    await connector_stats.drain(pg_db, w.org)                                     # the log of the world, dropped
+    paged["rows"].clear()
+    units = 0
+    while await kept(w, APP) is None:
+        assert await connector_stats.seed(pg_db, w.org, APP)
+        units += 1
+        assert units <= (BULK + 8) // PAGE + 2, "the count did not finish"
+    assert max(n for _, n in paged["rows"]) <= 2 * PAGE, sorted(paged["rows"], key=lambda r: -r[1])[:5]
+    assert units >= (BULK + 8) // PAGE, units                                     # a page a unit
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+    assert (await walk(w, APP)).total() == 4 + BULK
+
+
+async def test_an_interrupted_first_count_resumes_at_its_checkpoint(w: World, pg_db, paged, monkeypatch) -> None:
+    """A unit that fails (a restart, a timeout) rolls back alone: the next unit goes on from the last committed page, so every record is counted once by a committed
+    unit, the failed page once more, and nothing again from the start."""
+    await world(w, pg_db)
+    await bulk(w, pg_db)
+    await connector_stats.drain(pg_db, w.org)
+    for _ in range(5):
+        assert await connector_stats.seed(pg_db, w.org, APP)
+    apply = connector_stats._apply
+
+    async def failing(tx, org, ids):  # noqa: ANN202
+        await apply(tx, org, ids)
+        raise RuntimeError("the worker stopped")
+    monkeypatch.setattr(connector_stats, "_apply", failing)
+    with pytest.raises(RuntimeError):
+        await connector_stats.seed(pg_db, w.org, APP)
+    monkeypatch.setattr(connector_stats, "_apply", apply)
+    await settle(w, pg_db)
+    pages = paged["applied"]
+    committed = pages[:5] + pages[6:]
+    ids = [i for p in committed for i in p]
+    assert len(ids) == len(set(ids)), "a committed page counted a record again"
+    assert pages[5] == pages[6], "the next unit did not take the failed page again"
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'records'", w.org)) == len(set(ids))
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+
+
+async def test_writes_during_the_first_count_are_counted_once_it_ends(w: World, pg_db, paged) -> None:
+    """Writes between the units of the first count, behind its page and ahead of it, are recounted from the log (it is not dropped once the count has started): a status
+    change on both sides, a new record, a deleted record, a group move. A kept row of a record gone before the count (from an earlier recount whose log was dropped) is
+    recounted to none. After it, the counts are the walk's."""
+    await world(w, pg_db)
+    await bulk(w, pg_db)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.stats_records (org_id, record_id, app_id, record_type, indexing, extraction, entities)
+        VALUES ($1, 'ghost', $2, 'FILE', 'QUEUED', '', '')""", w.org, APP), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.stats_counts (org_id, app_id, record_type, indexing, extraction, entities, n)
+        VALUES ($1, $2, 'FILE', 'QUEUED', '', '', 1)""", w.org, APP), write=True)
+    await connector_stats.drain(pg_db, w.org)
+    for _ in range(20):
+        assert await connector_stats.seed(pg_db, w.org, APP)
+    assert await kept(w, APP) is None
+    await w.nodes("records", {"_key": "a", "indexingStatus": "FAILED"}, {"_key": "m50", "indexingStatus": "FAILED"}, {"_key": "m99", "indexingStatus": "FAILED"})
+    await w.nodes("records", {"_key": "late", **BASE})
+    await w.edge("belongsTo", ("records", "late"), ("recordGroups", "top"))
+    await w.p.delete_nodes(["m10"], "records")
+    await w.edge("belongsTo", ("recordGroups", "cut"), ("recordGroups", "side"))     # stray now counts
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+    assert (await walk(w, APP)).total() == 4 + BULK + 1 - 1 + 1
+
+
+async def test_a_page_of_the_first_count_reads_its_records_by_key_with_no_statistics_and_analysed(w: World, pg_db) -> None:
+    """EXPLAIN gate of the first count's page as it runs (under reader.seeks): graph.nodes and graph.stats_records are read as a range of record ids after the checkpoint,
+    a page's rows at most, with graph's statistics cleared and analysed; no read of the organisation's records grows with a connector."""
+    await world(w, pg_db)
+    await bulk(w, pg_db)
+    await settle(w, pg_db)                                                        # kept rows for the stats side to read
+
+    async def go(tx) -> tuple[int, dict]:
+        async with seeks(tx):
+            n = len(await tx.fetch(connector_stats.SWEEP_PAGE, w.org, "b", PAGE))
+            ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + connector_stats.SWEEP_PAGE, w.org, "b", PAGE)
+        return n, json.loads(ran) if isinstance(ran, str) else ran
+    try:
+        for state in ("no statistics", "analysed"):
+            await _admin(NO_GRAPH_STATS if state == "no statistics" else RESTORE_GRAPH)
+            n, ran = await pg_db.run(go, custom_plan=True)
+            assert n == PAGE, state
+            reads = plan_gate.scans(ran, ("nodes", "stats_records"))
+            assert {str(r["Relation Name"]).startswith("stats") for r in reads} == {True, False}, state
+            if bad := plan_gate.violations(ran, {"nodes": r"\bid > ", "stats_records": r"\brecord_id > "}):
+                pytest.fail(f"{state}: not a range of record ids: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
+            if big := [f"{r['Relation Name']}: {r['Actual Rows']}" for r in reads if r.get("Actual Rows", 0) > 2 * PAGE]:
+                pytest.fail(f"{state}: a read past the page: {big}")
     finally:
         await _admin(RESTORE_GRAPH)
 
