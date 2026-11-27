@@ -1685,6 +1685,14 @@ describe('ConfigurationManager Controller', () => {
           enableMetricCollection: 'false', pushIntervalMs: '60000', telemetryEnabled: false,
         })
       })
+
+      it('answers both fields when nothing is stored', async () => {
+        const res = createMockResponse()
+
+        await getMetricsCollection(createMockKeyValueStore())(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0]).to.deep.equal({ enableMetricCollection: 'false', telemetryEnabled: false })
+      })
     })
   })
 

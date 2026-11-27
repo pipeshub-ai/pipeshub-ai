@@ -81828,8 +81828,10 @@ paths:
         The stored object is returned decrypted, every stored value a string (the write routes
         store the switch and the interval in their string form), with `telemetryEnabled` added:
         whether telemetry can run on this deployment (`TELEMETRY_COLLECTION_FLAG`). When it is
-        `false`, `enableMetricCollection` is answered `"false"` whatever is stored, since nothing
-        is collected. With nothing stored, the answer holds `telemetryEnabled` alone. The query
+        `false`, `enableMetricCollection` is answered `"false"` whatever is stored (also when
+        nothing is), since nothing is collected. With nothing stored, the answer is
+        `{"telemetryEnabled": true}` while telemetry can run, and
+        `{"enableMetricCollection": "false", "telemetryEnabled": false}` when it cannot. The query
         string is not read.
 
         **Admin Access Required:** This endpoint requires administrator privileges.

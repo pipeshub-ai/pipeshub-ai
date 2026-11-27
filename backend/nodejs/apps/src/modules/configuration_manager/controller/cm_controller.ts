@@ -36,6 +36,7 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import {
+  isTelemetryEnabled,
   normalizeOrgId,
   setMetricCollectionEnabled,
 } from '../../../libs/services/telemetry/telemetry-impl';
@@ -56,7 +57,6 @@ import {
 } from '../../agent-harness/config';
 import { engineRunsServed } from '../../../libs/repositories/agent-harness/engine-runs-probe';
 import { EnvFlagEnvironment } from '../../../libs/utils/env-flags';
-import { isTelemetryEnabled } from '../../../libs/services/telemetry/flag';
 
 import {
   DefaultStorageConfig,
