@@ -556,24 +556,32 @@ async def test_the_connectors_of_an_org_take_their_turns_at_the_same_time_and_ea
     p, org = prov(pg_db), new_org()
     await _world(p, org, apps=3)                                                   # four connectors
     monkeypatch.setattr(bootstrap, "CONNECTORS_AT_ONCE", 3, raising=False)       # raising=False: the same test fails on code that takes the connectors one by one
-    active = {"now": 0, "max": 0}
+    active = {"now": 0, "max": 0, "arrived": 0, "alone": 0}
+    all_in = asyncio.Event()
     real = bf.backfill
 
-    async def slow(db, o, app, **k) -> object:
+    async def barrier(db, o, app, **k) -> object:
         active["now"] += 1
         active["max"] = max(active["max"], active["now"])
         try:
-            await asyncio.sleep(0.3)
+            if active["arrived"] < 3:                                             # the first three turns wait for each other: one at a time, the first waits alone
+                active["arrived"] += 1
+                if active["arrived"] == 3:
+                    all_in.set()
+                try:
+                    await asyncio.wait_for(all_in.wait(), 10)
+                except asyncio.TimeoutError:
+                    active["alone"] += 1
             return await real(db, o, app, **k)
         finally:
             active["now"] -= 1
-    monkeypatch.setattr(bf, "backfill", slow)
+    monkeypatch.setattr(bf, "backfill", barrier)
     due: dict = {}
     for _ in range(10):
         await bootstrap.bring_to_enforce(pg_db, org, due)
         if await _enforced(p, org) == 4:
             break
-    assert active["max"] == 3, active                                             # side by side, never more than the bound
+    assert active["alone"] == 0 and active["max"] == 3, active                    # side by side, never more than the bound
     assert await _enforced(p, org) == 4 and await _log_rows(p, org) == 0
 
 
