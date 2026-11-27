@@ -57,6 +57,7 @@ class KgWorker:
         self._verify_states: dict[tuple[str, str], net.VerifyState] = {}      # each enforced connector's turn and verify in progress (net)
         self._verify_task: asyncio.Task | None = None
         self._due: dict[tuple[str, str], float] = {}        # when a connector may next be taken to enforce (bootstrap)
+        self._turns: dict[tuple[str, str], asyncio.Task] = {}     # the connectors' bootstrap turns in flight, which may outlast a pass (bootstrap)
         self.passes = 0                                    # loop iterations done (tests wait on it)
 
     def _on_demote(self, payload: str) -> None:
@@ -101,7 +102,7 @@ class KgWorker:
             if self._stop.is_set():
                 break
             try:
-                rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
+                rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop, self._turns)
             except Exception:
                 logger.exception("kg bootstrap failed for an org; retrying")
             if self._stop.is_set():
@@ -194,13 +195,17 @@ class KgWorker:
                 t.cancel()
         await asyncio.gather(*(t for t in (*self._demotes, self._verify_task) if t is not None), return_exceptions=True)
         await net.shutdown()
-        if self._task is not None:
-            done, _ = await asyncio.wait({self._task}, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
-            if not done:
-                logger.warning("kg worker did not stop within %.0f s: cancelling its pass in flight (what it had not committed is redone at the next start)", STOP_TIMEOUT_S)
-                self._task.cancel()
+        inflight = [t for t in (self._task, *self._turns.values()) if t is not None]     # the pass, and the turns it carried over from earlier passes
+        if inflight:
+            await asyncio.wait(inflight, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
+        left = [t for t in (self._task, *self._turns.values()) if t is not None and not t.done()]
+        if left:
+            logger.warning("kg worker did not stop within %.0f s: cancelling its pass and turns in flight (what they had not committed is redone at the next start)", STOP_TIMEOUT_S)
+            for t in left:
+                t.cancel()
+            for t in left:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await self._task
+                    await t
 
 
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:
