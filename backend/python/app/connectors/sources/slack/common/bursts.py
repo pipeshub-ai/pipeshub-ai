@@ -206,7 +206,8 @@ class SlackRegroupMixin:
         when every message it may hold has a saved record: its messages are not stored, but
         it spans source_created_at to source_updated_at (first and last message, in ms), and
         one that spans an ``unsaved`` message, or does not say its span, is kept. A failed
-        lookup or delete keeps the record. A single's id is its bare ts, which is unique
+        lookup or delete keeps the record, and a full sync in progress then unlinks nothing.
+        A single's id is its bare ts, which is unique
         only within a channel, so a record of another group is never deleted."""
         unsaved_ms = [_ts_ms(ts) for ts in unsaved]
         processor = self.data_entities_processor
@@ -233,6 +234,9 @@ class SlackRegroupMixin:
                     f"Deleted message record {external_id}: its messages are now in another record"
                 )
             except Exception as exc:
+                # It may be a record kept but not noted kept: a full sync in progress unlinks nothing.
+                if processor.full_sync_running(self.connector_id) is True:
+                    self._full_sync_read_failed = True
                 self.logger.warning(
                     f"Could not delete message record {external_id} left by a regroup; it is kept: {exc}"
                 )

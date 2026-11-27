@@ -122,3 +122,19 @@ async def test_a_stored_record_that_does_not_say_its_span_is_kept() -> None:
     await connector._delete_regrouped_records([burst.external_record_id], CH)
 
     connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+
+
+async def test_a_failed_lookup_or_delete_during_a_full_sync_makes_it_unlink_nothing() -> None:
+    """The record is kept but cannot be noted kept, so the full sync must not count as complete."""
+    stale = message_record("150.0", "150.0", "150.0")
+    for full_sync in (True, False):
+        connector = _Connector({"100.0": RuntimeError("store down"), "150.0": stale})
+        connector._full_sync_read_failed = False
+        connector.data_entities_processor.full_sync_running = MagicMock(return_value=full_sync)
+        connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=RuntimeError("store down"))
+
+        await connector._delete_regrouped_records(["100.0"], CH)
+        assert connector._full_sync_read_failed is full_sync  # a failed lookup
+        connector._full_sync_read_failed = False
+        await connector._delete_regrouped_records(["150.0"], CH)
+        assert connector._full_sync_read_failed is full_sync  # a failed delete
