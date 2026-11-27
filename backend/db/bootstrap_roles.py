@@ -1,5 +1,8 @@
 """Create the role layout the migrations and the catalog check expect: ``python -m db.bootstrap_roles [--vetted a,b]``.
 
+The vetted owners are those of the shipped schemas, of every schema an extra migration location's manifest defines functions in
+(``location_vetted_schemas``), and of the ``--vetted`` schemas.
+
 Idempotent and additive: a missing role is created, a missing membership is granted, an existing role is never
 altered (passwords included). Needs an administrative credential (``PG_ADMIN_URL``: CREATEROLE, and database
 ownership for the REVOKEs). No role created here has SUPERUSER, CREATEROLE or BYPASSRLS.
@@ -16,6 +19,7 @@ import os
 import re
 import sys
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 import psycopg
 from psycopg import sql
@@ -41,6 +45,17 @@ LARGE_OBJECTS_SQL = """DO $$ DECLARE f regprocedure; BEGIN
   END LOOP; END $$"""
 MONITOR = "pipeshub_monitor"   # opt-in: made only with a password; kernel_0019 accepts its one membership, pg_monitor
 SHIPPED_VETTED = ("kernel", "platform", "identity", "retrieval", "graph", "kg")      # schemas of the shipped revisions that own SECURITY DEFINER functions
+
+
+def location_vetted_schemas() -> list[str]:
+    """The schemas whose SECURITY DEFINER functions an extra migration location defines (its ``vetted/manifest.yaml``): each needs
+    its vetted owner, which a migration cannot create (no migrate login has CREATEROLE). None without extra locations."""
+    from db.lib.vetted import load
+    from db.locations import extra_locations
+    return list(dict.fromkeys(f.schema for loc in extra_locations()
+                              if (m := Path(loc) / "vetted" / "manifest.yaml").is_file() for f in load(m)))
+
+
 def _verifier(conn: psycopg.Connection, role: str, password: str) -> str:
     """The SCRAM-SHA-256 verifier of ``password``, computed by libpq on this side (PQencryptPasswordConn): what the server stores."""
     return conn.pgconn.encrypt_password(password.encode(), role.encode(), b"scram-sha-256").decode()
@@ -50,7 +65,9 @@ class MissingPassword(ValueError):
     pass
 
 
-_SCHEMA = re.compile(r"^[a-z][a-z0-9_]*$")
+# a schema name as a vetted manifest names it (db.lib.vetted: lower case, digits, underscores, not starting with a digit), short enough
+# that its owner's name pipeshub_vetted_<schema> fits PostgreSQL's 63-byte identifiers (a longer one would be cut and not match)
+_SCHEMA = re.compile(r"^[a-z_][a-z0-9_]{0,46}$")
 
 
 def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), passwords: Mapping[str, str] | None = None,
@@ -62,6 +79,7 @@ def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), pass
 
     ``allow_no_password=False`` (what the command line passes unless waived) refuses to create a password-less login."""
     passwords = passwords or {}
+    vetted_schemas = [*location_vetted_schemas(), *vetted_schemas]
     vetted = [f"pipeshub_vetted_{s}" for s in dict.fromkeys([*SHIPPED_VETTED, *vetted_schemas])]   # the shipped schemas' functions need theirs
     if bad := [s for s in vetted_schemas if not _SCHEMA.match(s)]:
         raise ValueError(f"not a schema name: {bad}")
