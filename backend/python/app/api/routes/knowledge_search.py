@@ -39,6 +39,7 @@ from app.agents.agent_loop.entity_search_tool import (
     NAMED_ENTITIES_ENABLED_STATE_KEY,
     entity_search_tool_offered,
 )
+from app.api.connection_limit import connection_apps
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes
@@ -65,12 +66,14 @@ from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
     SelectionTooLargeError,
     prepare_turn_scope,
+    within_connection,
 )
 from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
 )
 from app.services.graph_db.interface.graph_db_provider import (
-    IGraphDBProvider,  # noqa: TC001 - FastAPI reads the annotation
+    SELECTION_APPS_FILTER_KEY,
+    IGraphDBProvider,
 )
 from app.services.graph_db.taxonomy import (
     TAXONOMY_EDGE_COLLECTIONS,
@@ -284,14 +287,34 @@ def _grep_command(body: GrepQuery) -> tuple[str, regex.Pattern[str]]:
     return command, compiled
 
 
+async def _turn_scope(
+    graph_provider: IGraphDBProvider, user_id: str, org_id: str,
+    filters: dict[str, Any] | None, limit: dict[str, list[str]] | None,
+    *, too_large: str = "This connection's limit is too large to search.", vector_ready: bool = True,
+) -> dict[str, Any]:
+    """The request's filters as a chat turn resolves them, bound by the limit of
+    the connected app making it, if any (see ``prepare_turn_scope``)."""
+    try:
+        return await prepare_turn_scope(
+            graph_provider, user_id, org_id, filters, connection_sources=limit, require_vector_ready=vector_ready,
+        )
+    except SelectionTooLargeError as exc:
+        raise HTTPException(status_code=400, detail=too_large) from exc
+    except (SelectionNotReadyError, PermissionVerificationUnavailableError) as exc:
+        raise HTTPException(status_code=503, detail="Access could not be checked right now; try again.") from exc
+
+
 async def _reachable_scope(
     graph_provider: IGraphDBProvider, org_id: str, user_id: str, filters: dict[str, Any],
+    limit_reach: frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
     """*filters* with ``apps`` and ``kb`` cut to the connectors and collections
-    the caller reaches, or None when the request named some and none are left.
+    the caller reaches (and, for a connected app, that its limit reaches), or
+    None when the request named some and none are left.
     A connector the caller cannot reach is never grepped, so nothing about it
-    (that it exists, how long it took) can show in the answer."""
-    named = {k: list(filters[k]) for k in ("apps", "kb") if filters.get(k)}
+    (that it exists, how long it took) can show in the answer: one outside the
+    limit answers exactly as one that does not exist."""
+    named = {k: list(filters[k]) for k in ("apps", "kb", SELECTION_APPS_FILTER_KEY) if filters.get(k)}
     if not named:
         return filters
     reach = {a["_key"] for a in await graph_provider.get_org_apps(org_id, active_only=False) if a.get("_key")}
@@ -305,6 +328,8 @@ async def _reachable_scope(
             CollectionNames.RECORD_GROUPS.value, "id", sorted(groups), ["id", "connectorId"],
         ) if groups else []
         reach &= set(containers.app_ids) | {r["connectorId"] for r in rows or [] if r.get("connectorId")}
+    if limit_reach is not None:
+        reach &= limit_reach
     kept = {k: [i for i in ids if i in reach] for k, ids in named.items()}
     if not any(kept.values()):
         return None
@@ -353,7 +378,24 @@ async def grep(
     owner = object()  # this request's share of the line-matching workers
     deadline = started + body.timeBudgetMs / 1000
     try:
-        filters = await _reachable_scope(graph_provider, org_id, user_id, body.filters or {})
+        # The connected app's limit first: nothing the request names can widen it.
+        limit = connection_limit(request.state.user)
+        limit_reach = None
+        if limit is None:
+            bounded = within_connection(body.filters, None)
+        else:
+            # The limit first, so that a limit too large to resolve answers as
+            # one; what is then too large is the request's own selection.
+            whole, partial = await connection_apps(request, graph_provider, org_id, user_id)
+            limit_reach = whole | partial
+            # As a chat turn resolves it: a selection below app level records
+            # the apps it touches, which the scan then runs on. Grep reads no
+            # vector index, so the selection needs no vector membership.
+            bounded = await _turn_scope(
+                graph_provider, user_id, org_id, body.filters, limit,
+                too_large="The selection in this request is too large to search.", vector_ready=False,
+            )
+        filters = await _reachable_scope(graph_provider, org_id, user_id, bounded, limit_reach)
         found: dict[str, dict[str, Any]] = {}
         coverage = PatternMatchCoverage()
         entries: list[dict[str, Any]] = []
@@ -468,14 +510,7 @@ async def _entity_state(request: Request, graph_provider: IGraphDBProvider) -> d
     container = request.app.container
     config_service = container.config_service()
     user = request.state.user or {}
-    try:
-        filters = await prepare_turn_scope(
-            graph_provider, user_id, org_id, {}, connection_sources=connection_limit(user),
-        )
-    except SelectionTooLargeError as exc:
-        raise HTTPException(status_code=400, detail="This connection's limit is too large to search.") from exc
-    except (SelectionNotReadyError, PermissionVerificationUnavailableError) as exc:
-        raise HTTPException(status_code=503, detail="Access could not be checked right now; try again.") from exc
+    filters = await _turn_scope(graph_provider, user_id, org_id, {}, connection_limit(user))
     store = await load_entity_vector_store(container, container.logger(), org_id)
     named = await is_named_entity_extraction_enabled(config_service)
     state: dict[str, Any] = {

@@ -225,13 +225,16 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
       }
 
       case 400:
+      case 413:
       case 422:
         return {
           type: ErrorType.VALIDATION_ERROR,
           message:
             extractApiErrorMessage(data) ||
             (typeof message === 'string' ? message.trim() : '') ||
-            'Invalid request. Please check your input.',
+            (status === 413
+              ? 'The upload is too large. Try a smaller file or fewer files.'
+              : 'Invalid request. Please check your input.'),
           statusCode: status,
           details: data?.errors ? { errors: data.errors } : data?.details,
           originalError: error,

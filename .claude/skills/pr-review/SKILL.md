@@ -68,6 +68,7 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 - Functions over ~50 lines or with more than 3 levels of nesting usually hide a missing abstraction.
 - Dead code, commented-out blocks and TODOs without an owner should go.
 - Comments follow the rule in `AGENTS.md`: only the why the code cannot say.
+- Module guides: for each changed folder, read its `AGENTS.md` and its parents' (see "Module guides" in the root `AGENTS.md`). Flag a change that breaks a rule there, and a change that makes the guide wrong (a renamed file or symbol, a changed rule or step) without updating it in the same PR.
 
 ### 7. Extensibility
 

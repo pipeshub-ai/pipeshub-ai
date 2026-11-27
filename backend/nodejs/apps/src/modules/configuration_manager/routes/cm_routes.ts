@@ -283,7 +283,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
       }
-      return getAtlassianOauthConfig(serviceStore)(req, res, next);
+      return getAtlassianOauthConfig(serviceStore, false)(req, res, next);
     },
   );
 
@@ -785,6 +785,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
         serviceStore,
         req.tokenPayload.userId,
         req.tokenPayload.orgId,
+        false,
       )(req, res, next);
     },
   );
@@ -846,7 +847,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/googleWorkspaceOauthConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getGoogleWorkspaceOauthConfig(serviceStore),
+    getGoogleWorkspaceOauthConfig(serviceStore, false),
   );
 
   router.post(

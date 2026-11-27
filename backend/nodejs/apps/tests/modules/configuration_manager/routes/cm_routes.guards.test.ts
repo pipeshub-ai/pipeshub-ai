@@ -241,7 +241,7 @@ describe('GET /configurationManager/web-search over HTTP', () => {
     savedSecretKey = process.env.SECRET_KEY;
     savedHideSecrets = process.env.HIDE_SECRET_CONFIG;
     process.env.SECRET_KEY = process.env.SECRET_KEY || 'bebe4bcfae5282d8e801761bb8acf01feb1080daa1d12f0fb516bb12861487e6';
-    delete process.env.HIDE_SECRET_CONFIG;
+    process.env.HIDE_SECRET_CONFIG = 'false';
 
     const cmConfig = loadConfigurationManagerConfig();
     const sealed = EncryptionService.getInstance(cmConfig.algorithm, cmConfig.secretKey).encrypt(
