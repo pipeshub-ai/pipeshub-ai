@@ -379,6 +379,9 @@ class ListenHub:
                         break
                     for ch in missing:
                         await self._listen(ch)
+                    if self._listened.isdisjoint(missing):
+                        # a connection cut since connect refuses every LISTEN at once, without yielding: retrying on it spins forever
+                        raise ConnectionError("no channel could be LISTENed on the new connection")
                 attempt = 0
                 with self._lock:
                     everyone = [s for subs in self._subs.values() for s in subs]

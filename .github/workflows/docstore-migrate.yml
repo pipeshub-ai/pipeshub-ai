@@ -204,7 +204,7 @@ jobs:
                 --expect-suite 'Mongo store fence deadline=2' \
                 --expect-suite 'store fence against PostgreSQL=15' \
                 --expect-suite 'Mongo store fence against a real MongoDB=18' \
-                --expect-suite 'docstore-migrate: pre-flight checks=14' \
+                --expect-suite 'docstore-migrate: pre-flight checks=15' \
                 --expect-suite 'docstore-migrate: command line gates=6' \
                 --expect-suite 'docstore-migrate: the application loses MongoDB writes at the switch=4' ;;
           esac

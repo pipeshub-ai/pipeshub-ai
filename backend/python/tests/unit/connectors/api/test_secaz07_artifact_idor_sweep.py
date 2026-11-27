@@ -42,7 +42,7 @@ ARTIFACT_DOC = {"_key": ARTIFACT, "name": "q3-plan.html", "artifactType": "DOCUM
 class FakeGraph:
     """The artifact store as the access policy, gallery and sharing read it."""
 
-    async def get_user_by_user_id(self, user_id: str) -> dict | None:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict | None:
         return USERS.get(user_id)
 
     async def get_document(self, key: str, collection: str, raise_on_error: bool = False) -> dict | None:

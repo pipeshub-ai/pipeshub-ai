@@ -437,10 +437,9 @@ async def is_local_cpu_embedding_configured(
     embedding step that every record has to pass through.
     """
     try:
-        ai_models = await config_service.get_config(
-            config_node_constants.AI_MODELS.value, use_cache=False
-        )
-        embedding_configs = (ai_models or {}).get("embedding") or []
+        from app.edition_services import startup_embedding_configs
+
+        embedding_configs = await startup_embedding_configs(config_service)
         if not embedding_configs:
             return True
         config = next(

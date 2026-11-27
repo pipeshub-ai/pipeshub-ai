@@ -490,6 +490,7 @@ async def _explain_seeking(tx: uow.Tx, sql: str, *args: object) -> object:
         return await tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs_to_it(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """``hasChildren`` of a collection at the root: a live, non-placeholder record of that collection (and this org) that belongs to it. One such record is enough,
     so the read stops at the first: a DISTINCT over every belongs-to edge of every collection read 258,000 buffers (245 ms) for 11 collections at a million records.
@@ -530,6 +531,7 @@ async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs
 
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_each_collections_children_are_read_by_target_on_every_edges_leaf_the_statistics_do_not_know_the_org_in(pg_db) -> None:
     """The edges are hash-partitioned by org, and each leaf has its own statistics and its own order of indexes. On a leaf whose statistics put the org at a
     row, the planner chose between edges_by_target (org, coll, to_id) and the primary key (org, coll, from_id, ...) by that order: on five of the sixteen

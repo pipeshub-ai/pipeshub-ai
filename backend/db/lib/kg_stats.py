@@ -1,4 +1,4 @@
-"""The statistics of the kg tables the knowledge-hub browse reads, refreshed after a connector's first load into kg or its count after a restore.
+"""The statistics of the kg tables the knowledge-hub browse and the drain read, refreshed after a connector's first load into kg or its count after a restore.
 
 The connectors service records a request (its vetted writer, one row per org in ``kg.analyze_requests``): it cannot run ANALYZE itself, since "to analyze a
 table, one must ordinarily have the MAINTAIN privilege on the table" (https://www.postgresql.org/docs/17/sql-analyze.html, Notes) and no application role holds
@@ -20,8 +20,11 @@ import os
 
 import psycopg
 
-# The kg tables the browse statements read (postgres/kh_browse.py, kh_listing.py, kg/listing.py, kg/read.py, kg/counts.py).
-TABLES = ("kg.records", "kg.links", "kg.node_keys", "kg.scope_classes", "kg.projection_state", "kg.counts")
+# Every kg table the copy fills: the browse (postgres/kh_browse.py, kh_listing.py, kg/listing.py, kg/read.py, kg/counts.py) and the drain's own units (kg/grant_marks.py,
+# kg/stamp.py) plan on them. Only the queues are left out (kg.graph_changes, kg.restamp_queue, kg.analyze_requests: read by their key, emptied as they are worked).
+# tests/test_kg_stats.py fails on a new kg table that is in neither list.
+TABLES = ("kg.records", "kg.links", "kg.node_keys", "kg.scope_classes", "kg.projection_state", "kg.counts", "kg.scope_members", "kg.principal_closure", "kg.scopes",
+          "kg.class_literals")
 # shortcut: 10 minutes between two ANALYZEs of one table is a guess (an ANALYZE of kg.records samples 30,000 rows, about a second at a million rows); measure under a
 # burst of first loads before changing it. PG_KG_ANALYZE_EVERY_S overrides it (the tests set 0).
 EVERY_S = 600
@@ -66,7 +69,7 @@ def analyze(owner: psycopg.Connection, tables: list[str]) -> list[str]:
     done = []
     for t in tables:
         if t not in TABLES:
-            raise ValueError(f"{t} is not a kg browse table")
+            raise ValueError(f"{t} is not a kg table the copy fills")
         before = owner.execute(_LAST, (t,)).fetchone()[0]
         owner.execute(f"ANALYZE (SKIP_LOCKED) {t}")
         if owner.execute(_LAST, (t,)).fetchone()[0] != before:

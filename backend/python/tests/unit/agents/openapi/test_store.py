@@ -1,4 +1,11 @@
-from app.agents.constants.api_toolset_constants import get_credentials_path
+import pytest
+
+from app.agents.constants.api_toolset_constants import (
+    get_credentials_path,
+    get_credentials_prefix,
+    get_instance_path,
+    get_oauth_client_path,
+)
 from app.agents.mcp.models import OAuthTokens
 from app.agents.openapi.models import (
     ApiToolsetCredentials,
@@ -9,6 +16,8 @@ from app.agents.openapi.models import (
     OAuthClient,
 )
 from app.agents.openapi.store import ApiToolsetStore
+from app.config.configuration_service import ConfigKeyNotDeletedError
+from app.utils import error_class
 from tests.support.in_memory_config import InMemoryConfigService
 
 
@@ -86,3 +95,105 @@ async def test_a_saved_sign_in_with_a_lifetime_under_a_second_still_expires() ->
 
     assert loaded is not None and loaded.oauth is not None
     assert loaded.oauth.expires_in == 1 and loaded.oauth.expires_at_epoch is not None
+
+
+class KeepsSome(InMemoryConfigService):
+    """Keeps the keys in ``kept`` (answers their delete False); raises ``ValueError`` for the keys in ``broken``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kept: set[str] = set()
+        self.broken: set[str] = set()
+
+    async def delete_config(self, key: str) -> bool:
+        if key in self.broken:
+            raise ValueError("a fault of ours")
+        return False if key in self.kept else await super().delete_config(key)
+
+
+async def _kept_store() -> tuple[ApiToolsetStore, KeepsSome]:
+    config = KeepsSome()
+    store = ApiToolsetStore(config)
+    for instance_id in ("i1", "i2"):
+        await store.save_instance(_instance(instance_id, "org-1"))
+        await store.save_credentials(instance_id, "u1", ApiToolsetCredentials(api_key=f"{instance_id}-u1"))
+        await store.save_oauth_client(instance_id, OAuthClient(client_id="app"))
+    return store, config
+
+
+async def test_each_delete_raises_when_the_store_kept_the_key() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_credentials_path("i1", "u1"), get_oauth_client_path("i2")}
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_credentials("i1", "u1")
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_instance_credentials("i1")
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_instance("i2")
+    assert get_credentials_path("i1", "u1") in config.values
+
+
+async def test_one_kept_credential_does_not_stop_the_others_going() -> None:
+    store, config = await _kept_store()
+    await store.save_credentials("i1", "u2", ApiToolsetCredentials(api_key="i1-u2"))
+    first, *rest = await config.list_keys_in_directory(get_credentials_prefix("i1"))
+    config.kept = {first}
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_instance_credentials("i1")
+    assert first in config.values and rest and not any(key in config.values for key in rest)
+
+
+async def test_the_not_deleted_error_names_no_key_or_user() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_credentials_path("i1", "u1")}
+    with pytest.raises(ConfigKeyNotDeletedError) as raised:
+        await store.delete_credentials("i1", "u1")
+    assert "u1" not in str(raised.value) and "i1" not in str(raised.value)
+
+
+async def test_deleting_what_is_not_there_succeeds() -> None:
+    store, _ = await _kept_store()
+    await store.delete_credentials("i1", "nobody")
+    await store.delete_instance("missing")
+
+
+async def test_a_failed_credential_delete_leaves_the_toolset_listed() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_credentials_path("i1", "u1")}
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_instance("i1")
+    assert get_instance_path("i1") in config.values and get_oauth_client_path("i1") in config.values
+
+
+async def test_a_failed_oauth_app_delete_leaves_the_toolset_listed() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_oauth_client_path("i1")}
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.delete_instance("i1")
+    assert get_instance_path("i1") in config.values
+
+
+async def test_removing_a_user_tries_every_toolset_then_raises() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_credentials_path("i1", "u1")}
+    with pytest.raises(ConfigKeyNotDeletedError) as raised:
+        await store.remove_owner("org-1", "u1")
+    assert await store.get_credentials("i2", "u1") is None
+    assert raised.value.__notes__ == ["1 of 2 toolsets failed"]
+
+
+async def test_removing_an_org_tries_every_toolset_then_raises() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_instance_path("i1")}
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await store.remove_org("org-1")
+    assert get_instance_path("i2") not in config.values
+
+
+async def test_a_fault_of_ours_beside_a_kept_key_is_not_reported_as_an_outage() -> None:
+    store, config = await _kept_store()
+    config.kept = {get_credentials_path("i1", "u1")}
+    config.broken = {get_credentials_path("i2", "u1")}
+    with pytest.raises(ValueError, match="a fault of ours") as raised:
+        await store.remove_owner("org-1", "u1")
+    assert error_class.classify_error(raised.value) == "internal"

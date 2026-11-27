@@ -38,12 +38,14 @@ from app.services.paid_cache.orphan import RecordGone, RecordHandBack, current_g
 from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
     DOCLING_UNAVAILABLE_REASON,
+    STORED_ROWS_PART,
     ParseErrorCode,
     ParseResult,
     ParserProvider,
 )
 from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.utils.converters.caption_map import apply_caption_map
+from app.utils.table_row_memory import encode_stored_tables, previous_row_texts
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -91,6 +93,19 @@ class ParsingClientError(Exception):
 
 MAX_PARSE_READ_TIMEOUT_SECONDS = 2400.0  # Docling's own PDF budget
 PARSE_SHARE_OF_RECORD_BUDGET = 0.8
+
+
+async def _stored_rows_part(record_name: str) -> tuple[str, bytes, str] | None:
+    """The stored version's table rows this delivery offered, as a part of the parse request, so the parsing service keeps an
+    unchanged row's text as indexing does. ``None`` when none were offered (not an update) or they are too large to send."""
+    tables = await previous_row_texts()
+    if not tables:
+        return None
+    raw = encode_stored_tables(tables)
+    if raw is None:
+        logger.warning("Parse of %s: the stored version's table rows are too large to send; its tables are described again", record_name)
+        return None
+    return ("stored_rows.json", raw, "application/json")
 
 
 class ParsingClient(BaseServiceClient):
@@ -233,10 +248,14 @@ class ParsingClient(BaseServiceClient):
             form_data["refresh_token"] = run.refresh_token
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
+        files = {"file": (record_name, file_content, mime_type or "application/octet-stream")}
+        stored_rows = await _stored_rows_part(record_name)
+        if stored_rows is not None:
+            files[STORED_ROWS_PART] = stored_rows
         try:
             response = await self._post_multipart(
                 "/api/v1/parse",
-                files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
+                files=files,
                 data=form_data,
                 operation="parse",
                 budget_seconds=record_budget,

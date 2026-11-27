@@ -55,8 +55,9 @@ async function refreshNow(): Promise<void> {
   timerId = null;
   scheduledForToken = null;
 
-  // On failure this logs the user out, unless the session already ended meanwhile; then the
-  // timer may already belong to the next person, so it is left alone.
+  // A refusal logs the user out, unless the session already ended meanwhile; then the timer may
+  // already belong to the next person, so it is left alone. With no answer nothing changes:
+  // the next request's pre-send check, or the tab becoming visible, tries again.
   if ((await refreshOrSignOut()) === 'signed-out') {
     // Hard stop: clear any state that may have been re-armed concurrently by an inbound `storage` event.
     clearTimer();
