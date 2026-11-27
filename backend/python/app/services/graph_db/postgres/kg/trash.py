@@ -44,7 +44,10 @@ _ROOT = f"""m.app_sk = $2 AND NOT m.alien AND m.deleted_ms IS NOT NULL AND NOT E
       AND (NOT $3 OR m.file_kind = {FILE_FILE})"""
 # A batch's records, of every connector (the batch at ``x``).
 _BATCH_ROWS = """(SELECT * FROM kg.records m WHERE m.org_id = $1 AND m.coll = 3 AND m.deleted AND m.delete_batch IS NOT NULL AND m.delete_batch >= {x}
-          AND m.delete_batch <= {x} ORDER BY m.delete_batch {limit}OFFSET 0)"""
+          AND m.delete_batch <= {x} ORDER BY m.delete_batch OFFSET 0)"""
+# Two of a batch's records: whether it has more than one.
+_BATCH_TWO = """(SELECT * FROM kg.records m WHERE m.org_id = $1 AND m.coll = 3 AND m.deleted AND m.delete_batch IS NOT NULL AND m.delete_batch >= {x}
+          AND m.delete_batch <= {x} ORDER BY m.delete_batch LIMIT 2 OFFSET 0)"""
 # How far the count climbs a batch's hierarchy to its top; a deeper (or cyclic) batch is read whole.
 _UP_STEPS = 64
 
@@ -61,11 +64,11 @@ _BATCHES = f"""RECURSIVE b(ms, batch, n) AS (
       SELECT count(*) AS cnt, count(*) FILTER (WHERE m.app_sk = $2) AS batch_size, array_agg(m.id ORDER BY m.id) FILTER (WHERE rt.root) AS roots,
         max(m.deleted_ms) FILTER (WHERE rt.root) AS root_ms,
         coalesce(bool_or(m.app_sk IS DISTINCT FROM $2 OR m.deleted_ms IS NULL OR ($3 AND m.kb_odd)), false) AS odd
-      FROM {_BATCH_ROWS.format(x="b.batch", limit="")} m
+      FROM {_BATCH_ROWS.format(x="b.batch")} m
         CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt) a
     WHERE (SELECT k.deleted_ms FROM kg.records k WHERE {_TRASHED_BY_BATCH} AND (k.delete_batch, k.deleted_ms) > (b.batch, b.ms) AND k.delete_batch <= b.batch
         ORDER BY k.app_sk, k.delete_batch, k.deleted_ms LIMIT 1) IS NULL
-      AND NOT ($3 AND (SELECT count(*) FROM {_BATCH_ROWS.format(x="b.batch", limit="LIMIT 2 ")} m) > 1))"""
+      AND NOT ($3 AND (SELECT count(*) FROM {_BATCH_TWO.format(x="b.batch")} m) > 1))"""
 # shortcut: a single-file page reads every batch until it has a page of single-file ones (a few pages each, once per delete time of a batch deleted at several times): a
 # trash of large mixed-time batches can pass LIMITS and take the walk; index single-record batches if that shows up beyond the gate world.
 PAGE = f"""/* pipeshub:kg.trash_page */ WITH {_BATCHES}
@@ -80,8 +83,8 @@ _HAS_ROOT = f"""SELECT CASE WHEN $3 THEN coalesce(f.root, false)
           SELECT c.sk, c.parent_sk, c.batch, c.app_sk, c.alien, c.deleted_ms, 0
           UNION ALL SELECT p.*, m.d + 1 FROM up m CROSS JOIN LATERAL {_PARENT_IN_BATCH} p WHERE m.d < {_UP_STEPS})
         SELECT t.d < {_UP_STEPS} AND t.app_sk = $2 AND NOT t.alien AND t.deleted_ms IS NOT NULL FROM up t ORDER BY t.d DESC LIMIT 1) THEN true
-      ELSE EXISTS (SELECT 1 FROM {_BATCH_ROWS.format(x="c.batch", limit="")} m WHERE {_ROOT}) END AS root, coalesce(f.odd, false) AS odd
-    FROM (SELECT count(*) = 1 AND bool_or(rt.root) AS root, count(*) = 1 AND bool_or(m.kb_odd) AS odd FROM {_BATCH_ROWS.format(x="c.batch", limit="LIMIT 2 ")} m
+      ELSE EXISTS (SELECT 1 FROM {_BATCH_ROWS.format(x="c.batch")} m WHERE {_ROOT}) END AS root, coalesce(f.odd, false) AS odd
+    FROM (SELECT count(*) = 1 AND bool_or(rt.root) AS root, count(*) = 1 AND bool_or(m.kb_odd) AS odd FROM {_BATCH_TWO.format(x="c.batch")} m
       CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt WHERE $3) f OFFSET 0"""
 _ROW = "k.delete_batch, k.sk, k.parent_sk, k.app_sk, k.alien, k.deleted_ms"
 COUNT = f"""/* pipeshub:kg.trash_count */ WITH RECURSIVE c(batch, sk, parent_sk, app_sk, alien, deleted_ms) AS (
