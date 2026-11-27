@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from db import epoch_lint, lint, locations, migrate, released_heads
 from db.boot_assert import schema_problems
@@ -438,6 +439,23 @@ def test_extra_locations_read_from_the_edition_file(tmp_path, monkeypatch):
     monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
     assert locations.extra_locations() == [str(mod)]
     assert locations.version_locations()[-1] == str(mod)
+
+
+def test_bootstrap_creates_the_vetted_owner_of_each_schema_an_extra_location_defines_functions_in(tmp_path, monkeypatch):
+    """A migration cannot create a role, so the bootstrap reads the extra locations' manifests for the owners they need."""
+    from db import bootstrap_roles
+    mod = tmp_path / "extra" / "demo"
+    (mod / "vetted").mkdir(parents=True)
+    fn = {"class": "read", "scope": "org", "args": [], "returns": "boolean", "no_org": "false", "body": "RETURN true;", "test": {"checks": ["privileges"]}}
+    (mod / "vetted" / "manifest.yaml").write_text(yaml.safe_dump({"functions": [{"name": "demo_a.one", **fn}, {"name": "demo_b.two", **fn},
+                                                                               {"name": "demo_a.three", **fn}]}))
+    (tmp_path / "extra" / "plain").mkdir()                       # a location without functions needs no owner
+    ed = tmp_path / "edition.py"
+    ed.write_text(f'EXTRA_MIGRATION_LOCATIONS = ["{mod}", "{tmp_path / "extra" / "plain"}"]\n')
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
+    assert bootstrap_roles.location_vetted_schemas() == ["demo_a", "demo_b"]
+    ed.write_text("EXTRA_MIGRATION_LOCATIONS = []\n")
+    assert bootstrap_roles.location_vetted_schemas() == []
 
 
 def test_shipped_edition_seam_names_only_module_directories_that_exist():
