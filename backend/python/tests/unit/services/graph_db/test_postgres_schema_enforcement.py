@@ -266,7 +266,7 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["migrate_legacy_kb_to_app", "migrate_agent_hub_knowledge", "migrate_legacy_relation_edge"], "none"),
     "migrate_person_to_user": "none",            # moves a person's stored edges onto a user
     **dict.fromkeys([
-        "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
+        "backfill_block_name_folded", "backfill_code_path_scope", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",
         "delete_blocks_for_records", "delete_edges_between_collections", "delete_edges_by_relationship_types", "delete_edges_by_source_keys",
         "delete_all_team_permissions", "remove_user_access_to_connector", "remove_kb_permission", "delete_kb_hub_app", "delete_connector_sync_edges", "reap_stale_external_app_relations", "delete_edges_from", "delete_edges_to", "delete_edges_to_groups", "delete_edges_touching_nodes", "delete_nodes", "delete_node_if_match", "delete_parent_child_edge_to_record",
         "delete_connector_instance", "delete_record", "delete_records_and_relations", "delete_records_recursive", "delete_single_record", "delete_team_member_edges",

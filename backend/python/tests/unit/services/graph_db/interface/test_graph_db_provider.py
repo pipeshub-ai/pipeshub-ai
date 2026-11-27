@@ -432,6 +432,7 @@ class TestAbstractMethodInventory:
         "upsert_sync_point",
         "update_sync_point_if",
         "backfill_block_name_folded",
+        "backfill_code_path_scope",
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",

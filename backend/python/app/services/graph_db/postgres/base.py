@@ -356,7 +356,7 @@ _SYNC_CODE_FILE_SCOPE = """/* pipeshub:graph.sync_code_file_scope */ UPDATE grap
       AND (c.doc->'connectorId' IS DISTINCT FROM r.doc->'connectorId' OR c.doc->'recordGroupId' IS DISTINCT FROM r.doc->'recordGroupId')"""
 
 
-async def sync_code_file_scope(tx: Tx, org: str, record_ids: list[str]) -> None:
+async def _sync_code_file_scope(tx: Tx, org: str, record_ids: list[str]) -> None:
     if record_ids:
         await tx.execute(_SYNC_CODE_FILE_SCOPE, org, sorted(set(record_ids)))
 

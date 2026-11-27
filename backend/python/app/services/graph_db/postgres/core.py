@@ -30,7 +30,7 @@ from app.services.graph_db.postgres.base import (
     _hot,
     _j,
     _node,
-    sync_code_file_scope,
+    _sync_code_file_scope,
 )
 
 
@@ -228,7 +228,7 @@ class CoreMixin(PgBase):
             n = await tx.fetchval("""/* pipeshub:graph.update_node */ WITH u AS (UPDATE graph.nodes SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 WHERE org_id = $1 AND coll = $2 AND id = $3 RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd))
             if collection == CollectionNames.RECORDS.value and any(f in upd for f in SCOPE_FIELDS):
-                await sync_code_file_scope(tx, org, [key])
+                await _sync_code_file_scope(tx, org, [key])
             return n
         return bool(await self._q(go, transaction, write=True))
 
@@ -256,7 +256,7 @@ class CoreMixin(PgBase):
         async def go(tx: Tx) -> None:
             await tx.execute("""/* pipeshub:graph.batch_update_nodes */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, collection, _j(items))
-            await sync_code_file_scope(tx, org, scoped)
+            await _sync_code_file_scope(tx, org, scoped)
         if items:
             await self._q(go, transaction, write=True)
         return True
