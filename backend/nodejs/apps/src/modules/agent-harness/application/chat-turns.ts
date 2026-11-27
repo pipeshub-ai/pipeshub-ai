@@ -323,6 +323,7 @@ export class ChatTurnService {
           {
             run,
             audience,
+            viewerId: request.actorId,
             ...(access.title !== undefined ? { title: access.title } : {}),
             ...(request.requestId !== undefined
               ? { requestId: request.requestId }

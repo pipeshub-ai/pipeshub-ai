@@ -345,6 +345,9 @@ export const bindRunViews: HarnessBinder = ({
       runJournal: journal.runJournal,
       tail: journalTail(),
       conversations: conversationReader,
+      ...(dependencies.conversationView !== undefined
+        ? { conversationView: dependencies.conversationView }
+        : {}),
       liveBus: dependencies.liveBus ?? null,
       logger,
       sharedCitations: container.get<SharedCitationService>(

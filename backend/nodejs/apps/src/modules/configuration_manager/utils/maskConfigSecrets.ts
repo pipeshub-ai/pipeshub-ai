@@ -4,6 +4,50 @@ import type { AIModelConfiguration } from '../types/ai-models.types';
 /** Placeholder shown in API responses when sensitive values are hidden. */
 export const CONFIG_SECRET_PLACEHOLDER = '****************';
 
+// Connector OAuth credential fields. clientId/tenantId are treated as sensitive
+// to match the auth-config secret lists (GOOGLE_AUTH_SECRET_KEYS etc.).
+export const GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS = [
+  'clientId',
+  'clientSecret',
+] as const;
+export const ATLASSIAN_CONNECTOR_SECRET_KEYS = [
+  'clientId',
+  'clientSecret',
+] as const;
+export const MICROSOFT_CONNECTOR_SECRET_KEYS = [
+  'clientId',
+  'clientSecret',
+  'tenantId',
+] as const;
+
+export function maskConnectorSecrets<T extends Record<string, unknown>>(
+  config: T,
+  secretKeys: readonly string[],
+): T {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- callers pass JSON.parse output, which can be null or a scalar
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out: Record<string, unknown> = { ...config };
+  for (const key of secretKeys) {
+    const value = out[key];
+    if (typeof value === 'string' && value.length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
+  }
+  return out as T;
+}
+
+// What a stored Google Workspace credential carries besides the OAuth app: a user's
+// tokens (individual) or a service account's key (business).
+export const GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS = [
+  ...GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+  'access_token',
+  'refresh_token',
+  'private_key',
+  'private_key_id',
+] as const;
+
 export function stripSecretKeys<T extends Record<string, unknown>>(
   config: T,
   secretKeys: readonly string[],

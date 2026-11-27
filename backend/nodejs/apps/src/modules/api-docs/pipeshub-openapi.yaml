@@ -6981,18 +6981,22 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
             (including the default when `allowedGrantTypes` is omitted).
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -7076,18 +7080,27 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
             Preserved in the database even if `authorization_code` is removed from grant types.
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
+            A URI the app already has stored is kept on update even when these rules would refuse it as new
+            (for example an `http:` URI on a non-loopback host registered earlier), unless its scheme is one
+            that can run script (`javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`) or it does not parse. The authorize endpoint also refuses a `redirect_uri` with such
+            a scheme, or one that does not parse, even when it is stored (`redirect_uri scheme is not allowed`).
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
         allowedGrantTypes:
           type: array
@@ -14630,7 +14643,9 @@ components:
         a citation, reference, filter node or search hit with no id, name, link or
         text. Only the owner of a conversation or search sees every source. An
         assistant answer that used a record its reader cannot read is withheld as
-        a whole (`HiddenAnswer`), the owner's included.
+        a whole (`HiddenAnswer`), the owner's included. A viewer never receives
+        the reasoning, tool steps or tool results of another user's message, nor
+        the text the model wrote between its steps.
       required:
         - redacted
         - reason
@@ -21864,8 +21879,8 @@ components:
           additionalProperties: true
     OAuthConfig:
       type: object
-      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
-        is on) and, in lists, the provider endpoints, for the organization's apps only.
+      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked unless the server sets
+        HIDE_SECRET_CONFIG=false) and, in lists, the provider endpoints, for the organization's apps only.
       properties:
         personal:
           type: boolean
@@ -21959,7 +21974,7 @@ components:
               example: "123456789-abc.apps.googleusercontent.com"
             clientSecret:
               type: string
-              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked when HIDE_SECRET_CONFIG is on)
+              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked unless the server sets HIDE_SECRET_CONFIG=false)
               example: "GOCSPX-xxxxxxxxxxxxx"
             tenantId:
               type: string
@@ -27218,8 +27233,8 @@ components:
             toolset's credential form. Returned to administrators, and to the owner of a personal
             instance, and only when not empty; nested objects are always masked, a non-empty client
             secret or field the toolset's form marks secret or types as a password (an API token, for
-            one) is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true` and
-            `reveal=true` is not sent, and every other value is returned as stored. An organization
+            one) is masked (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or
+            `reveal=true` is sent, and every other value is returned as stored. An organization
             OAuth instance stores none (its client is in the linked OAuth configuration); a personal
             OAuth instance holds its owner's own `clientId` and `clientSecret` here.
           additionalProperties: true
@@ -27228,8 +27243,8 @@ components:
       description: |
         An OAuth client configuration of a toolset type. Administrators also get the
         stored configuration fields (from `clientId` down); the client secret is masked
-        (`••••••••`) only when the server sets `HIDE_SECRET_CONFIG=true` and `reveal=true`
-        is not sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
+        (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or `reveal=true`
+        is sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
         are returned under their own names.
       properties:
         _id:
@@ -27550,22 +27565,22 @@ components:
           type: string
     StoredAtlassianConfig:
       type: object
-      description: Atlassian OAuth client, as stored. Empty when nothing has been saved.
+      description: Atlassian OAuth client. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
     StoredOneDriveConfig:
       type: object
-      description: Microsoft app credentials for OneDrive, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for OneDrive. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         hasAdminConsent:
@@ -27574,13 +27589,13 @@ components:
           description: Confirms tenant admin consent was granted; only `true` is accepted
     StoredSharePointConfig:
       type: object
-      description: Microsoft app credentials for SharePoint, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for SharePoint. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         sharepointDomain:
@@ -27593,7 +27608,7 @@ components:
     StoredGoogleWorkspaceOAuthConfig:
       type: object
       description: |
-        Google Workspace OAuth client and Gmail real-time update settings, as stored. Every
+        Google Workspace OAuth client and Gmail real-time update settings. Every
         field is present once something has been saved; empty when nothing has been saved.
       additionalProperties: false
       properties:
@@ -27601,7 +27616,7 @@ components:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -27610,7 +27625,7 @@ components:
     StoredGoogleWorkspaceCredentials:
       type: object
       description: |
-        Google Workspace credentials, as stored. A business organization gets the
+        Google Workspace credentials. A business organization gets the
         service-account key fields with `adminEmail`; an individual one gets the caller's
         OAuth tokens merged with the OAuth client (`clientId`, `clientSecret`). Empty when
         nothing has been saved.
@@ -27626,7 +27641,7 @@ components:
           type: string
         private_key:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         client_email:
           type: string
         client_id:
@@ -27659,7 +27674,7 @@ components:
           x-speakeasy-name-override: oauthClientId
         clientSecret:
           type: string
-          description: OAuth client secret, returned unmasked (individual)
+          description: OAuth client secret (individual); masked unless revealed
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -56000,6 +56015,12 @@ paths:
         Only the conversation's initiator can unshare. A missing, deleted or
         agent conversation, or one the caller did not start (even one
         shared with them at `write` access), is `404`.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareConversationById
       security:
         - bearerAuth: []
@@ -56137,9 +56158,34 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Persistence layer failed to update the conversation document.
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the persistence layer
+            failed to update the conversation document. When the revoke was
+            refused, the users stay listed; their attachment access may already
+            be revoked.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -61769,8 +61815,15 @@ paths:
         Remove specific users from an agent conversation's recipient list and
         revoke their access to its artifacts and attachments. **Owner only.**
         When the last recipient is removed the conversation becomes private
-        again (`isShared: false`). Removing a user who is not a recipient is a
-        no-op.
+        again (`isShared: false`). Removing a user who is not a recipient
+        leaves the list unchanged, but their access is still revoked, so that
+        request can fail the same way as below.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareAgentConversation
       x-pipeshub-sdk: false
       security:
@@ -61830,6 +61883,37 @@ paths:
           description: |
             Conversation not found, deleted, belongs to a different agent, or
             the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the share list could not
+            be saved. When the revoke was refused, the users stay listed; their
+            attachment access may already be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -70798,7 +70882,7 @@ paths:
         List the organization's OAuth client configurations of a toolset type (the type is matched
         case-insensitively and is not checked against the registry, so an unknown type is an empty
         list). Any member may call it: administrators also get the stored client fields (the
-        client secret masked only under `HIDE_SECRET_CONFIG=true`), other members only the
+        client secret masked unless the server sets `HIDE_SECRET_CONFIG=false`), other members only the
         metadata. The query string is not read.
       operationId: listToolsetOAuthConfigs
       security:
@@ -71653,8 +71737,10 @@ paths:
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
         a change of auth mode or catalog type counts, and of URL when the template lets it be
-        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
-        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
+        typed (Okta). With `CONTROL_PLANE_CREDENTIALS` on, every connection made on the instance
+        is revoked too. When a credential can't be confirmed removed, nothing is saved: a store
+        or credential service that kept it or could not answer gives 503 with `Retry-After`, any
+        other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71748,8 +71834,8 @@ paths:
             A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
             catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
             of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
-            store kept one of them or could not answer: the instance was not changed, though some credentials may
-            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
+            answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
           headers:
             Retry-After:
@@ -71766,7 +71852,11 @@ paths:
       summary: Delete an MCP server instance
       description: |
         Organization instances are deleted by administrators, a personal instance by its owner.
-        Removes every stored credential and the OAuth app configuration too.
+        Also removes the instance's stored credentials and OAuth app configuration, and with
+        `CONTROL_PLANE_CREDENTIALS` on revokes every connection made on the instance. That
+        clean-up is best effort: when a credential delete or the revoke can't be confirmed, the
+        instance is still deleted and the failure is only logged, so those credentials or
+        connections can stay stored, with no instance left to use them.
       operationId: deleteMcpInstance
       security:
         - bearerAuth: []
@@ -80379,8 +80469,8 @@ paths:
 
         **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
         comes back as the placeholder `****************`, and so does `configuration.baseUrl`
-        (admins always get the stored address). Admins get the stored key, unless the
-        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        (admins always get the stored address). Admins get the stored key masked too,
+        unless the server sets `HIDE_SECRET_CONFIG=false` or they reveal it. When updating a provider,
         sending the placeholder back keeps the stored key.
 
         Only stored providers are listed. `configured` is true when a stored provider that can
@@ -81770,7 +81860,7 @@ paths:
         is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
         models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
         connector and action OAuth apps, action credentials) to receive the stored values
-        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        instead of placeholders. Secrets are masked by default; a server that sets `HIDE_SECRET_CONFIG=false` returns them.
         The flag is ignored for OAuth-app tokens. Admin only.
       operationId: getSecretRevealStatus
       security:
@@ -89722,6 +89812,41 @@ paths:
         '400': { description: A malformed body }
         '401': { description: "No service token, or one without scope control-plane:bindings" }
         '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: the binding changed while it was being revoked; repeat the call" }
+  /control-plane/internal/bindings/revoke-installation:
+    post:
+      tags: [Connections]
+      summary: Revoke every binding of an installation (internal)
+      operationId: revokeInstallationBindings
+      description: An MCP server's connection target changed or the server was removed, with `CONTROL_PLANE_CREDENTIALS` on. Revokes each binding not revoked yet; safe to repeat. Audited as the token's user when it names one.
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [installation]
+              properties:
+                installation: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: The bindings this call revoked (empty when none was live)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings: { type: array, items: { $ref: '#/components/schemas/BindingRecord' } }
+        '400': { description: A malformed body }
+        '401': { description: "No service token, or one without scope control-plane:bindings" }
+        '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: a binding changed while it was being revoked; repeat the call" }
+        '503': { description: Connections are not configured on this deployment }
   /control-plane/internal/bindings/due:
     get:
       tags: [Connections]
@@ -92989,7 +93114,8 @@ paths:
             (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
             than a plain group, look-around, a named group or `(?i)` (so flags
             other than `(?i)`, comments and scoped flags are refused). The message
-            says which.
+            says which. Also returned when the folders and files named in
+            `filters` are too many to search.
           content:
             application/json:
               schema:
@@ -92998,6 +93124,8 @@ paths:
           description: Missing or invalid bearer token.
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '422':
+          description: The connected app's knowledge limit is too large to resolve.
         '501':
           description: This deployment does not keep records on local file storage. Use `POST /search`.
         '500':
@@ -93877,14 +94005,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Atlassian OAuth client stored for the caller's organization, decrypted and
-        as stored: the client secret is not masked. An empty object when none has been saved.
-
-        The request carries no parameters: the query string is not read.
+        Returns the Atlassian OAuth client stored for the caller's organization.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getAtlassianOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94006,14 +94136,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for OneDrive for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getOneDriveCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94132,14 +94263,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for SharePoint for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getSharePointCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94257,13 +94389,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Google Workspace OAuth client and Gmail real-time update settings,
-        decrypted and as stored: the client secret is not masked. An empty object when none
-        has been saved. The query string is not read.
+        Returns the Google Workspace OAuth client and Gmail real-time update settings.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94414,21 +94549,26 @@ paths:
         - Configuration Manager
       summary: Get Google Workspace credentials
       description: |
-        Returns the stored Google Workspace credentials, decrypted and as stored (nothing is
-        masked). What is read depends on the organization's account type:
+        Returns the stored Google Workspace credentials. What is read depends on the
+        organization's account type:
 
         - **business**: the service-account key saved for the organization, with the admin
           email and real-time update settings.
         - **individual**: the caller's own OAuth tokens merged with the Google Workspace
           OAuth client configuration. Both must be stored, otherwise the answer is empty.
 
-        An empty object when nothing is stored. The query string is not read.
+        `clientId`, `clientSecret`, `access_token`, `refresh_token`, `private_key`
+        and `private_key_id` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when nothing is stored.
 
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]

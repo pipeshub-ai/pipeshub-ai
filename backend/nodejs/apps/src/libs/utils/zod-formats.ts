@@ -15,6 +15,7 @@ type Check = z.core.CheckFn<string>;
 const emailSchema = z.email();
 const guidSchema = z.guid();
 const urlSchema = z.url();
+const webUrlSchema = z.url({ protocol: /^https?$/ });
 
 function formatCheck(
   accepts: (value: string) => boolean,
@@ -41,6 +42,13 @@ export const guidCheck = (message?: string): Check =>
 
 export const urlCheck = (message?: string): Check =>
   formatCheck((v) => urlSchema.safeParse(v).success, 'url', message);
+
+/** An http(s) URL: for links and images shown to users, where `javascript:` or `data:` would run. */
+export const isWebUrl = (value: string): boolean =>
+  webUrlSchema.safeParse(value).success;
+
+export const webUrlCheck = (message?: string): Check =>
+  formatCheck(isWebUrl, 'url', message);
 
 // Same pattern zod 3.24 used for `datetime({ offset: true })`.
 const DATE =

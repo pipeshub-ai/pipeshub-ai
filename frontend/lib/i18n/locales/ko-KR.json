@@ -1133,6 +1133,7 @@
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
     "sharedAgentChat": "공유된 에이전트 채팅",
+    "sharedAgentChatNotice": "이 채팅을 공유받은 사람은 채팅을 읽을 수 있지만, 에이전트도 함께 공유하지 않으면 에이전트를 열 수 없습니다.",
     "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",

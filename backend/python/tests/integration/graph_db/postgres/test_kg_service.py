@@ -631,3 +631,20 @@ async def test_stamping_a_copied_connector_rewrites_each_record_row_once(pg_db) 
     with ctx(org):
         updates, stamped = await pg_db.run(page, write=True)
     assert stamped == 15 and updates == stamped, (updates, stamped)
+
+
+async def test_a_log_that_cannot_be_drained_before_the_turns_still_gives_each_connector_its_turn_and_its_retry(pg_db, monkeypatch, caplog) -> None:
+    # the drain before the turns is the org's: when it fails, each connector still copies what it can and backs off as when its own drain fails
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, apps=1)                                                   # drv and drv0
+
+    async def broken(db, o, **k) -> object:
+        raise RuntimeError("the change log cannot be read")
+    monkeypatch.setattr(bf, "drain_org", broken)
+    due: dict = {}
+    with caplog.at_level("WARNING"):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+    assert sorted(a for (o, a) in due if o == org) == ["drv", "drv0"]
+    assert all(0 < due[(org, a)] - time.monotonic() <= bootstrap.RETRY_S for a in ("drv", "drv0")), due      # each turn ran and backs off
+    assert await _cursor(p, org) == "done"                                        # the copy went on before the failing drain
+    assert "could not be taken to enforce" in caplog.text

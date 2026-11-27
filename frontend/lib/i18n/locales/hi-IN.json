@@ -1047,6 +1047,7 @@
     "agentSidebarLabel": "एजेंट",
     "agentNameLoading": "लोड हो रहा है…",
     "sharedAgentChat": "साझा किया गया एजेंट चैट",
+    "sharedAgentChatNotice": "जिन लोगों के साथ आप यह चैट साझा करते हैं, वे इसे पढ़ सकते हैं, लेकिन जब तक आप एजेंट भी उनके साथ साझा नहीं करते, वे एजेंट नहीं खोल सकते।",
     "myAgents": "मेरे एजेंट",
     "moreAgents": "और एजेंट",
     "agentHeaderMenuAria": "एजेंट विकल्प",

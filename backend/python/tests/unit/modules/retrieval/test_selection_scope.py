@@ -699,3 +699,89 @@ class TestConnectionLimit:
         provider = _provider()
         provider.get_user_by_user_id = AsyncMock(return_value=None)
         assert await mod.outside_connection(provider, "u", "o", ["r"], {"apps": ["a"]}) == {"r"}
+
+
+class TestSelectionAppsUnderAConnectionLimit:
+    """The apps a turn's scan runs on, when the turn is limited to a folder."""
+
+    @staticmethod
+    def _graph() -> MagicMock:
+        rows = {"g-in": "app-in", "g-out": "app-out"}
+        provider = _provider(readable=set(rows))
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        provider.get_selection_nodes = AsyncMock(side_effect=lambda org_id, *, group_ids=(), **_: {
+            "groups": [{"id": g, "connectorId": rows[g]} for g in group_ids if g in rows], "records": [],
+        })
+        provider.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": a, "vectorMembershipBackfilled": True} for a in rows.values()
+        ])
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_request_that_picks_nothing_runs_on_the_app_of_the_limit_folder(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {}, connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == ["app-in"] and turn["strictScope"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_folder_of_another_app_named_by_the_request_is_never_scanned(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"recordGroups": ["g-out"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_app_the_request_names_outside_the_limit_is_not_recorded(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"apps": ["app-in", "app-out"], "recordGroups": ["g-in"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == ["app-in"]
+
+    @pytest.mark.asyncio
+    async def test_a_request_naming_only_apps_records_those_the_folder_limit_reaches(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"apps": ["app-in", "app-out"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == ["app-in"] and turn["strictScope"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_request_naming_only_apps_records_nothing_when_the_caller_is_unknown(self) -> None:
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        turn = await prepare_turn_scope(
+            graph, "u", "o", {"apps": ["app-in"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == []
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_the_selection_apps_are_as_before(self) -> None:
+        turn = await prepare_turn_scope(self._graph(), "u", "o", {"recordGroups": ["g-out"]})
+        assert turn["selectionApps"] == ["app-out"]
+
+
+class TestVectorReadinessIsOnlyForCallersThatSearchTheIndex:
+    @staticmethod
+    def _graph() -> MagicMock:
+        provider = _provider(readable={"g"}, groups=[{"id": "g", "connectorId": "app-1"}])
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        provider.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": "app-1", "vectorMembershipBackfilled": False},
+        ])
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_selection_in_an_app_not_backfilled_fails_the_turn_by_default(self) -> None:
+        with pytest.raises(SelectionNotReadyError):
+            await prepare_turn_scope(self._graph(), "u", "o", {"recordGroups": ["g"]})
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_reads_no_vector_index_is_not_held_to_it(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"recordGroups": ["g"]}, require_vector_ready=False,
+        )
+        assert turn["selectionApps"] == ["app-1"]

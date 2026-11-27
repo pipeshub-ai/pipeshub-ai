@@ -78,13 +78,17 @@ class FakeRecordsDb:
         record = self.record_by_id(record_id)
         return getattr(record, "file_path", None) if record else None
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> SimpleNamespace | None:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, **_: object,
+    ) -> SimpleNamespace | None:
         user = self.app_users.get(source_user_id)
         if user is None or (self.org_user_emails is not None and user.email not in self.org_user_emails):
             return None
         return SimpleNamespace(id=user.id, email=user.email)
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> AppUserGroup | None:
+    async def get_user_group_by_external_id(
+        self, connector_id: str, external_id: str, **_: object,
+    ) -> AppUserGroup | None:
         return self.user_groups.get(external_id)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:

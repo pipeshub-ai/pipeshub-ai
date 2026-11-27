@@ -1192,6 +1192,7 @@
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Načítání…",
     "sharedAgentChat": "Sdílený chat s agentem",
+    "sharedAgentChatNotice": "Lidé, se kterými tento chat sdílíte, ho mohou číst, ale agenta neotevřou, pokud s nimi nesdílíte i agenta.",
     "myAgents": "Moji agenti",
     "moreAgents": "Další agenti",
     "agentHeaderMenuAria": "Možnosti agenta",
