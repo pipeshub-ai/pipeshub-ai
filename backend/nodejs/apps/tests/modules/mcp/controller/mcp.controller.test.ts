@@ -19,6 +19,7 @@ delete require.cache[CONTROLLER_PATH]
 const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
 import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
+import * as agentCallRecorder from '../../../../src/libs/middlewares/agent-call-recorder'
 import path from 'path'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
@@ -629,6 +630,17 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(header).to.equal('WWW-Authenticate')
       expect(challenge).to.contain('error="insufficient_scope"').and.contain('scope="kb:read kb:upload"')
       expect(createOpts, 'no server is built').to.be.undefined
+    })
+
+    it('marks that refusal as a missing scope in the agent activity log', async () => {
+      const marked = sinon.spy(agentCallRecorder, 'markScopeDenied')
+      const res = createMockResponse() as any
+      res.set = sinon.stub().returns(res)
+      const req = oauthReq(['kb:read'], { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_upload' } })
+
+      await handleMCPRequest(appConfig)(req, res, createMockNext())
+
+      expect(marked.calledOnceWithExactly(req)).to.equal(true)
     })
 
     it("lists tools by the token's scopes, and lets chat act only with agent:execute", async () => {
