@@ -13,6 +13,24 @@ const bsonType = (v: unknown): string | undefined =>
     ? (v as { _bsontype?: string })._bsontype
     : undefined;
 
+/** Sets `k` as an own data property: an assignment would take a `__proto__` key as the prototype accessor and drop the field. */
+const setOwn = (o: object, k: string | number, value: unknown): void => {
+  Object.defineProperty(o, k, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+};
+
+/** `o[k]` when it is the object's own property (a `__proto__` key reads the field, not the prototype). */
+const getOwn = (o: unknown, k: string | number): unknown =>
+  o !== null &&
+  typeof o === 'object' &&
+  Object.prototype.hasOwnProperty.call(o, k)
+    ? (Object.getOwnPropertyDescriptor(o, k)?.value as unknown)
+    : undefined;
+
 export class UncarriableValue extends Error {
   override name = 'UncarriableValue';
 }
@@ -58,11 +76,15 @@ export function plainValue(
     const out: Doc = {};
     for (const [k, x] of Object.entries(v as Doc))
       if (x !== undefined)
-        out[k] = plainValue(
-          x,
-          path ? `${path}.${k}` : k,
-          oids,
-          oids ? [...at, k] : at,
+        setOwn(
+          out,
+          k,
+          plainValue(
+            x,
+            path ? `${path}.${k}` : k,
+            oids,
+            oids ? [...at, k] : at,
+          ),
         );
     return out;
   }
@@ -76,21 +98,15 @@ export function plainValue(
 export function withObjectIds(doc: Doc, paths: readonly DocPath[]): Doc {
   for (const p of paths) {
     if (!p.length) throw new Error('an ObjectId path is empty');
-    let at: unknown = doc;
-    for (const seg of p.slice(0, -1))
-      at =
-        at !== null && typeof at === 'object'
-          ? (at as Record<string | number, unknown>)[seg]
-          : undefined;
+    let holder: unknown = doc;
+    for (const seg of p.slice(0, -1)) holder = getOwn(holder, seg);
     const last = p[p.length - 1] as string | number;
-    const holder = at as Record<string | number, unknown> | null | undefined;
-    const hex =
-      holder !== null && typeof holder === 'object' ? holder[last] : undefined;
+    const hex = getOwn(holder, last);
     if (typeof hex !== 'string' || !/^[0-9a-f]{24}$/.test(hex))
       throw new Error(
         `${JSON.stringify(p)} holds no ObjectId text, so the document cannot be given back as it was`,
       );
-    (holder as Record<string | number, unknown>)[last] = new ObjectId(hex);
+    setOwn(holder as object, last, new ObjectId(hex));
   }
   return doc;
 }
@@ -105,7 +121,10 @@ export function sourceDoc(
   collection: string,
   opts: SourceRead = {},
 ): SourceDoc {
-  const { _id, ...all } = raw;
+  const _id = raw._id;
+  // copied key by key as own properties: a rest copy assigns, and a `__proto__` field would become the copy's prototype
+  const all: Doc = {};
+  for (const [k, x] of Object.entries(raw)) if (k !== '_id') setOwn(all, k, x);
   const oid = bsonType(_id) === 'ObjectId' || bsonType(_id) === 'ObjectID';
   if (!oid && typeof _id !== 'string')
     throw new UncarriableValue(
@@ -117,11 +136,13 @@ export function sourceDoc(
         opts.pick.filter((p) => all[p] !== undefined).map((p) => [p, all[p]]),
       )
     : all;
-  for (const p of opts.idPaths ?? []) {
-    const t = bsonType(rest[p]);
-    if (t === 'ObjectId' || t === 'ObjectID')
-      rest[p] = String(rest[p]).toLowerCase();
-  }
+  // with oids every ObjectId is read (and its place listed) by plainValue: converting these first would lose their places
+  if (!opts.oids)
+    for (const p of opts.idPaths ?? []) {
+      const t = bsonType(rest[p]);
+      if (t === 'ObjectId' || t === 'ObjectID')
+        rest[p] = String(rest[p]).toLowerCase();
+    }
   try {
     if (!opts.oids) return { id, oid, doc: plainValue(rest, '') as Doc };
     const oidPaths: DocPath[] = [];

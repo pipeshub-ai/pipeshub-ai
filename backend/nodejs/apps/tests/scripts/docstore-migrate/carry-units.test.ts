@@ -79,6 +79,29 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       expect(() => withObjectIds({ a: 'nope' }, [['a']])).to.throw(/holds no ObjectId/);
       expect(() => withObjectIds({ a: {} }, [['a', 'b', 'c']])).to.throw(/holds no ObjectId/);
     });
+
+    it('a key named __proto__ is kept as a field of its own (read and given back), never set through the prototype accessor', () => {
+      const id = new ObjectId();
+      const raw = JSON.parse(`{"_id": "x", "__proto__": "${id.toHexString()}", "inner": {"__proto__": {"n": 1}}}`) as Record<string, unknown>;
+      Object.defineProperty(raw, '__proto__', { value: id, enumerable: true, writable: true, configurable: true });
+      const d = sourceDoc(raw, 'c', { oids: true });
+      expect(Object.prototype.hasOwnProperty.call(d.doc, '__proto__'), 'an own field').to.equal(true);
+      expect(Object.getOwnPropertyDescriptor(d.doc, '__proto__')?.value).to.equal(id.toHexString());
+      expect(Object.getOwnPropertyDescriptor(d.doc.inner as object, '__proto__')?.value).to.deep.equal({ n: 1 });
+      expect(d.oidPaths).to.deep.equal([['__proto__']]);
+      const back = withObjectIds(d.doc, d.oidPaths!);
+      expect(Object.getOwnPropertyDescriptor(back, '__proto__')?.value).to.be.instanceOf(ObjectId);
+      // without oids it is refused, as any ObjectId inside a document
+      expect(sourceDoc(raw, 'c').refused).to.contain('__proto__');
+    });
+
+    it('with oids, an ObjectId at an idPaths path is listed too, so it is given back as an ObjectId', () => {
+      const org = new ObjectId();
+      const d = sourceDoc({ _id: 'x', orgId: org, other: new ObjectId() }, 'c', { oids: true, idPaths: ['orgId'] });
+      expect(d.doc.orgId).to.equal(org.toHexString());
+      expect(d.oidPaths).to.deep.equal([['orgId'], ['other']]);
+      expect(withObjectIds(d.doc, d.oidPaths!).orgId).to.be.instanceOf(ObjectId);
+    });
   });
 
   describe('data keys and workspaces (DocTable)', () => {
