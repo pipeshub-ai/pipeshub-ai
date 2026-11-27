@@ -19358,6 +19358,18 @@ class TestArangoPersonMigrationAndReaper:
             await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_num", [1200, 18, 29], ids=["conflict", "lock_timeout", "deadlock"])
+    async def test_reaper_raises_every_lost_race_so_its_caller_runs_it_again(self, connected_provider, error_num) -> None:
+        """A lock not granted in time (18) or a deadlock the server broke (29) aborts the operation as a write-write conflict (1200) does: each is
+        a transient error the caller's retry runs again, never 0 reaped."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        error = ArangoQueryError("Query failed", 409, f'{{"errorNum": {error_num}}}')
+        assert connected_provider.is_transient_error(error) and connected_provider.is_write_conflict(error)
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=error)
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
+
+    @pytest.mark.asyncio
     async def test_reaper_only_touches_flagged_edges(self, connected_provider):
         """A real app member's membership edge must never be a candidate."""
         calls = self._script(connected_provider, [0])

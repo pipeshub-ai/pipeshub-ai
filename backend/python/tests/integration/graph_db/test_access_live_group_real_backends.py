@@ -308,27 +308,36 @@ async def _edges_to_app(w: _World) -> dict[str, bool]:
 async def _reap_while(w: _World, writer_tid: str, *, reaper_in_transaction: bool = False) -> None:
     """Run the reaper while the writer's transaction is open, then commit the writer. A reaper that loses to the writer raises a write conflict (its
     transaction, if it had one, is rolled back) and runs again once the writer has committed, as its caller does; one that returns has its
-    transaction committed. It never returns after a conflict."""
+    transaction committed. It never returns after a conflict, and any other failure is raised."""
     g = w.graph
 
     async def once() -> None:
         rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"]) if reaper_in_transaction else None
         try:
             await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
-        except Exception as e:
+        except BaseException:
             if rid:
                 await g.rollback_transaction(rid)
-            assert g.is_write_conflict(e), e
             raise
         if rid:
             await g.commit_transaction(rid)
     reap = asyncio.create_task(once())
-    await asyncio.sleep(1.0)
-    await g.commit_transaction(writer_tid)
+    try:
+        await asyncio.sleep(1.0)
+        await g.commit_transaction(writer_tid)
+    except BaseException:      # the writer failed: nothing is left running, and the reaper's transaction is rolled back
+        reap.cancel()
+        with contextlib.suppress(BaseException):
+            await reap
+        with contextlib.suppress(Exception):
+            await g.rollback_transaction(writer_tid)
+        raise
     try:
         await reap
-    except Exception:      # a conflict: the caller's retry, now that the writer has committed
-        await once()
+    except Exception as e:
+        if not g.is_write_conflict(e):
+            raise
+        await once()      # the caller's retry, now that the writer has committed
 
 
 @pytest.mark.parametrize("in_transaction", [False, True], ids=["alone", "in_transaction"])
