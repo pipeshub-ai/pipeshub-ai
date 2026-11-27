@@ -66,3 +66,14 @@ async def test_an_editions_cipher_is_given_each_values_key_both_ways(env, monkey
     assert (await store.store.get_key(KEY)).startswith("t1:")
     assert await store.get_key(KEY) == {"secret": "s"}
     assert ("encrypt", KEY) in made[0].seen and ("decrypt", KEY) in made[0].seen
+
+
+def test_the_legacy_etcd3_store_refuses_a_cipher_other_than_the_platforms(env, monkeypatch) -> None:  # noqa: F811
+    from unittest.mock import MagicMock
+
+    from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+
+    monkeypatch.setattr(edition_services, "kv_cipher", lambda platform: Tagging(platform))
+    with patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=MagicMock()), \
+            pytest.raises(RuntimeError, match="only the platform cipher"):
+        Etcd3EncryptedKeyValueStore(logging.getLogger("kv-cipher-test"))

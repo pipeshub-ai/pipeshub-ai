@@ -91,3 +91,18 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
 export function checkStartup(): void {
   return;
 }
+
+/**
+ * How the key-value store turns a value into what it keeps, and back, given the value's key (`KeyValueStoreService`):
+ * `encode` on every write, `decode` on every read and watch. `decode(encode(v))` must give a value the callers read as `v`,
+ * and the same stored value must always decode to the same result (a compare-and-set compares decoded values).
+ * OSS: none, every value is kept as given.
+ */
+export interface KvValueCodec {
+  encode(key: string, value: unknown): unknown;
+  decode(key: string, stored: unknown): unknown;
+}
+
+export function kvValueCodec(): KvValueCodec | null {
+  return null;
+}
