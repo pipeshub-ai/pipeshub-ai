@@ -1,0 +1,26 @@
+[
+  {
+    "description": "an empty query",
+    "instance": {
+      "query": ""
+    }
+  },
+  {
+    "description": "an unknown status",
+    "instance": {
+      "status": "deleted"
+    }
+  },
+  {
+    "description": "an unknown field",
+    "instance": {
+      "actorId": "bob"
+    }
+  },
+  {
+    "description": "madeHere as text",
+    "instance": {
+      "madeHere": "yes"
+    }
+  }
+]

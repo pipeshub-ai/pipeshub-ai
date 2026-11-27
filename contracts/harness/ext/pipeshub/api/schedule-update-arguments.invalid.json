@@ -1,0 +1,67 @@
+[
+  {
+    "description": "no id",
+    "instance": {
+      "revision": 1,
+      "ask": "Tell me a joke."
+    }
+  },
+  {
+    "description": "no revision",
+    "instance": {
+      "id": "sch_1",
+      "ask": "Tell me a joke."
+    }
+  },
+  {
+    "description": "a negative revision",
+    "instance": {
+      "id": "sch_1",
+      "revision": -1,
+      "ask": "x"
+    }
+  },
+  {
+    "description": "an unknown action",
+    "instance": {
+      "id": "sch_1",
+      "revision": 0,
+      "action": "archive"
+    }
+  },
+  {
+    "description": "an unknown field",
+    "instance": {
+      "id": "sch_1",
+      "revision": 0,
+      "agentKey": "a"
+    }
+  },
+  {
+    "description": "an id with a slash",
+    "instance": {
+      "id": "sch/1",
+      "revision": 0,
+      "ask": "x"
+    }
+  },
+  {
+    "description": "an empty ask",
+    "instance": {
+      "id": "sch_1",
+      "revision": 0,
+      "ask": ""
+    }
+  },
+  {
+    "description": "a when without its zone",
+    "instance": {
+      "id": "sch_1",
+      "revision": 0,
+      "when": {
+        "kind": "once",
+        "at": "2026-11-27T15:47:00Z"
+      }
+    }
+  }
+]

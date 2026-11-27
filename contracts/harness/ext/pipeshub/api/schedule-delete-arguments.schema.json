@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/schedule-delete-arguments.schema.json",
+  "title": "ScheduleDeleteArguments",
+  "description": "The arguments of the `schedule_delete` tool (`pipeshub@schedules/delete`, ADR-SCH-03 D1): one of the caller's own schedules by id, and exactly what `POST /api/v1/agent-harness/internal/runs/{runId}/schedules/{id}/delete` accepts as `arguments`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "revision"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The schedule's id, as `schedule_find` answered it; never a name."
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The schedule's `revision` as read before asking: a schedule that changed since is not changed (`SCHEDULE_CHANGED`)."
+    }
+  },
+  "examples": [
+    {
+      "id": "sch_0f3a",
+      "revision": 3
+    }
+  ]
+}

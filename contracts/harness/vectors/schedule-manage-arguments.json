@@ -1,0 +1,281 @@
+{
+  "description": "The `schedule_find`, `schedule_update` and `schedule_delete` tools' arguments (ADR-SCH-03) against `ext/pipeshub/api/schedule-{find,update,delete}-arguments.schema.json`: each language's check (Node's internal and public routes, the worker's and classic chat's check before any card) must give `valid` for every case. Shape and lengths only, plus the one rule the generated models cannot express: an update is field changes (at least one) or one action, never both, never neither.",
+  "notes": [
+    "`code` cases are valid against the generated models and invalid by the rule checked in code; a validator must apply that rule, not the model alone."
+  ],
+  "vectors": [
+    {
+      "tool": "update",
+      "name": "a new ask",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 2,
+        "ask": "Tell me a short animal joke."
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "a new time and name",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 0,
+        "name": "Animal joke",
+        "when": {
+          "kind": "once",
+          "at": "2026-11-27T15:47:00-08:00",
+          "timeZone": "America/Los_Angeles"
+        }
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "new channels",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 1,
+        "notify": [
+          "in_app",
+          "email"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "a cron move",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 1,
+        "when": {
+          "kind": "cron",
+          "cron": "30 8 * * 1-5",
+          "timeZone": "Europe/Berlin"
+        }
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "pause",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "pause"
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "resume",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "resume"
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "skip the next run",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "skip_next"
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "run now",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "run_now"
+      },
+      "valid": true
+    },
+    {
+      "tool": "update",
+      "name": "an action with a field change",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "pause",
+        "name": "x"
+      },
+      "valid": false,
+      "code": true
+    },
+    {
+      "tool": "update",
+      "name": "nothing to change",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4
+      },
+      "valid": false,
+      "code": true
+    },
+    {
+      "tool": "update",
+      "name": "notify null",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "notify": null
+      },
+      "valid": false,
+      "code": true
+    },
+    {
+      "tool": "update",
+      "name": "a channel twice",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "notify": [
+          "email",
+          "email"
+        ]
+      },
+      "valid": false,
+      "code": true
+    },
+    {
+      "tool": "update",
+      "name": "an unknown action",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "action": "archive"
+      },
+      "valid": false
+    },
+    {
+      "tool": "update",
+      "name": "a name not given as a string",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "name": 7
+      },
+      "valid": false
+    },
+    {
+      "tool": "update",
+      "name": "a name of only spaces",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 4,
+        "name": "   "
+      },
+      "valid": false
+    },
+    {
+      "tool": "update",
+      "name": "a revision as text",
+      "arguments": {
+        "id": "sch_1",
+        "revision": "4",
+        "ask": "x"
+      },
+      "valid": false
+    },
+    {
+      "tool": "update",
+      "name": "a fractional revision",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 1.5,
+        "ask": "x"
+      },
+      "valid": false
+    },
+    {
+      "tool": "update",
+      "name": "an id of 129 characters",
+      "arguments": {
+        "id": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+        "revision": 1,
+        "ask": "x"
+      },
+      "valid": false
+    },
+    {
+      "tool": "delete",
+      "name": "a delete",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 3
+      },
+      "valid": true
+    },
+    {
+      "tool": "delete",
+      "name": "a delete without its revision",
+      "arguments": {
+        "id": "sch_1"
+      },
+      "valid": false
+    },
+    {
+      "tool": "delete",
+      "name": "a delete with an extra field",
+      "arguments": {
+        "id": "sch_1",
+        "revision": 3,
+        "reason": "done"
+      },
+      "valid": false
+    },
+    {
+      "tool": "find",
+      "name": "everything",
+      "arguments": {},
+      "valid": true
+    },
+    {
+      "tool": "find",
+      "name": "by name",
+      "arguments": {
+        "query": "standup"
+      },
+      "valid": true
+    },
+    {
+      "tool": "find",
+      "name": "this chat's, active",
+      "arguments": {
+        "madeHere": true,
+        "status": "active"
+      },
+      "valid": true
+    },
+    {
+      "tool": "find",
+      "name": "a query of only spaces",
+      "arguments": {
+        "query": "  "
+      },
+      "valid": false
+    },
+    {
+      "tool": "find",
+      "name": "a query of 201 characters",
+      "arguments": {
+        "query": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      },
+      "valid": false
+    },
+    {
+      "tool": "find",
+      "name": "an unknown status",
+      "arguments": {
+        "status": "deleted"
+      },
+      "valid": false
+    }
+  ]
+}
