@@ -21,6 +21,8 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { SharedArtifactService } from '../../../../src/modules/agent-harness/application/shared-artifacts'
+import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access'
 import { conversationExtensions, useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { chatArchivesScope, withListScope } from '../helpers/list-scope'
 
@@ -216,10 +218,10 @@ const stubConversation = (messages: unknown[]) => {
 const stubPeerConversation = (messages: unknown[]) =>
   stubConversation(messages.map((m) => ({ ...(m as object), messageType: 'user_query' })))
 
-const fetchConversation = async (userId: string) => {
+const fetchConversation = async (userId: string, handler: () => any = getChat) => {
   const r = res()
   const next = sinon.stub()
-  await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await handler()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   return r.json.firstCall.args[0].conversation.messages[0]
 }
@@ -1432,7 +1434,11 @@ describe('what a viewer sees of another user\'s reasoning and tool steps', () =>
   it('by default, all of it: an answer whose every source is readable keeps its reasoning and tool steps', async () => {
     stubAccess(readableAll)
     stubConversation([richAnswer()])
-    const message = await fetchConversation(VIEWER)
+    // Its artifact too: another reader is shown an artifact only once the artifact check admits it.
+    const artifacts = new SharedArtifactService(new InMemoryArtifactReadAccess().grant('Bearer t', R_NO))
+    const readingArtifacts = () =>
+      behindGuard(realGuards(), 'read', getConversationById(appConfig, undefined, { artifacts }) as Handler, 'chat') as any
+    const message = await fetchConversation(VIEWER, readingArtifacts)
 
     expect(message.answerHidden).to.equal(undefined)
     expect(message.reasoning).to.deep.equal([{ content: 'I looked at the pages' }])
