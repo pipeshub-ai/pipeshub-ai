@@ -9,6 +9,7 @@ harness state API with the attempt's token.
 from __future__ import annotations
 
 import functools
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast, override
@@ -124,15 +125,31 @@ def _zone(value: object) -> ZoneInfo | None:
         return None
 
 
+# Node's ``parseInstant`` (``domain/schedules.ts``): its pattern, ASCII digits only, and the same bounds on each part.
+_INSTANT: Final = re.compile(
+    r"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,3}))?)?"
+    r"(?:Z|([+-])([0-9]{2}):([0-9]{2}))$"
+)
+
+
 def _instant(value: object) -> datetime | None:
-    """An instant the contract's pattern let through, or Node's ``nextFireAt``; ``None`` when it is not a calendar
-    date (``2026-02-30T…``)."""
-    if not isinstance(value, str):
+    """The instant ``value`` names, read as Node's ``parseInstant`` reads it, or ``None`` where Node's is NaN: a date
+    off the calendar (``2026-02-30``), an hour past 23, a minute or second past 59, an offset past 14:59. Python's
+    own parse would roll ``+00:60`` into ``+01:00`` and show a card Node then refuses; the string is never changed."""
+    parts = _INSTANT.match(value) if isinstance(value, str) else None
+    if parts is None:
+        return None
+    year, month, day, hour, minute = (int(parts[i]) for i in range(1, 6))
+    second = int(parts[6] or 0)
+    sign, offset_hours, offset_minutes = parts[8], int(parts[9] or 0), int(parts[10] or 0)
+    if hour > 23 or minute > 59 or second > 59 or offset_hours > 14 or offset_minutes > 59:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        local = datetime(year, month, day, hour, minute, second, int((parts[7] or "0").ljust(6, "0")), tzinfo=UTC)
     except ValueError:
         return None
+    offset = timedelta(hours=offset_hours, minutes=offset_minutes)
+    return local - offset if sign == "+" else local + offset
 
 
 _MONTHS: Final = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -294,7 +311,8 @@ def _shape_problem(arguments: Mapping[str, Any]) -> str | None:
     except ValidationError as exc:
         errors = exc.errors()
         when = arguments.get("when")
-        branch = {"once": "When", "cron": "When1"}.get(when.get("kind") if isinstance(when, dict) else None)
+        kind = when.get("kind") if isinstance(when, dict) else None
+        branch = {"once": "When", "cron": "When1"}.get(kind) if isinstance(kind, str) else None
         # A ``when`` matches one branch of its union by ``kind``: the other branch's complaints are noise.
         relevant = [e for e in errors if len(e["loc"]) < 2 or e["loc"][0] != "when" or e["loc"][1] == branch]
         error = (relevant or errors)[0]

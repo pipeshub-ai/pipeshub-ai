@@ -594,3 +594,75 @@ def test_sch01_the_model_sees_the_contracts_schema() -> None:
     }
     notify = schema["properties"]["notify"]
     assert notify["type"] == "array" and "anyOf" not in notify and "$defs" not in schema
+
+
+# What Node's ``parseInstant`` (``domain/schedules.ts``) gives each ``at``: the epoch ms, or None for its NaN. The
+# parity test below runs Node's own function on them when Node is installed.
+NODE_INSTANTS: dict[str, int | None] = {
+    "2026-11-27T01:47:00+00:60": None,
+    "2026-11-27T01:47:00+00:59": 1_795_740_480_000,
+    "2026-11-27T01:47:00+14:59": 1_795_690_080_000,
+    "2026-11-27T01:47:00+15:00": None,
+    "2026-11-27T01:47:00-14:00": 1_795_794_420_000,
+    "2026-02-30T09:00:00Z": None,
+    "2026-04-31T09:00:00Z": None,
+    "2026-11-27T24:00:00Z": None,
+    "2026-11-27T23:60:00Z": None,
+    "2026-11-27T23:59:60Z": None,
+    "2027-02-29T09:00:00Z": None,
+    "2028-02-29T09:00:00Z": 1_835_427_600_000,
+    "2026-11-27T01:47Z": 1_795_744_020_000,
+    "2026-11-27T01:47:00.123Z": 1_795_744_020_123,
+    "2026-11-27T01:47:00.5-08:00": 1_795_772_820_500,
+    "2026-11-27T01:47:00": None,
+    "2026-11-27T01:47:00+0100": None,
+    "２026-11-27T01:47:00Z": None,
+}
+
+
+@pytest.mark.parametrize(("at", "epoch_ms"), sorted(NODE_INSTANTS.items()))
+def test_sch01_an_instant_reads_as_nodes_parse_instant(at: str, epoch_ms: int | None) -> None:
+    from app.harness.schedules import _instant  # pyright: ignore[reportPrivateUsage]
+
+    read = _instant(at)
+    assert (round(read.timestamp() * 1000) if read is not None else None) == epoch_ms
+    arguments = {"name": "Joke", "ask": "Tell me a joke.", "when": {"kind": "once", "at": at, "timeZone": "UTC"}}
+    sent = json.loads(json.dumps(arguments))
+    if epoch_ms is None:
+        # Refused before the card, whatever the schema's pattern let through.
+        assert schedule_problem(arguments) is not None
+        assert _asks()(_call(arguments), EFFECT) == "allow"
+    assert arguments == sent
+
+
+def test_sch01_the_recorded_instants_are_nodes() -> None:
+    import re
+    import shutil
+    import subprocess
+
+    source = (Path(__file__).resolve().parents[4] / "nodejs/apps/src/modules/agent-harness/domain/schedules.ts")
+    if shutil.which("node") is None or not source.is_file():
+        pytest.skip("Node is not on PATH")
+    text = source.read_text(encoding="utf-8")
+    pattern = re.search(r"const INSTANT =\s*(/.*?/);", text, re.S)
+    function = re.search(r"function parseInstant\(.*?\n}\n", text, re.S)
+    assert pattern is not None and function is not None, "parseInstant moved: update this test"
+    js = re.sub(r"\)\s*:\s*number\s*=>", ") =>", function.group(0))
+    js = js.replace("(at: string): number", "(at)").replace("(group: number)", "(group)")
+    script = (
+        f"const INSTANT = {pattern.group(1)};\n{js}\n"
+        "const out = {}; for (const at of JSON.parse(process.argv[1])) { const v = parseInstant(at);"
+        " out[at] = Number.isFinite(v) ? v : null; } console.log(JSON.stringify(out));"
+    )
+    answered = subprocess.run(
+        ["node", "-e", script, json.dumps(list(NODE_INSTANTS))], capture_output=True, text=True, check=True, timeout=20
+    )
+    assert json.loads(answered.stdout) == NODE_INSTANTS
+
+
+@pytest.mark.parametrize("kind", [[], {}, 5, None])
+def test_sch01_a_kind_that_is_not_a_string_is_refused_without_a_card(kind: object) -> None:
+    arguments = {**ONCE, "when": {**ONCE["when"], "kind": kind}}
+    problem = schedule_problem(arguments, now=NOW)
+    assert problem is not None and "`when" in problem
+    assert _asks()(_call(arguments), EFFECT) == "allow"
