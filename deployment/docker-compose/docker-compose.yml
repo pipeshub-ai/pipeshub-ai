@@ -241,6 +241,8 @@ services:
 
       # Public endpoints
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+      - INTERNAL_ROUTES_PUBLIC_ACCESS=${INTERNAL_ROUTES_PUBLIC_ACCESS:-log}
+      - INTERNAL_ROUTES_TRUSTED_CIDRS=${INTERNAL_ROUTES_TRUSTED_CIDRS:-}
 
       # Internal service URLs (fixed; all services share the container network)
       - QUERY_BACKEND=http://localhost:8000

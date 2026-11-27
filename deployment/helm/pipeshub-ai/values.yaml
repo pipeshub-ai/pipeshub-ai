@@ -687,6 +687,14 @@ config:
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
   # frontendPublicUrl: "https://pipeshub.dyn.example.com"
+  # "log" records public requests to /internal/ routes; "deny" answers them with 404.
+  # A request is internal only from a loopback peer (or one in internalRoutesTrustedCidrs) with no
+  # forwarded header. The chart runs its services in one pod, so they call over loopback and need
+  # nothing; set the list before "deny" if services call across a network. A proxy or sidecar
+  # that reaches the API over loopback must set X-Forwarded-For.
+  internalRoutesPublicAccess: "log"
+  # Comma-separated CIDRs of peers treated as internal, e.g. "10.20.0.0/16,fd00::/8". Empty by default.
+  internalRoutesTrustedCidrs: ""
 
   # SAML SP Entity ID (Issuer) — must match the Audience URI configured in your IdP.
   # Enter this value in your IdP (e.g. Okta → "Audience URI (SP Entity ID)").
