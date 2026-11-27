@@ -143,16 +143,18 @@ async def check_plain_delete(lives: Lives) -> None:
 
 
 async def check_repush_between_read_and_delete(lives: Lives) -> None:
-    """The re-push commits after the guard read 'gone' and before ``delete_entity``. Its index run needs the record's
-    lease, which the delete holds, so the run writes the entity point only after the delete: the point is there at the end."""
+    """The re-push commits after the guard read 'gone' and before ``delete_entity``. The index run is held back by a
+    test-owned lock until the delete returns, so it writes the entity point after the delete: the point is there at the
+    end. The lock only schedules that interleaving; the delete's wait on the record lease is covered by
+    ``test_delete_waits_for_record_lease``."""
     await lives.commit(1)
     await lives.purge()
     world = DeleteWorld(lives.graph, lives.org_id, lives.record_id)
-    lease = asyncio.Lock()
+    order = asyncio.Lock()
     runs: list[asyncio.Task] = []
 
     async def index_run() -> None:
-        async with lease:
+        async with order:
             world.calls.append("index_run_upsert")
             world.points.add(lives.record_id)
 
@@ -173,7 +175,7 @@ async def check_repush_between_read_and_delete(lives: Lives) -> None:
         get_document,
         create=True,
     ):
-        async with lease:
+        async with order:
             await world.delete()
     await asyncio.gather(*runs)
 

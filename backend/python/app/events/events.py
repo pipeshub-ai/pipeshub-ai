@@ -96,6 +96,7 @@ from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, inspect_untrusted_pdf
+from app.modules.parsers.push_origin import record_is_push_origin
 from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline import parser_identity
 from app.modules.pipeline.fingerprint import content_revision
@@ -2567,7 +2568,7 @@ class EventProcessor:
             )
             delivery_id = event_data.get(DELIVERY_ID_KEY)
             # Kinds whose stored blocks are not the whole content (code is read from the bytes, SQL
-            # tables keep a few rows), and runs that do not index, never resume or leave a marker.
+            # tables keep a few rows), runs that do not index, and pushed records never resume or leave a marker.
             resumable_kind = (
                 not store_only
                 and not is_code
@@ -2577,6 +2578,9 @@ class EventProcessor:
                 and bool(delivery_id)
                 and not rebuild_shared_vrid
                 and not dedup_decision.virtual_record_id
+                # A pushed record's values ride with the downloaded bytes and are not part of the stored blocks, so a
+                # resume could not hand them on and would publish an artifact set without them: parse it again.
+                and not record_is_push_origin(doc)
             )
             keep_old_copy.end_swap()
             # A run that replaces an indexed copy writes the new set under a fresh vrid and keeps the record on the old one until

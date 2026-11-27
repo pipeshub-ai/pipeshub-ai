@@ -405,6 +405,23 @@ async def test_an_abandoned_index_event_still_fails_its_record() -> None:
     graph.compare_and_set_indexing_status.assert_awaited_once()
 
 
+@pytest.mark.parametrize("is_final", [True, False])
+async def test_a_failing_delete_settles_no_status(is_final: bool) -> None:
+    """A delete whose guard read raises is redelivered or given up; either way the row that now holds the id
+    (a record pushed again) gets no FAILED and no requeue from the failure path of ``process_event``."""
+    world = World([RuntimeError("graph down")])
+    graph = world.handler.event_processor.graph_provider
+    graph.update_node = AsyncMock()
+    world.handler._RecordEventHandler__update_document_status = AsyncMock()
+    payload = {**PAYLOAD, "is_final_failure": is_final}
+
+    with pytest.raises(RuntimeError, match="graph down"):
+        await world.delete(payload)
+
+    world.handler._RecordEventHandler__update_document_status.assert_not_awaited()
+    graph.update_node.assert_not_awaited()
+
+
 # --- T45f: the delete takes the record's lease, as every event of the record does ----------------------------------
 
 

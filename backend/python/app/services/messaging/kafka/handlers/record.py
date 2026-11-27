@@ -3366,10 +3366,12 @@ class RecordEventHandler(BaseEventService):
         finally:
             if orphan_guard is not None:
                 orphan_guard.finish()
-            if stage_redrive or held_for_delete or held_for_refresh or skip_pending:
+            if stage_redrive or held_for_delete or held_for_refresh or skip_pending or event_type == EventTypes.DELETE_RECORD.value:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
+                # A delete indexes nothing, so it has no status to settle, and a failed one is
+                # redelivered: its id may name a live record by now (purged, then pushed again).
                 pass
             elif error_occurred and record_id:
                 if parse_now and current_run() is None:

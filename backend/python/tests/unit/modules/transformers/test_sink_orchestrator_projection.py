@@ -200,6 +200,19 @@ def _pushed_values() -> Any:  # noqa: ANN401
     )
 
 
+async def test_values_of_an_older_revision_are_not_projected_onto_the_newer_record(projected: AsyncMock) -> None:
+    """The run downloaded revision ``OLD`` and the record names ``0123..`` by the time the sink reads it."""
+    values = _pushed_values()
+    older = {projection_module.PROVIDED_PROPERTIES: values, projection_module.DOWNLOADED_REV: "fedcba9876543210"}
+    await _sink().index(TransformContext(record=_record(), settings=older))
+    assert projected.await_args.kwargs["provided"] is projection_module.NOT_PROVIDED
+
+    projected.reset_mock()
+    same = {projection_module.PROVIDED_PROPERTIES: values, projection_module.DOWNLOADED_REV: "0123456789abcdef"}
+    await _sink().index(TransformContext(record=_record(), settings=same))
+    assert projected.await_args.kwargs["provided"] is values
+
+
 async def test_pushed_values_reach_projection_and_none_pushed_is_none(projected: AsyncMock) -> None:
     from app.models.record_metadata import RecordMetadata
 

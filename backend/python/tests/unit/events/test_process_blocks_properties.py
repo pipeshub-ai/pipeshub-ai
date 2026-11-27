@@ -23,7 +23,11 @@ from app.modules.artifacts import store as store_module
 from app.modules.artifacts.models import PROPERTIES_PATH
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
-from app.modules.record_metadata.projection import NOT_PROVIDED, PROVIDED_PROPERTIES
+from app.modules.record_metadata.projection import (
+    DOWNLOADED_REV,
+    NOT_PROVIDED,
+    PROVIDED_PROPERTIES,
+)
 from app.modules.record_metadata.push_properties import PUSH_SOURCE
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -157,6 +161,21 @@ async def test_valid_values_reach_the_run_as_provided_push_values() -> None:
     assert {(v.provenance, v.source) for v in provided.values.values()} == {
         (MetadataProvenance.PROVIDED, "push")
     }
+
+
+async def test_the_run_carries_the_revision_of_the_bytes_it_downloaded() -> None:
+    """The sink files the run's content and values under this revision, not under whatever the record names later."""
+    data = _pushed(_props())
+    pipeline = _Capture()
+    await _process(_processor(_row(data), pipeline), data)
+    [ctx] = pipeline.applied
+    assert ctx.settings[DOWNLOADED_REV] == C.content_rev(data)
+
+    plain = _pushed(_props(), marker=False)
+    pipeline = _Capture()
+    await _process(_processor(_row(plain, pushOrigin=False, externalRevisionId="plain"), pipeline), plain)
+    [ctx] = pipeline.applied
+    assert DOWNLOADED_REV not in ctx.settings
 
 
 async def test_none_versus_empty_values() -> None:

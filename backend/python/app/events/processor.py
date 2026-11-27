@@ -85,7 +85,11 @@ from app.modules.parsers.push_origin import (
 from app.modules.parsers.text.plain_text_parser import plain_text_to_blocks
 from app.modules.parsers.text_decoding import decode_text
 from app.modules.pipeline.fingerprint import content_revision
-from app.modules.record_metadata.projection import NOT_PROVIDED, PROVIDED_PROPERTIES
+from app.modules.record_metadata.projection import (
+    DOWNLOADED_REV,
+    NOT_PROVIDED,
+    PROVIDED_PROPERTIES,
+)
 from app.modules.record_metadata.push_properties import push_properties
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
@@ -197,16 +201,21 @@ class Processor:
         event_type: Optional[str] = None,
         prev_virtual_record_id: Optional[str] = None,
         provided_properties: object = NOT_PROVIDED,
+        downloaded_rev: str | None = None,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context.
 
         ``provided_properties`` is what the pushed content said about the record's values
-        (``push_properties``); ``NOT_PROVIDED`` puts nothing in the settings.
+        (``push_properties``); ``NOT_PROVIDED`` puts nothing in the settings. ``downloaded_rev`` is the
+        ``contentRev`` of the bytes the run parsed: the sink stores the run's content under it, not under
+        whatever revision the record names when the sink reads it.
         """
         # The parse-now run, if any, rides in the settings (see parse_now_marker).
         settings = run_settings()
         if provided_properties is not NOT_PROVIDED:
             settings[PROVIDED_PROPERTIES] = provided_properties
+        if downloaded_rev is not None:
+            settings[DOWNLOADED_REV] = downloaded_rev
         extra = {"settings": settings} if settings else {}
         return TransformContext(
             record=record,
@@ -929,7 +938,11 @@ class Processor:
 
         # Apply indexing pipeline
         ctx = self._create_transform_context(
-            record, event_type, prev_virtual_record_id, provided_properties=provided_properties
+            record,
+            event_type,
+            prev_virtual_record_id,
+            provided_properties=provided_properties,
+            downloaded_rev=downloaded_rev if content_is_push_origin(blocks_dict) else None,
         )
         pipeline = self._pipeline()
         await pipeline.apply(ctx)
