@@ -71,6 +71,9 @@ class _Neo4j:
         )
         return rows[0]["permission_role"] if rows else None
 
+    async def remove_node(self, node_id: str) -> None:
+        await self.provider.client.execute_query("MATCH (n {id: $id}) DETACH DELETE n", parameters={"id": node_id})
+
     async def records_left(self, ids: list[str]) -> list[str]:
         rows = await self.provider.client.execute_query(
             "MATCH (r:Record) WHERE r.id IN $ids RETURN r.id AS id ORDER BY id", parameters={"ids": ids},
@@ -116,6 +119,10 @@ class _Arango:
             {"node": f"{NODE_TARGETS[kind]}/{node_id}", "user": USER},
         )
         return rows[0] if rows else None
+
+    async def remove_node(self, node_id: str) -> None:
+        """The node alone: ArangoDB keeps the edges of a removed vertex."""
+        await self._aql("REMOVE @k IN @@c", {"k": node_id, "@c": NODE_TARGETS[self.kinds[node_id]]})
 
     async def records_left(self, ids: list[str]) -> list[str]:
         return await self._aql("FOR r IN records FILTER r._key IN @ids SORT r._key RETURN r._key", {"ids": ids})
@@ -354,3 +361,16 @@ async def test_a_role_change_needs_no_direct_owner_edge(store) -> None:
 
     assert result["success"] is True and result["updated_users"] == 1
     assert (await store.provider.get_kb_permissions(kb_id=kb, user_ids=[member]))["users"] == {member: "WRITER"}
+
+
+async def test_a_record_s_details_take_no_role_from_a_team_that_no_longer_exists(store) -> None:
+    """A record of a collection the user reads directly (READER) and through a team (WRITER) whose node is gone: its details name the direct role."""
+    nodes = [_org(app("kbr-tg", "team gone", connector=KB, app_group="Local Storage", scope="personal")),
+             _org(rec("kbr-tg-r", "tg record", origin="UPLOAD", connector_id="kbr-tg", virtualRecordId="kbr-tg-v", indexingStatus="COMPLETED")),
+             _org(_node("Teams", "kbr-tg-team", name="kbr-tg-team"))]
+    edges = [bt("kbr-tg-r", "kbr-tg"), perm(USER, "kbr-tg", role="READER"), perm(USER, "kbr-tg-team", role="WRITER"),
+             perm("kbr-tg-team", "kbr-tg", grant_type="TEAM", role="WRITER")]
+    await store.load(nodes, edges)
+    await store.remove_node("kbr-tg-team")
+    details = await store.provider.check_record_access_with_details("kbr-m", ORG, "kbr-tg-r")
+    assert details["permissions"][0]["relationship"] == "READER"

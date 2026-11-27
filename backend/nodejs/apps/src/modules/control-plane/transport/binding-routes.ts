@@ -96,6 +96,9 @@ const material = z
 const ownerRef = z
   .object({ installation: z.string().min(1).max(256), owner })
   .strict();
+const installationRef = z
+  .object({ installation: z.string().min(1).max(256) })
+  .strict();
 const importBody = z
   .object({
     installation: z.string().min(1).max(256),
@@ -212,6 +215,21 @@ export function createInternalBindingRouter(container: Container): Router {
         binding: await deps
           .service()
           .revokeOwner({ orgId, actor }, installation, who),
+      });
+    }),
+  );
+
+  router.post(
+    '/revoke-installation',
+    guard,
+    handle<AuthenticatedServiceRequest>(async (req, res) => {
+      const orgId = tokenOrg(req);
+      const { installation } = installationRef.parse(req.body);
+      const actor = tokenUser(req) ?? LEGACY_ROUTE_ACTOR;
+      res.status(200).json({
+        bindings: await deps
+          .service()
+          .revokeInstallation({ orgId, actor }, installation),
       });
     }),
   );

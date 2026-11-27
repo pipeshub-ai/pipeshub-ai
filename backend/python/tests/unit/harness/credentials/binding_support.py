@@ -207,6 +207,15 @@ class FakeBindingWriter:
         row.update(status="revoked", revision=row["revision"] + 1)
         return self._row(row)
 
+    async def revoke_installation(self, org_id: str, installation: str, *, user_id: str | None = None) -> list[BindingRow]:
+        self.calls.append(("revoke_installation", installation))
+        live = [r for r in self.rows.values() if (r["orgId"], r["installation"]) == (org_id, installation) and r["status"] != "revoked"]
+        for row in live:
+            self.vault(org_id).tombstone(row["id"])
+            row.update(status="revoked", revision=row["revision"] + 1)
+            self.audited.append((org_id, row["id"], f"user:{user_id}" if user_id else "service:legacy-credentials"))
+        return [self._row(r) for r in live]
+
     def _claimable(self, row: dict[str, Any], holder: str) -> bool:
         """Node's refresh claim (QA23-F2): one holder's until it lapses; any write (a new revision) frees it."""
         held = row.get("claim")

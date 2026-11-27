@@ -8,13 +8,15 @@ export type NotifyChannel = 'in_app' | 'email' | 'slack';
 /** How a webhook caller proves it holds the secret (TR-04). */
 export type WebhookAuth = 'signature' | 'token';
 export type ScheduleStatus = 'active' | 'paused' | 'disabled';
-export type FiringKind = 'cron' | 'manual' | 'event';
+export type FiringKind = 'cron' | 'once' | 'manual' | 'event';
 export type FiringStatus = 'pending' | 'admitted' | 'refused' | 'skipped';
 /** A published agent version (from 1), or `latest` to follow every publish (OWD-14). */
 export type AgentVersionPin = number | 'latest';
 
 export type ScheduleTrigger =
   | { kind: 'cron'; cron: string; timeZone: string; catchUp: CatchUpPolicy }
+  /** Runs once at `at` (an instant); `timeZone` is the zone its owner reads it in (ADR-SCH-01 D1). */
+  | { kind: 'once'; at: string; timeZone: string }
   | { kind: 'webhook'; coalesceS: number; auth: WebhookAuth }
   | { kind: 'connector'; connectorId: string; coalesceS: number };
 
@@ -61,6 +63,7 @@ export interface Firing {
 
 export type NewTrigger =
   | { kind: 'cron'; cron: string; timeZone: string; catchUp: CatchUpPolicy }
+  | { kind: 'once'; at: string; timeZone: string }
   | { kind: 'webhook'; auth: WebhookAuth };
 
 export interface NewSchedule {

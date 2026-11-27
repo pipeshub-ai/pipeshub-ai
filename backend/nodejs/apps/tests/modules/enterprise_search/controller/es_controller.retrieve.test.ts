@@ -7,6 +7,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
+import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { createMockRequest, createMockResponse, createMockNext } from '../../../helpers/mock-request'
 
 // POST /api/v1/retrieve is called by developers' apps on every request they
@@ -151,6 +152,48 @@ describe('retrieve controller', () => {
     expect(next.calledOnce).to.be.true
     const err = next.firstCall.args[0]
     expect(err.statusCode ?? err.status).to.equal(503)
+  })
+
+  // A proxy's HTML page in front of the AI service: the command keeps the status and drops the body.
+  for (const status of [413, 503]) {
+    it(`keeps the status of a ${status} whose body was not JSON`, async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: status, data: undefined, msg: 'x' } as any)
+      const next = createMockNext()
+      await handle(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].statusCode).to.equal(status)
+    })
+  }
+
+  it('keeps the Retry-After of a 503 whose body was not JSON', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+      statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' },
+    } as any)
+    const next = createMockNext()
+    await handle(
+      createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+      createMockResponse(),
+      next,
+    )
+
+    expect(next.firstCall.args[0].statusCode).to.equal(503)
+    expect(next.firstCall.args[0].metadata.retryAfter).to.equal('5')
+  })
+
+  it('answers a 200 with no body as our failure', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: undefined } as any)
+    const next = createMockNext()
+    await handle(
+      createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+      createMockResponse(),
+      next,
+    )
+
+    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
   })
 
   const failedCall = async (error: unknown) => {

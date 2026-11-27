@@ -174,13 +174,17 @@ _HOP_PAGE_WHOLE_KEY_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relati
 # With few statistics, or a cursor whose range the planner cannot size, a scan of the edges (or a bitmap of them) and a sort can look cheaper than the ordered index and a page: both are off for
 # the page, and so is a parallel scan (a page is a few rows). The plan is the generic one from the first run (planned once per connection, not on every call; it is as good as a plan for the values,
 # see the test of it). The sort left is the incremental one over the index's order (an expression of the document cannot be an index column under row-level security).
-# The statement returns the four settings as they were, and a page read in a caller's transaction puts them back (``_HOP_RESTORE``); in a unit of its own they end with it.
-_HOP_PROFILE = ("/* pipeshub:graph.hop_page_profile */ SELECT w.b, w.s, w.p, w.m, set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), "
-                "set_config('max_parallel_workers_per_gather', '0', true), set_config('plan_cache_mode', 'force_generic_plan', true) "
+# A full sort is off too: PostgreSQL 18 can skip-scan the other direction's index for the anchor (its id is that index's last column), and a generic plan costs every leaf of the
+# partitioned table, so statistics that say ids repeat (the partitioned parent's, which autovacuum never refreshes) made that scan of every edge of the anchor and a sort of them win.
+# A sort that remains (of the branches' pages, a few pages of rows) still costs ``disable_cost`` on PostgreSQL 17, so JIT is off, or it would compile every page.
+# The statement returns the six settings as they were, and a page read in a caller's transaction puts them back (``_HOP_RESTORE``); in a unit of its own they end with it.
+_HOP_PROFILE = ("/* pipeshub:graph.hop_page_profile */ SELECT w.b, w.s, w.p, w.m, w.o, w.j, set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), "
+                "set_config('max_parallel_workers_per_gather', '0', true), set_config('plan_cache_mode', 'force_generic_plan', true), set_config('enable_sort', 'off', true), "
+                "set_config('jit', 'off', true) "
                 "FROM (SELECT current_setting('enable_bitmapscan') AS b, current_setting('enable_seqscan') AS s, current_setting('max_parallel_workers_per_gather') AS p, "
-                "current_setting('plan_cache_mode') AS m OFFSET 0) w")
+                "current_setting('plan_cache_mode') AS m, current_setting('enable_sort') AS o, current_setting('jit') AS j OFFSET 0) w")
 _HOP_RESTORE = ("/* pipeshub:graph.hop_page_restore */ SELECT set_config('enable_bitmapscan', $1, true), set_config('enable_seqscan', $2, true), "
-                "set_config('max_parallel_workers_per_gather', $3, true), set_config('plan_cache_mode', $4, true)")
+                "set_config('max_parallel_workers_per_gather', $3, true), set_config('plan_cache_mode', $4, true), set_config('enable_sort', $5, true), set_config('jit', $6, true)")
 
 
 # A cursor of the paged read is "v2:" and the seven fields of the row's order (anchor, direction, neighbour collection, neighbour id, type, edge collection, edge key), each with "\\" written "\\\\" and the
@@ -250,7 +254,7 @@ async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str]
         recs = await tx.fetch(_HOP_PAGE_SQL, *args)
     rows = [{**r, "page_key": _cursor(r)} for r in recs]
     if restore:      # the caller's transaction goes on with the settings it had
-        await tx.fetchval(_HOP_RESTORE, was["b"], was["s"], was["p"], was["m"])
+        await tx.fetchval(_HOP_RESTORE, was["b"], was["s"], was["p"], was["m"], was["o"], was["j"])
     return rows
 
 

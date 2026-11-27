@@ -358,6 +358,10 @@ class EffectRunner:
             if held == "denied":
                 said = self.hold.denial_reason(call) if isinstance(self.hold, ReasonedHold) else None
                 return await self._refuse(call, *approval_denial(said))
+            if isinstance(self.hold, NamedHold):
+                ctx = dataclasses.replace(
+                    ctx, interaction_id=self.hold.interaction_for(call), args_digest=call.args_digest
+                )
             edit = self.hold.approved_edit(call) if isinstance(self.hold, EditingHold) else None
             if edit is not None:
                 if edit.arguments is None:

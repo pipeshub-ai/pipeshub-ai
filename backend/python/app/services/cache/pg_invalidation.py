@@ -14,6 +14,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from app.core.db import notify
 from app.core.org_context import spawn_detached
 from app.services.pg_runtime import ListenHub, PgListener, RuntimeDb, listen_dsn
 
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 CHANNEL = "pipeshub_acl_cache"
-_NOTIFY = "/* pipeshub:acl.notify */ SELECT pg_notify($1, $2)"
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class PgCacheBus:
         payload = json.dumps({"k": kind, "o": org_id, "i": scope_id}, separators=(",", ":"))
         db = await self._rt.db()
         async with db.runtime_uow(write=True) as tx:
-            await tx.execute(_NOTIFY, self._channel, payload)
+            await notify(tx, self._channel, payload)
 
     async def stop(self) -> None:
         if self._listener is not None:

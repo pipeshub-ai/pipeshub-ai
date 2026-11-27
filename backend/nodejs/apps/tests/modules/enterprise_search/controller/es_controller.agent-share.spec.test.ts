@@ -9,6 +9,8 @@ import * as controller from '../../../../src/modules/enterprise_search/controlle
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * What the agent-chat sharing routes really answer, held against the published
@@ -161,6 +163,8 @@ function setup() {
 }
 
 describe('agent-chat sharing answers what the spec says', () => {
+  beforeEach(() => registerAppUpstreams(appConfig as never))
+  afterEach(() => registerUpstreams({}))
   beforeEach(() => {
     sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
   })

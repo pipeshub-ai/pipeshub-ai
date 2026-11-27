@@ -123,6 +123,16 @@ def engine_answer_language(run: HarnessRun | None) -> str:
     return build_output_language(locale)
 
 
+def engine_time_line(current_time: str | None, timezone: str | None) -> str:
+    """The run's current time and the person's time zone, at the first task's tail as the loop's prompt has them: an
+    engine told neither cannot resolve "in 5 minutes" or "tomorrow at 9" for ``schedule_create`` (ADR-SCH-01). The
+    time is the request's or the admission's, never the wall clock, so a re-driven task says the same; "" without."""
+    if not current_time:
+        return ""
+    zone = f" The user's time zone is {timezone}." if timezone else ""
+    return f"The current time is {current_time}.{zone}"
+
+
 __all__ = [
     "ANSWER_COMPLETENESS",
     "CITATIONS_IN_ANSWER",
@@ -135,4 +145,5 @@ __all__ = [
     "WORK_THAT_SURVIVES_A_LIMIT",
     "engine_answer_language",
     "engine_task_instructions",
+    "engine_time_line",
 ]

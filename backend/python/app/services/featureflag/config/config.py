@@ -33,6 +33,8 @@ class CONFIG:
     # The org's agent harness (ADR-OPS-08), with the server switch AGENT_HARNESS_WORKER_ENABLED: read only through
     # ``is_agent_harness_on``. Defaults to disabled; admins turn it on in Labs.
     ENABLE_AGENT_HARNESS = "ENABLE_AGENT_HARNESS"
+    # Scheduled and triggered harness runs (P8a); the worker reads it only to offer ``schedule_create`` (ADR-SCH-01).
+    ENABLE_SCHEDULED_RUNS = "ENABLE_SCHEDULED_RUNS"
     # Serves the knowledge hub's global listing (All records) from per-connector
     # scopes precomputed at each sync, instead of walking every connector's tree
     # on each request. Defaults to disabled; admins opt in from Labs.
