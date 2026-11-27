@@ -2,7 +2,7 @@
 exactly as it was before the hooks existed."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from app.modules.authz.chat_content_access import (
     NoChatContentAccess,
     resolve_read_access,
 )
+from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.agents.adapter.conftest import make_context
 
 EXT = ChatExtension()
@@ -97,18 +98,18 @@ class TestAgentLoopHooks:
 class TestAccessHooks:
     async def test_chat_content_needs_an_acl_path(self) -> None:
         assert isinstance(EXT.content_access(), NoChatContentAccess)
-        graph = MagicMock()
-        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        # No grant on r reaches u.
+        graph = InMemoryRecordAccess().user("u", "o").record("r", "o").serve(MagicMock())
         assert not await NoChatContentAccess().can_read_chat_content(
             graph, user_id="u", org_id="o", record="r", conversation_id="c", acl_version=1,
         )
         assert await resolve_read_access(graph, NoChatContentAccess(), user_id="u", org_id="o", record="r") is None
 
     async def test_an_acl_path_is_enough(self) -> None:
-        graph = MagicMock()
-        graph.check_record_access_with_details = AsyncMock(return_value={"record": {"id": "r"}})
+        graph = InMemoryRecordAccess().readable("u", "o", "r").serve(MagicMock())
         details = await resolve_read_access(graph, NoChatContentAccess(), user_id="u", org_id="o", record="r")
-        assert details == {"record": {"id": "r"}}
+        assert details == await graph.check_record_access_with_details("u", "o", "r")
+        assert details["record"]["id"] == "r"
 
     def test_no_extra_service_scope(self) -> None:
         assert EXT.extra_service_scopes() == frozenset()

@@ -95,6 +95,7 @@ __all__ = [
     "register_skill_tools",
     "register_skill_preloading",
     "register_skill_learning",
+    "may_learn_from",
     "skill_writer",
     "DOMAIN_SHARED_SKILL_TOOL_NAMES",
 ]
@@ -267,16 +268,12 @@ def register_skill_preloading(hooks: "HookRegistry", manager: SkillManager) -> N
     ))
 
 
-class _GatedSkillLearning(SkillLearning):
-    """Records outcomes always; learns only from a run `may_learn` allows."""
+def may_learn_from(context: "AgentContext") -> "Callable[[], bool]":
+    """Whether the run `context` serves may be distilled into a skill (`ChatExtension.may_learn_skills`), asked
+    when it ends. `SkillLearning` records outcomes either way. Both loops' learning asks it."""
+    from app.modules.agents.chat_extension import get_chat_extension
 
-    def __init__(self, *args: Any, may_learn: "Callable[[], bool]", **kwargs: Any) -> None:  # noqa: ANN401
-        super().__init__(*args, **kwargs)
-        self._may_learn = may_learn
-
-    async def _learn(self, ctx: Any, result: Any) -> None:  # noqa: ANN401
-        if self._may_learn():
-            await super()._learn(ctx, result)
+    return lambda: get_chat_extension().may_learn_skills(context)
 
 
 def register_skill_learning(
@@ -302,14 +299,9 @@ def register_skill_learning(
         "source_session_id": conversation_id,
         "source_agent_key": agent_key,
     }
-    if context is None:
-        hooks.on(HookEvent.POST_AGENT).use(SkillLearning(**learning))
-        return
-    from app.modules.agents.chat_extension import get_chat_extension
-
-    hooks.on(HookEvent.POST_AGENT).use(_GatedSkillLearning(
-        **learning, may_learn=lambda: get_chat_extension().may_learn_skills(context),
-    ))
+    if context is not None:
+        learning["may_learn"] = may_learn_from(context)
+    hooks.on(HookEvent.POST_AGENT).use(SkillLearning(**learning))
 
 
 def skill_writer(

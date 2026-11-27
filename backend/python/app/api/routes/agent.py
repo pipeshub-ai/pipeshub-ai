@@ -2974,7 +2974,7 @@ async def get_agent_readiness(request: Request, agent_id: str) -> AgentReadiness
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
+        org_key = current_org_id()
         graph_provider = services["graph_provider"]
 
         agent = await graph_provider.get_agent(agent_id, org_key)

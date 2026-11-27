@@ -7,12 +7,12 @@ so the check answers or fails closed in time. A request without a limit keeps th
 
 import asyncio
 import logging
-import time
 
 import pytest
 
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingBusy
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.settle import settle
 
 STATEMENT = "MATCH (r:Record) RETURN r"
 
@@ -52,14 +52,15 @@ async def test_a_check_plans_a_cold_statement_under_its_own_limit() -> None:
 @pytest.mark.asyncio
 async def test_a_check_waits_for_another_requests_plan_no_longer_than_its_limit() -> None:
     client = HeldClient()
-    p = provider(client, wait_s=5.0)
+    # The planner's own wait outlasts the hang backstop: a check that waited for it would never settle.
+    p = provider(client, wait_s=3600.0)
     listing = asyncio.create_task(p._kh_query(STATEMENT))
     await asyncio.sleep(0)
 
-    started = time.monotonic()
     with pytest.raises(KnowledgeHubListingBusy):
-        await p._kh_query(STATEMENT, timeout=0.05)
-    assert time.monotonic() - started < 1.0
+        await settle(p._kh_query(STATEMENT, timeout=0.05))
+    # It gave up while the plan it waited for was still being made.
+    assert not listing.done()
 
     # The listing's planner runs on under the planner's own limit, and its plan serves the next check.
     client.release.set()

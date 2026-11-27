@@ -14,6 +14,7 @@ import pytest
 
 from app.agents.actions.knowledge_graph.models import NavigationView, NodeRef, NodeRow
 from app.modules.agents.privacy.ledger import LabelLedger, bind_ledger
+from tests.support.record_access import InMemoryRecordAccess
 
 
 class _Recording(LabelLedger):
@@ -132,8 +133,8 @@ class TestCodeGraph:
     async def test_the_records_a_check_admits_are_named(self) -> None:
         from app.agents.actions.code_graph.ops import RecordAccess
 
-        graph = MagicMock()
-        graph.filter_accessible_record_ids = AsyncMock(return_value={"rec-a"})
+        # The user reads rec-a; rec-b is in the org, but no grant on it reaches them.
+        graph = InMemoryRecordAccess().readable("user-1", "org-1", "rec-a").record("rec-b", "org-1").serve(MagicMock())
         ledger = _Recording()
         with bind_ledger(ledger):
             admitted = await RecordAccess(graph, "org-1", "user-1").readable(["rec-a", "rec-b"])

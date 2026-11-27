@@ -418,7 +418,10 @@ class TestAttachmentContent:
 def _chat_graph() -> AsyncMock:
     g = AsyncMock()
     g.get_edge = AsyncMock(return_value=None)
-    g.check_record_access_with_details = AsyncMock(return_value=None)
+    # rec1 is a chat attachment user-b uploaded; no grant on it reaches the actor.
+    InMemoryRecordAccess().user("user-b", "org1", key="ukey-b").record(
+        "rec1", "org1", connectorName="ATTACHMENTS", recordType="FILE",
+    ).grant("rec1", user="user-b", role="OWNER").serve(g)
     g.get_document = AsyncMock(side_effect=lambda key, coll, *a, **k: {
         ("rec1", "records"): {"_key": "rec1", "orgId": "org1", "connectorName": "ATTACHMENTS", "recordType": "FILE"},
         ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},

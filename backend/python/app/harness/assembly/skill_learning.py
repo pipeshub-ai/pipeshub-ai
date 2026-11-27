@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import SkillLearning
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
+    from app.agents.agent_loop.context import AgentContext
     from app.harness.assembly.context import RunContext
     from harness_core.kernel.durable.ports import PostRunStep, RunEnding
     from harness_core.models.transports.registry import TransportRegistry
@@ -75,14 +76,16 @@ def skill_learning_steps(
     hooks: HookRegistry,
     provider: str,
     context_window: int | None = None,
+    context: AgentContext | None = None,
 ) -> list[PostRunStep]:
     """The run's post-run learning, as today's factory registers it: for a run with skills, not for a child
-    (legacy learns from the top-level agent's run only). The skill writer runs on the run's model and registry."""
+    (legacy learns from the top-level agent's run only). The skill writer runs on the run's model and registry.
+    With the run's `context`, it learns only from a run the edition lets it learn from, as today's loop."""
     if manager is None or run_kind == "child" or run.sub_agent is not None:
         return []
     from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import SkillLearning
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
-    from app.agents.agent_loop.skills_wiring import skill_writer
+    from app.agents.agent_loop.skills_wiring import may_learn_from, skill_writer
     from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
     from app.harness.assembly.loop import model_name
 
@@ -102,6 +105,7 @@ def skill_learning_steps(
         ),
         source_session_id=run.session_id or None,
         source_agent_key=run.agent.agent_key if run.agent is not None else None,
+        may_learn=may_learn_from(context) if context is not None else None,
     )
     return [SkillLearningStep(learning, goal=run.query, run_id=run.run_id, session_id=None)]
 

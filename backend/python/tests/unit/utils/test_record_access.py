@@ -135,7 +135,10 @@ class TestCallerCanReadVirtualRecord:
 
 
 def _attachment_graph(*, connector: str = "ATTACHMENTS") -> AsyncMock:
-    graph = _graph(allowed=False)
+    """rec-1 is a chat attachment user-b uploaded: the uploader's grant is the only one on it."""
+    graph, access = _graph(allowed=False)
+    access.record("rec-1", "org-1", connectorName=connector, recordType="FILE").user("user-b", "org-1", key="ukey-b")
+    access.grant("rec-1", user="user-b", role="OWNER")
     graph.get_document.side_effect = lambda key, coll, *a, **k: {
         ("rec-1", "records"): {"_key": "rec-1", "orgId": "org-1", "connectorName": connector, "recordType": "FILE"},
         ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
@@ -173,8 +176,9 @@ OTHER_RECORD = {"_key": "rec-1", "connectorName": "KNOWLEDGE_BASE", "recordType"
 
 
 def _granted_on(record: dict) -> AsyncMock:
-    graph = _graph()
-    graph.check_record_access_with_details.return_value = {"record": record}
+    """rec-1 is `record`, and a graph grant on it reaches user-c."""
+    graph, access = _graph(allowed=False)
+    access.record("rec-1", "org-1", **record).user("user-c", "org-1").grant("rec-1", user="user-c")
     return graph
 
 
@@ -206,9 +210,12 @@ class TestGraphGrantsOnChatContent:
     async def test_resolve_read_access_keeps_the_details_when_the_access_allows(self) -> None:
         graph = _granted_on(ATTACHMENT)
         kwargs = {"user_id": "user-c", "org_id": "org-1", "record": "rec-1"}
-        assert await resolve_read_access(graph, _EdgesGrantNoChatContent(True), **kwargs) == {"record": ATTACHMENT}
+        # What the graph's own details read answers for this grant.
+        details = await graph.check_record_access_with_details("user-c", "org-1", "rec-1")
+        assert details["record"]["connectorName"] == ATTACHMENT["connectorName"]
+        assert await resolve_read_access(graph, _EdgesGrantNoChatContent(True), **kwargs) == details
         assert await resolve_read_access(graph, _EdgesGrantNoChatContent(False), **kwargs) is None
-        assert await resolve_read_access(graph, NoChatContentAccess(), **kwargs) == {"record": ATTACHMENT}
+        assert await resolve_read_access(graph, NoChatContentAccess(), **kwargs) == details
 
 
 class TestServiceAccountUploadEdges:

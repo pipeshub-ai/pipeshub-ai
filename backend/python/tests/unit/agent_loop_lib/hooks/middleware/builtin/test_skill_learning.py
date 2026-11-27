@@ -225,3 +225,32 @@ class TestLearnedByAgent:
         await _run(manager, _result(success=True))
 
         assert manager.learned_from == [(None, None)]
+
+
+class TestLearningOnlyWhereAllowed:
+    async def test_a_run_it_may_not_learn_from_counts_its_skills_and_learns_nothing(self) -> None:
+        manager = _FakeSkillManager([_candidate("cand-1", "approved")])
+        spawned: list[str] = []
+
+        async def spawn(goal_description: str) -> AgentResult:
+            spawned.append(goal_description)
+            return _result()
+
+        learning = SkillLearning(manager, spawn, may_learn=lambda: False)
+        await learning.settle(_result(success=True, loaded_skills=["deploy-service"]), session_id="session-1", run_id="r1")
+
+        assert manager.outcomes == [("deploy-service", "session-1", True)]
+        assert manager.learn_calls == [] and spawned == []
+
+    async def test_it_is_asked_when_the_run_ends(self) -> None:
+        manager = _FakeSkillManager([_candidate("cand-1", "pending")])
+        allowed = {"now": False}
+
+        async def spawn(goal_description: str) -> AgentResult:
+            return _result()
+
+        learning = SkillLearning(manager, spawn, may_learn=lambda: allowed["now"])
+        allowed["now"] = True
+        await learning.settle(_result(success=True), session_id="session-1", run_id="r1")
+
+        assert manager.learn_calls == ["session-1"]

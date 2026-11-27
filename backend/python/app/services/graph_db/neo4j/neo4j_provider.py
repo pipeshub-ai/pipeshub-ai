@@ -22263,9 +22263,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
         if not ids and not vrids:
             return []
+        # Passed only when set, as `check_access` passes it: a caller written before the limit still answers the rest.
+        limit: dict[str, float] = {"timeout": timeout} if timeout is not None else {}
         if access is None:
             access = await self.get_knowledge_hub_access_v3(
-                user_key=user_key, org_id=org_id, transaction=transaction, timeout=timeout,
+                user_key=user_key, org_id=org_id, transaction=transaction, **limit,
             )
         # Each target is decided by walking UP from it: one parent per step in a
         # tree, so the cost follows depth, never the fan-out of a large group.
@@ -22423,14 +22425,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
             if probe:
                 by_parent = self._kh_grants_by_probe(by_parent)
-            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction, timeout=timeout)
+            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction, **limit)
             admitted = (rows or [{}])[0].get("items") or []
             done = {r["id"] for r in admitted}
             ids = [i for i in ids if i not in done]
             if not ids and not vrids:
                 return admitted
         parameters = {"kh_ids": ids, "kh_vrids": vrids, "org_id": org_id, "granteeIds": access["grantee_ids"], **grants}
-        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction, timeout=timeout)
+        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction, **limit)
         return admitted + ((rows or [{}])[0].get("items") or [])
 
     async def _kh_v3_app_declared_scope(

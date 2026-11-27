@@ -997,6 +997,7 @@ class PipesHubRuntimeAssembler:
             hooks=sandbox.hooks.registry,
             provider=_transport_provider(),
             context_window=env.context.configured_context_window,
+            context=env.context,
         )
         composed = _compose(
             env, run, registry, transports, sandbox.hooks, tools.catalog, skill_manager, memory, log, tools.workspace

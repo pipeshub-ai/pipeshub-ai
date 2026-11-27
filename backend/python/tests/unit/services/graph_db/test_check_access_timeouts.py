@@ -193,13 +193,19 @@ def pg_request() -> Any:  # noqa: ANN401
 
 
 class TestPostgres:
-    async def test_the_grants_and_the_walk_run_in_units_limited_per_statement(self, pg_request: Any) -> None:  # noqa: ANN401
+    async def test_the_grants_and_the_walk_run_in_the_checks_one_limited_unit(self, pg_request: Any) -> None:  # noqa: ANN401
+        # One check reads one state of the graph: the gate, the grants and the walk share the check's own unit.
         provider = _postgres()
+        gate = AsyncMock(return_value=None)
         with patch.object(pg_permissions.kg_read, "enabled", return_value=False), \
-                patch.object(PostgresGraphProvider, "_gate", AsyncMock(return_value=None)):
+                patch.object(PostgresGraphProvider, "_gate", gate):
             await provider._kh_v3_accessible_rows("user-key", ORG, ["n1"], [], access=None, transaction=None, timeout=2.0)
 
-        assert [unit.get("timeout_ms") for unit in provider._db.units] == [2000, 2000]
+        assert [unit.get("timeout_ms") for unit in provider._db.units] == [2000]
+        walk = pg_permissions.access_sql.accessible_rows
+        assert gate.await_count == walk.await_count == 1
+        # Both on the connection of that one unit.
+        assert gate.await_args.args[0] is walk.await_args.args[0]
 
     async def test_the_kg_read_runs_in_a_limited_unit_too(self, pg_request: Any) -> None:  # noqa: ANN401
         provider = _postgres()
