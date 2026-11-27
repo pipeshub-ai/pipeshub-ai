@@ -25,8 +25,14 @@ from app.services.llm_gateway.embedding_gateway import (
     get_embedding_gateway,
 )
 from app.services.llm_gateway.wire import refused_by_allowance
+from app.utils.aimodels import CredentialsRequiredError
 
 _CONCURRENCY_LIMIT = 10
+
+
+class BedrockKeysRequiredError(EmbeddingError, CredentialsRequiredError):
+    """An embedding error that the health check reports as ``credentials_required``."""
+
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
 # Titan Multimodal rejects any other value; asking for one the collection
 # needs but Titan cannot produce is a config error worth naming up front
@@ -95,7 +101,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
             if self.region_name:
                 client_kwargs["region_name"] = self.region_name
         elif not self.allow_ambient:
-            raise EmbeddingError("Enter an AWS access key and secret for this model.")
+            raise BedrockKeysRequiredError("Enter an AWS access key and secret for this model.")
         elif (access_key or secret_key) and self.logger:
             self.logger.warning("Only one of the AWS access key and secret is set for this Bedrock model.")
         if self.sdk_retries is not None:

@@ -597,6 +597,35 @@ async def test_missing_credentials_reach_the_admin_as_a_clear_400() -> None:
     assert json.loads(response.body)["message"] == _KEYS_REQUIRED
 
 
+@pytest.mark.asyncio
+async def test_health_image_probe_reports_missing_bedrock_keys_as_credentials_required() -> None:
+    import json
+
+    from app.api.routes.health import (
+        _model_setup_failed_response,
+        _probe_image_embedding,
+    )
+    from app.services.embeddings.multimodal.bedrock_provider import (
+        BedrockMultimodalProvider,
+    )
+    from app.utils.aimodels import CredentialsRequiredError
+
+    config = {"provider": "bedrock", "configuration": {"awsAccessKeyId": "AK"}}
+    with patch(
+        "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
+        return_value=BedrockMultimodalProvider(model_name="m", aws_access_key_id="AK"),
+    ), patch("boto3.client") as client, pytest.raises(CredentialsRequiredError) as raised:
+        await _probe_image_embedding(config, "m", 1024, MagicMock())
+    client.assert_not_called()
+
+    response = await _model_setup_failed_response("embedding model", config, "m", raised.value)
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["message"] == _KEYS_REQUIRED
+    assert body["details"]["error_code"] == "credentials_required"
+    assert "hint" not in body["details"]
+
+
 def test_bedrock_chat_control_plane_client_is_ours() -> None:
     from app.utils.aimodels import _get_generator_model_impl
 
