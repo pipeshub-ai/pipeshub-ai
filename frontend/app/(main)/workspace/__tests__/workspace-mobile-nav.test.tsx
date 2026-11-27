@@ -5,7 +5,7 @@
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
 import '@/lib/__tests__/test-i18n';
@@ -52,7 +52,8 @@ const shell = () => (
   </Theme>
 );
 
-const menu = () => screen.getByRole('button', { name: 'Open sidebar' });
+// While the drawer is open it is a modal dialog: the page behind it, this button too, is hidden from assistive tech.
+const menu = () => screen.getByRole('button', { name: 'Open sidebar', hidden: true });
 const drawer = () => document.getElementById('app-mobile-nav');
 const general = () => screen.queryByRole('link', { name: 'General' });
 
@@ -73,7 +74,7 @@ describe('workspace layout at phone width', () => {
     expect(menu().getAttribute('aria-controls')).toBe('app-mobile-nav');
   });
 
-  it('WM-2: the menu button opens the nav with focus inside; close returns focus to the button', () => {
+  it('WM-2: the menu button opens the nav with focus inside; close returns focus to the button', async () => {
     render(shell());
     menu().focus();
     fireEvent.click(menu());
@@ -83,17 +84,18 @@ describe('workspace layout at phone width', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Close sidebar' }));
     expect(drawer()).toBeNull();
-    expect(document.activeElement).toBe(menu());
+    // The dialog gives the focus back once it has closed.
+    await waitFor(() => expect(document.activeElement).toBe(menu()));
   });
 
-  it('WM-3: Esc closes the nav and focus returns to the button', () => {
+  it('WM-3: Esc closes the nav and focus returns to the button', async () => {
     render(shell());
     menu().focus();
     fireEvent.click(menu());
     fireEvent.keyDown(document.activeElement ?? document, { key: 'Escape' });
     expect(drawer()).toBeNull();
     expect(menu().getAttribute('aria-expanded')).toBe('false');
-    expect(document.activeElement).toBe(menu());
+    await waitFor(() => expect(document.activeElement).toBe(menu()));
   });
 
   it('WM-4: navigating to another page closes the nav', () => {
