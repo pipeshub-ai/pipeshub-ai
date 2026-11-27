@@ -1524,7 +1524,9 @@ async def test_a_connectors_flat_listing_reads_a_window_per_page_once_the_table_
 @pytest.mark.pg_table_lock      # analyses kg.records
 async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_keys_not_the_connector(pg_db, monkeypatch) -> None:
     """The flat listing below a folder of 5 records, in a connector of 3,000, after kg.records is analysed: the scope's rows are read by their keys (``r.sk = ANY(scope)``),
-    about the 5 of them, not the connector in the order's index (the profile that turns sorts off for an unscoped window would make that the plan)."""
+    about the 5 of them, not the connector in the order's index (the profile that turns sorts off for an unscoped window would make that the plan); so are the rows no class
+    decides (kg.listing_undecided: here the class of the connector's other 3,000 rows is one kg cannot vouch for) and the page's total (kg.listing_count): as a filter on
+    the connector's rows (by the class's index, records_list_class), a scope read every row of the class."""
     import app.core.db.uow as uow
     p, org = prov(pg_db), new_org()
     kids = [f"c{i:04d}" for i in range(3000)]
@@ -1537,6 +1539,19 @@ async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_ke
         await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ["small", *small]], "permission")
     await flip(pg_db, org)
     await _admin("ANALYZE kg.records")
+    import asyncpg
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:      # the class of the connector's 3,000 other rows, made one kg cannot vouch for: its rows are undecided, those of the scope none
+        shared = await con.fetchval("SELECT class_id FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c0000'", org)
+        assert shared is not None
+    finally:
+        await con.close()
+    real_sets = kh_listing.class_sets
+
+    async def unvouched(*a, **kw) -> object:
+        got = await real_sets(*a, **kw)
+        return None if got is None else {**got, "unvouched": {*got["unvouched"], shared}}
+    monkeypatch.setattr(kh_listing, "class_sets", unvouched)
     real = uow.Tx._run
     for field, way in (("name", "ASC"), ("updatedAt", "DESC"), ("sizeInBytes", "DESC")):
         ran: list[tuple[object, str, tuple]] = []
@@ -1547,10 +1562,10 @@ async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_ke
         monkeypatch.setattr(uow.Tx, "_run", spy)
         with ctx(org):
             page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=10,
-                                                                start_id="small", start_type="folder", sort_field=field, sort_dir=way, include_total=False)
+                                                                start_id="small", start_type="folder", sort_field=field, sort_dir=way)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert sorted(r["id"] for r in page["rows"]) == small, page["rows"]
-        read = await _page_rows_read(org, ran)
+        read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.listing_page_admitted", "kg.listing_undecided", "kg.listing_count"))
         assert read and all(n <= 20 for n in read), (field, way, read)
 
 
