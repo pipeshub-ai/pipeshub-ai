@@ -42,6 +42,12 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.modules.indexing.record_progress import (
+    RecordProgress,
+    begin_progress,
+    end_progress,
+    new_progress,
+)
 from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
@@ -52,8 +58,10 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.consumer_concurrency import (
+    ProgressRequeue,
     RequeueWithoutAttempt,
     backstop_give_up_reason,
+    requeue_after_productive_cut,
     work_key,
 )
 from app.services.messaging.disposition import describe_message, notify_abandoned
@@ -117,6 +125,19 @@ def _handback_base_s() -> float:
 def _handback_limit() -> int:
     """Hand-backs of one message (in this process) after which one that counts toward the backstop is charged as a failed attempt."""
     return int(os.getenv("PG_QUEUE_HANDBACK_LIMIT", "200"))
+
+
+#: Seconds a cut attempt's handler (on the worker loop) is given to unwind before its progress is read.
+_CUT_UNWIND_WAIT_S = 5.0
+
+
+class _LeaseState:
+    """What ``requeue_after_productive_cut`` asks of a lease handle: whether the record lease was lost."""
+
+    def __init__(self, *, lost: bool) -> None:
+        self.lost = asyncio.Event()
+        if lost:
+            self.lost.set()
 
 
 class RecordHeld(RequeueWithoutAttempt):
@@ -552,7 +573,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             timing.note(code=reason, pool=getattr(e, "pool", None), end_level=e.log_level)
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
-            if self.stage_admission is not None and e.pauses_consumer:
+            if self.stage_admission is not None and e.pauses_consumer and not isinstance(e, ProgressRequeue):
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
                 if e.give_up_label:
@@ -961,7 +982,20 @@ class PgMessagingConsumer(IMessagingConsumer):
             slot = await self._take_slot(parsed)
             if (timeline := timing.current_timeline()) is not None:
                 timeline.mark(timing.ADMITTED)  # the wait for the slot is wait_slot_ms, not held_ms
+            claim_loop = asyncio.get_running_loop()
+            # The record's progress is made on the worker loop, in the task that runs the handler (a context variable set on this
+            # loop would not reach it), and handed out through this cell before the first await. It is read here only after
+            # ``drain`` has ended (``drained``), so the cut is settled on this loop with a finished object.
+            progress_cell: list[RecordProgress] = []
+            drained = asyncio.Event()
+            armed_budget: list[record_budget.RecordBudget] = []
+
             async def drain() -> bool:
+                progress = new_progress()
+                progress_cell.append(progress)
+                if armed_budget:
+                    progress.attach(armed_budget[0])  # moves the deadline only through the owner loop's method
+                begin_progress(progress)
                 gen = self.message_handler(parsed)  # type: ignore[misc]
                 complete = False
                 try:
@@ -969,13 +1003,39 @@ class PgMessagingConsumer(IMessagingConsumer):
                         if event.event == IndexingEvent.INDEXING_COMPLETE:
                             complete = True
                 finally:
-                    await gen.aclose()
+                    try:
+                        await gen.aclose()
+                    finally:
+                        end_progress()
+                        with contextlib.suppress(RuntimeError):  # the claim loop closed: nothing waits for it
+                            claim_loop.call_soon_threadsafe(drained.set)
                 return complete
 
             try:
                 # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
-                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout):
+                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout) as armed:
+                    armed_budget.append(armed)
                     complete = await self._on_worker(drain)
+            except TimeoutError:
+                # The budget ended the attempt. After progress it resumes without a counted attempt, as on the other brokers.
+                if progress_cell and budget.expired():
+                    with contextlib.suppress(TimeoutError):  # a handler that does not unwind in time is left counted
+                        await asyncio.wait_for(drained.wait(), _CUT_UNWIND_WAIT_S)
+                    if not drained.is_set():
+                        # Its progress is not read while the handler may still change it: the cut stays a counted attempt.
+                        self.logger.warning(
+                            "Record %s: the handler did not unwind within %.1fs of its budget ending; the cut is counted",
+                            parsed.payload.get("recordId"), _CUT_UNWIND_WAIT_S,
+                        )
+                        timing.note(cut_unwind_timeout_s=_CUT_UNWIND_WAIT_S)
+                    else:
+                        await requeue_after_productive_cut(
+                            self,
+                            progress_cell[0],
+                            _LeaseState(lost=record_slot is not None and record_slot in self._lost_leases),
+                            fallback_key,
+                        )
+                raise
             except asyncio.CancelledError:
                 if record_slot is not None and record_slot in self._lost_leases:
                     # Our own cancel, sent because the record lease was not renewed: another delivery may own the record now.

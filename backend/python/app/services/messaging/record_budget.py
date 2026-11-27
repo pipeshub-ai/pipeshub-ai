@@ -42,6 +42,33 @@ class RecordBudget:
         with contextlib.suppress(RuntimeError):  # the owner's loop closed during shutdown: nothing is left to move
             self._loop.call_soon_threadsafe(self._move, seconds)
 
+    # The deadline, as the owner's timeout has it. A handler on another loop (PostgreSQL runs it on its worker loop) is given this
+    # object where the other consumers give the timeout itself: reads are plain, and a move is posted to the owner's loop, because
+    # ``Timeout.reschedule`` only works from the loop that entered the timeout.
+    def when(self) -> float | None:
+        return self.timeout.when()
+
+    def expired(self) -> bool:
+        return self.timeout.expired()
+
+    def reschedule(self, when: float | None) -> None:
+        """Move the deadline to *when* (the owner loop's clock) on the owner's loop, whichever loop calls."""
+        try:
+            same_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            same_loop = False
+        if same_loop:
+            self._reschedule(when)
+            return
+        with contextlib.suppress(RuntimeError):  # the owner's loop closed during shutdown: nothing is left to move
+            self._loop.call_soon_threadsafe(self._reschedule, when)
+
+    def _reschedule(self, when: float | None) -> None:
+        try:
+            self.timeout.reschedule(when)
+        except RuntimeError:  # it fired or was left: there is nothing to move
+            return
+
     def _move(self, seconds: float) -> None:
         when = self.timeout.when()
         # shortcut: a paused budget (when() None) is not moved; the handler never runs while the consumer waits for a
