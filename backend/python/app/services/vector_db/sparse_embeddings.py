@@ -15,20 +15,41 @@ Thread safety
 ``_ensure_initialized`` uses an ``asyncio.Lock`` so concurrent callers in the
 same event loop initialise the model exactly once.  Model construction is
 off-loaded to ``asyncio.to_thread`` so the (30–60 s cold-start) load never
-blocks the event loop.
+blocks the event loop.  A failed build is shared, not re-run: callers within
+the retry window raise the recorded outcome at once instead of each
+re-running fastembed's multi-minute download under the lock (issue #5904).
 """
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+import time
+from typing import TYPE_CHECKING, List, Optional
 
 from app.services.vector_db.models import SparseVector, to_generic_sparse_vector
-from app.utils.env_utils import hf_hub_offline
+from app.utils.env_utils import env_positive_int, hf_hub_offline
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = create_logger("sparse_embeddings")
 
 _MODEL_NAME = "Qdrant/bm25"
+
+
+def _init_attempt_timeout_seconds() -> float:
+    """Deadline for one model build, cache-only or download.
+
+    fastembed's own download path retries three times with 9 s and 27 s
+    backoffs, so one cold attempt on an unreachable Hub costs ~90 s; this
+    bounds what a caller waits for it.
+    """
+    return env_positive_int("SPARSE_EMBEDDER_INIT_TIMEOUT_SECONDS", 120)
+
+
+def _failure_retry_seconds() -> int:
+    """How long a failed build is remembered before another is attempted."""
+    return env_positive_int("SPARSE_EMBEDDER_FAILURE_RETRY_SECONDS", 60)
 
 
 class SparseEmbedder:
@@ -43,10 +64,15 @@ class SparseEmbedder:
         doc_vecs    = await embedder.embed_documents(["text 1", "text 2"])
     """
 
-    def __init__(self, model_name: str = _MODEL_NAME) -> None:
+    def __init__(self, model_name: str = _MODEL_NAME, clock: Callable[[], float] = time.monotonic) -> None:
         self._model_name = model_name
         self._model: Optional[object] = None
         self._lock: Optional[asyncio.Lock] = None
+        self._clock = clock
+        # The last failed build and when another may be attempted: ``(exception,
+        # deadline)``. Every caller arriving before the deadline raises the
+        # recorded outcome instead of re-running the download (see #5904).
+        self._init_failure: Optional[tuple[BaseException, float]] = None
 
     # ------------------------------------------------------------------
     # Internal initialisation
@@ -85,17 +111,59 @@ class SparseEmbedder:
             )
             return SparseTextEmbedding(model_name=self._model_name)
 
+    def _raise_if_failure_is_fresh(self) -> None:
+        """Raise the recorded build failure while it still counts.
+
+        Re-raising the stored exception instance from every waiter is fine —
+        they share one outcome rather than each paying for a new download.
+        """
+        if self._init_failure is None:
+            return
+        exception, retry_at = self._init_failure
+        if self._clock() < retry_at:
+            raise exception
+
     async def _ensure_initialized(self) -> object:
-        """Ensure the model is loaded; return it."""
+        """Ensure the model is loaded; return it.
+
+        A failed build is remembered for ``SPARSE_EMBEDDER_FAILURE_RETRY_SECONDS``
+        (default 60): a caller arriving in that window raises the recorded
+        outcome at once — without the lock, without a new download — and the
+        waiters queued behind a failed attempt drain the same way. One attempt
+        is bounded by ``SPARSE_EMBEDDER_INIT_TIMEOUT_SECONDS`` (default 120);
+        ``asyncio.wait_for`` returns control but cannot stop the worker thread,
+        so a timed-out download may still finish in the background and be
+        discarded — the retry builds again from scratch.
+        """
         if self._model is not None:
             return self._model
+        self._raise_if_failure_is_fresh()
         async with self._get_lock():
-            if self._model is None:
-                self._model = await asyncio.to_thread(self._build_model)
-                logger.info(
-                    f"Sparse embedder initialised: model='{self._model_name}', "
-                    "backend=fastembed.SparseTextEmbedding"
+            if self._model is not None:
+                return self._model
+            # A waiter queued behind the caller that just failed must not
+            # start its own build: the recorded failure is still fresh.
+            self._raise_if_failure_is_fresh()
+            try:
+                self._model = await asyncio.wait_for(
+                    asyncio.to_thread(self._build_model),
+                    timeout=_init_attempt_timeout_seconds(),
                 )
+            except Exception as exc:
+                retry_at = self._clock() + _failure_retry_seconds()
+                self._init_failure = (exc, retry_at)
+                logger.warning(
+                    "Sparse embedder failed to load model '%s'; retrying after %ss: %r",
+                    self._model_name,
+                    _failure_retry_seconds(),
+                    exc,
+                )
+                raise
+            self._init_failure = None
+            logger.info(
+                f"Sparse embedder initialised: model='{self._model_name}', "
+                "backend=fastembed.SparseTextEmbedding"
+            )
         return self._model
 
     # ------------------------------------------------------------------
