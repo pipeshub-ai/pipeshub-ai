@@ -26,7 +26,7 @@ MEMBER = "member-1"
 
 
 class _UsersGraph(FakeGraphProvider):
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict[str, Any]:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object) -> dict[str, Any]:
         return {"_key": f"key-{user_id}", "userId": user_id}
 
 

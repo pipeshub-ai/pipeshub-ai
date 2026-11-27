@@ -37,7 +37,7 @@ class Store:
         if self.down:
             raise ConnectionError("store down")
 
-    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> dict | None:
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False, **_: object) -> dict | None:
         try:
             self._read()
         except ConnectionError:

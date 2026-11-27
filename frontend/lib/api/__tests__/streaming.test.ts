@@ -249,6 +249,20 @@ describe('token handshake before a stream', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1); // the stream itself was never requested
     expect(sink.errors.map((e) => e.message)).toEqual([STREAM_ERROR_MESSAGES.sessionExpired]);
   });
+
+  it('keeps the person signed in and streams with the token it has when the refresh gets no answer', async () => {
+    const old = jwtExpiringIn(30);
+    useAuthStore.setState({ accessToken: old });
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(sseResponse([sseFrame('ok', {})]));
+
+    const sink = collect();
+    await streamSSERequest('/s', {}, sink);
+
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestHeaders(1).Authorization).toBe(`Bearer ${old}`);
+    expect(sink.events).toHaveLength(1);
+  });
 });
 
 describe('what a person reads when the chat stream fails', () => {
