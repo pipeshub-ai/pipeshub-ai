@@ -19,8 +19,7 @@ vi.mock('@/config', async () => {
   );
   return { useAuthStore: { getState: () => ({ user: null }) }, chatExtension: defaultChatExtension };
 });
-// i18next is not initialised in unit tests: `t` would answer undefined.
-vi.mock('i18next', () => ({ default: { t: (key: string) => key } }));
+// The real chat extension sets up i18n (with `i18next.use`), so `t` answers here; a stand-in for i18next would break it.
 vi.mock('@/lib/store/user-store', () => ({ useUserStore: { getState: () => ({ profile: h.profile }) } }));
 
 import { useChatStore } from '../store';
