@@ -108,9 +108,10 @@ function rotateText(
     } catch {
       return token;
     }
-    return typeof v === 'string' && ENCRYPTED_FORMAT.test(v)
-      ? `"${rotateOne(v, oldC, newC, t)}"`
-      : token;
+    if (typeof v !== 'string' || !ENCRYPTED_FORMAT.test(v)) return token;
+    const next = rotateOne(v, oldC, newC, t);
+    // An unchanged value keeps its original spelling, escapes included.
+    return next === v ? token : `"${next}"`;
   });
 }
 

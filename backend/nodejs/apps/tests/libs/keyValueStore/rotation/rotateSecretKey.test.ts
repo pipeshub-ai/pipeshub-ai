@@ -247,6 +247,17 @@ describe('rotateEncryptedValues', () => {
     expect(after).to.equal(raw.replace(enc, rotated));
   });
 
+  it('keeps the escaped spelling of a field already on the new key when another field rotates', async () => {
+    const done = cipher(NEW).encrypt('B');
+    const escaped = `\\u00${done.charCodeAt(0).toString(16)}${done.slice(1)}`;
+    const raw = `{"a":"${cipher(OLD).encrypt('A')}","b":"${escaped}"}`;
+    await store.createKey('/services/mixed', raw);
+    await rotateEncryptedValues(store, OLD, NEW, { dryRun: false });
+    const after = (await store.getKey('/services/mixed'))!;
+    expect(after).to.contain(`"b":"${escaped}"`);
+    expect(cipher(NEW).decrypt(JSON.parse(after).a)).to.equal('A');
+  });
+
   it('leaves a plain string that only ends in ciphertext after an escaped quote', async () => {
     const enc = cipher(OLD).encrypt('SK');
     const raw = JSON.stringify({ note: `"${enc}` }); // {"note":"\"<enc>"}
