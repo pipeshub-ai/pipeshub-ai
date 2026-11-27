@@ -57,6 +57,8 @@ flowchart LR
 
 **A validation refusal names the field and the rule, never the value.** `ValidationMiddleware` turns a `ZodError` into a 400 `ValidationError` whose entries have `value: ''`. Before the parse, the array guard (`findArrayLengthViolation`) refuses an oversized array, object or nesting depth. A schema callback that throws on the input becomes a 400 with `UNREADABLE_REQUEST_MESSAGE`, because the thrown text could quote the value. Our own `BaseError` thrown from a schema keeps its status (a 503 stays a 503). The refusal is logged once, by the error middleware, at WARNING with class `bad_request`. Tested in `validation.log-line.test.ts`, `validation.schema-throw.test.ts`, `validation.error-body.test.ts` and `validation.array-guard.test.ts`.
 
+**`authenticate` answers 401 only for a credential it checked and refused.** A store read that fails while it checks a token (the OAuth app or org lookup of a client_credentials token, like every other read there) is passed on as it is, so the error middleware answers it: the store's own 503 or 504 with its `Retry-After`, a dropped connection the error middleware recognises as 503, anything else (a down Mongo today) as 500. Never turn a failed read into an `UnauthorizedError`: on a 401, `/mcp` sends `WWW-Authenticate` (the MCP client starts OAuth again), the rejected-token limiter counts the address, Python's caller-role check refuses the token, and telemetry counts a refused credential. A server whose OAuth token service was never registered answers 500, not 401. Tested in `auth.store-outage.http.test.ts`.
+
 **Catch a rejected promise in an async middleware and pass it to `next`.** The app runs Express 4 (`express ^4.22.1` in `package.json`), which does not catch a rejection from an async handler; the request is never answered and has no failure line. `ValidationMiddleware.validate` wraps its body in `try`/`catch` and calls `next(error)` for this reason.
 
 **Every POST, PUT and PATCH route runs `ValidationMiddleware`.** A route without it must be in `ROUTES_WITHOUT_VALIDATION` with a reason. A handler that reads `req.body` unchecked is how a `{"$ne": null}` reaches a Mongo filter. Tested in `route-validation-coverage.test.ts`, which also fails when an allowlisted route no longer exists or gained validation.
@@ -68,6 +70,7 @@ flowchart LR
 - **Middleware lines mask the path too** (#6396). The rate limiters and the XSS middleware logged the path as sent, so an email in a URL reached the log; neither redactor removed it.
 - **A malformed percent-encoding is a 400 with a fixed sentence** (#6387). Passing Express's `URIError` on as a 500 was rejected: the 500 classed a client mistake as our bug, and its message carried the raw path.
 - **A schema refusal is WARNING `bad_request`, logged once** (#6367), not an ERROR: it is the caller's mistake. A schema callback that throws is a 400, not a 500 (#6386).
+- **A failed read while checking a token passes through, it is not re-classified in auth.** The OAuth app and org lookups used to turn any error into a 401 ("Failed to look up OAuth app owner"). Wrapping it into a 503 inside auth was rejected: it would be a second outage classifier, answer the same Mongo outage 500 or 503 by which read lost the race, and log our own bugs at WARNING as "unavailable". Typing Mongo outages as 503 belongs app-wide, in `unansweredKind`.
 - **Param values that are not ids stay out of the logs** (#6388). Logging every param and redacting later was rejected: a param can hold an email or a file name.
 
 ## Changing this code
@@ -114,6 +117,7 @@ npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'Every write route
 | `error.middleware.started-response.test.ts` | Logged once, then the connection closed |
 | `error.middleware.leak.test.ts` | A failed axios call is logged without its request, headers or body |
 | `error.params-values.test.ts` | No non-id param value on any line |
+| `auth.store-outage.http.test.ts` | A store read that fails while a token is checked answers the store's error, never 401; real refusals stay 401 |
 | `access-log.middleware.test.ts` | One access line per request, route template, `routeParams` |
 | `safe-path-params.middleware.test.ts` | The guard, the binding, and every router that needs them |
 | `validation.*.test.ts` | Refusal body, log line, array guard, schema throws |
