@@ -233,6 +233,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"x\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:e9c4fa44d8bbfea64d5153884f7fda3bd748844624a6faef3f5b5b880a37e1fc",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -337,6 +387,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"x\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:e9c4fa44d8bbfea64d5153884f7fda3bd748844624a6faef3f5b5b880a37e1fc",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -611,6 +677,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"H\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:9bb2dbfa4853813ddba14be0f639ade2ee4fcd4478dceb91072e55ebd1298602",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -715,6 +831,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"H\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:9bb2dbfa4853813ddba14be0f639ade2ee4fcd4478dceb91072e55ebd1298602",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -1121,6 +1253,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"M\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:0e86a1b078b2f64ba3a9ba09bb34028612160cddafb4290ba74bec475aeea97b",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -1225,6 +1407,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"M\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:0e86a1b078b2f64ba3a9ba09bb34028612160cddafb4290ba74bec475aeea97b",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -2334,6 +2532,56 @@
      "txn-3"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": \"high\", \"description\": \"d\", \"instructions\": \"ins\", \"knowledge\": [{\"_key\": \"<uuid-11>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{\\\"recordGroups\\\": [\\\"g1\\\"]}\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-12>\", \"connectorId\": \"c2\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"<uuid-7>\", \"allTools\": false, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Github\", \"instanceId\": \"mi-1\", \"name\": \"github\", \"tools\": [{\"_key\": \"<uuid-8>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"mcp_gh_t1\", \"name\": \"t1\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-9>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"gh.t2\", \"name\": \"t2\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}], \"typeId\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-10>\", \"allTools\": true, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Linear X\", \"instanceId\": \"mi-2\", \"name\": \"linear_x\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [\"m1_gpt-x\", \"m2\"], \"name\": \"Full\", \"sendUserContext\": false, \"serviceAccountUserId\": null, \"skills\": [{\"name\": \"mine\"}], \"startMessage\": \"hi\", \"systemPrompt\": \"sp\", \"tags\": [\"t1\", \"t2\"], \"toolsets\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira Cloud\", \"instanceId\": \"i-1\", \"instanceName\": \"Main\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"find\", \"fullName\": \"jira.search\", \"name\": \"search\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.get\", \"name\": \"get\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-6>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.send\", \"name\": \"send\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"webSearch\": \"tavily\"}",
+       "digest": "sha256:1747c79c5efcdd3681d9c5e87a21c6554fd595761d4b1388f26a4ec4b72677e7",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-13>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 3,
@@ -2658,6 +2906,22 @@
      "userId": "u-alice"
     }
    },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": \"high\", \"description\": \"d\", \"instructions\": \"ins\", \"knowledge\": [{\"_key\": \"<uuid-11>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{\\\"recordGroups\\\": [\\\"g1\\\"]}\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-12>\", \"connectorId\": \"c2\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"<uuid-7>\", \"allTools\": false, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Github\", \"instanceId\": \"mi-1\", \"name\": \"github\", \"tools\": [{\"_key\": \"<uuid-8>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"mcp_gh_t1\", \"name\": \"t1\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-9>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"gh.t2\", \"name\": \"t2\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}], \"typeId\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-10>\", \"allTools\": true, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Linear X\", \"instanceId\": \"mi-2\", \"name\": \"linear_x\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [\"m1_gpt-x\", \"m2\"], \"name\": \"Full\", \"sendUserContext\": false, \"serviceAccountUserId\": null, \"skills\": [{\"name\": \"mine\"}], \"startMessage\": \"hi\", \"systemPrompt\": \"sp\", \"tags\": [\"t1\", \"t2\"], \"toolsets\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira Cloud\", \"instanceId\": \"i-1\", \"instanceName\": \"Main\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"find\", \"fullName\": \"jira.search\", \"name\": \"search\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.get\", \"name\": \"get\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-6>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.send\", \"name\": \"send\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"webSearch\": \"tavily\"}",
+     "digest": "sha256:1747c79c5efcdd3681d9c5e87a21c6554fd595761d4b1388f26a4ec4b72677e7",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-13>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -2846,6 +3110,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [{\"_key\": \"<uuid-2>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-bob\", \"filters\": \"{\\\"x\\\": 1}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [], \"models\": [], \"name\": \"K\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:4d6594b4e7ac5e2b6b092d4518aac7827a569ea3ce63deccf5b182bfa6ec7567",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-3>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-bob",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -2968,6 +3282,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [{\"_key\": \"<uuid-2>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-bob\", \"filters\": \"{\\\"x\\\": 1}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [], \"models\": [], \"name\": \"K\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:4d6594b4e7ac5e2b6b092d4518aac7827a569ea3ce63deccf5b182bfa6ec7567",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-3>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-bob",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -3118,6 +3448,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Solo\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:203c645eeca787adbb5e66f48ce6e6ba331f92b8487a51918faea730105ba86f",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -3222,6 +3602,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Solo\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:203c645eeca787adbb5e66f48ce6e6ba331f92b8487a51918faea730105ba86f",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -3752,6 +4148,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"N\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:7a72c61cf73742a3258e75ca023675981e39a8773ebf162283129f73b9ab6f01",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -3856,6 +4302,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"N\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:7a72c61cf73742a3258e75ca023675981e39a8773ebf162283129f73b9ab6f01",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -4871,6 +5333,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Bot\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:4615a66ecd821009d01863715c80e3cf20f97dc96d628b0e2289be09ef47acfc",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-2>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -4983,6 +5495,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Bot\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:4615a66ecd821009d01863715c80e3cf20f97dc96d628b0e2289be09ef47acfc",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-2>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -5258,6 +5786,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "<uuid-1>",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "<uuid-1>",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "<uuid-1>",
+       "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"T\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.b\", \"name\": \"b\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"webSearch\": null}",
+       "digest": "sha256:539ab3aec4283580891931d8a485e93cda14ae15d2134c66e1edd4a1036de856",
+       "id": "<uuid-1>-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-6>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "<uuid-1>-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -5434,6 +6012,22 @@
      "type": "app",
      "updatedAtTimestamp": "<ts>",
      "userId": "u-alice"
+    }
+   },
+   "agentVersions": {
+    "<uuid-1>-v1": {
+     "_key": "<uuid-1>-v1",
+     "agentKey": "<uuid-1>",
+     "definition": "{\"apiToolsetTools\": [], \"defaultReasoningEffort\": null, \"description\": \"AI agent for task automation\", \"instructions\": null, \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"T\", \"sendUserContext\": true, \"serviceAccountUserId\": null, \"skills\": [], \"startMessage\": \"Hello! How can I help you today?\", \"systemPrompt\": \"You are a workplace productivity assistant. Help users with their connected work tools.\", \"tags\": [], \"toolsets\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.b\", \"name\": \"b\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"webSearch\": null}",
+     "digest": "sha256:539ab3aec4283580891931d8a485e93cda14ae15d2134c66e1edd4a1036de856",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-6>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -5741,7 +6335,17 @@
  "update-become-sa": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:f143c706f1aadad1b06c640c1196cd1982ee6bc66c674c0ba15c71dc72ae9ad6",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -5807,6 +6411,56 @@
      "org-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"apiToolsetTools\": [], \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:f143c706f1aadad1b06c640c1196cd1982ee6bc66c674c0ba15c71dc72ae9ad6",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 0,
@@ -5856,6 +6510,7 @@
    "agentInstances": {
     "private": {
      "_key": "private",
+     "apiToolsetTools": [],
      "createdBy": "k-alice",
      "description": "alice only",
      "isDeleted": false,
@@ -5890,6 +6545,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"apiToolsetTools\": [], \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:f143c706f1aadad1b06c640c1196cd1982ee6bc66c674c0ba15c71dc72ae9ad6",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -5941,7 +6612,17 @@
  "update-body-owner-fields-ignored": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:0cc2b8f7d00ae7aa9ba727dfdd6b03415ebd18be0c4413807709239e0f1a6edf",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -5988,6 +6669,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"x\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:0cc2b8f7d00ae7aa9ba727dfdd6b03415ebd18be0c4413807709239e0f1a6edf",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -6064,6 +6795,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"x\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:0cc2b8f7d00ae7aa9ba727dfdd6b03415ebd18be0c4413807709239e0f1a6edf",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -6256,7 +7003,17 @@
  "update-effort": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:c05fa9457c031b8f7b2a9af1240f8215df2936953d34ded8af673476c401b394",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -6301,6 +7058,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"defaultReasoningEffort\": \"low\", \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:c05fa9457c031b8f7b2a9af1240f8215df2936953d34ded8af673476c401b394",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -6378,6 +7185,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"defaultReasoningEffort\": \"low\", \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:c05fa9457c031b8f7b2a9af1240f8215df2936953d34ded8af673476c401b394",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -6561,7 +7384,17 @@
  "update-effort-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:92ac6044a4f7adf30140944eae0239dc168ec3d9f5cc796bbbb45c82dfb3a775",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -6606,6 +7439,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"defaultReasoningEffort\": null, \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:92ac6044a4f7adf30140944eae0239dc168ec3d9f5cc796bbbb45c82dfb3a775",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -6685,6 +7568,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"defaultReasoningEffort\": null, \"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:92ac6044a4f7adf30140944eae0239dc168ec3d9f5cc796bbbb45c82dfb3a775",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -6734,7 +7633,17 @@
  "update-empty-body": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -6777,6 +7686,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -6855,6 +7814,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -6904,7 +7879,17 @@
  "update-everything": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:45d571974da44d67812a366028eafa170952f2499b823bb41b257c260efb9389",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -7336,6 +8321,56 @@
      "txn-4"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"<uuid-4>\", \"connectorId\": \"c9\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"<uuid-3>\", \"allTools\": true, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Gh\", \"instanceId\": \"mi\", \"name\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [\"m_n\"], \"name\": \"All\", \"skills\": [{\"name\": \"mine\"}], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"<uuid-1>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}]}",
+       "digest": "sha256:45d571974da44d67812a366028eafa170952f2499b823bb41b257c260efb9389",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-5>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 4,
@@ -7508,6 +8543,22 @@
      "type": "app",
      "updatedAtTimestamp": "<ts>",
      "userId": "u-alice"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"<uuid-4>\", \"connectorId\": \"c9\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"<uuid-3>\", \"allTools\": true, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Gh\", \"instanceId\": \"mi\", \"name\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [\"m_n\"], \"name\": \"All\", \"skills\": [{\"name\": \"mine\"}], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"<uuid-1>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}]}",
+     "digest": "sha256:45d571974da44d67812a366028eafa170952f2499b823bb41b257c260efb9389",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-5>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -7861,7 +8912,17 @@
  "update-knowledge-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:7f627fc1a0f34235b49428de390d6d9df2d5bc696f841a0ac2777138b6790719",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -7946,6 +9007,56 @@
     "commit_transaction",
     [
      "txn-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+       "digest": "sha256:7f627fc1a0f34235b49428de390d6d9df2d5bc696f841a0ac2777138b6790719",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -8061,6 +9172,22 @@
     "ts-old": {
      "_key": "ts-old",
      "name": "jira"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+     "digest": "sha256:7f627fc1a0f34235b49428de390d6d9df2d5bc696f841a0ac2777138b6790719",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -8699,7 +9826,17 @@
  "update-knowledge-replace": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:acfaf92d1d6dc4a59ce76c6f107836b6ed335189af407e7f3cd93ef97e3d451c",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -8840,6 +9977,56 @@
     "commit_transaction",
     [
      "txn-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"<uuid-1>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{\\\"a\\\": 1}\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-2>\", \"connectorId\": \"c2\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+       "digest": "sha256:acfaf92d1d6dc4a59ce76c6f107836b6ed335189af407e7f3cd93ef97e3d451c",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-3>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -8987,6 +10174,22 @@
      "name": "jira"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"<uuid-1>\", \"connectorId\": \"c1\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{\\\"a\\\": 1}\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-2>\", \"connectorId\": \"c2\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"filters\": \"{}\", \"updatedAtTimestamp\": \"<ts>\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+     "digest": "sha256:acfaf92d1d6dc4a59ce76c6f107836b6ed335189af407e7f3cd93ef97e3d451c",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-3>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -9036,7 +10239,17 @@
  "update-mcp-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:79c25afa591ce4e5f991f93c6e9c90e70366c81f2bdddce3b81ebd146ec8d59d",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -9129,6 +10342,56 @@
     "commit_transaction",
     [
      "txn-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+       "digest": "sha256:79c25afa591ce4e5f991f93c6e9c90e70366c81f2bdddce3b81ebd146ec8d59d",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -9245,6 +10508,22 @@
     "ts-old": {
      "_key": "ts-old",
      "name": "jira"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+     "digest": "sha256:79c25afa591ce4e5f991f93c6e9c90e70366c81f2bdddce3b81ebd146ec8d59d",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -10125,7 +11404,17 @@
  "update-mcp-replace": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:339b9ea527543303e0f77886e77731203ab4ed773f02a514b8cf8b83baa3fc7d",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -10300,6 +11589,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"<uuid-1>\", \"allTools\": false, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Github\", \"instanceId\": \"mi-1\", \"name\": \"github\", \"tools\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"mcp_github_t\", \"name\": \"t\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}], \"typeId\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+       "digest": "sha256:339b9ea527543303e0f77886e77731203ab4ed773f02a514b8cf8b83baa3fc7d",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-3>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -10452,6 +11791,22 @@
     "ts-old": {
      "_key": "ts-old",
      "name": "jira"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"<uuid-1>\", \"allTools\": false, \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Github\", \"instanceId\": \"mi-1\", \"name\": \"github\", \"tools\": [{\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"mcp_github_t\", \"name\": \"t\", \"toolsetName\": \"github\", \"updatedAtTimestamp\": \"<ts>\"}], \"typeId\": \"gh\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"ts-old\", \"name\": \"jira\", \"tools\": [{\"_key\": \"tool-old\", \"fullName\": \"jira.search\", \"name\": \"search\"}]}]}",
+     "digest": "sha256:339b9ea527543303e0f77886e77731203ab4ed773f02a514b8cf8b83baa3fc7d",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-3>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -10644,7 +11999,17 @@
  "update-models": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:5b780a3196dc25117ff15bcaf9d06aac293d44406bb0e3af1b4ccc98f3660df6",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -10695,6 +12060,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [\"m1_n\"], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:5b780a3196dc25117ff15bcaf9d06aac293d44406bb0e3af1b4ccc98f3660df6",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -10775,6 +12190,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [\"m1_n\"], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:5b780a3196dc25117ff15bcaf9d06aac293d44406bb0e3af1b4ccc98f3660df6",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -10824,7 +12255,17 @@
  "update-models-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -10869,6 +12310,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -10945,6 +12436,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -11534,7 +13041,17 @@
  "update-rename": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:204389a16800f390837f58e404e03aaf7e48b87e66b6aee534bac7fcb367b284",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -11579,6 +13096,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Renamed\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:204389a16800f390837f58e404e03aaf7e48b87e66b6aee534bac7fcb367b284",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -11655,6 +13222,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Renamed\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:204389a16800f390837f58e404e03aaf7e48b87e66b6aee534bac7fcb367b284",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -12004,7 +13587,17 @@
  "update-scalars": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:c3be49603377feabc31192f500b2f59afeeba4f054e6ab2f86666fff800aef19",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -12058,6 +13651,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"d2\", \"instructions\": \"i2\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"sendUserContext\": false, \"skills\": [], \"startMessage\": \"s2\", \"systemPrompt\": \"p2\", \"tags\": [\"x\", \"y\"], \"toolsets\": []}",
+       "digest": "sha256:c3be49603377feabc31192f500b2f59afeeba4f054e6ab2f86666fff800aef19",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -12141,6 +13784,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"d2\", \"instructions\": \"i2\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"sendUserContext\": false, \"skills\": [], \"startMessage\": \"s2\", \"systemPrompt\": \"p2\", \"tags\": [\"x\", \"y\"], \"toolsets\": []}",
+     "digest": "sha256:c3be49603377feabc31192f500b2f59afeeba4f054e6ab2f86666fff800aef19",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -12190,7 +13849,17 @@
  "update-share-off": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "shared",
+    "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -12250,6 +13919,56 @@
      "shared",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "shared",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "shared",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "shared",
+       "definition": "{\"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent shared\", \"skills\": [], \"toolsets\": []}",
+       "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+       "id": "shared-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "shared-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -12322,6 +14041,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "shared-v1": {
+     "_key": "shared-v1",
+     "agentKey": "shared",
+     "definition": "{\"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent shared\", \"skills\": [], \"toolsets\": []}",
+     "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -12371,7 +14106,17 @@
  "update-share-on": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -12433,6 +14178,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -12519,6 +14314,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -12568,7 +14379,17 @@
  "update-share-unchanged": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "shared",
+    "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -12613,6 +14434,56 @@
      "shared",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "shared",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "shared",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "shared",
+       "definition": "{\"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent shared\", \"skills\": [], \"toolsets\": []}",
+       "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+       "id": "shared-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "shared-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -12691,6 +14562,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "shared-v1": {
+     "_key": "shared-v1",
+     "agentKey": "shared",
+     "definition": "{\"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent shared\", \"skills\": [], \"toolsets\": []}",
+     "digest": "sha256:a8df877fc9a0e26c936513772f91ded64d4bcc9f326e4df6f1c911b3780f1ede",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -12740,7 +14627,17 @@
  "update-skills": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:4a6aeb6f80aa1b18f071f64f7a56069bdf26559097bf517d5c2847523ee7b20d",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -12844,6 +14741,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [{\"name\": \"mine\"}], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:4a6aeb6f80aa1b18f071f64f7a56069bdf26559097bf517d5c2847523ee7b20d",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -12929,6 +14876,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [{\"name\": \"mine\"}], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:4a6aeb6f80aa1b18f071f64f7a56069bdf26559097bf517d5c2847523ee7b20d",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -12978,7 +14941,17 @@
  "update-skills-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -13045,6 +15018,56 @@
     "commit_transaction",
     [
      "txn-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -13122,6 +15145,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:1ece6411a2eb81416334623f14a5dc4bb81e5c466f03a918c312bc1676060320",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {
@@ -13666,7 +15705,17 @@
  "update-toolsets-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:aaf2e6e03cd17b9ecc3e942e9825a9903814d7f1c9ba020ce0899f473ab62f7e",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -13779,6 +15828,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+       "digest": "sha256:aaf2e6e03cd17b9ecc3e942e9825a9903814d7f1c9ba020ce0899f473ab62f7e",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -13884,6 +15983,22 @@
    },
    "agentTools": {},
    "agentToolsets": {},
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": []}",
+     "digest": "sha256:aaf2e6e03cd17b9ecc3e942e9825a9903814d7f1c9ba020ce0899f473ab62f7e",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -14567,7 +16682,17 @@
  "update-toolsets-replace": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:f17a2551e3dea197549b7f2bdb4b4df33d6f2a882919990aff411f8ea871c373",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -14820,6 +16945,56 @@
      "txn-1"
     ],
     {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"<uuid-1>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"instanceId\": \"inst-1\", \"instanceName\": \"S\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.send\", \"name\": \"send\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.b\", \"name\": \"b\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}]}",
+       "digest": "sha256:f17a2551e3dea197549b7f2bdb4b4df33d6f2a882919990aff411f8ea871c373",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-6>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
+    ],
+    {}
    ]
   ],
   "committed": 1,
@@ -15011,6 +17186,22 @@
      "userId": "u-alice"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [{\"_key\": \"k-old\", \"connectorId\": \"c-old\", \"filters\": \"{}\"}], \"mcpServers\": [{\"_key\": \"mcp-old\", \"instanceId\": \"old\"}], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [{\"_key\": \"<uuid-1>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Slack\", \"instanceId\": \"inst-1\", \"instanceName\": \"S\", \"name\": \"slack\", \"tools\": [{\"_key\": \"<uuid-3>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"slack.send\", \"name\": \"send\", \"toolsetName\": \"slack\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}, {\"_key\": \"<uuid-2>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"displayName\": \"Jira\", \"name\": \"jira\", \"tools\": [{\"_key\": \"<uuid-4>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.a\", \"name\": \"a\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}, {\"_key\": \"<uuid-5>\", \"createdAtTimestamp\": \"<ts>\", \"createdBy\": \"k-alice\", \"description\": \"\", \"fullName\": \"jira.b\", \"name\": \"b\", \"toolsetName\": \"jira\", \"updatedAtTimestamp\": \"<ts>\"}], \"type\": \"app\", \"updatedAtTimestamp\": \"<ts>\", \"userId\": \"u-alice\"}]}",
+     "digest": "sha256:f17a2551e3dea197549b7f2bdb4b4df33d6f2a882919990aff411f8ea871c373",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-6>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -15184,7 +17375,17 @@
  "update-web-search": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:36af9afdcb35ce5a6b1134ae931de81f1b4cf2fec79c7eb7bfaeb5481f4c6f44",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -15229,6 +17430,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [], \"webSearch\": \"tavily\"}",
+       "digest": "sha256:36af9afdcb35ce5a6b1134ae931de81f1b4cf2fec79c7eb7bfaeb5481f4c6f44",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -15308,6 +17559,22 @@
      "orgId": "org-1"
     }
    },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [], \"webSearch\": \"tavily\"}",
+     "digest": "sha256:36af9afdcb35ce5a6b1134ae931de81f1b4cf2fec79c7eb7bfaeb5481f4c6f44",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
+    }
+   },
    "organizations": {
     "org-1": {
      "_key": "org-1",
@@ -15357,7 +17624,17 @@
  "update-web-search-clear": {
   "body": {
    "message": "Agent updated successfully",
-   "status": "success"
+   "status": "success",
+   "version": {
+    "agentKey": "private",
+    "digest": "sha256:2845ed4f3576a4091a362ef84727ba30703c2f8457bbf31a4e54045e171add3d",
+    "note": null,
+    "publishedAtTimestamp": "<ts>",
+    "publishedBy": "u-alice",
+    "rolledBackFrom": null,
+    "source": "publish",
+    "version": 1
+   }
   },
   "calls": [
    [
@@ -15402,6 +17679,56 @@
      "private",
      "k-alice",
      "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_agent",
+    [
+     "private",
+     "org-1"
+    ],
+    {}
+   ],
+   [
+    "get_nodes_by_filters",
+    [
+     "agentVersions",
+     {
+      "agentKey": "private",
+      "orgId": "org-1"
+     }
+    ],
+    {}
+   ],
+   [
+    "ensure_nodes",
+    [
+     [
+      {
+       "agentKey": "private",
+       "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [], \"webSearch\": null}",
+       "digest": "sha256:2845ed4f3576a4091a362ef84727ba30703c2f8457bbf31a4e54045e171add3d",
+       "id": "private-v1",
+       "note": null,
+       "orgId": "org-1",
+       "publishId": "<publish-1>",
+       "publishedAtTimestamp": "<ts>",
+       "publishedBy": "u-alice",
+       "rolledBackFrom": null,
+       "source": "publish",
+       "version": 1
+      }
+     ],
+     "agentVersions"
+    ],
+    {}
+   ],
+   [
+    "get_document",
+    [
+     "private-v1",
+     "agentVersions"
     ],
     {}
    ]
@@ -15479,6 +17806,22 @@
      "createdBy": "k-alice",
      "name": "mine",
      "orgId": "org-1"
+    }
+   },
+   "agentVersions": {
+    "private-v1": {
+     "_key": "private-v1",
+     "agentKey": "private",
+     "definition": "{\"description\": \"alice only\", \"knowledge\": [], \"mcpServers\": [], \"models\": [], \"name\": \"Agent private\", \"skills\": [], \"systemPrompt\": \"old prompt\", \"tags\": [\"a\"], \"toolsets\": [], \"webSearch\": null}",
+     "digest": "sha256:2845ed4f3576a4091a362ef84727ba30703c2f8457bbf31a4e54045e171add3d",
+     "note": null,
+     "orgId": "org-1",
+     "publishId": "<publish-1>",
+     "publishedAtTimestamp": "<ts>",
+     "publishedBy": "u-alice",
+     "rolledBackFrom": null,
+     "source": "publish",
+     "version": 1
     }
    },
    "organizations": {

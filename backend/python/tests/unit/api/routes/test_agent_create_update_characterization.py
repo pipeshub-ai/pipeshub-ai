@@ -68,6 +68,12 @@ class _Normalizer:
             return value
         if isinstance(value, int) and key and key.endswith("Timestamp"):
             return "<ts>"
+        if isinstance(value, str) and key == "definition" and value.startswith("{"):
+            # A version's definition is the agent kept as JSON text: normalised as the documents are.
+            return json.dumps(self(json.loads(value)), sort_keys=True)
+        if isinstance(value, str) and key == "publishId":
+            # A version's publish id is a fresh random hex per publish: numbered like the ids, by first appearance.
+            return self.uuids.setdefault(value, f"<publish-{len(self.uuids) + 1}>")
         if isinstance(value, str):
             return UUID_RE.sub(self._uuid, value)
         return value
@@ -309,4 +315,8 @@ def test_create_response_shape() -> None:
 
 
 def test_update_response_shape() -> None:
-    assert _load()["update-rename"]["body"] == {"status": "success", "message": "Agent updated successfully"}
+    body = _load()["update-rename"]["body"]
+    # An update publishes the agent and names the version it published, as the agent routes answer since versions.
+    assert set(body) == {"status", "message", "version"}
+    assert (body["status"], body["message"]) == ("success", "Agent updated successfully")
+    assert body["version"]["agentKey"] == "private"
