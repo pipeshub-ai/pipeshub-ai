@@ -146,6 +146,8 @@ async def test_a_repo_key_is_casefolded_in_python_not_by_the_store(store) -> Non
     g, strip = store
     org = _org()
     with ctx(org):
+        # The backfill walks the store's orgs, so the group's org exists, as it does for every group a connector writes.
+        await g.batch_upsert_nodes([{"_key": org, "accountType": "enterprise", "isActive": True, "name": "path-scope"}], "organizations")
         group = RecordGroup(org_id=org, name="acme/Straße", external_group_id=f"ext-{org}", group_type=RecordGroupType.REPOSITORY,
                             connector_name=Connectors.GITHUB, connector_id="conn-cps")
         await g.batch_upsert_record_groups([group])
