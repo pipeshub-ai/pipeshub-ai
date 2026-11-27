@@ -381,23 +381,27 @@ def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_col
                 c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = 'w_trash_set'").fetchone()[0],
                 c.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'kg' AND table_name = 'records' AND column_name IN ('deleted_ms', 'delete_batch')").fetchone()[0],
                 c.execute("SELECT count(*) FROM pg_indexes WHERE schemaname = 'kg' AND indexname IN ('records_trash', 'records_trash_batch')").fetchone()[0],
-                c.execute("""SELECT kg.proj_doc('records', '{"deleteBatchId": "b", "deletedAtTimestamp": 1, "recordName": "n"}'::jsonb)::text""").fetchone()[0])
+                c.execute("""SELECT kg.proj_doc('records', '{"deleteBatchId": "b", "deletedAtTimestamp": 1, "recordName": "n"}'::jsonb)::text""").fetchone()[0],
+                # kg_0029's index of the same columns, valid
+                c.execute("SELECT count(*) FROM pg_index WHERE indexrelid = to_regclass('kg.records_trash_app_batch') AND indisvalid").fetchone()[0])
 
     with_trash = '{"recordName": "n", "deleteBatchId": "b", "deletedAtTimestamp": 1}'
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert state(c) == (False, True, 1, 2, 2, with_trash)
+        assert state(c) == (False, True, 1, 2, 2, with_trash, 1)
     r = run_migrate(url, "downgrade", "kg_0018", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert state(c) == (True, True, 0, 0, 0, '{"recordName": "n"}')
+        assert state(c) == (True, True, 0, 0, 0, '{"recordName": "n"}', 0)
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
         assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
+    # an install behind kg_0019: the online pre-build of kg_0029's index names columns kg_0019 adds, so kg_0029 builds it in the upgrade's transaction
+    assert "index kg.records_trash_app_batch: built in the upgrade's transaction instead" in r.stdout, r.stdout
     with connect(cluster, name) as c:
-        assert state(c) == (False, True, 1, 2, 2, with_trash)
+        assert state(c) == (False, True, 1, 2, 2, with_trash, 1)
         assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
