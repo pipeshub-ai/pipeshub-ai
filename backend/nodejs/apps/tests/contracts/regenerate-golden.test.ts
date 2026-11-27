@@ -7,9 +7,15 @@ import { AGENT_KEY, Flow, seedConversation, startStream } from '../modules/enter
 import { FakeAIBackend, settle } from '../modules/enterprise_search/controller/chat-test-harness'
 import { appConfig } from '../modules/enterprise_search/controller/streaming-flows'
 import { GOLDEN_DIR, SCENARIOS, compareOrWrite, normalize, readUpstream } from './support/golden'
-import { DURABLE_SCENARIOS, liveSteps, normalizeFrames, parseSse, project, readJournal } from './support/durable'
-import type { AguiFrame } from '../../src/modules/agent-harness/projection/frames'
-import { StreamRelay } from '../../src/modules/enterprise_search/utils/relay-events'
+import {
+  DURABLE_SCENARIOS,
+  liveSteps,
+  normalizeFrames,
+  parseSse,
+  project,
+  readJournal,
+  snapshotsAsTheLegacyRelaySendsThem,
+} from './support/durable'
 import { registerUpstreams } from '../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../src/modules/tokens_manager/config/config'
 import { behindGuard, realGuards } from '../modules/enterprise_search/helpers/guarded-chat'
@@ -53,21 +59,6 @@ const askerReadsAll = (ai: FakeAIBackend): void => {
     status: 200,
     body: { accessible: call.body['recordIds'] ?? [], accessibleUrls: [], unmatchedUrls: call.body['webUrls'] ?? [] },
   }))
-}
-
-/**
- * The legacy route's relay sends a state snapshot's progress fields only, and the final snapshot without the answer it
- * carried (`StreamRelay`); the durable projection sends the whole snapshot. So the durable snapshots are compared as
- * that relay sends them, and every other frame as it is.
- */
-const snapshotsAsTheLegacyRelaySendsThem = (frames: AguiFrame[]): AguiFrame[] => {
-  const relay = new StreamRelay()
-  return frames.map((frame) => {
-    if (frame.type !== 'STATE_SNAPSHOT') return frame
-    const sent = relay.relay('STATE_SNAPSHOT', JSON.stringify(frame))
-    expect(sent, 'the relay sends a state snapshot').to.not.equal('')
-    return JSON.parse(sent.slice(sent.indexOf('data: ') + 'data: '.length)) as AguiFrame
-  })
 }
 
 const regenerated = SCENARIOS.filter((s) => DURABLE_SCENARIOS.includes(s.name)).map((s) => ({

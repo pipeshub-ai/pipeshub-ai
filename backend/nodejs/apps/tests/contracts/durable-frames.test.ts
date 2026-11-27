@@ -14,13 +14,15 @@ import {
   parseSse,
   project,
   readJournal,
+  snapshotsAsTheLegacyRelaySendsThem,
 } from './support/durable'
 
 /**
  * D-5 at browser-frame level: each P0.7 agent and chat scenario, run durably
  * (`contracts/harness/vectors/journals/`), projected by Node, gives the frames
- * the legacy stream gave (`tests/contracts/golden/<scenario>.sse`) modulo ids
- * and delta chunking — live (Redis) and journal-only (no Redis, L-5).
+ * the legacy stream gave (`tests/contracts/golden/<scenario>.sse`) modulo ids,
+ * delta chunking and the legacy relay's snapshot fields — live (Redis) and
+ * journal-only (no Redis, L-5).
  */
 const compareOrWriteAt = (target: string, actual: string): void => {
   if (updateGoldens()) {
@@ -39,13 +41,13 @@ describe('contract: durable runs stream the legacy browser frames (D-5)', () => 
     it(`${scenario}: live`, () => {
       const journal = readJournal(scenario)
       const frames = project(journal, liveSteps(journal))
-      expect(normalizeFrames(frames.map((f) => f.frame))).to.deep.equal(legacy())
+      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(frames.map((f) => f.frame)))).to.deep.equal(legacy())
     })
 
     it(`${scenario}: journal only`, () => {
       const journal = readJournal(scenario)
       const frames = project(journal, journalOnlySteps(journal))
-      expect(normalizeFrames(frames.map((f) => f.frame))).to.deep.equal(legacy())
+      expect(normalizeFrames(snapshotsAsTheLegacyRelaySendsThem(frames.map((f) => f.frame)))).to.deep.equal(legacy())
     })
   }
 })
