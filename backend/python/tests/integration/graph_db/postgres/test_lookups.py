@@ -693,6 +693,37 @@ async def test_a_link_holder_read_in_a_callers_transaction_leaves_its_settings_a
     assert (got["s"], got["b"]) == ("on", "on"), dict(got)
 
 
+async def test_a_link_holder_read_that_loses_its_connection_is_retried(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A standalone read whose connection drops during the lookup (after the profile's statement) is read again in a new unit, as any read of one statement is:
+    the unit is a read, so the statement it had already run takes nothing from the retry."""
+    import asyncpg
+    p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    u = "https://dropped.example/p"
+    await p.batch_upsert_nodes([raw(p.org, "dz-link", webUrl=u, recordType="LINK", connectorName="SLACK WORKSPACE"), raw(p.org, "dz-holder", recordType="MESSAGE")], "records")
+    await p.batch_create_edges([{"from_id": "dz-holder", "from_collection": "records", "to_id": "dz-link", "to_collection": "records",
+                                 "relationshipType": "PARENT_CHILD"}], "nodeRelations")
+    dropped: list[str] = []
+    real = Tx._run
+
+    async def drop(self: Tx, op: str, sql: str, *args: object, internal: bool = False) -> object:
+        if "pipeshub:graph.get_records_linking_to_weburls" in sql and not dropped:
+            dropped.append(sql)
+            kind = type(self._con)      # the pool's proxy: its methods are its class's
+            con_fetch = kind.fetch
+
+            async def lost(*a: object, **k: object) -> object:
+                raise asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed in the middle of operation")
+            monkeypatch.setattr(kind, "fetch", lost)
+            try:
+                return await real(self, op, sql, *args, internal=internal)
+            finally:
+                monkeypatch.setattr(kind, "fetch", con_fetch)
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(Tx, "_run", drop)
+    assert await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE"]) == ["dz-holder"]
+    assert dropped
+
+
 async def test_more_addresses_than_one_probe_takes_are_read_in_one_statement(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """graph.records_by_weburl takes 1,000 addresses a call. 2,502 are read by one statement, so from one snapshot, outside a transaction and inside
     the caller's (whose separate statements would each read their own snapshot)."""

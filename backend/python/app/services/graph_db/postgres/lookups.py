@@ -169,7 +169,11 @@ class LookupsMixin(PgBase):
             if transaction is not None:      # the caller's transaction goes on with the settings it had
                 await tx.fetchval(LINKING_RESTORE, was["s"], was["b"])
             return rows
-        return await self._q(read, transaction)
+        if transaction:
+            return await self._txn(transaction).run(read)
+        # a read of its own: idempotent, so a connection lost after the profile's statement is still retried (with that statement done, the unit would
+        # otherwise count as one that did work and give the retry up)
+        return await self._db.run(read, idempotent=True, jobs=current_or_system().kind == "system")
 
     async def get_record_by_weburl(self, weburl: str, org_id: str | None = None, transaction: str | None = None) -> Record | None:
         """By exact web URL; LINK records are skipped."""
