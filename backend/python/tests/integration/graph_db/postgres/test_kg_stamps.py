@@ -518,6 +518,7 @@ async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_
     assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_stampers_facts_are_read_by_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
     """The graph is analysed before this org's 20,000 records, 200 groups and 2,000 users are written (its first load, before autovacuum reaches it), so
     the planner puts the org at a row. Each fact the stamper reads for 500 records is read by the record's key and each edge's other end by its own: joined,

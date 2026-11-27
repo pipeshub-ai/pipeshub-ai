@@ -531,6 +531,8 @@ export const providerType = z.string().min(1, 'Provider is required');
 // downstream errors like "Vertex AI requires a service account JSON" even when
 // the user uploaded one.
 //
+// Blank is allowed; the value is placed in a hostname, so nothing that could change the host.
+const PROVIDER_REGION_PATTERN = /^[^./\\@:#?%\s\p{Cc}]*$/u;
 export const configurationSchema = z.object({
   model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-5.6-luna, gpt-5.6-terra')"),
   modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
@@ -541,7 +543,9 @@ export const configurationSchema = z.object({
   provider: z.string().optional().describe("Provider name"),
   awsAccessKeyId: z.string().optional().describe("AWS access key ID"),
   awsAccessSecretKey: z.string().optional().describe("AWS secret access key"),
-  region: z.string().optional().describe("AWS region"),
+  region: z.string().trim().regex(PROVIDER_REGION_PATTERN, { message: 'Region cannot contain dots, slashes, colons, @, #, ?, % or spaces' }).optional().describe("AWS region"),
+    // eslint-disable-next-line prettier/prettier -- matches the unformatted schema around it; formatting it alone would mis-indent the block
+  location: z.string().trim().regex(PROVIDER_REGION_PATTERN, { message: 'Location cannot contain dots, slashes, colons, @, #, ?, % or spaces' }).optional().describe("Provider location"),
   model_kwargs: z.record(z.string(), z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.string(), z.any()).optional().describe("Additional encoding kwargs"),
   cache_folder: z.string().optional().describe("Cache folder for models"),

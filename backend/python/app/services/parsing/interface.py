@@ -91,6 +91,9 @@ class IParser(Protocol):
 # ``details.reason`` of a ``PARSE_BACKPRESSURE`` answer whose cause is that Docling never received the file.
 DOCLING_UNAVAILABLE_REASON = "docling_unavailable"
 
+# The parse request's part carrying the stored version's table rows (``table_row_memory.encode_stored_tables``) on an update.
+STORED_ROWS_PART = "stored_rows"
+
 
 class ParseErrorCode(str, Enum):
     UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
