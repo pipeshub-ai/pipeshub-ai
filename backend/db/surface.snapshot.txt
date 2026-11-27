@@ -1979,7 +1979,8 @@ func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=
 func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
 func kernel._internal_policy_md5(regclass,name) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog body=2c3f2ecf3de45cbf160a0250124e3917 ext=-
-func kernel._secure_rel(regclass,regclass,text,boolean,boolean,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=45e944ca69cf028cb941e242e4632ec7 ext=-
+func kernel._org_erase_policy_ok(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, pg_temp body=5b7d12c5266f4df90d1e8e3cc63aa475 ext=-
+func kernel._secure_rel(regclass,regclass,text,boolean,boolean,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=d07de2685eca942080965f9738a40882 ext=-
 func kernel._sync_vetted_privs(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=747275dd9bec9bbdfed44bae8293ba49 ext=-
 func kernel._vetted_org_policy(regclass,regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=4ef3b302aaac501d6fb397dbca31f17c ext=-
 func kernel.allow_vetted_delete(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b8b4486fa5fdd2cbc37ea306db8250f9 ext=-
@@ -1989,6 +1990,7 @@ func kernel.apply_rls(regclass,text,boolean,boolean,text,boolean) owner=pipeshub
 func kernel.apply_rls_partition(regclass,regclass,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=11c43c9acfff84c19685af9a65f2ddb8 ext=-
 func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=cc876dc61477062d7871f416a9a653b6 ext=-
 func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=75d08837d920da2585b2a05c27d5a707 ext=-
+func kernel.assert_org_writable(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=acf233f5241cac6f42be89b04a33b13a ext=-
 func kernel.declare_extension_schema(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b9da3c6332da59a2fbc1ddb6040080c5 ext=-
 func kernel.exempt_constraint(regclass,name,text,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=32c4a15e8a767e354922828a28af36e8 ext=-
 func kernel.exempt_trigger(regprocedure,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ba198108fb9374224c91da29e844c153 ext=-
@@ -1997,6 +1999,7 @@ func kernel.grant_job_gate(name) owner=pipeshub_owner secdef=false leakproof=fal
 func kernel.grant_vetted_owner_select(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=a1427a71de0492fa7b22f3b784064bd8 ext=-
 func kernel.has_extension(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, pg_temp body=9a911c56d70d1fb1fdc091c65d4ed2c9 ext=-
 func kernel.mark_person(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b484b2534a793edfa2ae9602b73116a0 ext=-
+func kernel.org_erase_allows(text) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, kernel, pg_temp body=3ae94a39ba9f187cd82a90200bb15269 ext=-
 func kernel.org_lineage(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=13472cd4766a802b66ccfd6b2a167682 ext=-
 func kernel.org_parent_ids(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=784c5292fdf530dd3ed72a8f021e7f2e ext=-
 func kernel.org_writes_held(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=8737922293d78caae4dadbd30b399e32 ext=-
@@ -2180,6 +2183,7 @@ funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
 funcacl identity.oldest_org() pipeshub_node EXECUTE
 funcacl identity.org_count(boolean) pipeshub_node EXECUTE
+funcacl kernel.assert_org_writable(text) pipeshub_jobs EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors_login EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_indexing EXECUTE
@@ -2835,469 +2839,573 @@ pin kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boole
 pin kg.w_trash_set(bigint[],smallint[],text[],smallint[],bigint[],text[]) kg.records upsert key=- set=deleted_ms,delete_batch txn=- max=5000
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy content.documents org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy content.documents org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.documents restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy content.project_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.project_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy content.project_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy content.project_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.project_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy content.projects backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.projects import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy content.projects org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy content.projects org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy content.projects restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_messages backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.chat_messages import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_messages jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_messages org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.chat_messages org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_messages restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_session_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.chat_session_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_session_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_session_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.chat_session_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_session_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.chat_sessions backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.chat_sessions import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.chat_sessions jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.chat_sessions org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.chat_sessions org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.chat_sessions restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.citations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.citations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.citations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.citations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.citations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.citations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.semantic_search_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.semantic_search_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.semantic_search_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.semantic_search_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.semantic_search_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_search_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy conversation.semantic_searches backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy conversation.semantic_searches import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy conversation.semantic_searches jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy conversation.semantic_searches org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy conversation.semantic_searches org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_searches restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.edges backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy graph.edges jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy graph.edges org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.edges org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.edges restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.nodes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy graph.nodes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy graph.nodes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.nodes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.nodes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.nodes vetted_read cmd=r permissive=true roles=pipeshub_vetted_graph using=true check=-
 policy graph.stats_apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_apps org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.stats_apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.stats_changes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_changes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.stats_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.stats_counts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_counts org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.stats_counts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_counts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.stats_records backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_records org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.stats_records org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_records restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.stats_sweeps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_sweeps org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy graph.stats_sweeps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.stats_sweeps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.admission_quotas backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.admission_quotas import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.admission_quotas jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.admission_quotas org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.admission_quotas org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.admission_quotas restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.admission_receipts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.admission_receipts import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.admission_receipts jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.admission_receipts org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.admission_receipts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.admission_receipts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.agent_erasures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.agent_erasures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.agent_erasures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.agent_erasures org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.agent_erasures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.agent_erasures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.audit_anchors backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.audit_anchors import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.audit_anchors jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.audit_anchors org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.audit_anchors org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.audit_anchors restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.audit_chain_checks backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.audit_chain_checks jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.audit_chain_checks org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.audit_chain_checks org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.audit_chain_checks restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.audit_heads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.audit_heads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.audit_heads jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.audit_heads org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.audit_heads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.audit_heads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.audit_pending backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.audit_pending import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.audit_pending jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.audit_pending org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.audit_pending org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.audit_pending restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.audit_records backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.audit_records import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.audit_records jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.audit_records org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.audit_records org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.audit_records restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.budget_accounts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.budget_accounts import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.budget_accounts jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.budget_accounts org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.budget_accounts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.budget_accounts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.budget_reservations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.budget_reservations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.budget_reservations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.budget_reservations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.budget_reservations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.budget_reservations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.command_receipts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.command_receipts import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.command_receipts jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.command_receipts org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.command_receipts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.command_receipts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_bindings backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_bindings import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.cp_bindings jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.cp_bindings org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_bindings org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_bindings restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_capability_ledger backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_capability_ledger import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_capability_ledger org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_capability_ledger org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_capability_ledger restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_catalog_items backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_catalog_items import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_catalog_items org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_catalog_items org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_catalog_items restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_grants backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_grants import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_grants org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_grants org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_grants restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_installation_history backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_installation_history import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_installation_history org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_installation_history org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_installation_history restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_installations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_installations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_installations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_installations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_installations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_migration_ledger backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_migration_ledger import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.cp_migration_ledger jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.cp_migration_ledger org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_migration_ledger org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_migration_ledger restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_org_heads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_org_heads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_org_heads org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_org_heads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_org_heads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_policy_history backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_policy_history import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy harness.cp_policy_history org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_policy_history org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_policy_history restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.cp_policy_layers backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.cp_policy_layers import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.cp_policy_layers jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.cp_policy_layers org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.cp_policy_layers org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.cp_policy_layers restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.data_keys backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.data_keys import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.data_keys jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.data_keys org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.data_keys org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.data_keys restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.engine_signins backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.engine_signins import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.engine_signins jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.engine_signins org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.engine_signins org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.engine_signins restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.erasure_backfill_items backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.erasure_backfill_items import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.erasure_backfill_items jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.erasure_backfill_items org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.erasure_backfill_items org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.erasure_backfill_items restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.erasure_backfill_markers backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.erasure_backfill_markers import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.erasure_backfill_markers jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.erasure_backfill_markers org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.erasure_backfill_markers org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.erasure_backfill_markers restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.inbox_preferences backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.inbox_preferences import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.inbox_preferences jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.inbox_preferences org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.inbox_preferences org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.inbox_preferences restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.journal_payloads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.journal_payloads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.journal_payloads jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.journal_payloads org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.journal_payloads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.journal_payloads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.memories backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.memories import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.memories jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.memories org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.memories org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.memories restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.next_runs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.next_runs import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.next_runs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.next_runs org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.next_runs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.next_runs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.personal_choices backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.personal_choices import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.personal_choices jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.personal_choices org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.personal_choices org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.personal_choices restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.principal_erasures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.principal_erasures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.principal_erasures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.principal_erasures org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.principal_erasures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.principal_erasures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.run_end_notices backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.run_end_notices import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.run_end_notices jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.run_end_notices org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.run_end_notices org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.run_end_notices restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.run_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.run_events import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.run_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.run_events org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.run_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.run_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.run_watchers backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.run_watchers jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.run_watchers org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.run_watchers org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.run_watchers restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.runs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.runs import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.runs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.runs org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.runs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.runs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.sandbox_snapshots backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.sandbox_snapshots import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.sandbox_snapshots jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.sandbox_snapshots org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.sandbox_snapshots org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.sandbox_snapshots restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.schedule_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.schedule_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.schedule_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.schedule_counters org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.schedule_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.schedule_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.schedule_firings backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.schedule_firings import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.schedule_firings jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.schedule_firings org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.schedule_firings org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.schedule_firings restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.schedules backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.schedules import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.schedules jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.schedules org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.schedules org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.schedules restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.session_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.session_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.session_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.session_counters org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.session_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.session_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.session_erasures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.session_erasures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.session_erasures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.session_erasures org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.session_erasures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.session_erasures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.session_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.session_events import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.session_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.session_events org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.session_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.session_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.session_forks backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.session_forks import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.session_forks jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.session_forks org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.session_forks org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.session_forks restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.stream_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.stream_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.stream_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.stream_counters org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.stream_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.stream_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.workspace_heads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.workspace_heads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.workspace_heads jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.workspace_heads org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.workspace_heads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.workspace_heads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.workspace_keys backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.workspace_keys import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.workspace_keys jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.workspace_keys org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.workspace_keys org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.workspace_keys restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.workspace_manifests backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.workspace_manifests import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy harness.workspace_manifests jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.workspace_manifests org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.workspace_manifests org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.workspace_manifests restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy harness.workspace_writers backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy harness.workspace_writers jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy harness.workspace_writers org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy harness.workspace_writers org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy harness.workspace_writers restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_auth_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_auth_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.org_auth_config org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_auth_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_auth_config vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy identity.org_logos backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_logos import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.org_logos org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.org_logos org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.org_logos restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.orgs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.orgs import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.orgs org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.orgs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.orgs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.orgs vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy identity.session_families backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.session_families jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.session_families org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.session_families org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.session_families restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.slug_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.slug_counters import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.slug_counters org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.slug_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.slug_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.used_reset_links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.used_reset_links import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.used_reset_links org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.used_reset_links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.used_reset_links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_activities backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_activities import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.user_activities org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.user_activities org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_activities restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_credentials backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_credentials import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.user_credentials org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.user_credentials org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_credentials restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_group_members import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.user_group_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.user_group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_groups import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.user_groups org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.user_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.user_pictures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.user_pictures import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.user_pictures org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.user_pictures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.user_pictures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.users backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.users import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy identity.users org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy identity.users org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.users restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.users vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
 policy integrations.slack_threads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy integrations.slack_threads import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy integrations.slack_threads org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy integrations.slack_threads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy integrations.slack_threads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy integrations.slack_user_links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy integrations.slack_user_links import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy integrations.slack_user_links org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy integrations.slack_user_links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy integrations.slack_user_links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.analyze_requests backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy kg.analyze_requests jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy kg.analyze_requests org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.analyze_requests org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.analyze_requests restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.analyze_requests vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.class_literals backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.class_literals org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.class_literals org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.class_literals restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.class_literals vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.counts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.counts org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.counts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.counts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.counts vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.graph_changes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.graph_changes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.graph_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.graph_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.graph_changes vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.links org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.links vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.node_keys backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.node_keys org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.node_keys org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.node_keys restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.node_keys vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.principal_closure backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.principal_closure org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.principal_closure org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.principal_closure restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.principal_closure vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.projection_state backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.projection_state org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.projection_state org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.projection_state restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.projection_state vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.records backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.records org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.records org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.records restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.records vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.restamp_queue backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.restamp_queue org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.restamp_queue org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.restamp_queue restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.restamp_queue vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scope_classes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.scope_classes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.scope_classes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scope_classes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.scope_classes vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scope_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.scope_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.scope_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scope_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.scope_members vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scopes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.scopes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kg.scopes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scopes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.scopes vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.access_tokens import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.access_tokens org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.access_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.agent_call_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.agent_call_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.agent_call_events org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.agent_call_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.agent_call_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.agent_registrations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.agent_registrations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.agent_registrations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.agent_registrations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.agent_registrations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.agent_registrations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.apps import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy oauth.apps org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.authorization_codes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.authorization_codes import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.authorization_codes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.authorization_codes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.authorization_codes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.authorization_codes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.delegation_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.delegation_events import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.delegation_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.delegation_events org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.delegation_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.delegation_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.device_authorizations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.device_authorizations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.device_authorizations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.device_authorizations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.device_authorizations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.device_authorizations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.refresh_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.refresh_tokens import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.refresh_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.refresh_tokens org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.refresh_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.refresh_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy oauth.service_account_delegations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.service_account_delegations import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy oauth.service_account_delegations org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy oauth.service_account_delegations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.service_account_delegations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.connectors_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.connectors_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy platform.connectors_config org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.connectors_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.connectors_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.consumer_inbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.consumer_inbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.consumer_inbox org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.consumer_inbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.consumer_inbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.docstore_changes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.docstore_changes import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.docstore_changes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.docstore_changes org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.docstore_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.docstore_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.docstore_keymap backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.docstore_keymap import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy platform.docstore_keymap org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.docstore_keymap org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.docstore_keymap restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.kv_entries kv_delete cmd=d permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR (expires_at <= now()) OR platform.kv_outside(platform.kv_access_path(key), 'delete'::text, expires_at)) check=-
@@ -3306,96 +3414,115 @@ policy platform.kv_entries kv_read cmd=r permissive=true roles=pipeshub_connecto
 policy platform.kv_entries kv_update cmd=w permissive=true roles=pipeshub_connectors,pipeshub_indexing,pipeshub_kv,pipeshub_node,pipeshub_query using=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at)) check=(platform.kv_may(platform.kv_access_path(key), true) OR platform.kv_outside(platform.kv_access_path(key), 'update'::text, expires_at))
 policy platform.mail_log backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.mail_log import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
+policy platform.mail_log org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.mail_log org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.mail_log restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.notifications backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.notifications import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.notifications jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.notifications org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.notifications org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.notifications restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.outbox backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.outbox import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy platform.outbox jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy platform.outbox org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy platform.outbox org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.outbox restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.collection_stats backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.collection_stats jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.collection_stats org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.collection_stats org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.collection_stats restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.collection_stats vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.group_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.group_members org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.group_members vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.lexical_bound_pending backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.lexical_bound_pending jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_bound_pending org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.lexical_bound_pending org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.lexical_bound_pending restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.lexical_df backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.lexical_df jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_df org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.lexical_df org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.lexical_df restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.lexical_df vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.lexical_df_delta backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.lexical_df_delta jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_df_delta org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.lexical_df_delta org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.lexical_df_delta restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.lexical_df_delta vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.lexical_df_pending backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.lexical_df_pending jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_df_pending org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.lexical_df_pending org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.lexical_df_pending restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.lexical_df_pending vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.lexical_term_delta backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.lexical_term_delta jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.lexical_term_delta org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.lexical_term_delta org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.lexical_term_delta restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.lexical_term_delta vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.member_stats backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.member_stats jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.member_stats org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.member_stats org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.member_stats restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.member_stats vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.org_spaces backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.org_spaces jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.org_spaces org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.org_spaces org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.org_spaces restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.org_spaces vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.org_spaces vetted_write cmd=* permissive=true roles=pipeshub_vetted_retrieval using=true check=true
 policy retrieval.placement_requests backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.placement_requests jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.placement_requests org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.placement_requests org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.placement_requests restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.placement_requests vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.placement_requests vetted_write cmd=* permissive=true roles=pipeshub_vetted_retrieval using=true check=true
 policy retrieval.point_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.point_groups jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_groups org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.point_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.point_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.point_groups vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.point_text backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.point_text jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_text org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.point_text org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.point_text restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.point_text vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.point_tombstones backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.point_tombstones jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.point_tombstones org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.point_tombstones org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.point_tombstones restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.point_tombstones vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.points backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.points jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.points org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.points org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.points restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.points vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.postings backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.postings jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.postings org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.postings org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.postings restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.postings vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
 policy retrieval.space_checks backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy retrieval.space_checks jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy retrieval.space_checks org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy retrieval.space_checks org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy retrieval.space_checks restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy retrieval.space_checks vetted_read cmd=r permissive=true roles=pipeshub_vetted_retrieval using=true check=-
@@ -3500,7 +3627,7 @@ rel kernel.policy_template kind=r owner=pipeshub_owner rls=false force=false opt
 rel kernel.restore_window kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
-rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=267eb1faa45f61621dae5c6f14a97aef
+rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=f9c7d09774ef68693a8612ba205f3074
 rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=e232e39bc8fc37a16c579397aa6379a6
 rel kernel.rls_warnings kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=82f66d8e056dc84e6344cb21d9064d00
 rel kernel.schema_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
