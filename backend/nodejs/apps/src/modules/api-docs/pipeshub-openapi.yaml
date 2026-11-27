@@ -7285,7 +7285,7 @@ components:
           description: OAuth client ID (unchanged)
         clientSecret:
           type: string
-          description: New client secret (store securely; previous secret is invalidated)
+          description: New client secret (store securely; previous secret is invalidated and tokens issued under it are revoked)
     UpdateOAuthAppResponse:
       type: object
       description: |
@@ -27217,7 +27217,9 @@ components:
             instance, and only when not empty; nested objects are always masked, a non-empty client
             secret or field the toolset's form marks secret or types as a password (an API token, for
             one) is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true` and
-            `reveal=true` is not sent, and every other value is returned as stored. An organization
+            `reveal=true` is not sent (and, whatever `HIDE_SECRET_CONFIG` says, for a personal access
+            token or OAuth app token when the server sets `TOKEN_RESTRICTIONS_MODE=enforce`), and
+            every other value is returned as stored. An organization
             OAuth instance stores none (its client is in the linked OAuth configuration); a personal
             OAuth instance holds its owner's own `clientId` and `clientSecret` here.
           additionalProperties: true
@@ -34644,7 +34646,9 @@ paths:
       description: |
         Generates a fresh client secret for an OAuth app. The previous secret is invalidated immediately — any client still presenting it will fail token exchange at `POST /oauth2/token` until updated.
 
-        The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app. If the rotation was triggered by a suspected leak, also call `POST /oauth-clients/{appId}/revoke-all-tokens` to invalidate already-issued access and refresh tokens instead of waiting for their natural expiry.
+        The new secret is returned in this response **only** and cannot be retrieved later. Pair this call with credential propagation to every integration that uses the app.
+
+        Every access and refresh token already issued to the app is revoked in the same call, so tokens obtained with the old secret stop working at once; integrations must obtain new tokens with the new secret. There is no need to call `POST /oauth-clients/{appId}/revoke-all-tokens` as well. If the tokens cannot be revoked, the call fails with `500` and returns no secret. The old secret stays invalid and the app accepts no secret until you regenerate it again, which also retries the revocation.
 
         Creator-only, for org admins too: an admin can view, suspend, activate or delete another person's app, but changing it could redirect the codes of everyone who consents to it or mint tokens that act as its creator. An admin gets `404`, as a member does.
       operationId: regenerateOAuthAppSecret
@@ -68679,7 +68683,11 @@ paths:
         Same response shape as GET /toolsets/my-toolsets (pagination, filterCounts, toolsets), except
         there is no `authStatus` filter. Any user who can see the agent may call it (a service-account
         agent is shared with the whole organization as reader); the agent's saved credentials (`auth`)
-        are returned only to users who can edit the agent. Query parameters other than the five below
+        are returned only to users who can edit the agent, and even then masked: every value is `••••••••`
+        except fields the toolset's auth schema declares and does not mark secret (such as a base URL or
+        an email). OAuth client secrets, fields the schema does not declare, and nested objects (stored
+        tokens) are always masked. Sending `••••••••` back on a credentials update keeps the stored value;
+        a masked value cannot be used to authenticate. Query parameters other than the five below
         are dropped without an error, and each parameter may be sent once only.
       operationId: getAgentToolsets
       security:
@@ -78217,11 +78225,18 @@ paths:
             Every string is trimmed before validation, so text of only whitespace counts as
             empty.
 
+            `error_code: credential_reentry_required` (`CredentialReentryRequiredError`) when the
+            `host` changes while `username` or `password` is sent as the mask `****************`:
+            the saved login is not sent to a new host. Send them in full. The port is not part of
+            the comparison, and host names are compared ignoring case.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Unauthorized
           content:
@@ -80502,6 +80517,11 @@ paths:
             unreachable one 500 with the same body. A missing API key for serper, tavily, exa
             or brave is refused by the health check itself, before any outside call.
 
+            `error_code: credential_reentry_required` (`CredentialReentryRequiredError`) when
+            `apiKey` is sent as the mask `****************` while `provider` or
+            `configuration.baseUrl` changes: the saved key is not sent to a new address. Send the
+            key in full. Nothing is checked or stored.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -80509,6 +80529,7 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/WebSearchHealthCheckError'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '408':
           description: |
             The provider health check did not get an answer in time (DuckDuckGo within 20

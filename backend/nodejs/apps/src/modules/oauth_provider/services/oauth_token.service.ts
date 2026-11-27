@@ -287,6 +287,7 @@ export class OAuthTokenService {
     if (opts?.recheckAppScopes) {
       await this.revokeIfAppChanged(
         app.clientId,
+        app.clientSecretEncrypted,
         scopes,
         // A personal access token's own limit is not the app's to change.
         opts.knowledgeLimit === undefined ? { knowledgeLimit } : undefined,
@@ -311,10 +312,13 @@ export class OAuthTokenService {
    * the insert closes the gap: if this read still sees the old values, the
    * save and its revocation come later and catch these tokens; if it sees the
    * new ones, they are revoked here. A limit that only widened keeps the
-   * tokens, which reach no more than the user agreed to.
+   * tokens, which reach no more than the user agreed to. A rotated client
+   * secret revokes every token the same way: a grant that read the old
+   * secret must not keep tokens stored after the rotation's revocation.
    */
   private async revokeIfAppChanged(
     clientId: string,
+    secretAtGrant: string | undefined,
     scopes: string[],
     signed: { knowledgeLimit: KnowledgeLimit | undefined } | undefined,
     tokens: GeneratedTokens,
@@ -323,6 +327,7 @@ export class OAuthTokenService {
       await getOAuthAppRepository().findLiveAllowedScopes(clientId);
     if (
       current &&
+      current.clientSecretEncrypted === secretAtGrant &&
       isGrantCoveredBy(scopes, current.allowedScopes) &&
       (signed === undefined ||
         isKnowledgeLimitWithin(signed.knowledgeLimit, current.knowledgeLimit))

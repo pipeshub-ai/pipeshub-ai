@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
@@ -192,15 +193,24 @@ async def test_each_save_answers_with_secrets_masked(route: str, save: _Save, bo
 
 async def test_auth_save_that_sends_the_mask_keeps_the_stored_secrets() -> None:
     config_service = _config_service()
-    body = {"auth": {"apiToken": REDACTED_PLACEHOLDER, "tokenSecret": REDACTED_PLACEHOLDER, "baseUrl": "https://new.example.com"}}
+    body = {"auth": {"apiToken": REDACTED_PLACEHOLDER, "tokenSecret": REDACTED_PLACEHOLDER, "baseUrl": "https://JIRA.example.com/"}}
 
     result = await update_connector_instance_auth_config("conn1", _request(config_service, body), AsyncMock())
 
     saved_auth = _saved(config_service)["auth"]
     assert saved_auth["apiToken"] == _STORED_API_TOKEN
     assert saved_auth["tokenSecret"] == _STORED_TOKEN_SECRET
-    assert saved_auth["baseUrl"] == "https://new.example.com"
+    assert saved_auth["baseUrl"] == "https://JIRA.example.com/"
     assert result["config"]["auth"]["apiToken"] == REDACTED_PLACEHOLDER
+
+
+async def test_auth_save_that_sends_the_mask_for_a_new_address_is_refused() -> None:
+    body = {"auth": {"apiToken": REDACTED_PLACEHOLDER, "tokenSecret": REDACTED_PLACEHOLDER, "baseUrl": "https://new.example.com"}}
+
+    with pytest.raises(HTTPException) as caught:
+        await update_connector_instance_auth_config("conn1", _request(_config_service(), body), AsyncMock())
+
+    assert caught.value.detail == "Enter the credentials again to use this new endpoint."
 
 
 async def test_auth_save_with_a_new_secret_replaces_the_stored_one() -> None:

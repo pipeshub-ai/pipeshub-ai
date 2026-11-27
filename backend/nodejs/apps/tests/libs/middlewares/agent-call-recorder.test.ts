@@ -6,7 +6,7 @@ import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import rateLimit from 'express-rate-limit'
 import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware'
-import { requireScopes } from '../../../src/libs/middlewares/require-scopes.middleware'
+import { requireScopes, requireScopesWhenEnforced } from '../../../src/libs/middlewares/require-scopes.middleware'
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
@@ -88,6 +88,7 @@ describe('Agent call recorder', () => {
     kb.use(auth.authenticate)
     kb.get('/:kbId/records', requireScopes(OAuthScopeNames.KB_READ), (_q, s) => s.json({ ok: true }))
     kb.post('/:kbId/records', requireScopes(OAuthScopeNames.KB_WRITE), (_q, s) => s.status(201).json({}))
+    kb.put('/:kbId/records', requireScopesWhenEnforced(OAuthScopeNames.KB_WRITE), (_q, s) => { s.json({ ok: true }) })
     kb.get('/:kbId/boom', (_q, _s, next) => next(new Error('nope')))
     kb.get('/:kbId/moved', (_q, s) => s.redirect(302, '/elsewhere'))
     app.use('/api/v1/knowledgeBase', kb)
@@ -192,6 +193,23 @@ describe('Agent call recorder', () => {
     await settle()
     expect(repo.rows).to.have.length(1)
     expect(repo.rows[0]).to.deep.include({ statusCode: 403, scopeDenied: true, rollup: false, route: '/api/v1/knowledgeBase/:kbId/records' })
+  })
+
+  it('does not flag a scope gap that token restrictions only logged', async () => {
+    const before = process.env.TOKEN_RESTRICTIONS_MODE
+    delete process.env.TOKEN_RESTRICTIONS_MODE
+    try {
+      asBearer() // kb:read only
+      const base = await start()
+      const res = await call(`${base}/api/v1/knowledgeBase/kb1/records`, { method: 'PUT', body: '{}' })
+      expect(res.status).to.equal(200)
+      await settle()
+      expect(repo.rows).to.have.length(1)
+      expect(repo.rows[0]).to.deep.include({ statusCode: 200, scopeDenied: false })
+    } finally {
+      if (before === undefined) delete process.env.TOKEN_RESTRICTIONS_MODE
+      else process.env.TOKEN_RESTRICTIONS_MODE = before
+    }
   })
 
   it('keeps the full route template when the handler fails, and records the failure as its own row', async () => {

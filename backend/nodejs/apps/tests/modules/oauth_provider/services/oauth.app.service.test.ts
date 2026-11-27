@@ -1160,6 +1160,40 @@ describe('OAuthAppService', () => {
       expect(result).to.have.property('clientSecret')
       expect(mockEncryptionService.encrypt.called).to.be.true
       expect(mockApp.save.calledOnce).to.be.true
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWithExactly('cid')).to.be.true
+    })
+
+    it('keeps the new secret, never the old one, and returns none when revocation fails', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        slug: 'test',
+        clientId: 'cid',
+        clientSecretEncrypted: 'old-encrypted',
+        name: 'Test',
+        redirectUris: [],
+        allowedGrantTypes: [],
+        allowedScopes: [],
+        status: OAuthAppStatus.ACTIVE,
+        isConfidential: true,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 2592000,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      let thrown: unknown
+      try {
+        await service.regenerateSecret(fakeAppId, fakeOrgId, fakeUserId)
+      } catch (error) {
+        thrown = error
+      }
+      expect((thrown as Error)?.message).to.equal('redis down')
+      // Restoring the old secret would revive it, and could undo a concurrent rotation.
+      expect(mockApp.clientSecretEncrypted).to.not.equal('old-encrypted')
+      expect(mockApp.save.calledOnce).to.be.true
     })
 
     it('should throw NotFoundError when app not found', async () => {

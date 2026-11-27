@@ -4,6 +4,10 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
+import {
+  observeTokenRestriction,
+  tokenRestrictionsEnforced,
+} from '../../../libs/utils/token-restrictions.utils';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { parseKvObject } from '../../../libs/utils/kv-object.utils';
@@ -126,6 +130,9 @@ import {
   SMTP_SECRET_KEYS,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
+  smtpHostMovedWithSavedLogin,
+  webSearchBaseUrlMovedWithSavedKey,
+  CREDENTIAL_REENTRY_REQUIRED,
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
@@ -185,9 +192,17 @@ type SlackBotStore = {
 };
 
 
-/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
-function shouldHideSecrets(): boolean {
-  return process.env.HIDE_SECRET_CONFIG === 'true';
+/**
+ * Returns true when the HIDE_SECRET_CONFIG env var is set to "true".
+ * With TOKEN_RESTRICTIONS_MODE=enforce, an OAuth or personal access token caller never gets them.
+ */
+function shouldHideSecrets(req: Request): boolean {
+  const hidden = process.env.HIDE_SECRET_CONFIG === 'true';
+  if (!hidden && (req as AuthenticatedUserRequest).user?.isOAuth === true) {
+    if (tokenRestrictionsEnforced()) return true;
+    observeTokenRestriction(req as never, 'token_caller_unmasked');
+  }
+  return hidden;
 }
 
 async function requesterIsOrgAdmin(
@@ -551,6 +566,10 @@ export const createSmtpConfig =
         ? await getParsedSmtpConfig(keyValueStoreService)
         : await getParsedSmtpConfig(keyValueStoreService).catch(() => null);
       if (hasPlaceholder && existing) {
+        if (smtpHostMovedWithSavedLogin(smtpConfig, existing)) {
+          res.status(HTTP_STATUS.BAD_REQUEST).json(CREDENTIAL_REENTRY_REQUIRED);
+          return;
+        }
         smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
       }
       // Editing the settings must not quietly turn email back on.
@@ -644,7 +663,8 @@ export const getSmtpConfig =
     try {
       const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
       if (smtpConfig) {
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
         res
           .status(200)
           .json(hideSecrets ? maskSmtpConfig(smtpConfig) : smtpConfig)
@@ -1383,8 +1403,12 @@ export const getMicrosoftAuthConfig =
       }
 
       if (authConfig) {
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1443,8 +1467,12 @@ export const getGoogleAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -4780,7 +4808,7 @@ export const getWebSearchProviders =
       // may read their API keys or server addresses.
       const isAdmin = await requesterIsOrgAdmin(req);
       const hideSecrets =
-        !isAdmin || (shouldHideSecrets() && !canRevealSecrets(req));
+        !isAdmin || (shouldHideSecrets(req) && !canRevealSecrets(req));
       const mask = isAdmin
         ? maskWebSearchProvider
         : maskWebSearchProviderForMember;
@@ -5040,6 +5068,23 @@ export const updateWebSearchProvider =
           status: 'error',
           message: `Provider with key '${providerKey}' not found`,
         });
+        return;
+      }
+
+      // A saved key must not follow a changed server address.
+      const savedProvider = targetProvider as {
+        configuration?: Record<string, unknown>;
+        provider?: unknown;
+      };
+      if (
+        webSearchBaseUrlMovedWithSavedKey(
+          configuration as Record<string, unknown>,
+          savedProvider.configuration ?? {},
+          provider,
+          savedProvider.provider,
+        )
+      ) {
+        res.status(400).json(CREDENTIAL_REENTRY_REQUIRED);
         return;
       }
 

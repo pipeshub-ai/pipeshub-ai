@@ -72,6 +72,17 @@ class TestInitializeEmbeddingModel:
         assert result[0] is mock_embed
 
     @pytest.mark.asyncio
+    async def test_configs_are_not_logged(self, mock_request) -> None:
+        configs = [{"provider": "openai", "configuration": {"apiKey": "sk-FAKE"}}]
+        with patch(f"{MODULE}.get_embedding_model", return_value=MagicMock()):
+            from app.api.routes.health import initialize_embedding_model
+            await initialize_embedding_model(mock_request, configs)
+
+        logger = mock_request.app.container.logger()
+        for call in logger.info.call_args_list:
+            assert "sk-FAKE" not in repr(call)
+
+    @pytest.mark.asyncio
     async def test_config_with_default_flag(self, mock_request):
         mock_embed = MagicMock()
         configs = [

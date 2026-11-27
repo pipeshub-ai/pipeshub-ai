@@ -183,10 +183,11 @@ export interface OAuthAppRepository {
   ): Promise<{ rows: OAuthAppDto[]; total: number }>;
   /** Not deleted. Used by the token endpoints, after the client is known. */
   findLiveByClientId(clientId: string): Promise<OAuthAppDto | null>;
-  /** The scopes and knowledge limit a live app allows now, or null when the app is gone or deleted. */
+  /** The scopes, knowledge limit and client secret a live app has now, or null when the app is gone or deleted. */
   findLiveAllowedScopes(clientId: string): Promise<{
     allowedScopes: string[];
     knowledgeLimit?: KnowledgeLimit;
+    clientSecretEncrypted: string;
   } | null>;
   /** Who a live app's `client_credentials` tokens act as: `tokenIdentityUserId` when set, else `createdBy`. Read per request. */
   findLiveIdentity(

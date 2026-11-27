@@ -5135,7 +5135,7 @@ describe('ConfigurationManager Controller', () => {
       const req = createMockRequest({
         body: {
           host: '****************',
-          port: 587,
+          port: 25,
           username: '****************',
           password: '****************',
           fromEmail: '****************',
@@ -5152,12 +5152,66 @@ describe('ConfigurationManager Controller', () => {
       const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
       expect(stored).to.deep.equal({
         host: 'smtp.real.com',
-        port: 587,
+        port: 25,
         username: 'real-user',
         password: 'real-pass',
         fromEmail: 'real@example.com',
       })
       expect(smtpCheck.firstCall.args[0]).to.deep.equal(stored, 'the server is asked about what is stored')
+    })
+
+    describe('a saved login and a changed host', () => {
+      const saved = { host: 'smtp.real.com', port: 25, username: 'real-user', password: 'real-pass', fromEmail: 'real@example.com' }
+      const send = async (body: Record<string, unknown>) => {
+        const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(`encrypted:${JSON.stringify(saved)}`) })
+        nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+        const res = createMockResponse()
+        const next = createMockNext()
+        await createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')(createMockRequest({ body }), res, next)
+        return { kvs, res, next }
+      }
+      const PH = '****************'
+
+      it('refuses a new host that would receive the saved password, and stores nothing', async () => {
+        const { kvs, res } = await send({ ...saved, host: 'smtp.other.com', username: PH, password: PH })
+
+        expect(res.status.calledWith(400)).to.be.true
+        expect(res.json.firstCall.args[0]).to.deep.equal({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        })
+        expect(kvs.set.called).to.be.false
+        expect(smtpCheck.called).to.be.false
+      })
+
+      it('refuses when only the username is still masked', async () => {
+        const { res } = await send({ ...saved, host: 'smtp.other.com', username: PH, password: 'typed-again' })
+
+        expect(res.status.calledWith(400)).to.be.true
+      })
+
+      it('accepts a new host when the username and password are typed again', async () => {
+        const { res, kvs } = await send({ ...saved, host: 'smtp.other.com', username: 'new-user', password: 'typed-again' })
+
+        expect(res.status.calledWith(200)).to.be.true
+        expect(kvs.set.calledOnce).to.be.true
+        expect(JSON.parse(mockEncService.encrypt.firstCall.args[0]).password).to.equal('typed-again')
+      })
+
+      it('keeps the saved password for the same host, however it is written', async () => {
+        const { res } = await send({ ...saved, host: 'SMTP.real.com.', username: PH, password: PH })
+
+        expect(res.status.calledWith(200)).to.be.true
+        expect(JSON.parse(mockEncService.encrypt.firstCall.args[0]).password).to.equal('real-pass')
+      })
+
+      it('refuses a new port, which also picks TLS, for the saved password', async () => {
+        const { res } = await send({ ...saved, port: 465, username: PH, password: PH })
+
+        expect(res.status.calledWith(400)).to.be.true
+        expect(mockEncService.encrypt.called).to.be.false
+      })
     })
 
     it('stores the body as sent when it has no placeholders', async () => {
