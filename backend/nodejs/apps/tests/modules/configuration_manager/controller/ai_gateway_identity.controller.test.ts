@@ -410,6 +410,23 @@ describe('ai gateway identity', () => {
       expect(sent.configuration.connectionId).to.equal(undefined);
     });
 
+    it('maps an error answer that was not JSON, so the client gets its status and Retry-After', async () => {
+      execute.resolves({ statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' } });
+      const body = identityPreviewSchema.parse({
+        body: { connectionId: 'conn-1', configuration: { identityForwardingEnabled: true } },
+      }).body;
+      const res = response();
+      let passed: any;
+      await previewIdentityForwarding(keyedStore({ [MODELS_PATH]: seed() }) as any, appConfig)(
+        { body, headers: {} } as any,
+        res as any,
+        (error: unknown) => { passed = error; },
+      );
+      expect(res.body).to.equal(undefined);
+      expect(passed.statusCode).to.equal(503);
+      expect(passed.metadata.retryAfter).to.equal('5');
+    });
+
     it('restores a redacted template before previewing', async () => {
       const models = seed();
       (models.llm[0]!.configuration as any).identityForwardingHeaderTemplates = {

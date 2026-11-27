@@ -342,6 +342,35 @@ class TestHandleRecordGroup:
         assert record.record_group_id is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["absent", "kept_for_trash"])
+    async def test_a_group_of_unknown_type_is_not_minted(self, stored: str) -> None:
+        """A record with no record_group_type whose group is not stored (BookStack
+        pages, Slack messages, Linear issues) goes in without a group: a stub with
+        no type cannot be stored, and every store serialises it the same way."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_record()
+        record.external_record_group_id = "book/20"
+        record.record_group_type = None
+        if stored == "absent":
+            tx_store.get_record_group_by_external_id.return_value = None
+        else:
+            tx_store.get_record_group_by_external_id.return_value = MagicMock(id="rg-1", is_deleted_at_source=True)
+            tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
+
+        async def _serialise(groups: list) -> None:
+            for g in groups:
+                g.to_arango_base_record_group()
+
+        tx_store.batch_upsert_record_groups = AsyncMock(side_effect=_serialise)
+
+        result = await proc._handle_record_group(record, tx_store)
+
+        assert result is None
+        assert record.record_group_id is None
+        tx_store.batch_upsert_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_uses_existing_group(self):
         """Uses existing record group when found."""
         proc = _make_processor()
