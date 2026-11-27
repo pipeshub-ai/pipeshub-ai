@@ -24,7 +24,11 @@ info:
 
     **OAuth scopes.** On an operation whose `security` names `oauth2` scopes, an OAuth access token holding none of them gets `403 HTTP_FORBIDDEN` ("Insufficient scope. Required: ...") right after authentication. Session tokens are never scope-checked.
 
+    **Uploads.** A `multipart/form-data` upload past one of its route's limits (a file too large, too many files, form fields or parts, or the whole request over its byte cap) is answered `413 HTTP_PAYLOAD_TOO_LARGE`, and one that cannot be read (cut short, without a boundary, or a file under a part name the route does not expect) `400 HTTP_BAD_REQUEST`. Both are refused while the body is read, before the route's handler runs. The agent-harness workspace upload (`POST .../workspace/files` on a conversation or agent conversation) keeps its own mapping: a file too large or too many files is `413` with code `WORKSPACE_TOO_LARGE`, and every other refused limit (form fields or parts) is `400 HTTP_BAD_REQUEST`.
+
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
+
+    **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -6979,18 +6983,22 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
             (including the default when `allowedGrantTypes` is omitted).
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -7074,18 +7082,27 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
             Preserved in the database even if `authorization_code` is removed from grant types.
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
+            A URI the app already has stored is kept on update even when these rules would refuse it as new
+            (for example an `http:` URI on a non-loopback host registered earlier), unless its scheme is one
+            that can run script (`javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`) or it does not parse. The authorize endpoint also refuses a `redirect_uri` with such
+            a scheme, or one that does not parse, even when it is stored (`redirect_uri scheme is not allowed`).
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
         allowedGrantTypes:
           type: array
@@ -14628,7 +14645,9 @@ components:
         a citation, reference, filter node or search hit with no id, name, link or
         text. Only the owner of a conversation or search sees every source. An
         assistant answer that used a record its reader cannot read is withheld as
-        a whole (`HiddenAnswer`), the owner's included.
+        a whole (`HiddenAnswer`), the owner's included. A viewer never receives
+        the reasoning, tool steps or tool results of another user's message, nor
+        the text the model wrote between its steps.
       required:
         - redacted
         - reason
@@ -21862,8 +21881,8 @@ components:
           additionalProperties: true
     OAuthConfig:
       type: object
-      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
-        is on) and, in lists, the provider endpoints, for the organization's apps only.
+      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked unless the server sets
+        HIDE_SECRET_CONFIG=false) and, in lists, the provider endpoints, for the organization's apps only.
       properties:
         personal:
           type: boolean
@@ -21957,7 +21976,7 @@ components:
               example: "123456789-abc.apps.googleusercontent.com"
             clientSecret:
               type: string
-              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked when HIDE_SECRET_CONFIG is on)
+              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked unless the server sets HIDE_SECRET_CONFIG=false)
               example: "GOCSPX-xxxxxxxxxxxxx"
             tenantId:
               type: string
@@ -23793,6 +23812,69 @@ components:
           example: "LLM provider added successfully"
         details:
           $ref: '#/components/schemas/AIModelProviderAddedDetails'
+    CredentialReentryRequiredError:
+      type: object
+      additionalProperties: false
+      description: |
+        A save that would send a saved secret (sent back as the mask) to a different server
+        address. Nothing is stored; send the secret again in full with the new address.
+      required: [status, error_code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          example: Enter the credentials again to use this new endpoint.
+    ConnectionEndpointsDifferError:
+      type: object
+      additionalProperties: false
+      description: |
+        A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          description: Names the models on another endpoint.
+        models:
+          type: array
+          description: The connection's models whose endpoint differs from its first model's.
+          items:
+            type: object
+            additionalProperties: false
+            required: [modelKey, modelType, name]
+            properties:
+              modelKey:
+                type: string
+              modelType:
+                type: string
+              name:
+                type: string
+                description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -23806,6 +23888,10 @@ components:
         status:
           type: string
           enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+          description: Set when a changed endpoint needs its credentials entered again.
         message:
           type: string
     PrepareEmbeddingModelRequest:
@@ -24065,6 +24151,10 @@ components:
         isReasoning:
           type: boolean
           description: Whether this is a reasoning model
+        forwardingCredentialsCleared:
+          type: boolean
+          enum: [true]
+          description: Present when the update moved the model to a new endpoint and removed its saved identity forwarding service key and credential headers.
     UpdateAIModelProviderResponse:
       type: object
       additionalProperties: false
@@ -27145,8 +27235,8 @@ components:
             toolset's credential form. Returned to administrators, and to the owner of a personal
             instance, and only when not empty; nested objects are always masked, a non-empty client
             secret or field the toolset's form marks secret or types as a password (an API token, for
-            one) is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true` and
-            `reveal=true` is not sent, and every other value is returned as stored. An organization
+            one) is masked (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or
+            `reveal=true` is sent, and every other value is returned as stored. An organization
             OAuth instance stores none (its client is in the linked OAuth configuration); a personal
             OAuth instance holds its owner's own `clientId` and `clientSecret` here.
           additionalProperties: true
@@ -27155,8 +27245,8 @@ components:
       description: |
         An OAuth client configuration of a toolset type. Administrators also get the
         stored configuration fields (from `clientId` down); the client secret is masked
-        (`••••••••`) only when the server sets `HIDE_SECRET_CONFIG=true` and `reveal=true`
-        is not sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
+        (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or `reveal=true`
+        is sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
         are returned under their own names.
       properties:
         _id:
@@ -27477,22 +27567,22 @@ components:
           type: string
     StoredAtlassianConfig:
       type: object
-      description: Atlassian OAuth client, as stored. Empty when nothing has been saved.
+      description: Atlassian OAuth client. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
     StoredOneDriveConfig:
       type: object
-      description: Microsoft app credentials for OneDrive, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for OneDrive. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         hasAdminConsent:
@@ -27501,13 +27591,13 @@ components:
           description: Confirms tenant admin consent was granted; only `true` is accepted
     StoredSharePointConfig:
       type: object
-      description: Microsoft app credentials for SharePoint, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for SharePoint. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         sharepointDomain:
@@ -27520,7 +27610,7 @@ components:
     StoredGoogleWorkspaceOAuthConfig:
       type: object
       description: |
-        Google Workspace OAuth client and Gmail real-time update settings, as stored. Every
+        Google Workspace OAuth client and Gmail real-time update settings. Every
         field is present once something has been saved; empty when nothing has been saved.
       additionalProperties: false
       properties:
@@ -27528,7 +27618,7 @@ components:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -27537,7 +27627,7 @@ components:
     StoredGoogleWorkspaceCredentials:
       type: object
       description: |
-        Google Workspace credentials, as stored. A business organization gets the
+        Google Workspace credentials. A business organization gets the
         service-account key fields with `adminEmail`; an individual one gets the caller's
         OAuth tokens merged with the OAuth client (`clientId`, `clientSecret`). Empty when
         nothing has been saved.
@@ -27553,7 +27643,7 @@ components:
           type: string
         private_key:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         client_email:
           type: string
         client_id:
@@ -27586,7 +27676,7 @@ components:
           x-speakeasy-name-override: oauthClientId
         clientSecret:
           type: string
-          description: OAuth client secret, returned unmasked (individual)
+          description: OAuth client secret (individual); masked unless revealed
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -30129,6 +30219,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    UpstreamFailure:
+      description: >-
+        A PipesHub service this route depends on failed (`HTTP_BAD_GATEWAY`). The message is generic;
+        the service's own words are in its log under the same request id. See Relayed failures in the
+        introduction.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UploadTooLarge:
+      description: >-
+        The upload is past one of this route's limits (`HTTP_PAYLOAD_TOO_LARGE`): a file over the size
+        limit, more files than allowed, too many form fields or parts, or the whole request over its byte
+        cap. Refused while the body is read, before the handler runs (see Uploads in the introduction).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     InsufficientScope:
       description: >-
         The bearer token is an OAuth access token without the scope this route requires
@@ -31012,6 +31120,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpenAIModelError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
   /openai/files/{fileId}:
     get:
       tags:
@@ -38171,9 +38281,8 @@ paths:
             - A multipart form with no file part (`File upload required but no files were received`)
             - Declared file type not allowed (`Invalid file type. Allowed types: ...`)
             - File bytes are not a PNG, JPEG, WebP or GIF image (`Profile photo must be a PNG, JPEG, WebP or GIF image`)
-            - File exceeds the 1 MB limit (`This file is larger than the 1 MB limit...`)
-            - The file is sent under a field name other than `file`, or more than one file is sent
-              (`The files weren't sent the way this page expects...` or `You can upload up to 1 files at a time...`)
+            - The file is sent under a field name other than `file`
+              (`The files weren't sent the way this page expects...`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -38188,9 +38297,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: |
-            The image is still larger than 100 KB after JPEG compression down to quality 10
-            (`HTTP_PAYLOAD_TOO_LARGE`). The message says `File too large , limit:1MB` although the
-            limit that was exceeded is the 100 KB one.
+            The file is over the 1 MB limit (`This file is larger than the 1 MB limit...`), more than one
+            file is sent (`You can upload up to 1 files at a time...`), or the image is still larger than
+            100 KB after JPEG compression down to quality 10 (`HTTP_PAYLOAD_TOO_LARGE`). For the last one the
+            message says `File too large , limit:1MB` although the limit that was exceeded is the 100 KB one.
           content:
             application/json:
               schema:
@@ -38657,10 +38767,8 @@ paths:
 
             - No body, or a body that is not multipart (`No files available for processing`)
             - A form with no file part (`File upload required but no files were received`)
-            - The file under another field name, or more than one file (`The files weren't sent the way
-              this page expects...`, `You can upload up to 1 files at a time...`)
+            - The file under another field name (`The files weren't sent the way this page expects...`)
             - A declared type that is not allowed (`Invalid file type. Allowed types: ...`)
-            - A file over 5 MB (`This file is larger than the 5 MB limit...`)
             - A spreadsheet that cannot be parsed (`Could not read the file. Upload a valid CSV or Excel file.`)
             - No cell containing `@`, including an empty file (`No email addresses found in the file`)
             - More than 1000 addresses (`File exceeds the 1000-user limit`)
@@ -38673,6 +38781,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -42243,10 +42353,9 @@ paths:
             Invalid request. Possible reasons:
 
             - No file provided: a multipart body without a `file` part, or a body that is not multipart at all
-            - The file is sent under a field other than `file`, or more than one file is sent
+            - The file is sent under a field other than `file`
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
             - File bytes are not a PNG, JPEG, WebP, GIF, or SVG image (`Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image`)
-            - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
 
             The upload is checked before the admin check, so a non-admin also gets this 400 for a bad upload.
@@ -42256,6 +42365,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -43722,6 +43833,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '500':
@@ -45997,6 +46110,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -46052,6 +46167,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -46439,6 +46556,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '503':
           description: Storage could not delete the artifact's files; nothing was changed, retry
           content:
@@ -47584,7 +47703,7 @@ paths:
             - JSON body: `recordName` is not a string, or the body is not an object (`VALIDATION_ERROR`)
             - `recordName` contains HTML, an inline event handler or a format specifier such as `%s`
             - Multipart `recordName` is only whitespace (`Record name cannot be empty`)
-            - More than one file, or a file sent under a field name other than `file`
+            - A file sent under a field name other than `file`
             - `recordId` holds a character that cannot stand in a URL path segment
               (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`)
 
@@ -47593,6 +47712,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -49046,9 +49167,8 @@ paths:
             - `kbId` not a UUID, `folderId` empty, `recordName`/`recordType`/`origin` empty, or a
               `files_metadata` entry without a string `file_path` or a numeric `last_modified`
               (`VALIDATION_ERROR`)
-            - No `files` part (`No files available for processing`), files sent under another
-              field name (`The files weren't sent the way this page expects. ...`), more than
-              1000 files, or more than 1 GB in total (`HTTP_BAD_REQUEST`)
+            - No `files` part (`No files available for processing`), or files sent under another
+              field name (`The files weren't sent the way this page expects. ...`) (`HTTP_BAD_REQUEST`)
             - `files_metadata` is not JSON (`Invalid files_metadata format. Expected JSON array.`)
               or has another length than the files (`Metadata count mismatch: ...`)
             - `recordName` holds a format specifier, or any field holds HTML (the HTML check runs
@@ -49061,6 +49181,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -51821,7 +51943,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no files, or an unsupported MIME type (`HTTP_BAD_REQUEST`). Size and count limits are not answered here but with `500`.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no files, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`).
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -51830,6 +51952,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -51857,9 +51981,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            `INTERNAL_ERROR`. The upload parser's own refusals land here
-            although they are caller mistakes: a file over 5 MiB, more than
-            10 files, or a file under any part name other than `files`.
+            `INTERNAL_ERROR`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -51913,7 +52035,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -55916,6 +56040,12 @@ paths:
         Only the conversation's initiator can unshare. A missing, deleted or
         agent conversation, or one the caller did not start (even one
         shared with them at `write` access), is `404`.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareConversationById
       security:
         - bearerAuth: []
@@ -56053,9 +56183,34 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Persistence layer failed to update the conversation document.
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the persistence layer
+            failed to update the conversation document. When the revoke was
+            refused, the users stay listed; their attachment access may already
+            be revoked.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -57624,6 +57779,8 @@ paths:
                   - $ref: '#/components/schemas/SpeechMissingAudioError'
                   - $ref: '#/components/schemas/SpeechProxyError'
                   - $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized — valid bearer token required.
           content:
@@ -60207,7 +60364,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up. Multer's own rejections are not a 400: see 500.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up.
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -60216,6 +60373,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -60243,7 +60402,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Gateway fallback when the upstream call does not return a status (implementation default). Also returned (`INTERNAL_ERROR`) for every Multer rejection, which is not mapped to a 400: more than 10 files, a file over 5 MiB, or a file part not named `files`.
+            Gateway fallback when the upstream call does not return a status (implementation default).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -60305,7 +60464,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -61685,8 +61846,15 @@ paths:
         Remove specific users from an agent conversation's recipient list and
         revoke their access to its artifacts and attachments. **Owner only.**
         When the last recipient is removed the conversation becomes private
-        again (`isShared: false`). Removing a user who is not a recipient is a
-        no-op.
+        again (`isShared: false`). Removing a user who is not a recipient
+        leaves the list unchanged, but their access is still revoked, so that
+        request can fail the same way as below.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareAgentConversation
       x-pipeshub-sdk: false
       security:
@@ -61746,6 +61914,37 @@ paths:
           description: |
             Conversation not found, deleted, belongs to a different agent, or
             the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the share list could not
+            be saved. When the revoke was refused, the users stay listed; their
+            attachment access may already be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -70714,7 +70913,7 @@ paths:
         List the organization's OAuth client configurations of a toolset type (the type is matched
         case-insensitively and is not checked against the registry, so an unknown type is an empty
         list). Any member may call it: administrators also get the stored client fields (the
-        client secret masked only under `HIDE_SECRET_CONFIG=true`), other members only the
+        client secret masked unless the server sets `HIDE_SECRET_CONFIG=false`), other members only the
         metadata. The query string is not read.
       operationId: listToolsetOAuthConfigs
       security:
@@ -71068,7 +71267,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71128,7 +71327,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71209,7 +71408,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71292,7 +71491,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71348,7 +71547,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected failure in the gateway or in the connectors service.
+          description: Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
           content:
             application/json:
               schema:
@@ -71399,7 +71598,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71491,7 +71690,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71551,7 +71750,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71569,8 +71768,10 @@ paths:
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
         a change of auth mode or catalog type counts, and of URL when the template lets it be
-        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
-        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
+        typed (Okta). With `CONTROL_PLANE_CREDENTIALS` on, every connection made on the instance
+        is revoked too. When a credential can't be confirmed removed, nothing is saved: a store
+        or credential service that kept it or could not answer gives 503 with `Retry-After`, any
+        other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71652,7 +71853,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71664,8 +71865,8 @@ paths:
             A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
             catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
             of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
-            store kept one of them or could not answer: the instance was not changed, though some credentials may
-            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
+            answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
           headers:
             Retry-After:
@@ -71682,7 +71883,11 @@ paths:
       summary: Delete an MCP server instance
       description: |
         Organization instances are deleted by administrators, a personal instance by its owner.
-        Removes every stored credential and the OAuth app configuration too.
+        Also removes the instance's stored credentials and OAuth app configuration, and with
+        `CONTROL_PLANE_CREDENTIALS` on revokes every connection made on the instance. That
+        clean-up is best effort: when a credential delete or the revoke can't be confirmed, the
+        instance is still deleted and the failure is only logged, so those credentials or
+        connections can stay stored, with no instance left to use them.
       operationId: deleteMcpInstance
       security:
         - bearerAuth: []
@@ -71988,12 +72193,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request, or a sign-in that
-            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
-            service answers `502`, which the gateway reports as `500`).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            An MCP server that could not be reached or answered with an error other than a sign-in request,
+            or a sign-in that couldn't be renewed because its provider is down, rate-limiting or busy
+            (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72049,7 +72260,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72118,7 +72329,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72197,7 +72408,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72274,7 +72485,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72337,7 +72548,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72417,7 +72628,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72480,7 +72691,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72574,8 +72785,14 @@ paths:
             Unexpected failure in the gateway or in the connectors service, including a failed dynamic client registration with the OAuth provider.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or refused the connection: the connectors service answers `502`, which the gateway reports as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The MCP server could not be reached or refused the connection (`HTTP_BAD_GATEWAY`; see Relayed
+            failures in the introduction).
           content:
             application/json:
               schema:
@@ -72645,11 +72862,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including a token endpoint
-            that could not be reached or that answered with an error other than a rejected refresh token
-            (the connectors service answers 502, which the gateway reports as 500).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            A token endpoint that could not be reached or that answered with an error other than a rejected
+            refresh token (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72722,7 +72945,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72826,7 +73049,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72913,7 +73136,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73056,7 +73279,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73136,7 +73359,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73219,7 +73442,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73283,7 +73506,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73364,7 +73587,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74561,15 +74784,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            One of:
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            One of (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction):
             - the API could not be reached, or answered with something that is not HTTP;
             - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
               or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
               refreshing after the API answered `401`. The call, or its retry, was not sent.
-
-            The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:
@@ -75428,6 +75656,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, malformed or expired bearer token
           content:
@@ -79192,7 +79422,13 @@ paths:
                 connectionId:
                   type: string
                   format: uuid
-                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                  description: |
+                    Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
+                    with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
                   description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
@@ -79237,13 +79473,19 @@ paths:
                 $ref: '#/components/schemas/AIModelBatchSSEEvent'
         '400':
           description: |
-            Invalid body, or connectionId does not match a saved connection for this provider
+            Invalid body, or connectionId does not match a saved connection for this provider.
+            `error_code: credential_reentry_required` when connectionId names a connection whose
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79273,7 +79515,12 @@ paths:
       tags:
         - AI Models Providers
       summary: Rotate credentials for every model in a connection
-      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      description: |
+        Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+        The new credentials are health-checked against the connection's first model and written to every
+        model of the connection. When the connection's models do not all share one endpoint and baseUrl
+        (a model was moved to another endpoint), the request is refused with 400
+        `credential_reentry_required` before any health check, and nothing is stored.
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
@@ -79307,15 +79554,32 @@ paths:
       responses:
         '200':
           description: Credentials updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+                    description: Models whose credentials were replaced.
         '400':
           description: |
-            Health check rejected the new credentials, or the body included a non-credential field
+            Health check rejected the new credentials, or the body included a non-credential field.
+
+            Also returned as `ConnectionEndpointsDifferError` (`credential_reentry_required`) when the connection's models use more than one endpoint; nothing is checked or stored.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79351,7 +79615,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Set identity forwarding for every model in a connection
-      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      description: |
+        Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+        A save carrying a new secret (a non-empty `serviceApiKey`, or a typed value for a credential header such as `Authorization`) is refused with 400 `credential_reentry_required` when the connection's models do not all share one endpoint and baseUrl; nothing is stored. A save without a new secret applies to every entry whatever its endpoint.
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
@@ -79415,7 +79681,13 @@ paths:
                   updated:
                     type: integer
         '400':
-          description: Invalid settings
+          description: Invalid settings, or a new secret for a connection whose models use more than one endpoint (`ConnectionEndpointsDifferError`; nothing is stored).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Authentication required
         '403':
@@ -79685,6 +79957,14 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -79709,6 +79989,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:
@@ -80213,8 +80502,8 @@ paths:
 
         **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
         comes back as the placeholder `****************`, and so does `configuration.baseUrl`
-        (admins always get the stored address). Admins get the stored key, unless the
-        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        (admins always get the stored address). Admins get the stored key masked too,
+        unless the server sets `HIDE_SECRET_CONFIG=false` or they reveal it. When updating a provider,
         sending the placeholder back keeps the stored key.
 
         Only stored providers are listed. `configured` is true when a stored provider that can
@@ -81604,7 +81893,7 @@ paths:
         is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
         models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
         connector and action OAuth apps, action credentials) to receive the stored values
-        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        instead of placeholders. Secrets are masked by default; a server that sets `HIDE_SECRET_CONFIG=false` returns them.
         The flag is ignored for OAuth-app tokens. Admin only.
       operationId: getSecretRevealStatus
       security:
@@ -89556,6 +89845,41 @@ paths:
         '400': { description: A malformed body }
         '401': { description: "No service token, or one without scope control-plane:bindings" }
         '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: the binding changed while it was being revoked; repeat the call" }
+  /control-plane/internal/bindings/revoke-installation:
+    post:
+      tags: [Connections]
+      summary: Revoke every binding of an installation (internal)
+      operationId: revokeInstallationBindings
+      description: An MCP server's connection target changed or the server was removed, with `CONTROL_PLANE_CREDENTIALS` on. Revokes each binding not revoked yet; safe to repeat. Audited as the token's user when it names one.
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [installation]
+              properties:
+                installation: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: The bindings this call revoked (empty when none was live)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings: { type: array, items: { $ref: '#/components/schemas/BindingRecord' } }
+        '400': { description: A malformed body }
+        '401': { description: "No service token, or one without scope control-plane:bindings" }
+        '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: a binding changed while it was being revoked; repeat the call" }
+        '503': { description: Connections are not configured on this deployment }
   /control-plane/internal/bindings/due:
     get:
       tags: [Connections]
@@ -92823,7 +93147,8 @@ paths:
             (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
             than a plain group, look-around, a named group or `(?i)` (so flags
             other than `(?i)`, comments and scoped flags are refused). The message
-            says which.
+            says which. Also returned when the folders and files named in
+            `filters` are too many to search.
           content:
             application/json:
               schema:
@@ -92832,6 +93157,8 @@ paths:
           description: Missing or invalid bearer token.
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '422':
+          description: The connected app's knowledge limit is too large to resolve.
         '501':
           description: This deployment does not keep records on local file storage. Use `POST /search`.
         '500':
@@ -93711,14 +94038,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Atlassian OAuth client stored for the caller's organization, decrypted and
-        as stored: the client secret is not masked. An empty object when none has been saved.
-
-        The request carries no parameters: the query string is not read.
+        Returns the Atlassian OAuth client stored for the caller's organization.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getAtlassianOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -93840,14 +94169,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for OneDrive for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getOneDriveCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -93966,14 +94296,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for SharePoint for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getSharePointCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94091,13 +94422,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Google Workspace OAuth client and Gmail real-time update settings,
-        decrypted and as stored: the client secret is not masked. An empty object when none
-        has been saved. The query string is not read.
+        Returns the Google Workspace OAuth client and Gmail real-time update settings.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94248,21 +94582,26 @@ paths:
         - Configuration Manager
       summary: Get Google Workspace credentials
       description: |
-        Returns the stored Google Workspace credentials, decrypted and as stored (nothing is
-        masked). What is read depends on the organization's account type:
+        Returns the stored Google Workspace credentials. What is read depends on the
+        organization's account type:
 
         - **business**: the service-account key saved for the organization, with the admin
           email and real-time update settings.
         - **individual**: the caller's own OAuth tokens merged with the Google Workspace
           OAuth client configuration. Both must be stored, otherwise the answer is empty.
 
-        An empty object when nothing is stored. The query string is not read.
+        `clientId`, `clientSecret`, `access_token`, `refresh_token`, `private_key`
+        and `private_key_id` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when nothing is stored.
 
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94482,6 +94821,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -95036,11 +95377,13 @@ paths:
                     type: string
                     format: email
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:
@@ -95120,11 +95463,13 @@ paths:
                       - failed
                       - no_smtp
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:

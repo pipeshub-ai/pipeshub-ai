@@ -208,7 +208,7 @@ class FakeProcessor:
     async def ensure_team_app_edge(self, connector_id) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id) -> None:
+    async def get_user_by_user_id(self, user_id, **_: object) -> None:
         return None
 
 

@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.connectors.sources.localKB.upload_grant import GrantedDocument
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 UPLOADED = 1792090099000  # 2026-10-15 18:48:19 UTC
 FILE_MTIME = 1741000000000  # 2025-03-03 11:06:40 UTC
@@ -30,17 +36,37 @@ def _upload_dicts(source_ms: int) -> tuple[dict, dict]:
     return record, {"_key": "rec-1", "orgId": "org-1", "name": "notes.txt", "isFile": True}
 
 
+@pytest.fixture(autouse=True)
+def _server_clock() -> Iterator[None]:
+    """The record is dated by the server, at the moment of the upload."""
+    with patch("app.connectors.sources.localKB.handlers.kb_service.get_epoch_timestamp_in_ms", return_value=UPLOADED):
+        yield
+
+
 class TestUploadStamp:
     def test_a_file_sent_without_its_own_time_is_dated_by_the_upload(self, service) -> None:
         record, file_record = _upload_dicts(UPLOADED - 25)
-        built = service._build_kb_file_record("kb-1", record, file_record, None, "")
+        built = service._build_kb_file_record(
+            "kb-1", record, file_record, None, "", org_id="org-1", granted_documents={"rec-1": GrantedDocument("doc-1", "text/plain", "txt")}
+        )
         assert built.source_timestamp_origin == "upload"
         assert built.to_arango_base_record()["sourceTimestampOrigin"] == "upload"
 
     def test_a_file_sent_with_its_last_modified_time_is_dated_by_the_file(self, service) -> None:
         record, file_record = _upload_dicts(FILE_MTIME)
-        built = service._build_kb_file_record("kb-1", record, file_record, None, "")
+        built = service._build_kb_file_record(
+            "kb-1", record, file_record, None, "", org_id="org-1", granted_documents={"rec-1": GrantedDocument("doc-1", "text/plain", "txt")}
+        )
         assert built.source_timestamp_origin == "file"
+
+    def test_a_slow_storage_upload_is_judged_by_nodes_clock(self, service) -> None:
+        record, file_record = _upload_dicts(RECEIVED - 5)
+        record["createdAtTimestamp"] = RECEIVED
+        built = service._build_kb_file_record(
+            "kb-1", record, file_record, None, "", org_id="org-1", granted_documents={"rec-1": GrantedDocument("doc-1", "text/plain", "txt")}
+        )
+        assert built.source_timestamp_origin == "upload"
+        assert built.created_at == UPLOADED
 
 
 class TestNewVersionStamp:

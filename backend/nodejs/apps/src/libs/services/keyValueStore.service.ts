@@ -8,6 +8,7 @@ import {
   StoreType,
 } from '../keyValueStore/constants/KeyValueStoreType';
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
+import { KvValueCodec, kvValueCodec } from '../../edition';
 
 // An encrypted value (`iv:ciphertext:tag`, hex) as the Python services kept it until they stored it as its own text: JSON-encoded,
 // with the quotes. Read as the text inside, which is what this service keeps and what its callers decrypt.
@@ -28,6 +29,27 @@ export class KeyValueStoreService implements IKVStoreConnection {
     service: 'KeyValueStoreService',
   });
   private config: ConfigurationManagerConfig;
+  /** The edition's value codec (`kvValueCodec`), read once; null keeps every value as given. */
+  private codec: KvValueCodec | null | undefined;
+
+  private valueCodec(): KvValueCodec | null {
+    if (this.codec === undefined) this.codec = kvValueCodec();
+    return this.codec;
+  }
+
+  private encode<T>(key: string, value: T): T {
+    const codec = this.valueCodec();
+    return codec && typeof value === 'string'
+      ? (codec.encode(key, value) as T)
+      : value;
+  }
+
+  private decode<T>(key: string, stored: T | null): T | null {
+    const codec = this.valueCodec();
+    return codec && typeof stored === 'string'
+      ? (codec.decode(key, stored) as T)
+      : stored;
+  }
 
   private constructor(config: ConfigurationManagerConfig) {
     this.config = config;
@@ -200,8 +222,9 @@ export class KeyValueStoreService implements IKVStoreConnection {
    * @param key - The key to set
    * @param value - The value to store
    */
-  async set<T>(key: string, value: T): Promise<void> {
+  async set<T>(key: string, given: T): Promise<void> {
     await this.ensureConnection();
+    const value = this.encode(key, given);
     try {
       await this.store.createKey(key, value);
     } catch (error) {
@@ -221,7 +244,8 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async get<T>(key: string): Promise<T | null> {
     await this.ensureConnection();
-    return readable<T>((await this.store.getKey(key)) as T | null);
+    const kept = readable<T>((await this.store.getKey(key)) as T | null);
+    return this.decode<T>(key, kept);
   }
 
   /**
@@ -255,7 +279,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
   ): Promise<void> {
     await this.ensureConnection();
     await this.store.watchKey(key, (value: T | null) =>
-      callback(readable(value)),
+      callback(this.decode<T>(key, readable(value))),
     );
   }
 
@@ -282,27 +306,55 @@ export class KeyValueStoreService implements IKVStoreConnection {
     newValue: T,
   ): Promise<boolean> {
     await this.ensureConnection();
-    let success = await this.store.compareAndSet(key, expectedValue, newValue);
-    if (!success && typeof expectedValue === 'string') {
-      // The caller expects what `get` returned; the store may keep it in the older quoted form. One retry against the kept form
-      // when it reads as the expected value: the store's compare is still the atomic check.
+    const encoded = this.encode(key, newValue);
+    let success: boolean;
+    if (
+      this.valueCodec() &&
+      (typeof expectedValue === 'string' || expectedValue === null)
+    ) {
+      // The caller compares against the string it read (decoded); the store compares what it keeps: swap in the kept string
+      // when it reads as exactly the one expected (quotes off, then the codec), so the store's own compare stays the atomic step.
       let kept: T | null;
       try {
         kept = (await this.store.getKey(key)) as T | null;
       } catch (error) {
-        // the store's own compare already answered false: a failure of the read after it keeps that answer
+        // the same contract as the store's own compare-and-set: a failure is `false` (the callers retry), never a rejection
         this.logger.warn('compare-and-set read failed', {
           error: (error as Error).message,
         });
         return false;
       }
-      if (kept !== expectedValue && readable(kept) === expectedValue) {
-        // the entry keeps the form it had: a ciphertext replacing a quoted one is written quoted, as its earlier readers expect
-        const next =
-          typeof newValue === 'string' && CIPHERTEXT.test(newValue)
-            ? (JSON.stringify(newValue) as T)
-            : newValue;
-        success = await this.store.compareAndSet(key, kept, next);
+      if (this.decode<T>(key, readable(kept)) !== expectedValue) return false;
+      // the entry keeps the form it had: a value replacing a quoted ciphertext is written quoted, as its earlier readers expect
+      const quoted = typeof kept === 'string' && kept !== readable(kept);
+      const next =
+        quoted && typeof encoded === 'string' && CIPHERTEXT.test(encoded)
+          ? (JSON.stringify(encoded) as T)
+          : encoded;
+      success = await this.store.compareAndSet(key, kept, next);
+    } else {
+      success = await this.store.compareAndSet(key, expectedValue, encoded);
+      if (!success && typeof expectedValue === 'string') {
+        // The caller expects what `get` returned; the store may keep it in the older quoted form. One retry against the kept form
+        // when it reads as the expected value: the store's compare is still the atomic check.
+        let kept: T | null;
+        try {
+          kept = (await this.store.getKey(key)) as T | null;
+        } catch (error) {
+          // the store's own compare already answered false: a failure of the read after it keeps that answer
+          this.logger.warn('compare-and-set read failed', {
+            error: (error as Error).message,
+          });
+          return false;
+        }
+        if (kept !== expectedValue && readable(kept) === expectedValue) {
+          // the entry keeps the form it had: a ciphertext replacing a quoted one is written quoted, as its earlier readers expect
+          const next =
+            typeof encoded === 'string' && CIPHERTEXT.test(encoded)
+              ? (JSON.stringify(encoded) as T)
+              : encoded;
+          success = await this.store.compareAndSet(key, kept, next);
+        }
       }
     }
     if (success) {

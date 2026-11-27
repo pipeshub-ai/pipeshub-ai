@@ -87,6 +87,15 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         self.logger.debug("KeyValueStore initialized successfully")
 
     @property
+    def cipher(self) -> object:
+        """The edition's cipher of the values (app.edition_services.kv_cipher), made on first use from the platform cipher."""
+        if (cipher := self.__dict__.get("_cipher")) is None:
+            from app import edition_services
+
+            cipher = self._cipher = edition_services.kv_cipher(lambda: self.encryption_service)
+        return cipher
+
+    @property
     def client(self) -> object:
         """Expose the underlying client for watchers and diagnostics."""
         return self.store.client
@@ -199,7 +208,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         if encrypt_value:
             # Encrypt the value
-            store_value = _Ciphertext(self.encryption_service.encrypt(value_json))
+            store_value = _Ciphertext(self.cipher.encrypt(key, value_json))
         else:
             # The underlying store serializes what it is given (Redis and
             # PostgreSQL json.dumps it, etcd writes a str as-is and json.dumps
@@ -227,9 +236,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             encrypted_stored_value = await self.store.get_key(key)
             if encrypted_stored_value:
                 if encrypt_value:
-                    decrypted_value = self.encryption_service.decrypt(
-                        encrypted_stored_value
-                    )
+                    decrypted_value = self.cipher.decrypt(key, encrypted_stored_value)
                     stored_value = json.loads(decrypted_value)
                 else:
                     stored_value = encrypted_stored_value
@@ -288,7 +295,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         needs_decryption = not is_unencrypted_key(key)
         value = (
-            self.encryption_service.decrypt(stored)
+            self.cipher.decrypt(key, stored)
             if needs_decryption
             else stored
         )

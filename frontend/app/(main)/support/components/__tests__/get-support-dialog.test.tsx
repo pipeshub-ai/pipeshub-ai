@@ -328,9 +328,9 @@ describe('GetSupportDialog', { timeout: 15000 }, () => {
     expect(third).not.toBe(first);
   });
 
-  it('shows the server message for a rejected field and offers no email detour for it', async () => {
+  it.each([400, 413])('shows the server message for a %i refusal and offers no email detour for it', async (statusCode) => {
     mocks.getContext.mockResolvedValue(context(true));
-    mocks.submit.mockRejectedValue({ statusCode: 400, message: 'Attachments can total up to 8 MB' });
+    mocks.submit.mockRejectedValue({ statusCode, message: 'Attachments can total up to 8 MB' });
     renderAndOpen();
     await chooseArea('other');
     typeDescription('Something is off here');

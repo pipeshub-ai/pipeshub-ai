@@ -31,8 +31,8 @@ ARGS = {
     "create_kb_permissions": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": [], "role": "READER"},
     "update_kb_permission": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": [], "new_role": "READER"},
     "remove_kb_permission": {"kb_id": "kb1", "requester_id": "u1", "user_ids": ["u2"], "team_ids": []},
-    "upload_records_to_kb": {"kb_id": "kb1", "user_id": "u1", "org_id": "org1", "files": []},
-    "upload_records_to_folder": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1", "files": []},
+    "upload_records_to_kb": {"kb_id": "kb1", "user_id": "u1", "org_id": "org1", "files": [], "granted_documents": {}},
+    "upload_records_to_folder": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1", "files": [], "granted_documents": {}},
     "validate_folder_for_upload": {"kb_id": "kb1", "folder_id": "f1", "user_id": "u1", "org_id": "org1"},
     "move_record": {"kb_id": "kb1", "record_id": "r1", "new_parent_id": None, "user_id": "u1"},
 }
