@@ -49,11 +49,11 @@ async def get_sharing_service(
         "mcpRelay": bool(request.headers.get("x-pipeshub-mcp-relay")),
     }
 
-    async def share_gate(actor: Actor, artifact_id: str, artifact: dict) -> str | None:
+    async def share_gate(actor: Actor, artifact_id: str, artifact: dict, targets: list[str]) -> str | None:
         if container is None:
             return "SHARE_NOT_WIDENABLE"
         return await get_chat_extension().artifact_share_refusal(
-            actor, artifact_id, artifact, container.config_service(), caller
+            actor, artifact_id, artifact, container.config_service(), caller, targets
         )
 
     return ArtifactSharingService(graph_provider, notifications, share_gate=share_gate)

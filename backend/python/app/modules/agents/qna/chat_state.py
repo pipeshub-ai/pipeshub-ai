@@ -106,6 +106,7 @@ class ChatState(TypedDict):
     instructions: str | None  # Agent-specific instructions for the LLM
     custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
     project_instructions: str | None  # Author-set instructions from a linked Project (Node ProjectService)
+    project_id: str | None  # The project those instructions came from, which the answer's label names
     project_tools_selected: bool  # A project chat whose tools are the ones enabled on the project
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
@@ -145,7 +146,7 @@ class ChatState(TypedDict):
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
     # Attached toolsets/MCP servers the caller has not connected (`readiness.UnavailableTool` wire
-    # dicts, no credentials): left out of the run, named in the prompt and the completion.
+    # dicts, no credentials): left out of the run and offered to the model as stubs (`not_connected_tools`).
     unavailable_tools: list[dict[str, Any]] | None
 
     # Planner-based execution fields
@@ -579,6 +580,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # its own prompt section, never merged into system_prompt/instructions,
     # so it never touches a real Agent Builder agent's identity.
     project_instructions = chat_query.get("projectInstructions")
+    project_id = chat_query.get("projectId")
     project_tools_selected = bool(chat_query.get("projectToolsSelected"))
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
@@ -681,6 +683,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "instructions": instructions,
         "custom_instructions": custom_instructions,
         "project_instructions": project_instructions,
+        "project_id": project_id,
         "project_tools_selected": project_tools_selected,
         "timezone": timezone,
         "current_time": current_time,

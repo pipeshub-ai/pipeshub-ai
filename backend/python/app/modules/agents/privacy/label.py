@@ -7,7 +7,8 @@ everything named here; a missing, incomplete or unreadable label means only
 the asker sees it.
 
 `direct.records` holds record ids, the unit access is checked on. Virtual
-record ids (`vrids`, `saVrids`) are kept for audit only.
+record ids (`vrids`, `saVrids`) are never checked on a read; an answer with any
+entry in `saVrids`, its own or of an answer it built on, is never shared.
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from typing import Any, Final, Literal
 
 LABEL_VERSION: Final = 5
 # The set of writers this build tags with. Raised when a writer is added or a
-# rule changes, so labels written by an older set can be told apart.
-TAGSET: Final = 1
+# rule changes, so labels written by an older set can be told apart. Since 2, an
+# agent's entry says when the run was given skill text its asker can't open
+# (`AgentRef.skill`); an entry of an older label that says nothing is not known.
+TAGSET: Final = 2
 # One answer's direct ids. More is never stored cut short: it makes the label
 # incomplete instead.
 LABEL_DIRECT_MAX: Final = 2_000
@@ -30,6 +33,9 @@ LABEL_KEYS: Final = frozenset(
 )
 PARENT_MODES: Final = frozenset({"text", "full", "grant", "preswitch"})
 AGENT_KINDS: Final = frozenset({"service", "config"})
+# What a `saVrids` entry starts with for a result read with a sign-in an administrator shares with everyone, before
+# the MCP server's or API action's id. Like a service identity's, it is never checked on a read, and never shared.
+SHARED_SIGN_IN: Final = "shared-sign-in:"
 
 ParentMode = Literal["text", "full", "grant", "preswitch"]
 AgentKind = Literal["service", "config"]
@@ -53,9 +59,14 @@ class LabelError(ValueError):
 class AgentRef:
     key: str
     kind: AgentKind
+    # The run was given the text of a skill assigned to this agent that its asker can't open by themself.
+    skill: bool = False
 
-    def to_wire(self) -> dict[str, str]:
-        return {"key": self.key, "kind": self.kind}
+    def to_wire(self) -> dict[str, str | bool]:
+        wire: dict[str, str | bool] = {"key": self.key, "kind": self.kind}
+        if self.skill:
+            wire["skill"] = True
+        return wire
 
 
 @dataclass(frozen=True, order=True)
@@ -115,6 +126,22 @@ def _ids(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted({v for v in values if isinstance(v, str) and v}))
 
 
+def _agents(refs: Iterable[AgentRef]) -> tuple[AgentRef, ...]:
+    """One entry per agent and kind, which says `skill` when any of its entries does."""
+    merged: dict[tuple[str, AgentKind], bool] = {}
+    for ref in refs:
+        merged[ref.key, ref.kind] = merged.get((ref.key, ref.kind), False) or ref.skill
+    return tuple(sorted(AgentRef(key, kind, skill) for (key, kind), skill in merged.items()))
+
+
+def _agent_from_wire(entry: Mapping[str, Any]) -> AgentRef:
+    key, kind = entry["key"], entry["kind"]
+    skill = entry.get("skill", False)
+    if kind not in AGENT_KINDS or not isinstance(skill, bool):
+        raise LabelError("unknown agent kind or skill mark")
+    return AgentRef(str(key), kind, skill)
+
+
 @dataclass(frozen=True)
 class LabelDirect:
     records: tuple[str, ...] = ()
@@ -138,10 +165,11 @@ class LabelDirect:
         return sum(len(getattr(self, name)) for name in _FIELD_OF.values())
 
     def union(self, other: LabelDirect) -> LabelDirect:
-        return LabelDirect(**{
+        merged: dict[str, Any] = {
             name: tuple(sorted({*getattr(self, name), *getattr(other, name)}))
             for name in _FIELD_OF.values()
-        })
+        }
+        return LabelDirect(**{**merged, "agents": _agents(merged["agents"])})
 
     def to_wire(self) -> dict[str, list[Any]]:
         return {
@@ -150,7 +178,7 @@ class LabelDirect:
             "nodes": list(_ids(self.nodes)),
             "saVrids": list(_ids(self.sa_vrids)),
             "personal": list(_ids(self.personal)),
-            "agents": [a.to_wire() for a in sorted(set(self.agents))],
+            "agents": [a.to_wire() for a in _agents(self.agents)],
             "chat": [c.to_wire() for c in sorted(set(self.chat))],
             "projects": list(_ids(self.projects)),
             "marks": [m.to_wire() for m in sorted(set(self.marks))],
@@ -164,16 +192,13 @@ class LabelDirect:
         if unknown:
             raise LabelError(f"unknown direct keys: {sorted(unknown)}")
         try:
-            agents = tuple(AgentRef(str(a["key"]), a["kind"]) for a in wire.get("agents") or ())
-            if any(a.kind not in AGENT_KINDS for a in agents):
-                raise LabelError("unknown agent kind")
             return cls(
                 records=_ids(wire.get("records") or ()),
                 vrids=_ids(wire.get("vrids") or ()),
                 nodes=_ids(wire.get("nodes") or ()),
                 sa_vrids=_ids(wire.get("saVrids") or ()),
                 personal=_ids(wire.get("personal") or ()),
-                agents=agents,
+                agents=tuple(_agent_from_wire(a) for a in wire.get("agents") or ()),
                 chat=tuple(ChatUpload(str(c["conversationId"]), str(c["recordId"])) for c in wire.get("chat") or ()),
                 projects=_ids(wire.get("projects") or ()),
                 marks=tuple(Mark(str(m["source"]), str(m["ver"])) for m in wire.get("marks") or ()),
@@ -297,6 +322,7 @@ __all__ = [
     "NO_FINAL_EVENT",
     "OVER_CAP",
     "PARENT_MODES",
+    "SHARED_SIGN_IN",
     "TAGSET",
     "UNKNOWN_VERSION",
     "UNREFERENCED_ROW",

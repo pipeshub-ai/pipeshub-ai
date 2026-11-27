@@ -95,3 +95,24 @@ class TestStrictScopeMergedIntoFilters:
         await self._run(query_info)
 
         assert "strictScope" not in original_filters
+
+
+class TestProjectFieldsReachTheRun:
+    """The project a chat's instructions came from goes to the run with them, so its answer names that project."""
+
+    async def test_the_project_id_goes_with_the_instructions(self) -> None:
+        from app.api.routes.chatbot import ChatQuery
+
+        query_info = ChatQuery(query="hello", projectInstructions="Cite the Q3 report.", projectId="proj-1")
+
+        query_dict = await TestStrictScopeMergedIntoFilters()._run(query_info)
+
+        assert query_dict["projectInstructions"] == "Cite the Q3 report."
+        assert query_dict["projectId"] == "proj-1"
+
+    async def test_a_chat_in_no_project_names_none(self) -> None:
+        from app.api.routes.chatbot import ChatQuery
+
+        query_dict = await TestStrictScopeMergedIntoFilters()._run(ChatQuery(query="hello"))
+
+        assert query_dict["projectId"] is None

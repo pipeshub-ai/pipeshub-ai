@@ -449,7 +449,8 @@ class MCPToolProvider:
         context.tool_state.setdefault(SOURCES_STATE_KEY, {})[names["group"]] = {
             "name": server.display_name, "summary": summary,
         }
-        if instructions:
+        # Sent to the person's own sign-in, and the model can repeat them in an answer others read.
+        if instructions and not context.read_by_others:
             context.mcp_server_instructions.append({
                 "instanceId": server.instance_id, "name": server.display_name, "instructions": instructions,
             })

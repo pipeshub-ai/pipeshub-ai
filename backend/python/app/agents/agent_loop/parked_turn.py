@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 
 # How the request that answers an ask-user question starts; it continues the turn, it isn't a question.
 ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
+# `context.tool_state`: what a guard refused in this run until the person confirms it on a question card, by kind.
+# No lookup answers that question (`hooks/ask_user_question.py`).
+CONFIRM_ON_CARD = "ask_user_question_confirms"
 # How the answer to an approval card starts (`tool_approvals.TOOL_APPROVAL_RESUME_PREFIX`).
 _TOOL_APPROVAL_PREFIX = "Tool approval:"
 # How the words that close a turn stopped on an approval card start (`tool_approvals._ask`).

@@ -1,7 +1,7 @@
 """In a run others read, the assistant is offered none of the person's own tools.
 
 That is their personal toolsets and the MCP servers they added for themselves. The run's tools, its prompts (the tool
-list, "Available Actions", "Needs Authentication", "Unavailable MCP Servers", the notes on tools that are not
+list, "Available Actions", "Needs Authentication", "Unavailable MCP Servers", the stubs of tools that are not
 connected, the router's capability block) and its sub-agents all read the lists this trims, so none of those names
 reaches a model call. The person uses them in a private ask or a solo chat.
 
@@ -60,7 +60,7 @@ def keep_own_tools_out(context: AgentContext) -> None:
         context.mcp_servers = servers
         context.mcp_server_configs = {k: v for k, v in context.mcp_server_configs.items() if k not in dropped_servers}
         state.update({"mcp_servers": servers, "mcp_server_configs": context.mcp_server_configs})
-    # The assistant is offered only tools the person has connected, so every note about one that is not is about
+    # The assistant is offered only tools the person has connected, so every stub of one that is not is about
     # their own sign-in.
     state["unavailable_tools"] = []
 

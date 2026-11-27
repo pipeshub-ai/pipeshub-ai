@@ -33,9 +33,13 @@ class _Recorder(LabelLedger):
 
     def __init__(self) -> None:
         self.skills: list[tuple[str, SkillOrigin, str | None]] = []
+        self.closed: list[tuple[str, SkillOrigin, str | None]] = []
 
     def skill_shown(self, name: str, origin: SkillOrigin, agent_key: str | None = None) -> None:
         self.skills.append((name, origin, agent_key))
+
+    def closed_skill(self, name: str, origin: SkillOrigin, agent_key: str | None = None) -> None:
+        self.closed.append((name, origin, agent_key))
 
 
 def _md(name: str) -> str:
@@ -92,6 +96,25 @@ class TestWhereASkillCameFrom:
 
         assert origins.of("x") is SkillOrigin.PERSON and origins.of("y") is SkillOrigin.PERSON
 
+    async def test_the_store_records_whether_the_asker_opens_each_skill_by_themself(self) -> None:
+        _manager, origins = await _run_manager(await _graph(), also_visible={"team-playbook"})
+
+        # Bob's skill is in the run only because the agent was given it.
+        assert origins.closed("team-playbook")
+        assert not origins.closed("pdf-tools") and not origins.closed("comp-bands")
+
+    async def test_a_name_it_never_read_is_one_the_asker_cant_open(self) -> None:
+        assert SkillOrigins().closed("anything")
+
+    @pytest.mark.parametrize("opens", [(True, False), (False, True)])
+    async def test_a_name_the_asker_could_not_open_once_stays_closed(self, opens: tuple[bool, bool]) -> None:
+        origins = SkillOrigins()
+
+        for each in opens:
+            origins.record("x", SkillOrigin.AGENT, opens=each)
+
+        assert origins.closed("x")
+
     async def test_a_builtin_is_one_the_stores_rule_calls_builtin(self) -> None:
         """This store's rule: a builtin-sourced skill is the org's (`GraphSkillStore.is_builtin`)."""
         graph = await _graph()
@@ -129,6 +152,50 @@ class TestWhatTheLedgerIsTold:
         assert {name for name, _origin, _agent in recorder.skills} <= {"pdf-tools", "comp-bands"}
         assert all(agent == "agent-1" for _name, _origin, agent in recorder.skills)
 
+    @pytest.mark.parametrize(
+        ("read", "text"),
+        [
+            (lambda m: m.catalog_snapshot(), False),
+            (lambda m: m.list_skills(), False),
+            (lambda m: m.search("team playbook"), False),
+            (lambda m: m.list_versions("team-playbook"), False),
+            (lambda m: m.get_skill("team-playbook"), True),
+            (lambda m: m.activate_skill("team-playbook"), True),
+            (lambda m: m.load_resource("team-playbook", "refs/b.md"), True),
+            (lambda m: m.get_resources("team-playbook"), True),
+            (lambda m: m.get_version("team-playbook", "1.0.0"), True),
+            (lambda m: m.evaluate_skill_health("team-playbook"), True),
+            (lambda m: m.patch("team-playbook", "not in it", "x"), True),
+        ],
+    )
+    async def test_a_read_that_gives_text_the_asker_cant_open_says_so(self, read: Any, text: bool) -> None:  # noqa: ANN401
+        graph = await _graph()
+        bob = GraphSkillStore(graph, ORG, "user-bob")
+        await bob.write_resource("team-playbook", "refs/b.md", "b")
+        await bob.update_skill("team-playbook", _md("team-playbook"))
+        # This store keeps a version (1.0.0) once a later update replaces it.
+        await bob.update_skill("team-playbook", _md("team-playbook") + "\nMore steps.\n")
+        manager, _origins = await _run_manager(graph, also_visible={"team-playbook"})
+        recorder = _Recorder()
+
+        with bind_ledger(recorder):
+            result = read(manager)
+            if hasattr(result, "__await__"):
+                await result
+
+        assert recorder.closed == ([("team-playbook", SkillOrigin.AGENT, "agent-1")] if text else [])
+
+    @pytest.mark.parametrize("name", ["pdf-tools", "comp-bands"])
+    async def test_text_the_asker_can_open_says_nothing_more(self, name: str) -> None:
+        manager, _origins = await _run_manager(await _graph())
+        recorder = _Recorder()
+
+        with bind_ledger(recorder):
+            await manager.activate_skill(name)
+            await manager.get_resources(name)
+
+        assert recorder.skills and recorder.closed == []
+
     async def test_a_delete_refused_for_its_users_names_them_so_counts_as_the_askers(self) -> None:
         class _InUse:
             async def delete(self, name: str, *, detach: bool = False) -> bool:
@@ -156,4 +223,4 @@ class TestWhatTheLedgerIsTold:
         with bind_ledger(recorder):
             await manager.patch("comp-bands", "Steps", "Updated steps")
 
-        assert recorder.skills == []
+        assert recorder.skills == [] and recorder.closed == []

@@ -26,6 +26,8 @@ _MAX_LABEL_CHARS = 120
 _MAX_DESCRIPTION_CHARS = 200
 _MAX_HEADER_CHARS = 20
 _MAX_USER_INTENT_CHARS = 500
+# The key of a question under which a guard says what it added at its end; never the model's.
+NAMED = "named"
 
 # The app adds its own 'Something else' choice, so a model's catch-all would show twice.
 _CATCH_ALL_LABEL = re.compile(
@@ -436,8 +438,18 @@ class InternalTools:
         questions = asked_questions(questions)
         if not questions:
             return ToolOutput(success=False, error=_NO_QUESTIONS_ERROR)
+        # What a guard added to a question to name what a yes confirms (`NAMED`) is as long as it is:
+        # the limits are for the model's own words.
+        named = [q[NAMED] if isinstance(q, dict) and isinstance(q.get(NAMED), str) else "" for q in questions]
+        written = [
+            {**q, "question": _question_text(q).removesuffix(added)} if added else q
+            for q, added in zip(questions, named, strict=True)
+        ]
         try:
-            parsed = AskUserQuestionInput.model_validate({"user_intent": user_intent, "questions": questions})
+            parsed = AskUserQuestionInput.model_validate({"user_intent": user_intent, "questions": written})
         except ValidationError as e:
             return ToolOutput(success=False, error=_invalid_input_error(e))
-        return json.dumps(question_payload(parsed.user_intent, parsed.questions), ensure_ascii=False)
+        payload = question_payload(parsed.user_intent, parsed.questions)
+        for question, added in zip(payload["questions"], named, strict=True):
+            question["question"] += added
+        return json.dumps(payload, ensure_ascii=False)

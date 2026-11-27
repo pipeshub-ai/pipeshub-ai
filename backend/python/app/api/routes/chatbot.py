@@ -206,6 +206,10 @@ class ChatQuery(BaseModel):
     # to (Node `ProjectService.buildContext`). Additive — rendered as its
     # own prompt section, never merged into system_prompt/instructions.
     projectInstructions: str | None = Field(default=None, max_length=8000)
+    # The project those instructions came from (Node `applyProjectScope`): an
+    # answer given them is labelled with it, so only people who can open the
+    # project read that answer.
+    projectId: str | None = None
     attachments: list[dict[str, Any]] = []
     # AG-UI is the only supported SSE wire protocol. This field is
     # accepted but ignored — `resolve_protocol` always returns "agui".
@@ -2284,6 +2288,7 @@ async def _stream_chat_via_agent_loop(
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
         "projectInstructions": query_info.projectInstructions,
+        "projectId": query_info.projectId,
         "attachments": attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "includeRetrievalContext": query_info.includeRetrievalContext,

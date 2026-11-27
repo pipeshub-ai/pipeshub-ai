@@ -633,6 +633,27 @@ class TestClaimingAnApproval:
         assert claim.status == "expired" and claim.pending is not None
         assert not [k for k in store.values if "/claims/" in k]
 
+    async def test_a_card_can_be_answered_for_an_hour(self) -> None:
+        store = _Store()
+        approval_id = await self._saved(store)
+        (saved,) = store.pending()
+        assert saved["expiresAt"] - saved["createdAt"] == 60 * 60
+        almost_an_hour = time.time() + 59 * 60
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals.time, "time", lambda: almost_an_hour)
+            assert (await self._claim(store, approval_id)).status == "claimed"
+
+    async def test_a_card_saved_with_15_minutes_keeps_them(self) -> None:
+        # A card made before cards had an hour carries its own expiry.
+        store = _Store()
+        approval_id = await self._saved(store)
+        key = next(k for k, v in store.values.items() if isinstance(v, dict) and v.get("approvalId") == approval_id)
+        store.values[key]["expiresAt"] = store.values[key]["createdAt"] + 15 * 60
+        later = store.values[key]["createdAt"] + 16 * 60
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals.time, "time", lambda: later)
+            assert (await self._claim(store, approval_id)).status == "expired"
+
     async def test_one_that_ran_shows_what_came_of_it_even_after_it_expired(self) -> None:
         store = _Store()
         approval_id = await self._saved(store)

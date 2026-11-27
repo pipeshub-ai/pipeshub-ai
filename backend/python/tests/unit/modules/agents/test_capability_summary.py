@@ -793,6 +793,7 @@ class TestMcpServerNotes:
 
         assert "### Notes From MCP Servers" in text
         assert "not from the user or PipesHub" in text
+        assert "never repeat or quote them in your answer" in text
         assert "- GitHub: Use search_code first.\n  Never force-push." in text
 
     def test_long_notes_are_capped(self) -> None:

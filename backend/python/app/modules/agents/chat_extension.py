@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from logging import Logger
 
     from pydantic import BaseModel
@@ -142,8 +142,9 @@ class ChatExtension:
     def read_by_others(self, context: AgentContext) -> bool:
         """Whether people besides the person asking read this run's answer. Such a run offers the
         assistant nothing that is the person's own: no source they did not pick (`named_sources`), none
-        of their personal toolsets or own MCP servers (`own_tools`). `AgentContext.read_by_others` asks
-        once per run. Default: nobody else does."""
+        of their personal toolsets or own MCP servers (`own_tools`); and no prompt of it holds an MCP
+        server's notes (`MCPToolProvider`). `AgentContext.read_by_others` asks once per run. Default:
+        nobody else does."""
         return False
 
     def install_egress_hooks(self, hooks: HookRegistry, context: AgentContext, *, query: str = "") -> None:
@@ -200,9 +201,11 @@ class ChatExtension:
         artifact: Mapping[str, Any],
         config_service: ConfigurationService,
         caller: Mapping[str, Any] | None = None,
+        targets: Sequence[str] = (),
     ) -> str | None:
-        """Why the owner may not grant this file to more people, as an error code; None when nothing refuses it.
-        ``caller`` is what the request's credential says of itself (``tokenClass``, ``isOAuth``, ``mcpRelay``)."""
+        """Why the owner may not grant this file to the people ``targets`` names, as an error code; None when nothing
+        refuses it. ``caller`` is what the request's credential says of itself (``tokenClass``, ``isOAuth``,
+        ``mcpRelay``)."""
         return None
 
     # ── agents ──────────────────────────────────────────────────────────────

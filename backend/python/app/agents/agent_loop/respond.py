@@ -74,6 +74,7 @@ from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.hooks.flow_guard import request_label
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
+from app.agents.agent_loop.not_connected_tools import NEEDED_TOOLS_STATE_KEY
 from app.agents.agent_loop.reasoning_persistence import (
     build_reasoning_payload,
     filter_reasoning_parts,
@@ -142,9 +143,9 @@ class AnswerFinalizer:
         sent, so the persisted transcript's final segment always matches
         `completion_data["answer"]` (see `TranscriptCollector.
         replace_final_text`)."""
-        # Every way a turn ends passes here; the saved answer keeps what the run left out.
-        if unavailable := self._context.tool_state.get("unavailable_tools"):
-            completion_data["unavailableTools"] = list(unavailable)
+        # Every way a turn ends passes here; the saved answer keeps the tools it called but couldn't use.
+        if needed := self._context.tool_state.get(NEEDED_TOOLS_STATE_KEY):
+            completion_data["unavailableTools"] = list(needed)
         collector = self._context.transcript_collector
         if collector is None:
             return

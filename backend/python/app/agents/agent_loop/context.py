@@ -216,6 +216,9 @@ class AgentContext(BaseModel):
     # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
     # and `custom_instructions` (org-level) — never touches agent identity.
     project_instructions: str | None = None
+    # The project those instructions came from (`ChatQuery.projectId`): the
+    # answer's label names it, so only people who can open it read the answer.
+    project_id: str | None = None
     # A project chat: every tool loaded is one enabled on the project (Node
     # narrows `tools` to them), which `tool_approvals.decide` relies on.
     project_tools_selected: bool = False
@@ -276,7 +279,7 @@ class AgentContext(BaseModel):
     durable_web_app: bool = False
 
     # `{"instanceId", "name", "instructions"}` for each loaded MCP server whose `initialize`
-    # result carried instructions, for the capability summary.
+    # result carried instructions, for the capability summary. Empty in a run others read (`read_by_others`).
     mcp_server_instructions: list[dict[str, Any]] = Field(default_factory=list)
 
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
@@ -592,6 +595,7 @@ class AgentContext(BaseModel):
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
             project_instructions=state.get("project_instructions"),
+            project_id=state.get("project_id"),
             project_tools_selected=bool(state.get("project_tools_selected", False)),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),

@@ -47,8 +47,9 @@ _RECORDS_DYNAMIC_NAMES: Final = frozenset({
     "slack__fetch_slack_thread", "slack__fetch_slack_nearby_messages",
 })
 _PUBLIC_DYNAMIC_TOOLS: Final = frozenset({"web_search", "fetch_url"})
-# Library toolsets.
-_NONE_TOOLSETS: Final = frozenset({"builtin", "agents"})
+# Library toolsets, and the stubs of tools the asker hasn't connected (`not_connected_tools`): a call runs
+# nothing and answers with fixed text.
+_NONE_TOOLSETS: Final = frozenset({"builtin", "agents", "not_connected"})
 # The skill tools name each skill they showed, by where it came from, through
 # the run's skill manager (`LabelledSkillManager`).
 _RECORDS_TOOLSETS: Final = frozenset({"coding_sandbox", "skills"})

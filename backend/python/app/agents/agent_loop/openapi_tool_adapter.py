@@ -20,6 +20,8 @@ from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.openapi.auth import ApiToolsetAuthError
 from app.agents.openapi.executor import ApiCallError
 from app.agents.openapi.request_builder import RequestBuildError
+from app.agents.openapi.service import uses_shared_credential
+from app.modules.agents.privacy.ledger import note_shared_sign_in
 from app.utils import error_class
 from harness_core.security.display_safe import tool_display_name
 
@@ -88,6 +90,11 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         return self._operation
 
     @property
+    def shared_sign_in(self) -> str | None:
+        """The API action's id when its calls sign in with the credential an admin shares with everyone."""
+        return self._instance.id if uses_shared_credential(self._instance) else None
+
+    @property
     def short_description(self) -> str:
         line = first_line(self._operation.summary or self._operation.description or self._operation.tool_name)
         return line if len(line) <= _SHORT_DESCRIPTION_MAX_LEN else line[: _SHORT_DESCRIPTION_MAX_LEN - 3] + "..."
@@ -130,6 +137,9 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         return f"{prefix}{text[:_MAX_SUMMARY_CHARS]}" if text else None
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
+        if (shared := self.shared_sign_in) is not None:
+            # Here, where the call is made, whatever asked for it; an error can hold what the API said too.
+            note_shared_sign_in(shared)
         # The executor logs each failure once from `cause` and `end_fields`.
         try:
             response = await self._executor.call(self._operation, kwargs)

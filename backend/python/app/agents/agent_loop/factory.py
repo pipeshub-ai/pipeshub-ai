@@ -166,6 +166,7 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.not_connected_tools import register_not_connected_tools
 from app.agents.agent_loop.openapi_tool_loader import OpenAPIToolProvider
 from app.agents.agent_loop.output_cap_transport import (
     max_turn_output_chars,
@@ -680,6 +681,8 @@ class PipesHubAgentFactory:
         # reveal and are not worth two extra bound schemas every turn.
         _mark("f:mcp_load")
         register_lazy_tool_meta_tools(tool_registry, context)
+        # Not counted for lazy disclosure: a stub alone must not hide the agent's real tools.
+        uncounted_names = _SWITCHED_TOOL_NAMES | frozenset(register_not_connected_tools(tool_registry, context))
 
         # Resolved ONCE per request and threaded into every surface the
         # model sees or that shapes `run_code`'s actual behavior — the
@@ -940,7 +943,7 @@ class PipesHubAgentFactory:
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
                 essential_names=frozenset(essential_toolset_names),
                 context=context,
-                uncounted_names=_SWITCHED_TOOL_NAMES,
+                uncounted_names=uncounted_names,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
@@ -1032,7 +1035,7 @@ class PipesHubAgentFactory:
             ),
             essential_names=frozenset(essential_toolset_names),
             context=context,
-            uncounted_names=_SWITCHED_TOOL_NAMES,
+            uncounted_names=uncounted_names,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above

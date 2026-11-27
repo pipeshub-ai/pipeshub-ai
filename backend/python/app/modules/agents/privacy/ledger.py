@@ -97,6 +97,9 @@ class LabelLedger:
     def personal(self, call_id: str | None = None) -> None:
         """A result read with the asker's own credential reached the run."""
 
+    def shared_sign_in(self, instance_id: str) -> None:
+        """Something read with the sign-in an administrator shares for this MCP server or API action reached the run."""
+
     def agent(self, key: str, kind: AgentKind) -> None:
         """An agent's configuration or service identity shaped the run."""
 
@@ -116,6 +119,10 @@ class LabelLedger:
     def skill_shown(self, name: str, origin: SkillOrigin, agent_key: str | None = None) -> None:
         """A skill's name, description, body or files reached the run. `agent_key` is the run's
         agent, which a skill assigned to it belongs to."""
+
+    def closed_skill(self, name: str, origin: SkillOrigin, agent_key: str | None = None) -> None:
+        """The body or a file of a skill its asker can't open by themself reached the run, besides what
+        `skill_shown` says of it."""
 
     def untagged(self, where: str) -> None:
         """Something reached a prompt whose source the ledger cannot name."""
@@ -321,6 +328,11 @@ def note_personal() -> None:
     _guarded(lambda ledger: ledger.personal(call_id=_tool_call.get()))
 
 
+def note_shared_sign_in(instance_id: str) -> None:
+    """A call answered with the sign-in an administrator shares for this MCP server or API action."""
+    _guarded(lambda ledger: ledger.shared_sign_in(instance_id))
+
+
 def note_artifact_read(
     artifact_id: str, run_id: str | None = None, *, conversation_id: str | None = None, written_at: int | None = None,
 ) -> None:
@@ -343,6 +355,11 @@ def note_skills(shown: Iterable[tuple[str, SkillOrigin]], *, agent_key: str | No
             ledger.skill_shown(name, origin, agent_key)
 
     _guarded(_write)
+
+
+def note_closed_skill(name: str, origin: SkillOrigin, *, agent_key: str | None = None) -> None:
+    """The body or a file of a skill the asker can't open by themself was handed to the run."""
+    _guarded(lambda ledger: ledger.closed_skill(name, origin, agent_key))
 
 
 def note_untagged(where: str) -> None:
@@ -446,9 +463,11 @@ __all__ = [
     "leave_tool_call",
     "model_call_scope",
     "note_artifact_read",
+    "note_closed_skill",
     "note_history_results",
     "note_personal",
     "note_request_sources",
+    "note_shared_sign_in",
     "note_shown",
     "note_skills",
     "note_tool_finished",

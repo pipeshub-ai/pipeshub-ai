@@ -70,8 +70,8 @@ class ShareNotWidenableError(PermissionError):
         self.code = code
 
 
-# Why the owner may not grant this file (an error code), or None. An exception refuses too.
-ShareGate = Callable[["Actor", str, dict[str, Any]], Awaitable[str | None]]
+# Why the owner may not grant this file to these people (an error code), or None. An exception refuses too.
+ShareGate = Callable[["Actor", str, dict[str, Any], list[str]], Awaitable[str | None]]
 
 
 def _user_key_from_edge(edge: dict) -> str | None:
@@ -125,9 +125,9 @@ class ArtifactSharingService:
         artifact_doc, artifact_name, current = await self._authorize(actor, artifact_id)
         if artifact_doc.get("serviceAgentRun") is True:
             raise ShareNotAllowedError("A file a service account agent made can't be shared.")
-        # The gate judges the file as it is now: the version the share is checked on.
-        await self._check_gate(actor, artifact_id, {**artifact_doc, "version": current})
         targets = await self._resolve_targets(actor, user_ids)
+        # The gate judges the file as it is now (the version the share is checked on), for the people it would reach.
+        await self._check_gate(actor, artifact_id, {**artifact_doc, "version": current}, list(targets))
         now = get_epoch_timestamp_in_ms()
         edges: list[dict[str, Any]] = []
         refreshed: list[dict[str, Any]] = []
@@ -219,12 +219,12 @@ class ArtifactSharingService:
             await notify_principals_changed(actor.org_id, user_ids=user_ids)  # a narrowing PERMISSION write
         return len(to_keep_for_chat) + len(to_delete)
 
-    async def _check_gate(self, actor: Actor, artifact_id: str, artifact_doc: dict) -> None:
-        """Refuses the grant when the edition's gate does, or when the gate itself fails."""
+    async def _check_gate(self, actor: Actor, artifact_id: str, artifact_doc: dict, targets: list[str]) -> None:
+        """Refuses the grant to ``targets`` when the edition's gate does, or when the gate itself fails."""
         if self._share_gate is None:
             return
         try:
-            refusal = await self._share_gate(actor, artifact_id, artifact_doc)
+            refusal = await self._share_gate(actor, artifact_id, artifact_doc, targets)
         except Exception:
             logger.warning("Artifact share gate failed; refusing the share", exc_info=True)
             refusal = "SHARE_NOT_WIDENABLE"

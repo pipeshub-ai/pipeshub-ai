@@ -142,7 +142,10 @@ SCOPED_SITES: Final[dict[str, ScopedSite]] = {
 PROMPT_SECTIONS: Final[dict[str, str]] = {
     "identity": "fixed text, or a saved agent's configuration (agents: config)",
     "agent_instructions": "a saved agent's configuration (agents: config)",
-    "project_instructions": "the request names no project: incomplete (untagged_prompt_part:project_instructions)",
+    "project_instructions": (
+        "the project they came from (projects); a request that names no project: incomplete "
+        "(untagged_prompt_part:project_instructions)"
+    ),
     "custom_instructions": "the org's own instructions: fixed text",
     "operating_rules": "fixed text",
     "response_format": "fixed text",
@@ -158,10 +161,13 @@ PROMPT_SECTIONS: Final[dict[str, str]] = {
     "preloaded_tools": "tool schemas: fixed text",
     "code_navigation": "fixed text",
     "knowledge_sources": "chat route: connector types only; assistant: nodes; saved agent: agents (config)",
-    "capability_summary": "runtime status; per-user MCP server notes make the answer personal",
+    "capability_summary": (
+        "runtime status; MCP server notes, in a run nobody else reads: the asker (personal) once the answer, or a file "
+        "it saves, holds their words"
+    ),
     "conversation_rules": "the chat's roster",
-    "user_context": "the asker's own profile",
-    "sender_context": "the asker's own profile and the roster",
+    "user_context": "the asker's name, email and organization, as every member sees them in the directory: no mark",
+    "sender_context": "the asker's directory profile, as user_context, and the roster: no mark",
     "answer_confidence": "fixed text",
     "worked_traces": "fixed text",
     "skills_overview": (
@@ -169,13 +175,15 @@ PROMPT_SECTIONS: Final[dict[str, str]] = {
         "builtin or one this run wrote adds nothing; one assigned to the run's agent, the agent "
         "(agents: config); any other is a person's own, so the asker (personal)"
     ),
-    "preloaded_skills": "each skill named or loaded, as skills_overview",
+    "preloaded_skills": (
+        "each skill named or loaded, as skills_overview; the body of an assigned one the asker can't open "
+        "is also said on the agent's entry (skill)"
+    ),
     "current_request": "the asker's words",
     "request_interpretation": "the intent call's output, from inputs the ledger observed",
     "goal_brief": "the intent call's output, from inputs the ledger observed",
     "time_context": "fixed text",
     "request_context": "goal constraints: prefetch (records), the artifact reminder (artifact parents), notices",
-    "unavailable_tools": "runtime status",
     "entity_filter": "the asker's own filter choice",
     "attachments": "the request's attachments: chat uploads, or records by id",
     "extra_sections": "the catch-all for the extra sections below",

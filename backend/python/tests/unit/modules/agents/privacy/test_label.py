@@ -68,6 +68,23 @@ class TestWireShape:
             {"id": "m1", "ver": "v1", "mode": "text"},
         ]
 
+    def test_an_agents_entry_says_skill_only_when_its_run_was_given_text_the_asker_cant_open(self) -> None:
+        wire = _label(agents=(AgentRef("a1", "config", skill=True), AgentRef("a2", "config"))).to_wire()
+
+        # An entry that says nothing is written as before labels had the mark.
+        assert wire["direct"]["agents"] == [
+            {"key": "a1", "kind": "config", "skill": True}, {"key": "a2", "kind": "config"},
+        ]
+
+    def test_two_entries_of_one_agent_are_one_that_says_skill_when_either_does(self) -> None:
+        wire = _label(agents=(
+            AgentRef("a1", "config"), AgentRef("a1", "config", skill=True), AgentRef("a1", "service"),
+        )).to_wire()
+
+        assert wire["direct"]["agents"] == [
+            {"key": "a1", "kind": "config", "skill": True}, {"key": "a1", "kind": "service"},
+        ]
+
     def test_a_file_parent_names_the_run_that_wrote_it_and_reads_back_the_same(self) -> None:
         label = AnswerProvenance(
             direct=LabelDirect(),
@@ -140,7 +157,9 @@ class TestWireShape:
 class TestReading:
     def test_a_label_reads_back_as_written(self) -> None:
         label = AnswerProvenance(
-            direct=LabelDirect(records=("r1",), personal=("u1",), agents=(AgentRef("k", "config"),)),
+            direct=LabelDirect(
+                records=("r1",), personal=("u1",), agents=(AgentRef("k", "config"), AgentRef("s", "config", skill=True)),
+            ),
             parents=(ParentRef("m1", "v1", "full"),),
             complete=False,
             incomplete=("unreferenced_row",),
@@ -161,6 +180,26 @@ class TestReading:
 
         with pytest.raises(LabelError):
             AnswerProvenance.from_wire(wire)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"key": "a", "kind": "config", "skill": "yes"}, {"key": "a", "kind": "config", "skill": 1},
+            {"key": "a", "kind": "owner"}, {"key": "a"}, {"kind": "config"}, "a", None,
+        ],
+    )
+    def test_an_agents_entry_this_build_cannot_read_is_refused(self, entry: object) -> None:
+        wire = _label().to_wire()
+        wire["direct"]["agents"] = [entry]
+
+        with pytest.raises(LabelError):
+            AnswerProvenance.from_wire(wire)
+
+    def test_an_entry_of_an_older_label_reads_as_saying_nothing(self) -> None:
+        wire = _label().to_wire()
+        wire["direct"]["agents"] = [{"key": "a", "kind": "config"}]
+
+        assert AnswerProvenance.from_wire(wire).direct.agents == (AgentRef("a", "config"),)
 
     def test_an_unknown_parent_mode_is_refused(self) -> None:
         wire = _label().to_wire()
@@ -193,6 +232,15 @@ class TestMerge:
         assert merged["direct"]["records"] == ["q1", "r1"]
         assert merged["direct"]["personal"] == ["u1"]
         assert merged["complete"] is False and merged["incomplete"] == ["x"]
+
+    @pytest.mark.parametrize("strong_first", [False, True])
+    def test_a_pass_that_was_given_the_skills_text_says_so_for_the_union(self, strong_first: bool) -> None:
+        fast = _label(agents=(AgentRef("a1", "config"),)).to_wire()
+        strong = _label(agents=(AgentRef("a1", "config", skill=True),)).to_wire()
+
+        merged = merge_wire([strong, fast] if strong_first else [fast, strong])
+
+        assert merged["direct"]["agents"] == [{"key": "a1", "kind": "config", "skill": True}]
 
     def test_a_pass_with_no_label_makes_the_union_incomplete(self) -> None:
         merged = merge_wire([_label(records=("r1",)).to_wire(), None])

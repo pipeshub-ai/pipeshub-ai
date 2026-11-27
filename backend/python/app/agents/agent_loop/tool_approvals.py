@@ -52,6 +52,11 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
+from app.modules.agents.privacy.ledger import (
+    note_shared_sign_in,
+    note_tool_finished,
+    note_tool_started,
+)
 from app.utils.env_utils import env_bool
 from app.utils.error_class import log_failure
 from app.utils.logging_fields import log_event
@@ -76,7 +81,8 @@ logger = logging.getLogger(__name__)
 
 ENABLED_ENV = "MCP_TOOL_APPROVALS"
 TOOLSET_ENABLED_ENV = "TOOLSET_TOOL_APPROVALS"
-APPROVAL_TTL_SECONDS = 900
+# A card saved before keeps its own `expires_at`.
+APPROVAL_TTL_SECONDS = 3600
 # A saved call and its claim are kept longer than they can be answered, so a late or repeated
 # answer still finds the call it was about and is told what happened to it.
 _RECORD_TTL_SECONDS = 86400
@@ -493,6 +499,20 @@ def _arguments_key(arguments: object) -> str:
     return json.dumps(arguments, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
 
 
+# A built-in tool has no server to name on its card: what it does, in words, by its path. The web app knows
+# them too, to translate them (`BUILT_IN_TOOLS`, `frontend/app/(main)/chat/tool-approval.ts`).
+_BUILT_IN_WORDS: dict[str, str] = {
+    "/dynamic/dynamic/fetch_url": "Open a web page",
+    "/toolsets/coding_sandbox/run_code": "Run code",
+    "/toolsets/coding_sandbox/install_packages": "Install code packages",
+}
+
+
+def _built_in_words(tool_path: str, name: str) -> str:
+    """Without words of its own, a tool's name as it reads, less the group it is called under."""
+    return _BUILT_IN_WORDS.get(tool_path) or name.rsplit("__", 1)[-1].replace("_", " ").strip().capitalize() or name
+
+
 def call_target(context: "AgentContext", tool_path: str, tool: "Tool | None", name: str) -> ApprovalTarget:
     """What a restricted card is asked about: the call's MCP server or toolset when it has one
     (whatever its own approvals setting), else the registered tool `name` itself."""
@@ -502,10 +522,9 @@ def call_target(context: "AgentContext", tool_path: str, tool: "Tool | None", na
     target: Optional[ApprovalTarget] = context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).get(tool_path)
     if target is not None:
         return target
-    display = getattr(tool, "display_name", None) if tool is not None else None
+    words = _built_in_words(tool_path, name)
     return ApprovalTarget(
-        source="tool", instance_id="", tool_name=name, owner=display if isinstance(display, str) and display else name,
-        kind="write", tool=tool,  # type: ignore[arg-type]
+        source="tool", instance_id="", tool_name=name, owner=words, kind="write", tool=tool, title=words,  # type: ignore[arg-type]
     )
 
 
@@ -728,7 +747,8 @@ async def _ask(
             code="approval_not_saved",
         )
         return
-    message = f"{WAITING_PREFIX} {tool_name} on {server}."
+    asked = f"“{server}”" if target.source == "tool" else f"{tool_name} on {server}"
+    message = f"{WAITING_PREFIX} {asked}."
     context.tool_state[PENDING_MESSAGE] = message
     shown = (
         {"arguments": shown_value(pending.arguments), "restricted": True, **restricted}
@@ -932,6 +952,8 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 "it may still be running. Don't run it again."
             ), True, restricted=pending.restricted, nested=pending.nested)
         _log_answered(answer, pending, "already_answered", call_id=call_id, tool=tool_name, outcome=outcome)
+        if outcome.ran:
+            _note_earlier_result(call_id, tool_name, pending, target)
         await _show(run, call_id, tool_name, pending, target, outcome)
         return _Settled(
             call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed",
@@ -1011,6 +1033,16 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
         answer=outcome.answer, restricted=pending.restricted, nested=pending.nested, reason=outcome.reason,
         carried=carried,
     )
+
+
+def _note_earlier_result(call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget]) -> None:
+    """The model is given what the call returned to an earlier answer of its card, and nothing runs: tagged for the
+    label as the executor tags a call that ran. A tool this request no longer has could have used any sign-in."""
+    note_tool_started(call_id, target.tool.path if target is not None else "", tool_name)
+    note_tool_finished(call_id)
+    shared = getattr(target.tool, "shared_sign_in", None) if target is not None else pending.instance_id
+    if shared:
+        note_shared_sign_in(shared)
 
 
 async def _saved(save: Any, rule: Rule) -> str:  # noqa: ANN401

@@ -45,6 +45,12 @@ class TestFromChatState:
         context = AgentContext.from_chat_state(state)
         assert context.project_instructions == "Cite the Q3 report."
 
+    def test_project_id_is_threaded_through_beside_the_instructions(self) -> None:
+        state = {"project_instructions": "Cite the Q3 report.", "project_id": "proj-1"}
+        context = AgentContext.from_chat_state(state)
+        assert context.project_id == "proj-1"
+        assert AgentContext.from_chat_state({}).project_id is None
+
     def test_independent_of_custom_instructions(self):
         """The two fields must not clobber each other — a conversation can
         carry an org-level custom instruction AND a project instruction at

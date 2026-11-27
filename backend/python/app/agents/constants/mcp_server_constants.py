@@ -18,7 +18,7 @@ would create under concurrent admin writes):
   /services/mcp/tool-catalogs/pointers/{instanceId}/{ownerKey}    -> which catalog a sign-in's discovery gave
   /services/mcp/tool-catalogs/blobs/{sha256}                      -> a tool catalog, stored once (`tool_cache`)
   /services/mcp/user-tool-rules/{userId}/{instanceId}             -> a person's own rules per tool (`tool_approvals`)
-  /services/mcp/tool-approvals/pending/{approvalId}               -> a call waiting for approval (answerable for 15 min)
+  /services/mcp/tool-approvals/pending/{approvalId}               -> a call waiting for approval (answerable for 60 min)
   /services/mcp/tool-approvals/claims/{approvalId}                -> single-use claim of an approval, and what came of it
 
 DCR clients used to be registered per-owner (one OAuth app per user per instance at the

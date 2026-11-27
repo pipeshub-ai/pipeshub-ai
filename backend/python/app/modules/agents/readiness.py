@@ -2,8 +2,8 @@
 
 A run uses the credentials of the identity it acts as: the caller's own, or, for a
 service-account agent that runs as itself, the credentials kept for the agent. A
-normal agent leaves out what the caller has not connected; the run tells the model
-and the client what is missing. A service agent stops the run until they are set up.
+normal agent leaves out what the caller has not connected and offers each one to the
+model as a stub (`not_connected_tools`). A service agent stops the run until they are set up.
 """
 
 import asyncio
@@ -20,11 +20,6 @@ logger = logging.getLogger(__name__)
 
 TOOLSET_CONFIG_MISSING_CODE = "toolset_config_missing"
 MCP_SERVER_CONFIG_MISSING_CODE = "mcp_server_config_missing"
-# Non-fatal custom stream event: the run goes on without these tools.
-TOOLS_UNAVAILABLE_EVENT = "tools_unavailable"
-
-# Names come from admin-set display names; keep a prompt line short and on one line.
-_MAX_PROMPT_NAME_LEN = 80
 
 
 class UnavailableTool(BaseModel):
@@ -131,39 +126,9 @@ class AgentReadiness(BaseModel):
             "servers": [item.legacy_mcp_server() for item in self.unavailable_tools if item.kind == "mcp"],
         }
 
-    def unavailable_event(self, agent_id: str | None) -> dict[str, Any]:
-        return {
-            "agentId": agent_id,
-            "serviceAccount": self.is_service_account,
-            "items": [item.wire() for item in self.unavailable_tools],
-        }
-
 
 def _quoted(names: Sequence[str]) -> str:
     return ", ".join(f"'{name}'" for name in names)
-
-
-def _prompt_name(raw: object) -> str:
-    text = " ".join(str(raw or "").split())
-    return text[:_MAX_PROMPT_NAME_LEN] or "unnamed tool"
-
-
-def unavailable_tools_note(items: Sequence[Mapping[str, Any]] | None) -> str | None:
-    """The system-prompt lines naming the attached tools this run left out, or None."""
-    if not items:
-        return None
-    by_user = [_prompt_name(i.get("displayName")) for i in items if i.get("userCanConnect")]
-    by_admin = [_prompt_name(i.get("displayName")) for i in items if not i.get("userCanConnect")]
-    lines = ["## Tools that are not connected"]
-    if by_user:
-        lines.append(f"Unavailable until the user connects them: {', '.join(by_user)}.")
-    if by_admin:
-        lines.append(f"Unavailable until an admin sets them up: {', '.join(by_admin)}.")
-    lines.append(
-        "If the request needs one of them, say so plainly and name it; don't pretend to use it or "
-        "invent its results. If the request does not need them, don't mention them."
-    )
-    return "\n".join(lines)
 
 
 async def _toolset_readiness(

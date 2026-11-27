@@ -108,6 +108,15 @@ class TestChatQueryModel:
         with pytest.raises(ValidationError):
             ChatQuery(query="q", projectInstructions="x" * 8001)
 
+    def test_project_id_defaults_to_none(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        assert ChatQuery(query="q").projectId is None
+
+    def test_project_id_names_the_project_its_instructions_came_from(self) -> None:
+        from app.api.routes.agent import ChatQuery
+        q = ChatQuery(query="q", projectInstructions="Cite the Q3 report.", projectId="proj-1")
+        assert q.projectId == "proj-1"
+
 
 class TestMergeEndUserServiceAccountUserInfo:
     def _creator_like(self) -> dict:

@@ -101,13 +101,6 @@ def _frames(response: Response) -> list[tuple[str, dict]]:
     return frames
 
 
-def _custom(response: Response, name: str) -> dict:
-    for event, data in _frames(response):
-        if event == "CUSTOM" and data.get("name") == name:
-            return data["value"]
-    raise AssertionError(f"no CUSTOM {name!r} in {response.text!r}")
-
-
 def _run_error(response: Response) -> dict:
     for event, data in _frames(response):
         if event == "RUN_ERROR":
@@ -347,9 +340,8 @@ class TestChatStreamToolsets:
             "problem": problem, "authMode": None, "sharedCredential": False, "userCanConnect": True,
         }
         assert call["query_info"]["unavailableTools"] == [item]
-        assert _custom(response, "tools_unavailable") == {
-            "agentId": "private", "serviceAccount": False, "items": [item],
-        }
+        # The run keeps it as a stub; only an answer that calls the stub offers Connect.
+        assert "tools_unavailable" not in response.text
         assert "42" in response.text
 
     def test_the_connected_toolsets_still_run_beside_a_missing_one(self, graph, loop) -> None:
@@ -465,10 +457,11 @@ class TestChatStreamMcpServers:
         (call,) = loop.calls
         assert call["query_info"]["mcpServers"] == []
         assert call["query_info"]["mcpServerConfigs"] == {}
-        assert _custom(response, "tools_unavailable")["items"] == [{
+        assert call["query_info"]["unavailableTools"] == [{
             "kind": "mcp", "instanceId": "inst-m", "displayName": "GitHub", "name": "github",
             "problem": "not_authenticated", "authMode": "oauth", "sharedCredential": False, "userCanConnect": True,
         }]
+        assert "tools_unavailable" not in response.text
 
     def test_a_connected_server_runs_with_the_users_own_credential(self, graph, loop) -> None:
         self._attach(graph, "shared")
@@ -489,7 +482,8 @@ class TestChatStreamMcpServers:
         self._attach(graph, "private")
         c, _ = make_client(graph, self._config())
 
-        (item,) = _custom(_stream(c, "private", "alice"), "tools_unavailable")["items"]
+        _stream(c, "private", "alice")
+        (item,) = loop.calls[0]["query_info"]["unavailableTools"]
 
         assert item["problem"] == "not_found"
         assert item["userCanConnect"] is False
@@ -499,7 +493,8 @@ class TestChatStreamMcpServers:
         shared = self._instance(authMode="api_token", useAdminAuth=True)
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": shared}))
 
-        (item,) = _custom(_stream(c, "private", "alice"), "tools_unavailable")["items"]
+        _stream(c, "private", "alice")
+        (item,) = loop.calls[0]["query_info"]["unavailableTools"]
 
         assert item["sharedCredential"] is True
         assert item["authMode"] == "api_token"
@@ -549,6 +544,21 @@ class TestChatStreamMcpServers:
 
         assert error["details"]["serviceAccount"] is True
         assert error["details"]["agentId"] == "sa"
+
+
+class TestChatStreamProject:
+    def test_the_project_its_instructions_came_from_reaches_the_run(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice", {"query": "hi", "projectInstructions": "Cite the Q3 report.", "projectId": "proj-1"})
+        (call,) = loop.calls
+        assert call["query_info"]["projectInstructions"] == "Cite the Q3 report."
+        assert call["query_info"]["projectId"] == "proj-1"
+
+    def test_a_chat_in_no_project_names_none(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice")
+        (call,) = loop.calls
+        assert call["query_info"]["projectId"] is None
 
 
 class TestChatStreamKnowledge:
@@ -767,7 +777,8 @@ class TestNonStreamingChat:
         assert response.status_code == 429
         assert response.json()["message"] == "The model is busy. Try again shortly."
 
-    def test_a_missing_toolset_comes_back_with_the_answer(self, graph, loop) -> None:
+    def test_a_missing_toolset_the_answer_did_not_call_is_not_named(self, graph, loop) -> None:
+        # Only an answer that called the tool's stub names it (`not_connected_tools`).
         graph.add_node("agentToolsets", {"_key": "ts", "name": "jira", "displayName": "Jira", "instanceId": "inst-1"})
         graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/private", "_to": "agentToolsets/ts"})
         c, _ = make_client(graph)
@@ -775,7 +786,8 @@ class TestNonStreamingChat:
         assert response.status_code == 200
         body = response.json()
         assert body["answer"] == "42"
-        assert [i["instanceId"] for i in body["unavailableTools"]] == ["inst-1"]
+        assert [i["instanceId"] for i in loop.calls[0]["query_info"]["unavailableTools"]] == ["inst-1"]
+        assert "unavailableTools" not in body
         assert "events" not in body
 
     @pytest.mark.usefixtures("agents_run_as_the_caller")

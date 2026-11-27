@@ -109,8 +109,6 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("output_language",            Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("sender_context",             Volatility.TURN),
-    # Attached tools this sender has not connected; depends on who asks, so it is per turn.
-    ("unavailable_tools",          Volatility.TURN),
     # Per request: a client can send a different entity filter on every turn.
     ("entity_filter",              Volatility.TURN),
     ("attachments",                Volatility.TURN),

@@ -27,10 +27,7 @@ from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
-from app.agents.agent_loop.protocol.stream_collector import (
-    StreamOutcome,
-    collect_stream_outcome,
-)
+from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.capability_sync import CapabilitySync
@@ -190,7 +187,6 @@ from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.named_sources import picked_source_ids
 from app.modules.agents.context.told_files import picked_file_ids
 from app.modules.agents.readiness import (
-    TOOLS_UNAVAILABLE_EVENT,
     AgentReadiness,
     compute_agent_readiness,
 )
@@ -326,6 +322,10 @@ class ChatQuery(BaseModel):
     # own prompt section, never merged into the agent's system_prompt/
     # instructions, so a real Agent Builder agent's identity is untouched.
     projectInstructions: str | None = Field(default=None, max_length=8000)
+    # The project those instructions came from (Node `applyProjectScope`): an
+    # answer given them is labelled with it, so only people who can open the
+    # project read that answer.
+    projectId: str | None = None
     # End-user display name when JWT userId is synthetic (e.g. Slack) — see
     # _merge_end_user_into_service_account_user_info.
     callerDisplayName: str | None = None
@@ -3052,22 +3052,9 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
 
     outcome = await collect_stream_outcome(
         streaming_response.body_iterator, request.is_disconnected,
-        keep_events=get_chat_extension().completion_events() | {TOOLS_UNAVAILABLE_EVENT},
+        keep_events=get_chat_extension().completion_events(),
     )
-    return _with_unavailable_tools(outcome).to_response()
-def _with_unavailable_tools(outcome: StreamOutcome) -> StreamOutcome:
-    """The answer names the tools the run left out, as a streamed answer's completion does."""
-    notices = [e for e in outcome.events if e.get("name") == TOOLS_UNAVAILABLE_EVENT]
-    if not notices:
-        return outcome
-    events = tuple(e for e in outcome.events if e.get("name") != TOOLS_UNAVAILABLE_EVENT)
-    completion = outcome.completion
-    if completion is not None and not completion.get("unavailableTools"):
-        value = notices[-1].get("value")
-        items = value.get("items") if isinstance(value, dict) else None
-        if items:
-            completion = {**completion, "unavailableTools": items}
-    return replace(outcome, completion=completion, events=events)
+    return outcome.to_response()
 
 
 ToolsetConfigResolution = tuple[dict[str, Any], list[dict[str, Any]], list[str], list[str]]
@@ -3640,8 +3627,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 mcp_server_configs: dict[str, dict[str, Any]] = readiness.mcp_server_configs
 
                 # A service-account agent stops the run while one of its tools cannot be used. Everyone
-                # else runs with what they have connected, and the model and the client are told what
-                # was left out.
+                # else runs with what they have connected; the model sees the rest as stubs.
                 if not readiness.can_send:
                     log_turn_end(
                         logger, "error", error_class="bad_request", code=readiness.blocked_code,
@@ -3659,15 +3645,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     agent_toolsets = readiness.configured_toolsets
                 if readiness.configured_mcp_servers is not None:
                     agent_mcp_servers = readiness.configured_mcp_servers
+                # The run offers these as stubs (`not_connected_tools`); only an answer that calls one names it.
                 unavailable_tools = [item.wire() for item in readiness.unavailable_tools]
                 if unavailable_tools:
                     logger.info(
                         f"Agent {agent_id} runs without tools user {executing_user_id!r} has not connected: "
                         f"{[(i['kind'], i['instanceId'], i['problem']) for i in unavailable_tools]}"
-                    )
-                    yield _stream_custom_frame(
-                        protocol, TOOLS_UNAVAILABLE_EVENT,
-                        readiness.unavailable_event(None if agent_id == UNIVERSAL_AGENT_ID else agent_id),
                     )
 
                 timer.mark("toolset_cfg")
@@ -3861,6 +3844,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
                     "projectInstructions": chat_query.projectInstructions,
+                    "projectId": chat_query.projectId,
                     "projectToolsSelected": chat_query.strictScope and chat_query.tools is not None,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
@@ -4043,16 +4027,6 @@ async def _assistant_api_toolset_tools(
         # The assistant still answers without them, like it does without toolsets above.
         logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
         return []
-
-
-def _stream_custom_frame(protocol: str, name: str, value: dict[str, Any]) -> str:
-    """A non-fatal named event the client renders on its own; the run goes on."""
-    if protocol == "agui":
-        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
-
-        evt = frame(AGUIEventType.CUSTOM, name=name, value=value)
-        return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
-    return f"event: {name}\ndata: {json.dumps(value)}\n\n"
 
 
 async def get_assistant_agent(

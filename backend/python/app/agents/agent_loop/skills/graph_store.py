@@ -448,10 +448,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """`visibility` decides which of the org's skills a read sees (`SkillVisibility`; unstated, the acting
         user's). For a run: `also_visible` names the agent's assigned skills, which its creator chose for everyone
         who uses it, and a read always sees them; `origins` is told where each skill read or created came from,
-        for the answer's label (see `ledger_manager.py`); `own_skills=False` (a run whose answer others read)
-        leaves out the person's own skills, so a read then sees the builtins, the `also_visible` skills and those
-        this store created. `account_id` is the person's account id, which a skill a run created before runs
-        stamped the graph user key holds as its `createdBy`."""
+        and whether the person can open it by themself, for the answer's label (see `ledger_manager.py`);
+        `own_skills=False` (a run whose answer others read) leaves out the person's own skills, so a read then sees
+        the builtins, the `also_visible` skills and those this store created. `account_id` is the person's account
+        id, which a skill a run created before runs stamped the graph user key holds as its `createdBy`."""
         self._graph = graph_provider
         self._org_id = org_id
         self._user_id = user_id
@@ -500,11 +500,20 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             return SkillOrigin.AGENT
         return SkillOrigin.PERSON
 
+    def _opens(self, doc: Mapping[str, Any]) -> bool:
+        """Whether the person can open this skill by themself, whatever their agent was given. A store
+        with no person to ask about says no."""
+        viewers = self._visibility.viewers
+        if viewers is None:
+            return False
+        own = SkillVisibility.of([*viewers, self._account_id], teams=self._visibility.teams)
+        return self.visible_to(doc, own)
+
     def _seen(self, doc: Mapping[str, Any]) -> None:
         """Tells the run's ledger where a skill it reads came from, for the answer's label."""
         name = doc.get("name")
         if self._origins is not None and isinstance(name, str) and name:
-            self._origins.record(name, self._origin(doc))
+            self._origins.record(name, self._origin(doc), opens=self._opens(doc))
 
     def _sees(self, doc: Mapping[str, Any]) -> bool:
         """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands). The

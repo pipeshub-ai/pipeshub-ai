@@ -239,6 +239,13 @@ class TestBuildInitialState:
         assert state["instructions"] == "Focus on finance"
         assert state["custom_instructions"] == "Always respond in Spanish."
         assert state["project_instructions"] == "Cite the Q3 report for every financial claim."
+        assert state["project_id"] is None
+
+    def test_project_id_passthrough(self, mock_deps, minimal_user_info) -> None:
+        """The project the instructions came from, which the answer's label names."""
+        cq = {"query": "q", "projectInstructions": "Cite the Q3 report.", "projectId": "proj-1"}
+        state = build_initial_state(chat_query=cq, user_info=minimal_user_info, **mock_deps)
+        assert state["project_id"] == "proj-1"
 
     def test_with_toolsets(self, mock_deps, minimal_user_info):
         cq = {
