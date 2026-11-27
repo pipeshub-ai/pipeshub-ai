@@ -638,6 +638,8 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 if name.startswith("wide"):      # the parent's children are read by an index on the parent (the children index, in its order, once the node is wide: the latency run's plans)
                     used = {n.get("Index Name") for n in _nodes(plan)}
                     assert any(str(u).startswith(("records_children_", "records_parent")) for u in used), f"{at}: {used}"
+                if name.startswith("undecided probe"):      # another connector's children of the node by records_child_app, whose predicate the statement implies
+                    assert "records_child_app" in {n.get("Index Name") for n in _nodes(plan)}, f"{at}: {[n.get('Index Name') for n in _nodes(plan)]}"
     finally:
         await con.close()
 

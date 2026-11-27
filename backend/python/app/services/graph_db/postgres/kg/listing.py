@@ -354,8 +354,9 @@ def browse_undecided_probe_sql(where: str, app_param: str, links: str | None, cl
     child of a wide node), and the linked ones by their keys, tested whole (``classes_param``: the unvouched classes, given with ``links``). ``$3`` of them at most."""
     prim = f"r.org_id = $1 AND r.parent_sk = $2 AND {BROWSE_LIVE}"
     parts = [f"(SELECT {COLS} FROM {ROWS} WHERE {prim} AND ({_NOT_DECIDED} OR r.app_sk IS NULL){where}{_limit('$3')})",
-             # the organisation's other connectors (their keys: a handful, never deleted) and each one's children of the node, by records_child_app
-             f"(SELECT r.* FROM kg.node_keys a CROSS JOIN LATERAL (SELECT {COLS} FROM {ROWS} WHERE {prim} AND r.app_sk = a.sk{where}{_limit('$3')}) r "
+             # the organisation's other connectors (their keys: a handful, never deleted) and each one's children of the node, by records_child_app (its predicate's
+             # ``app_sk IS NOT NULL`` spelt out, so that the planner proves it from the statement's text, not from the join)
+             f"(SELECT r.* FROM kg.node_keys a CROSS JOIN LATERAL (SELECT {COLS} FROM {ROWS} WHERE {prim} AND r.app_sk IS NOT NULL AND r.app_sk = a.sk{where}{_limit('$3')}) r "
              f"WHERE a.org_id = $1 AND a.coll = 1 AND a.sk <> {app_param}::bigint{_limit('$3')})"]
     if links:
         assert classes_param is not None
