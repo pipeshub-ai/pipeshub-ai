@@ -29,13 +29,22 @@ Some folders have their own `AGENTS.md`: what the code does, the rules it must k
 | [`frontend/`](./frontend/AGENTS.md) | Any UI: naming, routing, styling, i18n, data fetching |
 | [`backend/nodejs/apps/src/libs/`](./backend/nodejs/apps/src/libs/AGENTS.md) | Node errors, calls to other services, retries |
 | [`backend/nodejs/apps/src/libs/middlewares/`](./backend/nodejs/apps/src/libs/middlewares/AGENTS.md) | Error handling, path params, validation, access lines for any Node route |
+| [`backend/nodejs/apps/src/libs/services/`](./backend/nodejs/apps/src/libs/services/AGENTS.md) | The Node logger, its typed fields, and log redaction |
 | [`backend/nodejs/apps/src/modules/`](./backend/nodejs/apps/src/modules/AGENTS.md) | Any Node feature module, above all the ones that proxy to the Python services |
+| [`backend/nodejs/apps/src/modules/configuration_manager/`](./backend/nodejs/apps/src/modules/configuration_manager/AGENTS.md) | Admin settings routes, their audit lines, stored secrets |
+| [`backend/nodejs/apps/src/modules/oauth_provider/`](./backend/nodejs/apps/src/modules/oauth_provider/AGENTS.md) | PipesHub as an OAuth server: apps, tokens, PATs, error answers |
+| [`backend/nodejs/apps/src/modules/storage/`](./backend/nodejs/apps/src/modules/storage/AGENTS.md) | Blob storage routes and the local, S3 and Azure providers |
 | [`backend/nodejs/apps/src/modules/user_management/`](./backend/nodejs/apps/src/modules/user_management/AGENTS.md) | Users, roles, admins, groups, teams, invites |
+| [`backend/nodejs/apps/tests/`](./backend/nodejs/apps/tests/AGENTS.md) | Node tests: running one, log assertions, real-store tests, CI gates |
 | [`backend/python/app/agents/mcp/`](./backend/python/app/agents/mcp/AGENTS.md) | The MCP client and its server catalog |
+| [`backend/python/app/api/middlewares/`](./backend/python/app/api/middlewares/AGENTS.md) | Python request logging and auth middleware |
 | [`backend/python/app/config/`](./backend/python/app/config/AGENTS.md) | Config reads and writes, KV providers, the file-type table |
 | [`backend/python/app/connectors/api/`](./backend/python/app/connectors/api/AGENTS.md) | The connectors service HTTP API: OAuth, connector create and config |
+| [`backend/python/app/services/docling/`](./backend/python/app/services/docling/AGENTS.md) | The Docling client and service, and what counts as an outage |
+| [`backend/python/app/services/embeddings/`](./backend/python/app/services/embeddings/AGENTS.md) | Image embedding providers: adding one, threads, errors |
 | [`backend/python/app/services/graph_db/`](./backend/python/app/services/graph_db/AGENTS.md) | Graph queries and providers, and any job that reads the graph without a request |
 | [`backend/python/app/services/messaging/`](./backend/python/app/services/messaging/AGENTS.md) | Broker consumers and producers, retries, commits |
+| [`backend/python/tests/`](./backend/python/tests/AGENTS.md) | Python tests: guards, log assertions, markers, CI jobs |
 
 ### Using a guide
 
