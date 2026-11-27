@@ -18,7 +18,7 @@ class Graph:
         self.failing = failing
         self.asked: list[tuple[str, str]] = []
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object) -> dict[str, Any] | None:
         assert raise_on_error, "a failed lookup must not read as an unknown user"
         if self.failing:
             raise ConnectionError("graph down")

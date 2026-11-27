@@ -103,7 +103,7 @@ class TestLegacyInstancesWithoutOrgId:
 
         assert allowed is False
         graph_provider.get_edges_to_node.assert_awaited_once_with(
-            f"apps/{CONN_ID}", "orgAppRelation"
+            f"apps/{CONN_ID}", "orgAppRelation", raise_on_error=True
         )
 
     async def test_admin_of_another_org_cannot_delete_a_legacy_connector(self) -> None:

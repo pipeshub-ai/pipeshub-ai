@@ -41,7 +41,7 @@ envfile() { # major image
     echo "REDIS_PASSWORD=x"; echo "COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate"; echo "PGBACKREST_ENV_FILE=$work/pgbackrest.env"
     echo "PG_MEMORY_LIMIT=${DRILL_PG_MEMORY:-2G}"; echo "PG_SHARED_BUFFERS=${DRILL_PG_SHARED_BUFFERS:-256MB}"
     echo "PG_ARCHIVE_TIMEOUT=${DRILL_ARCHIVE_TIMEOUT:-60}"; echo "PG_BACKUP_INCR_HOURS=10000"; echo "PG_BACKUP_FULL_DAYS=10000"
-    echo "PG_BACKUP_RETRY_SECS=10"
+    echo "PG_BACKUP_RETRY_SECS=10"; echo "PG_ROLES_RECOVERY_WAIT_SECS=7200"
     # 17: the repository in a host directory that does not exist yet, as PG_BACKUP_REPO gives it (Docker creates it, owned by root);
     # 18: the default named volume. Both are new, as on a first start.
     if [ "$1" = 17 ]; then echo "PG_BACKUP_REPO=$work/repo-$1"; fi; } > "$work/env$1"
@@ -138,6 +138,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc up -d --no-build postgres > "$work/up.log" 2>&1 || { echo "FAIL $major: compose up failed:"; cat "$work/up.log"; fail=1; continue; }
   healthy postgres || { echo "FAIL $major: postgres did not become healthy"; dc logs postgres | tail -20; fail=1; continue; }
   check "$major: archiving is on" "$(sql -c 'show archive_mode')" on
+  check "$major: the role setup's recovery wait from .env reaches the server" "$($DOCKER exec "$proj-postgres-1" printenv PG_ROLES_RECOVERY_WAIT_SECS)" 7200
   t0=$(now); seed; echo "info $major: seeded $rows rows per schema in $(secs "$t0" "$(now)")s, database $(sql -c "select pg_size_pretty(pg_database_size('pipeshub'))")"
 
   # the service's first run: stanza, check, then a full backup because there is none
@@ -206,10 +207,20 @@ for major in ${DRILL_MAJORS:-17 18}; do
   dc stop > /dev/null 2>&1
   t0=$(now)
   scripts/pg-restore.sh "$target" --in-place > "$work/restore.log" 2>&1 || { echo "FAIL $major: in-place restore:"; tail -20 "$work/restore.log"; fail=1; }
+  check "$major: the reachability check ran on a reachable target" "$(grep -c 'without checking\|cannot be reached' "$work/restore.log")" 0
+  # the container is the same as before, and its log holds every earlier start: a stop during an earlier start's role setup (as the
+  # refusal above can be) logs "role setup failed" there, so only this start's lines count
+  started="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
   dc up -d --no-build postgres > /dev/null 2>&1
   if writable 600; then
     echo "info $major: in-place restore to T, server accepting writes: $(secs "$t0" "$(now)")s"
     check "$major: in-place restore to T: rows and checksums per schema equal those at T" "$(sql -c "$checksums")" "$at_t"
+    healthy postgres || { echo "FAIL $major: postgres is not healthy after the in-place restore"; fail=1; }
+    # role setup waits for the end of recovery instead of writing into the read-only server
+    $DOCKER logs --since "$started" "$proj-postgres-1" > "$work/pg-inplace.log" 2>&1
+    n="$(grep -c 'read-only transaction\|role setup failed' "$work/pg-inplace.log" || true)"
+    check "$major: role setup logs no failure during recovery" "$n" 0
+    [ "$n" = 0 ] || grep -B3 'read-only transaction\|role setup failed' "$work/pg-inplace.log" | sed "s/^/info $major: postgres log: /"
   fi
   dc up -d --no-build pg-backup > /dev/null 2>&1
   check "$major: archiving and backups go on after an in-place restore" \
@@ -254,8 +265,18 @@ for major in ${DRILL_MAJORS:-17 18}; do
   # fatal error", PostgreSQL 19.5.6), while the end of the archive from the backup before the gap restores up to the gap.
   copy="${proj}_pg_restore_gap_$$"; copies+=("$copy"); rc=0
   [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --into "$copy" > "$work/gap-t.log" 2>&1 || rc=$?; }
-  check "$major: a restore to the first lost commit fails, recovery ending at the gap" \
-    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/gap-t.log" 2>/dev/null && echo ended)" "1 ended"
+  check "$major: a restore to the first lost commit is refused before anything is restored, naming the backup before the gap" \
+    "$rc $(grep -c "cannot be reached" "$work/gap-t.log" 2>/dev/null) $(grep -c "pg-restore.sh latest --set $label_pre\$" "$work/gap-t.log" 2>/dev/null) $($DOCKER volume ls -q | grep -cx "$copy")" "4 1 1 0"
+  grep 'pg-restore: ' "$work/gap-t.log" | sed "s/^/info $major: /"
+  # In place, the same. The full backup has removed pg-backup's drop files (and a lost machine takes them with it, in pg_backup_socket):
+  # the repository itself must refuse, before the data volume is touched, instead of a server that stops at the gap and is started
+  # again and again by restart: always.
+  before="$(sql -c "$checksums")"; dc stop > /dev/null 2>&1; rc=0
+  [ -n "$lost" ] && { scripts/pg-restore.sh "$lost" --in-place > "$work/gap-i.log" 2>&1 || rc=$?; }
+  check "$major: in place, a restore past the gap is refused, naming the backup before it" \
+    "$rc $(grep -c "pg-restore.sh latest --set $label_pre\$" "$work/gap-i.log")" "4 1"
+  dc up -d --no-build postgres pg-backup > /dev/null 2>&1
+  if writable 300; then check "$major: and the stack's database is untouched" "$(sql -c "$checksums")" "$before"; fi
   # the outage's first gap (a drop during the gap-closing backup can open a second one, held with a later backup)
   check "$major: the backup before the outage is held against expiry" \
     "$(dc exec -T pg-backup sh -c 'cd /var/run/postgresql/pgbackrest-gap-hold.d && cat "$(ls | head -1)"')" "$label_pre"
@@ -296,8 +317,8 @@ for major in ${DRILL_MAJORS:-17 18}; do
   # (whatever autovacuum or the archive timeout did since the mark), so recovery ends before it and the server shuts down.
   copy="${proj}_pg_restore_quiet_time_$$"; copies+=("$copy"); rc=0
   scripts/pg-restore.sh "$(sql -c "select clock_timestamp() + interval '1 hour'")" --into "$copy" > "$work/quiet-time.log" 2>&1 || rc=$?
-  check "$major: a time after the last archived commit cannot be reached" \
-    "$rc $(grep -q 'recovery ended before configured recovery target was reached' "$work/quiet-time.log" && echo ended)" "1 ended"
+  check "$major: a time after the last archived commit is refused before anything is restored" \
+    "$rc $(grep -c 'latest reachable point from that backup is its last commit' "$work/quiet-time.log") $($DOCKER volume ls -q | grep -cx "$copy")" "4 1 0"
   # the restored copies run as one-off pg-backup containers, which mount the data volume too: they go first, as the docs say
   for c in "${copies[@]}"; do $DOCKER rm -f "$c" >/dev/null 2>&1 || true; $DOCKER volume rm "$c" >/dev/null 2>&1 || true; done; copies=()
   change 5
@@ -308,6 +329,7 @@ for major in ${DRILL_MAJORS:-17 18}; do
   check "$major: the lost machine has no database volume left" "$($DOCKER volume ls -q | grep -cx "${proj}_postgres_data")" 0
   t0=$(now)
   if scripts/pg-restore.sh "lsn:$(cat "$backup_dir/pg-restore-point.txt")" --in-place > "$work/loss.log" 2>&1; then
+    check "$major: the reachability check ran on the restore point" "$(grep -c 'without checking\|cannot be reached' "$work/loss.log")" 0
     dc up -d --no-build postgres > /dev/null 2>&1
     if writable 600; then
       echo "info $major: restore after losing the machine, server accepting writes: $(secs "$t0" "$(now)")s"

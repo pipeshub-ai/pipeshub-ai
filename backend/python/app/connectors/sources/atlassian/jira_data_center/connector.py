@@ -5799,52 +5799,61 @@ class JiraDataCenterConnector(BaseConnector):
                 if not attachment_id:
                     continue
 
-                # Check for existing attachment record
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=f"attachment_{attachment_id}"
-                )
+                # One attachment that cannot be built must not drop the issue's others: it is left out, and a
+                # full sync keeps it as stored with its issue (``_keep_stored_records``).
+                try:
+                    # Check for existing attachment record
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=f"attachment_{attachment_id}"
+                    )
 
-                # Get attachment metadata
-                filename = attachment.get("filename", "unknown")
-                file_size = attachment.get("size", 0)
-                mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
+                    # Get attachment metadata
+                    filename = attachment.get("filename", "unknown")
+                    file_size = attachment.get("size", 0)
+                    mime_type = attachment.get("mimeType", MimeTypes.UNKNOWN.value)
 
-                # Parse timestamps
-                created_str = attachment.get("created")
-                created_at = self._parse_jira_timestamp(created_str) if created_str else 0
+                    # Parse timestamps
+                    created_str = attachment.get("created")
+                    created_at = self._parse_jira_timestamp(created_str) if created_str else 0
 
-                # Determine version (increment if file was updated)
-                record_id = existing_record.id if existing_record else None
-                is_new = existing_record is None
+                    # Determine version (increment if file was updated)
+                    record_id = existing_record.id if existing_record else None
+                    is_new = existing_record is None
 
-                if is_new:
-                    version = 0
-                elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
-                    version = existing_record.version + 1
-                else:
-                    version = existing_record.version if existing_record else 0
+                    if is_new:
+                        version = 0
+                    elif hasattr(existing_record, 'source_updated_at') and existing_record.source_updated_at != created_at:
+                        version = existing_record.version + 1
+                    else:
+                        version = existing_record.version if existing_record else 0
 
-                # Create FileRecord using helper method
-                attachment_record = self._create_attachment_file_record(
-                    attachment_id=str(attachment_id),
-                    filename=filename,
-                    mime_type=mime_type,
-                    file_size=file_size,
-                    created_at=created_at,
-                    parent_issue_id=issue_id,
-                    parent_node_id=parent_node_id,
-                    project_id=parent_record_group_id,
-                    weburl=weburl,
-                    record_id=record_id,
-                    version=version,
-                    authored_by=atlassian_person(attachment.get("author")),
-                )
+                    # Create FileRecord using helper method
+                    attachment_record = self._create_attachment_file_record(
+                        attachment_id=str(attachment_id),
+                        filename=filename,
+                        mime_type=mime_type,
+                        file_size=file_size,
+                        created_at=created_at,
+                        parent_issue_id=issue_id,
+                        parent_node_id=parent_node_id,
+                        project_id=parent_record_group_id,
+                        weburl=weburl,
+                        record_id=record_id,
+                        version=version,
+                        authored_by=atlassian_person(attachment.get("author")),
+                    )
 
-                # Attachments inherit permissions from parent issue
-                attachment_permissions = []
+                    # Attachments inherit permissions from parent issue
+                    attachment_permissions = []
 
-                attachment_records.append((attachment_record, attachment_permissions))
+                    attachment_records.append((attachment_record, attachment_permissions))
+                except Exception as e:
+                    self.logger.error(
+                        f"Skipping attachment {attachment_id} on issue {issue_key}: failed to build its record: {e}",
+                        exc_info=True,
+                    )
+                    self._issues_not_written.add(str(issue_id))
 
             self.logger.info(f"📎 Returning {len(attachment_records)} attachment records for issue {issue_key}")
             return attachment_records

@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 
 const prepared = metricsBackend.createGauge({
   name: 'pipeshub_agent_harness_store_prepared',
