@@ -1484,7 +1484,7 @@ function ChatContent() {
         ) : showLoadFailed ? (
           <Flex role="alert" style={{ flex: 1, minHeight: 0, width: '100%' }}>
             <EmptyState
-              icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-9)" />}
+              icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-11)" />}
               title={t('chat.loadFailedTitle')}
               description={t('chat.loadFailedDescription')}
               action={

@@ -77,7 +77,7 @@ describe('EmptyState (panel)', () => {
 });
 
 describe('NoResults', () => {
-  it('shows the 40px empty glyph on gray 8 by default, hidden from assistive technology', () => {
+  it('shows the 40px empty glyph in gray 11 by default, hidden from assistive technology', () => {
     const { container } = render(<NoResults title="No users found" description="Try a different search." />);
     const box = iconBox(container)!;
     expect(box.getAttribute('aria-hidden')).toBe('true');
@@ -85,7 +85,7 @@ describe('NoResults', () => {
     const svg = box.querySelector('svg')!;
     expect(svg.getAttribute('width')).toBe('40');
     expect(svg.getAttribute('height')).toBe('40');
-    expect(svg.style.color).toBe('var(--gray-8)');
+    expect(svg.style.color).toBe('var(--gray-11)');
   });
 
   it('drops the glyph when icon is null', () => {

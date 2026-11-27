@@ -3614,7 +3614,7 @@ export function ChatInput({
                     </Text>
                     {reasoningEffortLevelLabel && (
                       <>
-                        <Text size="1" aria-hidden style={{ color: 'var(--gray-a8)', flexShrink: 0 }}>
+                        <Text size="1" aria-hidden style={{ color: 'var(--gray-a11)', flexShrink: 0 }}>
                           ·
                         </Text>
                         <Text size="1" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', flexShrink: 0 }}>

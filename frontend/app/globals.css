@@ -280,16 +280,16 @@
 
    Declared on :root (for surfaces portalled outside any Theme) and again on
    .radix-themes, so a nested Theme that changes the appearance re-resolves
-   them. Quiet text that must stay readable is --text-secondary; --text-tertiary
-   is below 4.5:1 and only for decoration-level captions.
+   them. Every text role is step 11 or 12, which holds 4.5:1 on the page and the
+   panels; --text-tertiary and --text-placeholder take step 11's alpha form.
    ======================== */
 :root,
 .radix-themes {
   /* Text */
   --text-primary: var(--gray-12);
   --text-secondary: var(--gray-11);
-  --text-tertiary: var(--gray-a10);
-  --text-placeholder: var(--gray-a9);
+  --text-tertiary: var(--gray-a11);
+  --text-placeholder: var(--gray-a11);
 
   /* Surfaces */
   --surface-raised: var(--gray-1);

@@ -13,8 +13,8 @@ function block(selectorStart: string): string {
 const ROLES: Record<string, string> = {
   '--text-primary': 'var(--gray-12)',
   '--text-secondary': 'var(--gray-11)',
-  '--text-tertiary': 'var(--gray-a10)',
-  '--text-placeholder': 'var(--gray-a9)',
+  '--text-tertiary': 'var(--gray-a11)',
+  '--text-placeholder': 'var(--gray-a11)',
   '--surface-raised': 'var(--gray-1)',
   '--surface-subtle': 'var(--gray-2)',
   '--fill-muted': 'var(--gray-3)',

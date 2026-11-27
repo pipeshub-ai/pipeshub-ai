@@ -187,7 +187,7 @@ export function ContextList({
             row.folder ? (
               <DetailRow key={row.key} name={row.name} icon={partIcon(row.folder)} detail={t('chat.answerPanel.contextFolderInCollection')} />
             ) : (
-              <PlainRow key={row.key} name={row.name} icon={<MaterialIcon name="folder" variant="filled" size={16} color="var(--accent-9)" />} />
+              <PlainRow key={row.key} name={row.name} icon={<MaterialIcon name="folder" variant="filled" size={16} color="var(--accent-11)" />} />
             ),
           )}
         </Group>

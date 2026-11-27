@@ -48,8 +48,8 @@ export type EmptyStateProps = PanelEmptyStateProps | NoResultsEmptyStateProps;
 
 export type NoResultsProps = Omit<NoResultsEmptyStateProps, 'variant' | 'action'>;
 
-/** The no-results glyph: the empty artwork at 40px on a quiet gray. */
-const NO_RESULTS_ICON = <EmptyIcon size={40} color="var(--gray-8)" />;
+/** The no-results glyph: the empty artwork at 40px, in the gray's text step. */
+const NO_RESULTS_ICON = <EmptyIcon size={40} color="var(--gray-11)" />;
 
 /** 320px: the no-results area. */
 const NO_RESULTS_MIN_HEIGHT = 'calc(var(--space-9) * 5)';

@@ -58,7 +58,7 @@ export function WithheldSourceChip() {
     >
       <span aria-hidden style={{ display: 'inline-flex', lineHeight: 0, flexShrink: 0 }}>
         {/* Drawn, not a font's glyph: a copy of the line keeps no icon's name. */}
-        <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="var(--gray-10)" strokeWidth={1.5}>
+        <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="var(--gray-11)" strokeWidth={1.5}>
           <rect x="3" y="7" width="10" height="7" rx="1.5" />
           <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
         </svg>
