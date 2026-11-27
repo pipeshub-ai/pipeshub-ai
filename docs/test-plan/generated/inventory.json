@@ -1,9 +1,9 @@
 {
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
- "harnessTestFiles": 2049,
- "claimedTestFiles": 3996,
- "claimedTests": 42943,
+ "harnessTestFiles": 2051,
+ "claimedTestFiles": 4010,
+ "claimedTests": 43117,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3267
+  "unit": 3281
  },
  "components": [
   {
@@ -15987,23 +15987,23 @@
    "id": "SCH",
    "name": "Scheduler",
    "status": "built, Labs off by default",
-   "files": 39,
-   "tests": 337,
+   "files": 46,
+   "tests": 414,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
     "e2e-browser": 1,
     "integration": 5,
     "integration-docker": 1,
-    "unit": 29
+    "unit": 36
    },
    "testsByLevel": {
-    "component": 10,
-    "contract": 32,
+    "component": 11,
+    "contract": 37,
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 277
+    "unit": 348
    },
    "markers": {
     "docker": 1
@@ -16034,6 +16034,18 @@
      "level": "unit",
      "markers": [],
      "tests": 33
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 16
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 21
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16087,7 +16099,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-routes.http.test.ts",
      "level": "component",
      "markers": [],
-     "tests": 9
+     "tests": 10
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-service.test.ts",
@@ -16129,7 +16141,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/support/schedule-store-contract.ts",
      "level": "contract",
      "markers": [],
-     "tests": 32
+     "tests": 37
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/trigger-settings.test.ts",
@@ -16180,6 +16192,12 @@
      "tests": 2
     },
     {
+     "path": "backend/nodejs/apps/tests/modules/enterprise_search/scheduled-classic-turn.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 7
+    },
+    {
      "path": "backend/python/tests/unit/harness/engines/test_scheduled_durable.py",
      "level": "integration-docker",
      "markers": [
@@ -16216,6 +16234,30 @@
      "level": "unit",
      "markers": [],
      "tests": 6
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch02-firing-runner.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 3
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch02-schedules-without-harness.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 7
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch03-schedule-chat-changes.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 6
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch03-schedule-drawer.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 11
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/schedules-api.test.ts",
@@ -16699,19 +16741,19 @@
    "id": "LAB",
    "name": "Labs, flags and rollout",
    "status": "built",
-   "files": 36,
-   "tests": 342,
+   "files": 37,
+   "tests": 344,
    "filesByLevel": {
     "cohesion": 4,
     "e2e-browser": 1,
     "integration": 1,
-    "unit": 30
+    "unit": 31
    },
    "testsByLevel": {
     "cohesion": 53,
     "e2e-browser": 3,
     "integration": 5,
-    "unit": 281
+    "unit": 283
    },
    "markers": {
     "mcp_hub_default": 2
@@ -16913,13 +16955,19 @@
      "path": "frontend/app/(main)/workspace/labs/__tests__/labs-overrides.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 6
+     "tests": 7
     },
     {
      "path": "frontend/app/(main)/workspace/labs/__tests__/page.test.tsx",
      "level": "unit",
      "markers": [],
      "tests": 2
+    },
+    {
+     "path": "frontend/app/(main)/workspace/labs/__tests__/sch02-labs-beta.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 1
     },
     {
      "path": "frontend/app/(main)/workspace/labs/__tests__/ux2-labs-conflict.test.tsx",
@@ -17236,15 +17284,15 @@
    "id": "LEG",
    "name": "Legacy query path (today's loop)",
    "status": "built (reference and kill-switch target)",
-   "files": 796,
-   "tests": 17805,
+   "files": 799,
+   "tests": 17870,
    "filesByLevel": {
     "contract": 6,
     "integration": 3,
     "integration-docker": 1,
     "live": 6,
     "replay": 1,
-    "unit": 779
+    "unit": 782
    },
    "testsByLevel": {
     "contract": 88,
@@ -17252,7 +17300,7 @@
     "integration-docker": 19,
     "live": 39,
     "replay": 7,
-    "unit": 17635
+    "unit": 17700
    },
    "markers": {
     "ai_agents": 6,
@@ -20543,6 +20591,24 @@
      "tests": 8
     },
     {
+     "path": "backend/python/tests/unit/agents/agent_loop/test_sch02_schedules_without_harness.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 25
+    },
+    {
+     "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_managing_schedules.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 24
+    },
+    {
+     "path": "backend/python/tests/unit/agents/agent_loop/test_sch03_schedules_on_demand.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 16
+    },
+    {
      "path": "backend/python/tests/unit/agents/agent_loop/test_stop_interrupts_sandbox.py",
      "level": "unit",
      "markers": [],
@@ -22710,15 +22776,15 @@
    "id": "FEC",
    "name": "Frontend chat surfaces",
    "status": "built",
-   "files": 506,
-   "tests": 4565,
+   "files": 509,
+   "tests": 4593,
    "filesByLevel": {
     "e2e-browser": 77,
-    "unit": 429
+    "unit": 432
    },
    "testsByLevel": {
     "e2e-browser": 327,
-    "unit": 4238
+    "unit": 4266
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -24099,6 +24165,24 @@
      "tests": 6
     },
     {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/sch02-classic-schedule-card.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 9
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/sch02-schedule-origin.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 4
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/sch03-schedule-change-cards.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 14
+    },
+    {
      "path": "frontend/app/(main)/chat/components/message-area/__tests__/search-degraded-note.test.tsx",
      "level": "unit",
      "markers": [],
@@ -24948,7 +25032,7 @@
      "path": "frontend/lib/harness-jobs/__tests__/inbox.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 21
+     "tests": 22
     },
     {
      "path": "frontend/lib/harness-jobs/__tests__/jobs.test.ts",
@@ -25766,15 +25850,15 @@
    "id": "FEA",
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
-   "files": 298,
-   "tests": 2167,
+   "files": 303,
+   "tests": 2198,
    "filesByLevel": {
     "e2e-browser": 15,
-    "unit": 283
+    "unit": 288
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2114
+    "unit": 2145
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -26081,7 +26165,7 @@
      "path": "frontend/app/(main)/agents/agent-builder/components/__tests__/ux07-agent-runtime.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 8
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/agents/agent-builder/hooks/__tests__/use-node-templates.test.ts",
@@ -26945,13 +27029,19 @@
      "path": "frontend/app/(main)/workspace/labs/__tests__/labs-overrides.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 6
+     "tests": 7
     },
     {
      "path": "frontend/app/(main)/workspace/labs/__tests__/page.test.tsx",
      "level": "unit",
      "markers": [],
      "tests": 2
+    },
+    {
+     "path": "frontend/app/(main)/workspace/labs/__tests__/sch02-labs-beta.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 1
     },
     {
      "path": "frontend/app/(main)/workspace/labs/__tests__/ux2-labs-conflict.test.tsx",
@@ -27168,6 +27258,30 @@
      "level": "unit",
      "markers": [],
      "tests": 6
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch02-firing-runner.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 3
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch02-schedules-without-harness.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 7
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch03-schedule-chat-changes.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 6
+    },
+    {
+     "path": "frontend/app/(main)/workspace/schedules/__tests__/sch03-schedule-drawer.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 11
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/schedules-api.test.ts",
@@ -29036,12 +29150,12 @@
    "name": "Job and Inbox view models and data layer for the classic UI",
    "status": "moved from the set-aside new interface (UI-ASIDE, 2026-11-10); classic screens next",
    "files": 17,
-   "tests": 153,
+   "tests": 154,
    "filesByLevel": {
     "unit": 17
    },
    "testsByLevel": {
-    "unit": 153
+    "unit": 154
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -29117,7 +29231,7 @@
      "path": "frontend/lib/harness-jobs/__tests__/inbox.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 21
+     "tests": 22
     },
     {
      "path": "frontend/lib/harness-jobs/__tests__/jobs.test.ts",
