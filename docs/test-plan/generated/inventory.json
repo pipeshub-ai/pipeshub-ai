@@ -3,7 +3,7 @@
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2051,
  "claimedTestFiles": 4010,
- "claimedTests": 43117,
+ "claimedTests": 43123,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -15988,7 +15988,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 46,
-   "tests": 414,
+   "tests": 420,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -16003,7 +16003,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 348
+    "unit": 354
    },
    "markers": {
     "docker": 1
@@ -16033,7 +16033,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch01-schedule-from-chat.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 33
+     "tests": 35
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
@@ -16045,7 +16045,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 21
+     "tests": 23
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16129,7 +16129,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/scheduled-run-admission.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 1
+     "tests": 3
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedules.test.ts",
