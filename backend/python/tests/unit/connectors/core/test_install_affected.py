@@ -64,7 +64,14 @@ def _registry_with(apps: list[dict] | Exception) -> tuple:
     data_store.graph_provider = gp
     container.data_store = AsyncMock(return_value=data_store)
     container.config_service.return_value.set_config = AsyncMock(return_value=True)
+    # A report from an earlier start is stored: a start that cannot write a new one must remove it.
+    container.config_service.return_value.delete_config = AsyncMock(return_value=True)
     return registry, gp, container.config_service.return_value.set_config
+
+
+def _forgotten(registry: object) -> bool:
+    delete = registry.container.config_service.return_value.delete_config  # type: ignore[attr-defined]
+    return delete.await_args is not None and delete.await_args.args == (INSTALL_AFFECTED_KEY,)
 
 
 @pytest.mark.asyncio
@@ -86,6 +93,7 @@ async def test_nothing_is_reported_when_an_orgs_connectors_could_not_be_read() -
     registry, _, set_config = _registry_with(RuntimeError("store down"))
     await registry.sync_with_database()
     set_config.assert_not_awaited()
+    assert _forgotten(registry), "a stored affected: false must not outlive a start that could not count"
 
 
 @pytest.mark.asyncio
@@ -101,6 +109,7 @@ async def test_nothing_is_reported_when_the_org_list_could_not_be_read() -> None
     gp.get_all_orgs.side_effect = orgs
     assert await registry.sync_with_database() is True
     set_config.assert_not_awaited()
+    assert _forgotten(registry)
 
 
 @pytest.mark.asyncio
@@ -108,3 +117,38 @@ async def test_a_failed_report_does_not_fail_the_sync() -> None:
     registry, _, set_config = _registry_with([])
     set_config.side_effect = RuntimeError("store down")
     assert await registry.sync_with_database() is True
+
+
+@pytest.mark.asyncio
+async def test_a_report_the_store_refused_removes_the_last_one() -> None:
+    """set_config logs a store error and answers False rather than raising."""
+    registry, _, set_config = _registry_with([])
+    set_config.return_value = False
+    assert await registry.sync_with_database() is True
+    assert _forgotten(registry)
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_raised_removes_the_last_one() -> None:
+    registry, _, set_config = _registry_with([])
+    set_config.side_effect = RuntimeError("store down")
+    assert await registry.sync_with_database() is True
+    assert _forgotten(registry)
+
+
+@pytest.mark.asyncio
+async def test_a_registry_sync_that_failed_removes_the_last_report() -> None:
+    """The service still starts after a failed registry sync; the report it never wrote must not stay behind."""
+    registry, gp, set_config = _registry_with([])
+    gp.get_all_orgs.side_effect = RuntimeError("store down")
+    assert await registry.sync_with_database() is False
+    set_config.assert_not_awaited()
+    assert _forgotten(registry)
+
+
+@pytest.mark.asyncio
+async def test_a_written_report_is_not_removed() -> None:
+    registry, _, set_config = _registry_with([])
+    assert await registry.sync_with_database() is True
+    set_config.assert_awaited_once()
+    assert not _forgotten(registry)
