@@ -572,7 +572,7 @@ line.
     rest are deleted;
   - a failure is retried, then dead-lettered;
   - before any graph row goes, the deleting service records the cleanup in
-    the KV store (`/services/entityCleanup/pending/<connectorId>`) and does not
+    the KV store (`/services/entityCleanup/pending/<orgId>/<connectorId>/<request>`) and does not
     delete if it cannot; the event's handler clears it when the cleanup
     finishes. The rebuild loop reads the intents every 5 minutes and runs any
     older than 15 minutes (a lost publish, a dead-lettered message) once the

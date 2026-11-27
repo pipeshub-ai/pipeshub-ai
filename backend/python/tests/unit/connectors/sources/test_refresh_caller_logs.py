@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.token_service.oauth_service import OAuthTokenRequestError
+from app.connectors.sources.github_teams.runtime import RefreshOutcome
 from app.connectors.sources.github_teams.runtime import RuntimeHelper as GitHubRuntime
 from app.connectors.sources.gitlab.runtime import RuntimeHelper as GitLabRuntime
 from app.connectors.sources.microsoft.outlook_individual.connector import (
@@ -138,7 +139,7 @@ async def _slack(error: BaseException) -> object:
 
 SITES: dict[str, tuple[Callable[[BaseException], Awaitable[object]], object]] = {
     "outlook_individual": (_outlook, False),
-    "github_teams": (lambda e: _runtime(GitHubRuntime, e), False),
+    "github_teams": (lambda e: _runtime(GitHubRuntime, e), RefreshOutcome.UNAVAILABLE),
     "notion": (_notion, False),
     "zendesk": (_zendesk, False),
     "slack": (_slack, None),

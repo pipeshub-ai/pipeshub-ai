@@ -2260,7 +2260,7 @@ class TestOpenAIListedModelProbe:
         client.models.retrieve = AsyncMock(return_value=MagicMock(id="kokoro"))
         client.close = AsyncMock()
 
-        def factory(**kwargs):
+        def factory(**kwargs: object) -> MagicMock:
             created.update(kwargs)
             return client
 
@@ -2278,7 +2278,7 @@ class TestOpenAIListedModelProbe:
         client.models.retrieve = AsyncMock(return_value=MagicMock(id="gpt-4o"))
         client.close = AsyncMock()
 
-        def factory(**kwargs):
+        def factory(**kwargs: object) -> MagicMock:
             created.clear()
             created.update(kwargs)
             return client
@@ -2295,3 +2295,81 @@ class TestOpenAIListedModelProbe:
             await _probe_openai_listed_model({}, "gpt-4o")
         assert "api_key" not in created
 
+
+
+class TestMediaProbesKeepTheServerKeyHome:
+    """A blank key sends the server's OPENAI_API_KEY only to OpenAI itself. Any other
+    endpoint gets the placeholder, as the image, TTS and STT clients send in use."""
+
+    CHECKS = {
+        "imageGeneration": "perform_image_generation_health_check",
+        "tts": "perform_tts_health_check",
+        "stt": "perform_stt_health_check",
+    }
+
+    async def _sent_key(self, check: str, provider: str, configuration: dict) -> object:
+        import app.api.routes.health as health
+
+        created: dict = {}
+        client = MagicMock()
+        client.models.retrieve = AsyncMock(return_value=MagicMock(id="m1"))
+        client.close = AsyncMock()
+
+        def factory(**kwargs: object) -> MagicMock:
+            created.update(kwargs)
+            return client
+
+        model_config = {"provider": provider, "configuration": {"model": "m1", **configuration}}
+        with patch("openai.AsyncOpenAI", side_effect=factory):
+            resp = await getattr(health, self.CHECKS[check])(model_config, MagicMock())
+        assert resp.status_code == 200, resp.body
+        return created.get("api_key")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    async def test_compatible_endpoint_gets_the_placeholder(self, check, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAICompatible", {"endpoint": "https://models.example.com/v1", "apiKey": ""})
+        assert key == "not-needed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    async def test_openai_with_another_endpoint_gets_the_placeholder(self, check, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAI", {"endpoint": "https://proxy.example.com/v1", "apiKey": ""})
+        assert key == "not-needed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    @pytest.mark.parametrize("endpoint", ["", "https://api.openai.com/v1"])
+    async def test_openai_itself_still_uses_the_server_key(self, check, endpoint, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAI", {"endpoint": endpoint, "apiKey": ""})
+        assert key is None  # the SDK reads OPENAI_API_KEY itself
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    @pytest.mark.parametrize("endpoint", [
+        "https://us.api.openai.com/v1", "https://eu.api.openai.com/v1", "https://api.openai.com./v1",
+    ])
+    async def test_openai_regional_hosts_still_use_the_server_key(self, check, endpoint, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAI", {"endpoint": endpoint, "apiKey": ""})
+        assert key is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    @pytest.mark.parametrize("endpoint", [
+        "https://api.openai.com.evil.example/v1", "https://not-api.openai.com/v1",
+    ])
+    async def test_openai_lookalike_hosts_get_the_placeholder(self, check, endpoint, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAI", {"endpoint": endpoint, "apiKey": ""})
+        assert key == "not-needed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("check", list(CHECKS))
+    async def test_a_saved_key_is_sent(self, check, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-server-canary")
+        key = await self._sent_key(check, "openAICompatible", {"endpoint": "https://models.example.com/v1", "apiKey": "sk-saved"})
+        assert key == "sk-saved"

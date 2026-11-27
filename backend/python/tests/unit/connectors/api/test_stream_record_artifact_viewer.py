@@ -50,7 +50,7 @@ def _graph(record: SimpleNamespace, edges: dict[tuple[str, str], str]) -> AsyncM
     # Every org member passes the record check, so only the artifact's own rule can refuse the viewer.
     access = InMemoryRecordAccess().user("owner", "org-1").user("viewer", "org-1").record(record.id, "org-1")
     access.grant(record.id, org="org-1").serve(gp)
-    gp.get_user_by_user_id = AsyncMock(side_effect=lambda user_id: {"_key": f"key-{user_id}"})
+    gp.get_user_by_user_id = AsyncMock(side_effect=lambda user_id, **_: {"_key": f"key-{user_id}"})
 
     async def get_edge(**kw: str) -> dict[str, str] | None:
         role = edges.get((kw["from_id"], kw["to_id"]))

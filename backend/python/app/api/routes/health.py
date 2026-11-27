@@ -80,6 +80,10 @@ async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
     user = getattr(request.state, "user", None)
     container = getattr(request.app, "container", None)
     config_service = container.config_service() if container is not None else None
+    # Imported here: edition_services pulls in connector and graph code.
+    from app.edition_services import bind_request_org_root
+
+    await bind_request_org_root(config_service)
     async with call_scope(
         principal_from_request_user(user if isinstance(user, dict) else None),
         Workload.HEALTH_CHECK,
@@ -568,6 +572,11 @@ async def _model_setup_failed_response(
             "details": {"provider": provider, "model": model, "error_code": "model_check_failed"},
         },
     )
+
+
+def _unstamped(model_config: dict) -> dict:
+    """A request body is never trusted to carry server-side annotations (underscore keys)."""
+    return {k: v for k, v in model_config.items() if not k.startswith("_")}
 
 
 def _is_settings_failure(e: BaseException) -> bool:
@@ -1712,7 +1721,7 @@ async def _check_one_llm(
         )
 
     llm_model = await asyncio.to_thread(
-        get_generator_model, provider=provider, config=llm_config, model_name=model_name,
+        get_generator_model, provider=provider, config=_unstamped(llm_config), model_name=model_name,
     )
     logger.debug("Generator model created for %s", model_name)
 
@@ -1819,6 +1828,10 @@ async def _probe_image_embedding(
     """
     from app.services.embeddings.multimodal.config import MultimodalProviderConfig
     from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
+    from app.utils.aimodels import (
+        AMBIENT_MULTIMODAL_PROVIDERS,
+        _ambient_cloud_credentials_allowed,
+    )
 
     provider = embedding_config.get("provider", "")
     configuration = embedding_config.get("configuration") or {}
@@ -1832,6 +1845,11 @@ async def _probe_image_embedding(
                 region_name=configuration.get("region"),
                 aws_access_key_id=configuration.get("awsAccessKeyId"),
                 aws_secret_access_key=configuration.get("awsSecretAccessKey"),
+                # A request body carries no model entry, so it is unstamped.
+                allow_ambient_credentials=(
+                    provider in AMBIENT_MULTIMODAL_PROVIDERS
+                    and _ambient_cloud_credentials_allowed({"provider": provider, "configuration": configuration})
+                ),
                 embedding_size=text_dimension,
                 logger=logger,
             )
@@ -1927,7 +1945,7 @@ async def perform_embedding_health_check(
             embedding_model = await asyncio.to_thread(
                 get_embedding_model,
                 provider=embedding_config.get("provider"),
-                config=embedding_config,
+                config=_unstamped(embedding_config),
                 model_name=model_name,
             )
 
@@ -2054,7 +2072,7 @@ async def perform_embedding_health_check(
         )
 
 
-async def _probe_openai_listed_model(configuration: dict, model_name: str) -> None:
+async def _probe_openai_listed_model(configuration: dict, model_name: str, provider: str | None = None) -> None:
     """Confirm ``model_name`` exists on an OpenAI-compatible ``/v1/models`` API.
 
     ``models.retrieve`` is the cheap check. Servers that don't implement it
@@ -2064,11 +2082,21 @@ async def _probe_openai_listed_model(configuration: dict, model_name: str) -> No
     """
     from openai import AsyncOpenAI
 
+    from app.utils.aimodels import (
+        _ambient_cloud_credentials_allowed,
+        _server_key_would_leave,
+    )
+
     kwargs = openai_async_client_kwargs(configuration)
     # Keyless OpenAI-compatible servers (LocalAI, Kokoro, vLLM) have no key.
     # The image, TTS, and STT builders use this same placeholder. A configured
-    # key, or OPENAI_API_KEY in the environment, still wins.
-    if not kwargs.get("api_key") and not os.environ.get("OPENAI_API_KEY"):
+    # key wins. OPENAI_API_KEY from the environment is only sent to OpenAI
+    # itself (https), whatever the provider: this client reads OPENAI_API_KEY for each.
+    if not kwargs.get("api_key") and (
+        not os.environ.get("OPENAI_API_KEY")
+        or _server_key_would_leave("openAI", configuration)
+        or not _ambient_cloud_credentials_allowed({"provider": provider, "configuration": configuration})
+    ):
         kwargs["api_key"] = "not-needed"
     client = AsyncOpenAI(**kwargs)
     try:
@@ -2126,7 +2154,7 @@ async def perform_image_generation_health_check(
         try:
             adapter = get_image_generation_model(
                 provider=provider,
-                config=model_config,
+                config=_unstamped(model_config),
                 model_name=model_name,
             )
         except Exception as e:
@@ -2141,7 +2169,7 @@ async def perform_image_generation_health_check(
                 ImageGenerationProvider.OPENAI.value,
                 ImageGenerationProvider.OPENAI_COMPATIBLE.value,
             ):
-                await _probe_openai_listed_model(configuration, model_name)
+                await _probe_openai_listed_model(configuration, model_name, provider)
             elif provider == ImageGenerationProvider.GEMINI.value:
                 from google import genai
 
@@ -2229,7 +2257,7 @@ async def perform_tts_health_check(
         try:
             adapter = get_tts_model(
                 provider=provider,
-                config=model_config,
+                config=_unstamped(model_config),
                 model_name=model_name,
             )
         except Exception as e:
@@ -2244,7 +2272,7 @@ async def perform_tts_health_check(
                 TTSProvider.OPENAI.value,
                 TTSProvider.OPENAI_COMPATIBLE.value,
             ):
-                await _probe_openai_listed_model(configuration, model_name)
+                await _probe_openai_listed_model(configuration, model_name, provider)
             elif provider == TTSProvider.GEMINI.value:
                 # The adapter only calls Gemini when it synthesizes, so check the key and model here.
                 from google import genai
@@ -2336,7 +2364,7 @@ async def perform_stt_health_check(
         try:
             adapter = get_stt_model(
                 provider=provider,
-                config=model_config,
+                config=_unstamped(model_config),
                 model_name=model_name,
             )
         except Exception as e:
@@ -2351,7 +2379,7 @@ async def perform_stt_health_check(
                 STTProvider.OPENAI.value,
                 STTProvider.OPENAI_COMPATIBLE.value,
             ):
-                await _probe_openai_listed_model(configuration, model_name)
+                await _probe_openai_listed_model(configuration, model_name, provider)
             elif provider == STTProvider.WHISPER.value:
                 try:
                     import importlib.util
