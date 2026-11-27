@@ -77,8 +77,13 @@ export function signedInMark(): string | null {
   return storage()?.getItem(SESSION_HINT_KEY) ?? null;
 }
 
+/** The signed-in mark a session with this access token writes. */
+export function markOf(accessToken: string): string {
+  return accountOfToken(accessToken) ?? 'signed-in';
+}
+
 export function markSignedIn(accessToken: string): void {
-  const value = accountOfToken(accessToken) ?? 'signed-in';
+  const value = markOf(accessToken);
   try {
     if (storage()?.getItem(SESSION_HINT_KEY) !== value) storage()?.setItem(SESSION_HINT_KEY, value);
   } catch {
@@ -86,8 +91,13 @@ export function markSignedIn(accessToken: string): void {
   }
 }
 
-export function clearSignedInMark(): void {
+/**
+ * Removes the signed-in mark. With `expected`, only while the mark still reads that: once another tab has signed in
+ * as someone else the mark is theirs, and removing it would end their restore and their refreshes.
+ */
+export function clearSignedInMark(expected?: string | null): void {
   try {
+    if (expected !== undefined && signedInMark() !== expected) return;
     storage()?.removeItem(SESSION_HINT_KEY);
   } catch {
     // ignore
@@ -125,7 +135,7 @@ export type AccessTokenAnswer =
   | { outcome: 'unreachable'; retryAfterMs?: number };
 
 async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
-  // One attempt may not hang the refresh: slower than the limit counts as no answer, body read included.
+  // One attempt may not hang the refresh: no answer within the limit counts as no answer.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REFRESH_ATTEMPT_TIMEOUT_MS);
   try {
@@ -146,6 +156,10 @@ async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
       return retryAfterMs === null ? { outcome: 'unreachable' } : { outcome: 'unreachable', retryAfterMs };
     }
     if (!response.ok) return { outcome: 'refused' };
+    // The server said yes and has already replaced the refresh token; a bearer client gets the replacement only in
+    // this body, so cutting the read off would leave it holding the spent token, and its next refresh ends the session.
+    // shortcut: a body that stalls after a 2xx keeps the refresh lock until the connection fails; bound it if seen.
+    clearTimeout(timer);
     let data: { accessToken?: unknown; refreshToken?: unknown } | null;
     try {
       data = (await response.json()) as { accessToken?: unknown; refreshToken?: unknown } | null;

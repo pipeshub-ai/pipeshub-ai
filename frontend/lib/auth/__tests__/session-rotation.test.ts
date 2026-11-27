@@ -108,6 +108,39 @@ describe('refresh-token rotation in the page', () => {
     expect(vault.token).toBe('t2');
   });
 
+  it('the desktop keeps the replacement when the body of a yes arrives after the attempt limit', async () => {
+    vi.useFakeTimers();
+    try {
+      electron.on = true;
+      vault.token = 'first';
+      // Like fetch: the headers are in, the body is still coming, and an abort of the request errors the body read.
+      fetchMock.mockImplementationOnce(async (_url, init) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let aborted = false;
+            init?.signal?.addEventListener('abort', () => {
+              aborted = true;
+              controller.error(new DOMException('The user aborted a request.', 'AbortError'));
+            });
+            setTimeout(() => {
+              if (aborted) return;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify({ accessToken: 'a1', refreshToken: 'second' })));
+              controller.close();
+            }, 15_000);
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      const { requestAccessToken } = await import('@/lib/auth/session-credential');
+      const answer = requestAccessToken();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await answer).toMatchObject({ outcome: 'issued', accessToken: 'a1' });
+      expect(vault.token).toBe('second');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a web answer carries no refresh token for the page to keep', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: 'a1' }));
     const { requestAccessToken } = await import('@/lib/auth/session-credential');

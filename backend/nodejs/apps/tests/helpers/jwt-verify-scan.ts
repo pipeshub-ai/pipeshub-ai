@@ -320,6 +320,14 @@ export function unlistedLibraryMentions(
   return found;
 }
 
+/** The local names a binding declares, including destructured ones (`{ a: b, c: [d] }`). */
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((el) =>
+    ts.isOmittedExpression(el) ? [] : bindingNames(el.name),
+  );
+}
+
 /**
  * The names a source file exports: exported declarations, export lists (`export { a }`,
  * `export { a as b }`) and named re-exports (`export { a } from './x'`), by exported name.
@@ -343,7 +351,7 @@ export function exportedNames(source: string): string[] {
     ) {
       if (ts.isVariableStatement(st)) {
         for (const d of st.declarationList.declarations) {
-          if (ts.isIdentifier(d.name)) names.push(d.name.text);
+          names.push(...bindingNames(d.name));
         }
       } else if (
         (ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) &&

@@ -140,9 +140,14 @@ describe('contract: no jsonwebtoken verify outside the allowlist', function () {
           'const g = 1;',
           'export { g as default };',
           'const notExported = 1;',
+          'export const { h, i: j, k: { l }, ...m } = o;',
+          'export const [n, , [p]] = q;',
+          'const { notExportedEither } = o;',
         ].join('\n'),
       ).sort(),
-    ).to.deep.equal(['a', 'b', 'c', 'd', 'default', 'e', 'f']);
+    ).to.deep.equal(
+      ['a', 'b', 'c', 'd', 'default', 'e', 'f', 'h', 'j', 'l', 'm', 'n', 'p'],
+    );
   });
 
   describe('the scanner sees every spelling of a verify call', () => {
