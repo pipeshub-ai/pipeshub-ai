@@ -38917,6 +38917,10 @@ paths:
               description: Seconds to wait before retrying.
               schema:
                 type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /users/bulk/invite/check:
     post:
       tags:
