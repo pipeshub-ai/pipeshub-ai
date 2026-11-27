@@ -501,3 +501,13 @@ class TestRejectedCredentials:
         c, runtime = self._runtime({"access_token": "tok", "refresh_token": "r"})
         await self._call(runtime, MagicMock(refresh_now=AsyncMock(side_effect=RefreshTokenInvalidError("x"))))
         assert "refresh token" in str(c.run_state.rejected)
+
+    async def test_a_rate_limited_check_marks_the_run_and_stops_nothing(self) -> None:
+        c, runtime = self._runtime({"access_token": "tok"})
+        c.data_source.get_authenticated = AsyncMock(return_value=GitHubResponse(
+            success=False, error="HTTP 403", status_code=403, retry_after_seconds=3600,
+        ))
+        res = await self._call(runtime, MagicMock())
+        assert res.status_code == 401
+        assert c.run_state.rejected is None
+        assert c.run_state.rate_limited is True

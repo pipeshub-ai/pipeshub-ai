@@ -628,3 +628,48 @@ class TestRunOutcome:
         result = await runtime.paged_list(MagicMock(), progress_label="members")
         assert result.success is False
         assert c.run_state.rate_limited is True
+
+    def _signed_out(self, confirm: object) -> tuple[MagicMock, object]:
+        c, runtime = _make_runtime()
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value.get_token.return_value = "old"
+        c.data_source = MagicMock(get_user=confirm)
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH"}, "credentials": {"access_token": "old"}}
+        )
+        return c, runtime
+
+    async def test_a_dead_token_with_no_refresh_token_stops_the_run_and_is_counted(self) -> None:
+        refused = GitLabResponse(success=False, error="401 Unauthorized", status_code=401)
+        c, runtime = self._signed_out(MagicMock(return_value=refused))
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=MagicMock())
+            await runtime.call_with_auth_retry(MagicMock(return_value=refused))
+        assert "no refresh token" in str(c.run_state.rejected)
+        assert c.run_state.unrefreshable_token == "old"
+
+    async def test_a_token_replaced_while_the_sign_in_was_checked_is_not_rejected(self) -> None:
+        refused = GitLabResponse(success=False, error="401 Unauthorized", status_code=401)
+        c, runtime = self._signed_out(None)
+
+        def confirm() -> GitLabResponse:
+            # Another call installed the owner's new sign-in while this check was in flight.
+            c.external_client.get_client.return_value.get_token.return_value = "new"
+            return refused
+
+        c.data_source.get_user = confirm
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=MagicMock())
+            await runtime.call_with_auth_retry(MagicMock(return_value=refused))
+        assert c.run_state.rejected is None
+
+    async def test_a_rate_limited_check_marks_the_run_and_stops_nothing(self) -> None:
+        refused = GitLabResponse(success=False, error="401 Unauthorized", status_code=401)
+        limited = GitLabResponse(success=False, error="429 Too Many Requests", status_code=429)
+        c, runtime = self._signed_out(MagicMock(return_value=limited))
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=MagicMock())
+            response = await runtime.call_with_auth_retry(MagicMock(return_value=refused))
+        assert response is refused
+        assert c.run_state.rejected is None
+        assert c.run_state.rate_limited is True

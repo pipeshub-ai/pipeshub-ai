@@ -265,8 +265,16 @@ class RuntimeHelper:
         c = self.c
         if why is None or c.run_state.rejected is not None or c.data_source is None:
             return
+        sent_with = self._current_token()
         confirm = await self._execute_gitlab_op(lambda: c.data_source.get_user(), op_label="confirm credentials")
+        if confirm.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            # The caller gets the original 401, which does not show the limit that cut the check short.
+            c.run_state.rate_limited = True
+            return
         if not self._is_auth_error(confirm):
+            return
+        if self._current_token() != sent_with:
+            # A new sign-in was installed while the check ran; the next call uses it.
             return
         self.logger.error(
             "GitLab rejected the connector's credentials (HTTP 401: %s) and they cannot be renewed (%s). The token "
@@ -277,7 +285,7 @@ class RuntimeHelper:
             f"GitLab rejected this connector's sign-in ({why}). It may have been revoked or expired, or the OAuth "
             "app may have been removed. Syncing stopped and nothing was removed. Reconnect it, or replace its "
             "token, in the connector's settings; if that fails, check the OAuth app in GitLab.",
-            unrefreshable_token=self._current_token() if why == NO_REFRESH_TOKEN else None,
+            unrefreshable_token=sent_with if why == NO_REFRESH_TOKEN else None,
         )
 
     # ------------------------------------------------------------------

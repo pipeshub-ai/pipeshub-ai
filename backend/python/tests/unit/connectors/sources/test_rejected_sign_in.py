@@ -261,3 +261,24 @@ async def test_zammad_does_not_reject_a_token_replaced_while_it_was_checked() ->
     assert await c._stop_if_signed_out() is False
     assert c.run_state.rejected is None
     c.notify.assert_not_awaited()
+
+
+async def test_zammad_does_not_reject_a_token_saved_while_the_check_was_refused() -> None:
+    in_use = SimpleNamespace(token="old")
+    refused = SimpleNamespace(status_code=401, success=False, error="no", message=None)
+    stored = {"token": "old"}
+
+    async def current_user() -> SimpleNamespace:
+        stored["token"] = "new"  # saved in the settings; the client still holds the old one
+        return refused
+
+    async def fresh_datasource() -> MagicMock:
+        in_use.token = stored["token"]  # installs the stored token, as the real one does
+        return MagicMock(get_current_user=current_user)
+
+    c = _bare(
+        ZammadConnector, external_client=MagicMock(get_client=MagicMock(return_value=in_use)),
+        _get_fresh_datasource=fresh_datasource,
+    )
+    assert await c._stop_if_signed_out() is False
+    assert c.run_state.rejected is None

@@ -459,6 +459,16 @@ class ZammadConnector(BaseConnector):
         get_client = getattr(self.external_client, "get_client", None)
         return getattr(get_client(), "token", None) if callable(get_client) else None
 
+    async def _still_holds(self, token: object) -> bool:
+        """Whether ``token`` is still the one stored. A token saved while a request was refused only reaches
+        the client on the next read of the config, so the client alone cannot tell."""
+        try:
+            await self._get_fresh_datasource()
+        except Exception as e:
+            self.logger.warning("Could not read the stored Zammad access token: %s", type(e).__name__)
+            return False
+        return self._token_in_use() == token
+
     async def _stop_if_signed_out(self) -> bool:
         """Raise when Zammad no longer accepts the access token: nothing written after that could be trusted.
         True when Zammad confirmed it accepts the token the last read used, False when that could not be
@@ -471,7 +481,7 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.warning("Could not check whether Zammad still accepts the access token: %s", e)
             return False
-        if me.status_code == HttpStatusCode.UNAUTHORIZED.value and self._token_in_use() != checked_with:
+        if me.status_code == HttpStatusCode.UNAUTHORIZED.value and not await self._still_holds(checked_with):
             # Refused the token stored when the check started; the one saved since is still untried.
             self.logger.warning(
                 "Zammad: the access token was replaced while it was checked; members stay as stored until the "
