@@ -45,6 +45,10 @@ CURATED_TOOLS = {
     "pipeshub_indexing_status",
     "pipeshub_connect_source",
     "pipeshub_add_web_source",
+    # The citations card and the app-only preview it loads files through. The Node API
+    # builds the server with ``apps: true``, so they are listed for every client.
+    "pipeshub_show_citations",
+    "pipeshub_preview_record",
 }
 
 # Registered by PipesHub itself (modules/mcp/code-graph.tools.ts), not the
