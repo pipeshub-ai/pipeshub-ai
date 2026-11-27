@@ -310,14 +310,15 @@ async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None
     """, {"seen": seen, "keep": list(keep or ())})
 
 
-async def stale_connectors(client: Neo4jClient) -> list[str]:
-    """Apps (not KBs) without a fresh stamp of this version."""
+async def stale_connectors(client: Neo4jClient, org_id: str) -> list[str]:
+    """The org's Apps (not KBs) without a fresh stamp of this version. An App with no orgId (not backfilled yet) is
+    taken by whichever org comes first: stamping is idempotent."""
     rows = await _q(client, """
-        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB'
+        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB' AND coalesce(a.orgId, $org) = $org
         OPTIONAL MATCH (m:KhScopeMeta {connectorId: a.id})
         WITH a, m WHERE m IS NULL OR NOT coalesce(m.fresh, false) OR coalesce(m.version, 0) <> $v
         RETURN a.id AS id
-    """, {"v": STAMP_VERSION})
+    """, {"v": STAMP_VERSION, "org": org_id})
     return [r["id"] for r in rows]
 
 

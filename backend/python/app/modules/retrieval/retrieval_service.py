@@ -4,7 +4,16 @@ import logging
 import math
 import os
 import time
-from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -87,10 +96,12 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
+from app.services.llm_gateway.embedding_gateway import EmbeddingGateway
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
 from app.services.permissions import access_status
 from app.services.permissions.metrics import SERVING_DEGRADED
+from app.services.spend_guard.retry_policy import RetryKind
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -386,6 +397,12 @@ EMBEDDING_OUT_OF_CREDIT_MESSAGE = (
     "Search can't run because the embedding model's provider account is out of credit. "
     "An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models."
 )
+# The embedding provider kept refusing the query as rate limited (another workload can be using the same limit).
+# Allowlisted by the Node gateway like the messages above.
+EMBEDDING_RATE_LIMITED_MESSAGE = (
+    "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. "
+    "Please try again in a minute."
+)
 # Some collections answered and some failed (timed out, or any other error):
 # the results stand, with this said.
 SEARCH_INCOMPLETE_MESSAGE = (
@@ -528,6 +545,24 @@ def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[s
 _SELECTION_REQUEST_KEYS = frozenset(
     (*SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_KEY)
 )
+
+class QueryEmbeddingRateLimitedError(Exception):
+    """The embedding provider refused the query with a rate limit (429), after any retries."""
+
+    def __init__(self) -> None:
+        super().__init__("the embedding provider is rate limiting queries")
+
+
+@contextmanager
+def _naming_rate_limits() -> Iterator[None]:
+    """Raise a provider's rate limit inside the block as ``QueryEmbeddingRateLimitedError``, anything else as it is."""
+    try:
+        yield
+    except Exception as exc:
+        if EmbeddingGateway.retry_kind(exc) is not RetryKind.THROTTLE:
+            raise
+        raise QueryEmbeddingRateLimitedError from exc
+
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -1691,6 +1726,9 @@ class RetrievalService:
         except ValueError as e:
             self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+        except QueryEmbeddingRateLimitedError as e:
+            log_failure(self.logger, "search.failed", e, include_error_text=False)
+            return self._create_empty_response(EMBEDDING_RATE_LIMITED_MESSAGE, Status.EMBEDDING_RATE_LIMITED)
         except Exception as e:
             # A refused query embedding lands here too, its text the provider's body.
             log_failure(self.logger, "search.failed", e, include_error_text=False)
@@ -2982,7 +3020,7 @@ class RetrievalService:
 
         # The tasks gather() starts copy the context when they are created, so the
         # scope has to be open across the awaits, not just where the coroutines are built.
-        with narrow_workload(Workload.QUERY_EMBEDDING), span("embed"):
+        with narrow_workload(Workload.QUERY_EMBEDDING), span("embed"), _naming_rate_limits():
             if sparse_embedder is not None and supports_sparse:
                 # Parallelise dense and sparse embedding generation
                 sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
@@ -3209,6 +3247,7 @@ class RetrievalService:
             # 503 so every caller that reads a failed search by its status code keeps doing so, and the gateway
             # passes the message through.
             Status.EMBEDDING_OUT_OF_CREDIT: 503,
+            Status.EMBEDDING_RATE_LIMITED: 503,
             Status.SELECTION_TOO_LARGE: 422,
             Status.SELECTION_NOT_READY: 422,
             Status.SELECTION_EMPTY: 404,

@@ -106,9 +106,7 @@ class GraphDBProviderFactory:
             elif provider_type == "postgres":
                 from app.core.db import DbConfig
                 from app.core.db.shared import acquire_db
-                from app.services.graph_db.postgres.provider import (
-                    PostgresGraphProvider,
-                )
+                from app.edition_services import PostgresGraphProvider
                 from app.services.pg_runtime import runtime_service
 
                 # Each process connects as its own service role (PG_RUNTIME_SERVICE, next to its PG_CORE_URL)
