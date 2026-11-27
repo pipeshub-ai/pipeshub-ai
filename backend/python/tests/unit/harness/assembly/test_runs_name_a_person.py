@@ -67,18 +67,15 @@ def _claim(via: str):  # noqa: ANN202 - a NodeClaim
     return claim(spec)
 
 
-@pytest.mark.parametrize("via", ["service", "oauth_app"])
-def test_a_run_whose_actor_is_no_person_is_refused_where_agents_run_as_the_caller(
-    monkeypatch: pytest.MonkeyPatch, via: str
-) -> None:
-    """A service identity, and an OAuth application, whose actor may be an identity the app names, not a person."""
+def test_a_service_run_is_refused_where_agents_run_as_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
     with pytest.raises(RunRefused) as refused:
-        _run_context(_claim(via))
+        _run_context(_claim("service"))
     assert refused.value.error_type == "unidentified_caller"
 
 
-@pytest.mark.parametrize("via", ["session", "pat", "trigger"])
+# oauth_app: an OAuth app's user token, the MCP client's and the CLI's; admission refuses a client-credentials one.
+@pytest.mark.parametrize("via", ["session", "pat", "oauth_app", "trigger"])
 def test_a_person_s_run_builds_where_agents_run_as_the_caller(monkeypatch: pytest.MonkeyPatch, via: str) -> None:
     monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
     assert _run_context(_claim(via)).via == via
@@ -90,7 +87,7 @@ async def test_the_tool_environment_refuses_before_it_reads_anything(monkeypatch
     from app.harness.assembly.tool_environment import build_tool_environment
 
     monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
-    run = RunContext.from_claim(_claim("oauth_app"))
+    run = RunContext.from_claim(_claim("service"))
     with pytest.raises(RunRefused) as refused:
         await build_tool_environment(run, None, None)  # type: ignore[arg-type]
     assert refused.value.error_type == "unidentified_caller"

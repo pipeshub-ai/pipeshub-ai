@@ -350,6 +350,23 @@ def test_an_app_caller_is_refused_where_agents_run_as_the_caller(world: World, m
     _refused_before_any_header(rig, as_client, as_identity)
 
 
+def test_an_oauth_apps_user_token_is_served_where_agents_run_as_the_caller(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An authorization-code token acts for the user who granted it, as the MCP client's and the CLI's do."""
+    from app import edition
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    monkeypatch.delenv(POLICY_STORE_ENV, raising=False)
+    token_claims = {
+        "userId": "u-bob", "client_id": "client-9", "orgId": "org-1", "tokenType": "oauth", "scope": "agent:execute",
+    }
+    rig = Rig(world, monkeypatch, extra_users={"granted": _normalize_regular_payload(dict(token_claims), "bearer")})
+    header = sign(claims(NOW, org="org-1", sub="u-bob", agent="shared", cid=CONVERSATION, access={"run": True}))
+    _served(rig.agent_stream(caller="granted", header=header))
+    assert rig.loop.user_info["userId"] == "u-bob"
+
+
 def test_a_service_account_agent_runs_on_the_callers_binding_where_agents_run_as_the_caller(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -367,16 +367,11 @@ async def _system_assistant(
     }
 
 
-# How a run's actor reached it, where the actor is a person acting as themself: a session, their own personal access
-# token, or a trigger they set. A service identity and an OAuth application (whose actor may be an identity the app
-# names, not a person) are not.
-PERSON_VIAS = frozenset({"session", "pat", "trigger"})
-
-
 def refuse_unidentified_run(run: RunContext) -> None:
     """Where the edition runs every agent as the identified person asking, a run whose actor is not a person with an
-    org (see ``PERSON_VIAS``) is refused before anything is read for it."""
+    org (``app.api.middlewares.person_caller.PERSON_VIAS``) is refused before anything is read for it."""
     from app import edition
+    from app.api.middlewares.person_caller import PERSON_VIAS
 
     if edition.AGENTS_RUN_AS_THE_CALLER and (run.via not in PERSON_VIAS or not run.actor_id or not run.org_id):
         raise RunRefused("unidentified_caller", "the run names no identified person to act as")

@@ -531,6 +531,25 @@ class TestRunDefinitionWhereAgentsRunAsTheCaller:
         assert refused.value.status_code == 403
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", [_service_account_agent(), _agent()], ids=["service-account", "ordinary"])
+    async def test_an_oauth_apps_user_token_is_served_and_its_client_credentials_token_refused(
+        self, agent: dict[str, Any]
+    ) -> None:
+        """An authorization-code token acts for the user who granted it (the MCP client, the CLI); a
+        client-credentials token of the same app acts as an identity the app names and is no person."""
+        from app.api.middlewares.auth import _normalize_regular_payload
+
+        app = {"orgId": "org-1", "tokenType": "oauth", "scope": "agent:execute"}
+        user_token = _normalize_regular_payload({**app, "userId": "u1", "client_id": "client-9"}, "t")
+        client_credentials = _normalize_regular_payload(
+            {**app, "userId": "client-9", "client_id": "client-9", "createdBy": "u1"}, "t"
+        )
+        await self._admitted(user_token, agent)
+        with pytest.raises(HTTPException) as refused:
+            await self._admitted(client_credentials, agent)
+        assert refused.value.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_a_service_account_agent_lists_its_servers_as_the_caller(self) -> None:
         _, listing = await TestHubOffSavedAgentPins._define(_service_account_agent(), hub=False)
         listing.assert_awaited_once()

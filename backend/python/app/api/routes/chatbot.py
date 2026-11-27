@@ -44,6 +44,7 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
+from app.api.middlewares.person_caller import refuse_unless_a_person
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -2219,6 +2220,7 @@ async def askAI(
     Called by Node's `POST /api/v1/conversations/create` and
     `POST /api/v1/conversations/:id/messages`.
     """
+    refuse_unless_a_person(getattr(request.state, "user", None))
     query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=False)
     await assert_identity_allowed(
         _chat_principal(request),
@@ -2254,6 +2256,7 @@ async def askAIStream(
     agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
     for the mode → tool/prefetch behavior.
     """
+    refuse_unless_a_person(getattr(request.state, "user", None))
     query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=True)
     await assert_identity_allowed(
         _chat_principal(request),
