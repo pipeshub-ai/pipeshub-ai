@@ -51,7 +51,8 @@ describe('R51-COMPAT: conversation erasure follows the harness switch or the har
       join(__dirname, '../../../src/modules/enterprise_search/controller/es_controller.ts'),
       'utf8',
     );
-    expect(source).to.include('if (deleted && erasures !== undefined) {');
+    // The soft delete has written by then (it throws when it wrote nothing); only a queue adds the mark and the job.
+    expect(source).to.match(/if \(erasures !== undefined\) \{[^}]*?await markErasureRequested\(/);
   });
 
   it('R52SPLITA-FU-1: an org delete gets its erasure job wherever a delete erases, harness on or a hardened install with it off', () => {
