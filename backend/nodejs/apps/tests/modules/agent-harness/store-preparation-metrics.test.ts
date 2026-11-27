@@ -1,7 +1,8 @@
 /** OPS1-2-3: whether this process prepared the harness's store, as Prometheus exposes it. */
 import { expect } from 'chai';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
-import { storePreparedGauge } from '../../../src/modules/agent-harness/adapters/telemetry/store-preparation-metrics';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { storePreparedGauge } from '../../../src/modules/agent-harness/adapters/observability/store-preparation-metrics';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const SERIES = 'pipeshub_agent_harness_store_prepared';
 
@@ -11,6 +12,8 @@ const sample = async (): Promise<number | null> => {
 };
 
 describe('store preparation metric (OPS1-2-3)', () => {
+  useTelemetryPlugin();
+
   it('is 0 while the harness is unavailable and 1 once its store is prepared', async () => {
     storePreparedGauge(false);
     expect(await sample()).to.equal(0);

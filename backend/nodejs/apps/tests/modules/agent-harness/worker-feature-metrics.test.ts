@@ -4,8 +4,9 @@
  * without `run_code`, and stranded runs by outcome.
  */
 import { expect } from 'chai';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
-import { prometheusWorkerFeatureMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/worker-feature-metrics';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { prometheusWorkerFeatureMetrics } from '../../../src/modules/agent-harness/adapters/observability/worker-feature-metrics';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const sample = async (series: string): Promise<number | null> => {
   const text = await metricsBackend.serialize();
@@ -14,6 +15,8 @@ const sample = async (series: string): Promise<number | null> => {
 };
 
 describe('worker feature metrics (DUR2)', () => {
+  useTelemetryPlugin();
+
   it('reports a feature live as 1 and gone as 0', async () => {
     const series = 'pipeshub_agent_harness_worker_feature_live{feature="agent_code"}';
     prometheusWorkerFeatureMetrics.live('agent_code', true);

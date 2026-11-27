@@ -23,11 +23,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startMetricsCredentialFile } from '../../../src/modules/agent-harness/transport/metrics-credential-file';
-import { prometheusChatPathMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/chat-path-metrics';
+import { prometheusChatPathMetrics } from '../../../src/modules/agent-harness/adapters/observability/chat-path-metrics';
 import { recordRunCacheRead } from '../../../src/modules/agent-harness/application/run-cache-read';
 import type { BudgetUsage } from '../../../src/modules/agent-harness/domain/budget-ledger';
 import { InMemoryBudgetLedger } from '../../../src/modules/agent-harness/adapters/in-memory-budget-ledger';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import {
   HarnessLocalMetrics,
   RUN_STATE_METRICS,
@@ -50,6 +50,7 @@ import {
   AGENT_HARNESS_INTERNAL_PREFIX,
   createAgentHarnessInternalRouter,
 } from '../../../src/modules/agent-harness/transport/internal-routes';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const CREDENTIAL = 'ob04-worker-credential';
 
@@ -92,6 +93,8 @@ const manualClock = (start = 1_000_000) => {
 };
 
 describe('OB-04, OB-05: operational metrics for dashboards and alerts (C9.04, C9.05)', () => {
+  useTelemetryPlugin();
+
   it('OB-04-1, OB-05: claim wait, tokens by kind, cost and quarantines on the Prometheus registry', async () => {
     prometheusChatPathMetrics.claimed('queued', 1.5);
     prometheusChatPathMetrics.modelCharged(0.02, 1_300, {

@@ -8,14 +8,14 @@ import type { ApproverNoticeOutbox } from '../ports/approval-links';
 import type { Tx } from '../../../libs/repositories/uow';
 import { createMemoryStore } from '../../../libs/repositories/agent-harness/memory';
 import { createWorkerFeatureSightings } from '../../../libs/repositories/agent-harness/worker-feature-sightings';
-import { prometheusChatPathMetrics } from '../adapters/telemetry/chat-path-metrics';
+import { prometheusChatPathMetrics } from '../adapters/observability/chat-path-metrics';
 import { createRunState } from '../../../libs/repositories/agent-harness/run-state';
 import {
   HarnessLocalMetrics,
   LocalMetrics,
 } from '../application/harness-local-metrics';
 import { opsMetrics } from '../../../libs/metrics';
-import { prometheusWorkerFeatureMetrics } from '../adapters/telemetry/worker-feature-metrics';
+import { prometheusWorkerFeatureMetrics } from '../adapters/observability/worker-feature-metrics';
 import { HarnessCapabilityService } from '../application/capability-service';
 import {
   childEngineAuthority,

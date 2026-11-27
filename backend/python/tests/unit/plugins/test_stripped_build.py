@@ -120,6 +120,22 @@ FORMER_IMPORTERS = [
 # A module this tree does not have cannot import anything; the rest are probed.
 FORMER_IMPORTERS = [m for m in FORMER_IMPORTERS if (PY / (m.replace(".", "/") + ".py")).is_file()]
 
+# The agent harness's tracing stays in every build: its ports with no-op defaults (``harness_core.telemetry``), the
+# process's OpenTelemetry binding of them (``app/harness/telemetry.py``), and the harness's own trace event contract
+# (``x.pipeshub.telemetry.recorded``: generated, and named where a run's presentation reads it). None of it is this
+# product's usage collection.
+HARNESS_TRACING_FILES = (
+    "app/harness/telemetry.py",
+    "app/harness/citations.py",
+    "app/harness/presentation.py",
+    "app/harness/contracts/generated/",
+)
+
+
+def _harness_tracing(file: str, line: str) -> bool:
+    return file.startswith(HARNESS_TRACING_FILES) or "harness_core.telemetry" in line or "app.harness.telemetry" in line
+
+
 # ``grep -ri telemetry`` over the stripped tree may find only these, each a product fact and none of
 # them this product's own collection: (file, text on the line) -> why it stays.
 ALLOWED_MENTIONS: dict[tuple[str, str], str] = {
@@ -141,6 +157,7 @@ ALLOWED_MENTIONS: dict[tuple[str, str], str] = {
         "a ServiceNow REST API (MID server metrics) the generated client wraps; called only if an agent tool asks"
     ),
     ("app/sources/external/servicenow/servicenow.py", "/mid_telemetry/metrics"): "the same ServiceNow API's path",
+    ("app/utils/env_flags.py", "The OpenTelemetry GenAI conventions"): "the name of OpenTelemetry's own setting for the harness's traces (see HARNESS_TRACING_FILES); not usage collection",
     ("app/services/skills/npm_command_parser.py", "--no-telemetry"): (
         "a flag of other people's npm tools that the skill-install command parser recognises as taking no value"
     ),
@@ -173,7 +190,8 @@ from app import platform_events, plugins
 host = plugins.load_plugins("probe")
 out["__plugins__"] = [host.loaded, [f.plugin for f in host.failures], plugins.get_capability(plugins.USAGE_COLLECTION) is None]
 out["__listeners__"] = sorted(platform_events._listeners)
-out["__loaded__"] = sorted(m for m in sys.modules if m.split(".")[0] == "prometheus_client" or (m.split(".")[0] == "app" and "telemetry" in m.lower()))
+_tracing = ("app.harness.telemetry", "app.harness.contracts.generated.")
+out["__loaded__"] = sorted(m for m in sys.modules if m.split(".")[0] == "prometheus_client" or (m.split(".")[0] == "app" and "telemetry" in m.lower() and not m.startswith(_tracing)))
 out["__third_party__"] = sorted({m.split(".")[0] for m in sys.modules if m.split(".")[0] == "opentelemetry"})
 out["__ours__"] = sorted(m for m in sys.modules if any(m == p or m.startswith(p + ".") for p in OPTIONAL))
 sys.stdout.write("\\nRESULT " + json.dumps(out))
@@ -249,7 +267,11 @@ def test_grep_for_telemetry_in_the_stripped_tree_finds_only_the_listed_product_s
             assert b"telemetry" not in path.read_bytes().lower(), relative
             continue
         hits += [(relative, line.strip()) for line in text.splitlines() if "telemetry" in line.lower()]
-    unexplained = [hit for hit in hits if not any(hit[0] == file and text in hit[1] for file, text in ALLOWED_MENTIONS)]
+    unexplained = [
+        hit
+        for hit in hits
+        if not _harness_tracing(*hit) and not any(hit[0] == file and text in hit[1] for file, text in ALLOWED_MENTIONS)
+    ]
     assert unexplained == []
     unused = [key for key in ALLOWED_MENTIONS if not any(hit[0] == key[0] and key[1] in hit[1] for hit in hits)]
     assert unused == [], "an allowance nothing needs any more"

@@ -60,6 +60,20 @@
   ],
   "type": "counter"
  },
+ "pipeshub_agent_harness_egress_decisions": {
+  "labels": [
+   "decision",
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_agent_harness_token_rejected": {
+  "labels": [
+   "kind",
+   "reason"
+  ],
+  "type": "counter"
+ },
  "pipeshub_capability_downgrade": {
   "labels": [
    "from",
@@ -157,6 +171,45 @@
    "op"
   ],
   "type": "histogram"
+ },
+ "pipeshub_egress_bytes": {
+  "labels": [
+   "alias",
+   "scope",
+   "direction"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_egress_run_bytes": {
+  "buckets": [
+   1024.0,
+   4096.0,
+   16384.0,
+   65536.0,
+   262144.0,
+   1048576.0,
+   4194304.0,
+   16777216.0,
+   67108864.0,
+   268435456.0,
+   1073741824.0,
+   4294967296.0,
+   17179869184.0,
+   68719476736.0,
+   Infinity
+  ],
+  "labels": [
+   "scope",
+   "direction"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_egress_volume_alerts": {
+  "labels": [
+   "kind",
+   "direction"
+  ],
+  "type": "counter"
  },
  "pipeshub_entity_index_writes": {
   "labels": [
@@ -300,6 +353,98 @@
  "pipeshub_graph_view_requests": {
   "labels": [
    "operation",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_gateway_refusals": {
+  "labels": [
+   "gateway",
+   "route",
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_gateway_request_duration_seconds": {
+  "buckets": [
+   0.01,
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   10.0,
+   30.0,
+   60.0,
+   120.0,
+   300.0,
+   Infinity
+  ],
+  "labels": [
+   "gateway",
+   "route"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_harness_gateway_requests": {
+  "labels": [
+   "gateway",
+   "route",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_sandbox_seconds": {
+  "labels": [
+   "mode",
+   "phase"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_sandbox_warm_claims": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_sandbox_warm_pool_depth": {
+  "labels": [],
+  "type": "gauge"
+ },
+ "pipeshub_harness_tool_gateway_call_duration_seconds": {
+  "buckets": [
+   0.01,
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   10.0,
+   30.0,
+   60.0,
+   120.0,
+   300.0,
+   Infinity
+  ],
+  "labels": [
+   "family"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_harness_tool_gateway_calls": {
+  "labels": [
+   "family",
+   "disposition"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_harness_tool_read_cache_lookups": {
+  "labels": [
+   "executor",
    "outcome"
   ],
   "type": "counter"

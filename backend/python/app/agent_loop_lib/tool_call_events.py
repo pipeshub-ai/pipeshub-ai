@@ -24,7 +24,7 @@ class ToolCallEvents:
 
         org = org_context.peek()
         platform_events.emit(
-            TOOL_CALL_COMPLETED,
+            "tool.call.completed",
             tool=tool,
             kind=kind,
             org_id=org.org_id if org is not None else None,

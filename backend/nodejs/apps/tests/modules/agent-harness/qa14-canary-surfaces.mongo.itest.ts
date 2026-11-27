@@ -28,7 +28,7 @@ import sinon from 'sinon';
 import { Logger } from '../../../src/libs/services/logger.service';
 import { xssSanitizationMiddleware } from '../../../src/libs/middlewares/xss-sanitization.middleware';
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import {
   AGENT_HARNESS_AUTHORITY,
   bindAgentHarness,
@@ -67,6 +67,7 @@ import { canonicalJsonBytes } from '../../../src/modules/agent-harness/contracts
 import { inlineContentRef } from '../../../src/modules/agent-harness/domain/run-content';
 import { bindingProof, ringBindingKey } from '../../../src/modules/agent-harness/domain/sandbox-binding';
 import { ensureRigSecretKey } from './support/rig-secret-key';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const ORG = new Types.ObjectId().toHexString();
 const OWNER = new Types.ObjectId().toHexString();
@@ -261,6 +262,7 @@ const worker = (type: string, data: Record<string, unknown>, visibility = 'owner
 });
 
 describe('QA-14 canary scan of the Node surfaces (QA14-N2..N4)', function () {
+  useTelemetryPlugin();
   this.timeout(60_000);
   let rig: Rig;
 

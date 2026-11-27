@@ -9,8 +9,8 @@ export const EVENT_LOOP_UTILIZATION_METRIC =
  * The process's own saturation, for a scraper and the autoscaler (PERF-E).
  * Node serves the API on one thread, so pod CPU against a multi-core request
  * never shows it full; the share of time its event loop was busy does. Kept
- * out of the product telemetry registry: an autoscaling signal must not
- * depend on the telemetry switch, and carries no org or user labels.
+ * out of the usage-data registry: an autoscaling signal must not depend on
+ * the usage-data switch, and carries no org or user labels.
  */
 export function createProcessMetricsRegistry(): promClient.Registry {
   const registry = new promClient.Registry();

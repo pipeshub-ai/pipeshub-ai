@@ -37,7 +37,7 @@ import {
   TOKEN_KINDS,
   TOKEN_REJECTED_METRIC,
   tokenRejectionLabels,
-} from '../../../src/modules/agent-harness/adapters/telemetry/token-rejection-metrics';
+} from '../../../src/modules/agent-harness/adapters/observability/token-rejection-metrics';
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware';
 import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
@@ -49,7 +49,7 @@ import {
   recordAuthAttempt,
   refusalOutcome,
   signInMethod,
-} from '../../../src/libs/services/telemetry/modules/auth-metrics';
+} from '../../../src/plugins/telemetry/modules/auth-metrics';
 import {
   PAT_TOKEN_PREFIX,
   SERVICE_TOKEN_PREFIX,
@@ -65,10 +65,11 @@ import { OPERATOR_SCOPE_KINDS } from '../../../src/modules/agent-harness/domain/
 import {
   orgBucket,
   prometheusChatPathMetrics,
-} from '../../../src/modules/agent-harness/adapters/telemetry/chat-path-metrics';
+} from '../../../src/modules/agent-harness/adapters/observability/chat-path-metrics';
 import { keepFamilies, mergeExpositions } from '../../../src/modules/agent-harness/domain/metrics-exposition';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import { samples, sampleValue } from '../../helpers/metric-samples';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const serve = async (app: express.Express): Promise<{ base: string; close: () => Promise<void> }> => {
   const server = http.createServer((req, res) => {
@@ -99,6 +100,8 @@ const harness = (): Container => {
 const rejected = (kind: string, reason: string) => sampleValue(TOKEN_REJECTED_METRIC, { kind, reason });
 
 describe('SEC-D-13: security signals Node counts where it decides', () => {
+  useTelemetryPlugin();
+
   afterEach(() => sinon.restore());
 
   describe('token and credential refusals on the internal listener', () => {

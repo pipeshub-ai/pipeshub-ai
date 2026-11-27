@@ -50,7 +50,7 @@ import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guar
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
-import { createProcessMetricsServer } from './libs/services/telemetry/process-metrics';
+import { createProcessMetricsServer } from './libs/services/process-metrics';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {

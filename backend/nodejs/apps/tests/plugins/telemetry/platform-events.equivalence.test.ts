@@ -120,6 +120,18 @@ function announceEverything(): void {
 
 /** Metrics added after the golden file was captured; everything else must match it line for line. */
 const ADDED_SINCE = /^(# (HELP|TYPE) )?pipeshub_usage_sdk_requests_total[ {]/;
+/** The metric a Prometheus text line belongs to (`# HELP name ...`, `name{...} 1`, `name_bucket{...}`). */
+const familyOf = (line: string): string =>
+  line.replace(/^# (HELP|TYPE) /, '').split(/[ {]/)[0]!.replace(/_(bucket|sum|count)$/, '');
+
+/**
+ * Only what the golden file covers, and what was added since for the same calls: instruments other code registers
+ * on the same registry (the credential checks, the agent harness's, other tests' in this process) have tests of their own.
+ */
+const covered = (golden: { metrics: string[] }): ((line: string) => boolean) => {
+  const families = new Set(golden.metrics.map(familyOf));
+  return (line) => ADDED_SINCE.test(line) || families.has(familyOf(line));
+};
 
 /** Finished requests from a browser, a script, an SDK and the MCP server. */
 function announceClientRequests(): void {
@@ -168,7 +180,10 @@ describe('telemetry plug-in: platform events produce what the direct calls produ
   it('serialises the same Prometheus text: metric names, help, labels and values', async () => {
     announceEverything();
     const text = await metricsBackend.serialize();
-    const lines = text.split('\n').filter((line) => line !== '').sort();
+    const lines = text
+      .split('\n')
+      .filter((line) => line !== '' && covered(golden)(line))
+      .sort();
     expect(lines.filter((line) => !ADDED_SINCE.test(line))).to.deep.equal(golden.metrics);
     // What the golden file does not know is exactly the metrics added since, with no sample yet.
     expect(lines.filter((line) => ADDED_SINCE.test(line))).to.deep.equal([
@@ -181,7 +196,10 @@ describe('telemetry plug-in: platform events produce what the direct calls produ
     announceEverything();
     announceClientRequests();
     const text = await metricsBackend.serialize();
-    const lines = text.split('\n').filter((line) => line !== '').sort();
+    const lines = text
+      .split('\n')
+      .filter((line) => line !== '' && covered(golden)(line))
+      .sort();
     expect(lines.filter((line) => !ADDED_SINCE.test(line))).to.deep.equal(golden.metrics);
     expect(lines.filter((line) => ADDED_SINCE.test(line) && !line.startsWith('#'))).to.deep.equal([
       'pipeshub_usage_sdk_requests_total{service="node_api",channel="mcp",sdk_language="other",sdk_version="1.4.2",outcome="failure",org="org-1",domain="example.com"} 1',

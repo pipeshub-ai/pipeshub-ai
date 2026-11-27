@@ -4,7 +4,7 @@ import {
   EVENT_LOOP_UTILIZATION_METRIC,
   createProcessMetricsRegistry,
   createProcessMetricsServer,
-} from '../../../../src/libs/services/telemetry/process-metrics';
+} from '../../../src/libs/services/process-metrics';
 
 function busyFor(ms: number): void {
   const end = Date.now() + ms;

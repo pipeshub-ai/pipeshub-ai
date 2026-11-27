@@ -19,7 +19,7 @@ import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware';
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
 import { Logger } from '../../../src/libs/services/logger.service';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import { policySnapshotLoader } from '../../../src/modules/agent-harness/adapters/control-plane/policy-snapshot-loader';
 import { activeOrgIds } from '../../../src/libs/repositories/agent-harness/active-orgs/mongo';
 import { bindControlPlaneCapabilities } from '../../../src/modules/agent-harness/binders/control-plane-capabilities';
@@ -48,13 +48,14 @@ import {
   CpInstallationHistoryModel,
   CpInstallationModel,
 } from '../../../src/libs/repositories/control-plane/installations/schema/installations.schema';
-import { prometheusShadowMismatches } from '../../../src/modules/control-plane/adapters/telemetry/shadow-metrics';
+import { prometheusShadowMismatches } from '../../../src/modules/control-plane/adapters/metrics/shadow-metrics';
 import type { OAuthTokenService } from '../../../src/modules/oauth_provider/services/oauth_token.service';
 import { Org } from '../../../src/modules/user_management/schema/org.schema';
 import { aBinding, aGrant, anEntry, anInstallation, bindingId, directTx, instId, ORG_A, rejection } from './support/cp-objects';
 import { InMemoryBindingStore, InMemoryCapabilityLedger, InMemoryGrantStore, InMemoryInstallationStore } from './support/in-memory-stores';
 import { fakeCollections } from './support/fake-mongo-models';
 import { testControlPlane } from './support/in-memory';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const JWT_SECRET = 'cpd7-jwt-secret-0123456789abcdef0123456789';
 const SCOPED_SECRET = 'cpd7-scoped-secret-0123456789abcdef01234567';
@@ -75,6 +76,8 @@ const sent = (stub: sinon.SinonStub, call = 0): SentCommand => stub.thisValues[c
 const HEADS = { head: async () => 4, heads: async () => ({ org: 4, deployment: 0 }) };
 
 describe('CPD-7 capability adapters', () => {
+  useTelemetryPlugin();
+
   afterEach(() => sinon.restore());
 
   describe('HttpLegacyCapabilitySource', () => {

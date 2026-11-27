@@ -51,8 +51,9 @@ import {
 } from '../../../../src/libs/org-lifecycle';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 import { samples, sampleValue } from '../../../helpers/metric-samples';
-import { AUTH_ATTEMPTS_METRIC } from '../../../../src/libs/services/telemetry/modules/auth-metrics';
+import { AUTH_ATTEMPTS_METRIC } from '../../../../src/plugins/telemetry/modules/auth-metrics';
 import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -157,6 +158,8 @@ type AzureClaims = Awaited<ReturnType<typeof azureAd.validateAzureAdUser>>;
 type AzureIdentity = ReturnType<typeof azureAd.microsoftAccountIdentity>;
 
 describe('UserAccountController sign-in flow', () => {
+  useTelemetryPlugin();
+
   useCommunitySignInLists();
 
   let controller: UserAccountController;

@@ -91,6 +91,28 @@ const ALLOWED_IN_STRIPPED_TREE: { file: string; text: string; why: string }[] =
     },
   ];
 
+/**
+ * The agent harness's tracing and its event contracts stay in every build: its spans' ids shared with
+ * `harness_core.telemetry`, its OTLP exporter, and the `x.pipeshub.telemetry.recorded` run event. None of it is usage
+ * collection or goes away with the plug-in.
+ */
+const HARNESS_TRACING_FILES = [
+  'modules/agent-harness/contracts/generated/',
+  'modules/agent-harness/adapters/observability/otlp-http-tracer.ts',
+  'modules/agent-harness/application/harness-tracing.ts',
+];
+const harnessTracing = (hit: { file: string; text: string }): boolean =>
+  HARNESS_TRACING_FILES.some((prefix) => hit.file.startsWith(prefix)) ||
+  hit.text.includes('x.pipeshub.telemetry.recorded') ||
+  (hit.file === 'modules/agent-harness/projection/run-projector.ts' && hit.text.includes('TELEMETRY_RECORDED')) ||
+  hit.text.includes('harness_core.telemetry');
+
+/**
+ * The process's own saturation for the autoscaler (PERF-E): a registry of its own, served whatever the usage-data
+ * switch says, so it stays in a build without the plug-in.
+ */
+const PROM_CLIENT_OUTSIDE_PLUGINS = ['libs/services/process-metrics.ts'];
+
 /** Lines an edition's own code and API reference still need, each with its reason. */
 const ALSO_ALLOWED: { file: string; text?: string; why: string }[] =
   BUILD_PROFILES.strippedTreeAllowList === undefined
@@ -165,6 +187,8 @@ describe('architecture: telemetry is a plug-in', () => {
         if (!name.endsWith('.ts')) continue;
         if (name === PLUGIN_LIST) continue;
         if (WITH_TELEMETRY.some((dir) => name.startsWith(`${dir}/`))) continue;
+        // The harness's generated event contracts name its trace event, not the plug-in.
+        if (name.startsWith(HARNESS_TRACING_FILES[0]!)) continue;
         for (const path of importPaths(readFileSync(file, 'utf8'))) {
           // The usage telemetry package only; a module merely named *opentelemetry* is not it.
           if (/(?<!open)telemetry/i.test(path)) offenders.push(`${name} -> ${path}`);
@@ -195,6 +219,7 @@ describe('architecture: telemetry is a plug-in', () => {
       for (const file of walk(SRC)) {
         const name = rel(SRC, file);
         if (!name.endsWith('.ts') || inOptionalDir(name)) continue;
+        if (PROM_CLIENT_OUTSIDE_PLUGINS.includes(name)) continue;
         for (const path of importPaths(readFileSync(file, 'utf8'))) {
           if (/^(prom-client|@opentelemetry\/)/.test(path)) {
             offenders.push(`${name} -> ${path}`);
@@ -264,6 +289,7 @@ describe('architecture: telemetry is a plug-in', () => {
     it('says "telemetry" nowhere except the documented API reference lines', () => {
       const unexpected = telemetryHits(stripped).filter(
         (hit) =>
+          !harnessTracing(hit) &&
           ![...ALLOWED_IN_STRIPPED_TREE, ...ALSO_ALLOWED].some(
             (allowed) =>
               allowed.file === hit.file &&
@@ -286,6 +312,7 @@ describe('architecture: telemetry is a plug-in', () => {
       const offenders: string[] = [];
       for (const file of walk(stripped)) {
         if (!file.endsWith('.ts')) continue;
+        if (PROM_CLIENT_OUTSIDE_PLUGINS.includes(rel(stripped, file))) continue;
         for (const path of importPaths(readFileSync(file, 'utf8'))) {
           if (/^(prom-client|@opentelemetry\/)/.test(path)) {
             offenders.push(`${rel(stripped, file)} -> ${path}`);

@@ -1,6 +1,6 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { OtlpHttpTracer } from '../../../src/modules/agent-harness/adapters/telemetry/otlp-http-tracer';
+import { OtlpHttpTracer } from '../../../src/modules/agent-harness/adapters/observability/otlp-http-tracer';
 import { admissionSpan } from '../../../src/modules/agent-harness/application/harness-tracing';
 
 describe('agent-harness OTLP tracer: export on its timer', () => {

@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../src/plugins/telemetry/metrics-backend';
 
 /** The registry's samples of `name` (a counter's or gauge's own series), each with its labels. */
 export async function samples(
