@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
+import { opsMetrics } from '../../../../libs/metrics';
 
 /**
  * SEC-D-13 (ADR-OPS-03): the machine credentials, attempt tokens and gateway tokens the harness refused. The same
@@ -40,7 +40,7 @@ export const FORGED_REASONS = [
   'credential',
 ] as const;
 
-const rejected = metricsBackend.createCounter({
+const rejected = opsMetrics.createCounter({
   name: TOKEN_REJECTED_METRIC,
   help: 'Machine credentials, attempt tokens and gateway tokens the harness refused, by kind and reason',
   labelNames: ['kind', 'reason'],

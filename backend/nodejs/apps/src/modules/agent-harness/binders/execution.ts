@@ -14,7 +14,7 @@ import {
   HarnessLocalMetrics,
   LocalMetrics,
 } from '../application/harness-local-metrics';
-import { metricsBackend } from '../../../libs/services/telemetry/telemetry-impl';
+import { opsMetrics } from '../../../libs/metrics';
 import { prometheusWorkerFeatureMetrics } from '../adapters/telemetry/worker-feature-metrics';
 import { HarnessCapabilityService } from '../application/capability-service';
 import {
@@ -101,7 +101,7 @@ export const bindExecutionStore: HarnessBinder = ({
     // C9.04: the merged metrics route's own part: Node's harness families and the run store read at scrape time.
     container.bind<LocalMetrics>(AGENT_HARNESS_LOCAL_METRICS).toConstantValue(
       new HarnessLocalMetrics({
-        registry: () => metricsBackend.serialize(),
+        registry: () => opsMetrics.serialize(),
         runs: createRunState(),
         // Resolved at each scrape: the operator controls are bound by a later binder.
         controls: () =>

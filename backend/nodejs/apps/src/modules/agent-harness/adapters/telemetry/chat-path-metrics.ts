@@ -1,52 +1,52 @@
 import { createHash } from 'crypto';
-import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
+import { opsMetrics } from '../../../../libs/metrics';
 import { ChatPathMetrics } from '../../ports/chat-path-metrics';
 
-const turns = metricsBackend.createCounter({
+const turns = opsMetrics.createCounter({
   name: 'pipeshub_agent_chat_turns_total',
   help: "Chat turns ended, by path (legacy: today's loop; durable: the harness), surface and outcome",
   labelNames: ['path', 'surface', 'outcome'],
 });
 
-const duration = metricsBackend.createHistogram({
+const duration = opsMetrics.createHistogram({
   name: 'pipeshub_agent_chat_turn_duration_seconds',
   help: "Seconds from a chat turn's start (legacy: the request; durable: admission) to its end, by path",
   labelNames: ['path', 'surface', 'outcome'],
   buckets: [1, 2.5, 5, 10, 20, 40, 80, 160, 320, 640, 1800],
 });
 
-const claims = metricsBackend.createCounter({
+const claims = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_run_claims_total',
   help: 'Durable runs claimed by a worker: queued (first claim) or expired_lease (a resume after a lost lease)',
   labelNames: ['from'],
 });
 
-const replays = metricsBackend.createCounter({
+const replays = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_commit_replays_total',
   help: 'Worker commands the store had already applied, sent again and answered from the receipt',
   labelNames: [],
 });
 
-const costUsd = metricsBackend.createCounter({
+const costUsd = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_model_cost_usd_total',
   help: "Metered USD of durable runs' model calls (budget ledger commits); divide by durable turns for cost per turn",
   labelNames: [],
 });
 
-const tokens = metricsBackend.createCounter({
+const tokens = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_model_tokens_total',
   help: "Tokens of durable runs' model calls, as the budget ledger committed them",
   labelNames: [],
 });
 
-const claimWait = metricsBackend.createHistogram({
+const claimWait = opsMetrics.createHistogram({
   name: 'pipeshub_agent_harness_run_claim_wait_seconds',
   help: 'Seconds from when a durable run could first be claimed (admission, or its notBefore) to its first claim',
   labelNames: [],
   buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300],
 });
 
-const usageTokens = metricsBackend.createCounter({
+const usageTokens = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_model_usage_tokens_total',
   help:
     "Tokens of durable runs' model calls by kind, as the budget ledger committed them; input counts every prompt " +
@@ -54,7 +54,7 @@ const usageTokens = metricsBackend.createCounter({
   labelNames: ['kind'],
 });
 
-const runCacheRead = metricsBackend.createHistogram({
+const runCacheRead = opsMetrics.createHistogram({
   name: 'pipeshub_agent_harness_run_cache_read_ratio',
   help:
     "Each ended durable run's cache_read / input over its own model calls, as its budget account summed them " +
@@ -63,13 +63,13 @@ const runCacheRead = metricsBackend.createHistogram({
   buckets: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95],
 });
 
-const quarantined = metricsBackend.createCounter({
+const quarantined = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_quarantined_runs_total',
   help: 'Durable runs the worker quarantined after repeated failed claims (a crash loop)',
   labelNames: [],
 });
 
-const approvalsRequested = metricsBackend.createCounter({
+const approvalsRequested = opsMetrics.createCounter({
   name: 'pipeshub_agent_harness_approvals_requested_total',
   help:
     'Approvals and questions durable runs asked people (interaction.requested), by org_bucket: one of 256 buckets ' +

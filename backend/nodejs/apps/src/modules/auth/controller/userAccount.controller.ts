@@ -126,10 +126,9 @@ import {
 } from '../utils/authMethodGuard';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
-  recordAuthAttempt,
   refusalOutcome,
   signInMethod,
-} from '../../../libs/services/telemetry/telemetry-impl';
+} from '../../../libs/utils/auth-attempt.utils';
 import {
   executeConnectorCommand,
   handleBackendError,
@@ -2330,9 +2329,15 @@ export class UserAccountController {
             sessionInfo,
           ),
       );
-      recordAuthAttempt(attempted, 'success');
+      emitPlatformEvent('auth.attempted', {
+        method: attempted,
+        outcome: 'success',
+      });
     } catch (error) {
-      recordAuthAttempt(attempted, refusalOutcome(error));
+      emitPlatformEvent('auth.attempted', {
+        method: attempted,
+        outcome: refusalOutcome(error),
+      });
       const method: unknown = (req.body as { method?: unknown } | undefined)
         ?.method;
       auditAuthRefusal('auth.sign_in', error, {

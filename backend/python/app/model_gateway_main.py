@@ -49,8 +49,8 @@ from app.harness.provider_gate import provider_admission
 from app.harness.run_policy.live import worker_live_layer
 from app.harness.run_policy.select import org_access_policies as policy_source
 from app.harness.telemetry import harness_tracer
-from app.plugins.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
-from app.plugins.telemetry.pusher import MetricsPusher
+from app.harness.plugin_metrics import gateway_metrics
+from app.plugins import load_plugins
 from app.utils.gc_startup import freeze_startup_heap
 from app.utils.output_limits import model_output_limits
 from harness_core.access.guard import GuardedModelAccess
@@ -87,6 +87,9 @@ ENV_DEFAULT_ALLOWANCE = "MODEL_GATEWAY_DEFAULT_OUTPUT_TOKENS"
 ENV_CONTROL_PLANE_PIN = "CONTROL_PLANE_PIN"
 CONTROL_PLANE_PIN_MODES = ("off", "shadow", "on")
 _LOG = HarnessLog.named("app.model_gateway")
+
+# Before anything is built: the harness's metric ports and its /metrics route come from the plug-ins (app.harness.plugin_metrics).
+plugin_host = load_plugins("model_gateway")
 
 
 def output_allowance() -> OutputAllowance:
@@ -245,15 +248,14 @@ async def run_gateway(port: int | None = None) -> None:
     _ = preload_in_background()
     server = ModelGatewayServer(
         await create_gateway(config_service, container=services),
-        metrics=BackendGatewayMetrics(),
+        metrics=gateway_metrics(),
         # C9.04: what Node's control-plane metrics route scrapes, with the worker credential.
         exposition=worker_metrics_exposition(config_service),
     )
     bound = await server.start(host="0.0.0.0", port=port or int(os.getenv(ENV_PORT) or MODEL_GATEWAY_PORT))
     _LOG.info("model_gateway.started", port=bound)
-    # Its request metrics leave the process as every service's do (a no-op with telemetry off).
-    pusher = MetricsPusher(config_service, "model_gateway", services.logger())
-    await pusher.start()
+    # Its request metrics leave the process as every service's do (a plug-in's; none without one).
+    await plugin_host.start(config_service=config_service, logger=services.logger())
     # As the worker's (WP-77): a gen-2 collection over the imported app paused every stream in flight.
     _ = freeze_startup_heap(_LOG)
     stopped = asyncio.Event()
@@ -264,7 +266,7 @@ async def run_gateway(port: int | None = None) -> None:
     try:
         _ = await stopped.wait()
     finally:
-        await pusher.stop()
+        await plugin_host.stop()
         await server.stop()
         shutdown = cast("object", services.shutdown_resources())  # pyright: ignore[reportUnknownMemberType]
         if asyncio.iscoroutine(shutdown):

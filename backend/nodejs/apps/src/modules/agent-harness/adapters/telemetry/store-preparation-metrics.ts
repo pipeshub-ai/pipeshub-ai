@@ -1,6 +1,6 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
+import { opsMetrics } from '../../../../libs/metrics';
 
-const prepared = metricsBackend.createGauge({
+const prepared = opsMetrics.createGauge({
   name: 'pipeshub_agent_harness_store_prepared',
   help: "Whether this process prepared the agent harness's store (1) or runs with the harness unavailable while it retries (0)",
   labelNames: [],

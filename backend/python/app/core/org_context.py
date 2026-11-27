@@ -256,7 +256,7 @@ enforcing = validate_mode
 
 
 # Frames that wrap every store call; naming one as the caller would hide which code made the call.
-_WRAPPER_FILES = ("/app/telemetry/modules/db_metrics.py",)
+_WRAPPER_FILES = ("/app/utils/store_timing.py",)
 
 
 def _caller(depth: int) -> str:

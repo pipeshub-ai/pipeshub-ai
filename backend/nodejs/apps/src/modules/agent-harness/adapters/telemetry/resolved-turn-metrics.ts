@@ -1,7 +1,7 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
+import { opsMetrics } from '../../../../libs/metrics';
 import type { ResolvedTurnMetrics } from '../../ports/resolved-turn-metrics';
 
-const trimmed = metricsBackend.createCounter({
+const trimmed = opsMetrics.createCounter({
   name: 'pipeshub_cp_resolved_turn_trimmed_total',
   help: 'Legacy chat turns whose X-PipesHub-Resolved header was sent without its bindings because it would not fit (CPD-10)',
   labelNames: [],

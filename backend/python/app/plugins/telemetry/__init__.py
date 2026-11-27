@@ -40,7 +40,7 @@ class TelemetryPlugin:
     name = "telemetry"
 
     def register(self, ctx: PluginContext) -> None:
-        from app.plugins.telemetry import listeners
+        from app.plugins.telemetry import harness_capabilities, listeners
         from app.plugins.telemetry.flag import telemetry_enabled
         from app.plugins.telemetry.pusher import MetricsPusher
 
@@ -66,6 +66,8 @@ class TelemetryPlugin:
 
         ctx.on_start(start_pusher)
         ctx.on_stop(stop_pusher)
+        # Whatever the collection flag says, as before: the harness's ops metrics follow the backend the flag picks.
+        harness_capabilities.provide(ctx)
         _OpsExporterWiring(service_name.removesuffix("_service")).attach(ctx)
 
 

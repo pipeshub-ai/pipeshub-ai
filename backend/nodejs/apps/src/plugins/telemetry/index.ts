@@ -4,6 +4,8 @@
  * import it; it announces platform events and this plug-in turns them into the
  * metrics and events the collector receives.
  */
+import { metricsBackend } from './metrics-backend';
+import { recordAuthAttempt } from './modules/auth-metrics';
 import type { RequestHandler } from 'express';
 import type { PlatformPlugin, PluginContext } from '../../libs/plugins/types';
 import type { McpCaller } from '../../libs/platform-events/events';
@@ -40,6 +42,9 @@ function mcpProps(caller: McpCaller): Record<string, unknown> {
 }
 
 function subscribeProductEvents(ctx: PluginContext): void {
+  ctx.onEvent('auth.attempted', (e) => {
+    recordAuthAttempt(e.method, e.outcome);
+  });
   ctx.onEvent('user.signed_in', (e) => {
     recordEvent('login', {
       orgId: e.orgId,
@@ -198,6 +203,9 @@ const telemetryPlugin: PlatformPlugin = {
   register(ctx) {
     const active = isTelemetryEnabled();
     ctx.provideCapability('data-collection', { isActive: () => active });
+    // The operational registry (agent harness, control plane), whatever the collection flag says, as before: its
+    // backend is the one the flag picks.
+    ctx.provideCapability('metrics', metricsBackend);
     if (!active) {
       logger.info(
         `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`,

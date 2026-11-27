@@ -62,6 +62,15 @@ export interface McpCaller extends RequestClient {
 export interface PlatformEvents {
   // ---- accounts and organisations -----------------------------------------
 
+  /**
+   * A credential was presented to sign in or to call the API, and its check ended (SEC-D-13). `method` is one of
+   * `AUTH_METHODS` (libs/utils/auth-attempt.utils) or a sign-in method an edition adds; never caller text.
+   */
+  'auth.attempted': {
+    method: string;
+    outcome: 'success' | 'failure' | 'error';
+  };
+
   /** A user signed in. */
   'user.signed_in': {
     orgId?: string;

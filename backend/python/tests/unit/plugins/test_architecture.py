@@ -38,9 +38,18 @@ def _violations(path: Path, root: Path = APP) -> list[str]:
     return found
 
 
+# The agent harness's tracing: its ports with no-op defaults (``harness_core.telemetry``), the process's binding of them
+# (``app.harness.telemetry``), the OpenTelemetry SDK that binding imports when tracing is switched on, and the harness's
+# generated event contracts. None of it is usage telemetry, records anything for the collector or goes away with the
+# plug-in; the harness's metrics reach the plug-in only as capabilities (``app.harness.plugin_metrics``).
+HARNESS_TRACING = ("harness_core.telemetry", "app.harness.telemetry", "opentelemetry", "app.harness.contracts.generated")
+
+
 def _is_telemetry_module(dotted: str) -> bool:
     # The module path, not the imported name: ``disable_vendor_telemetry`` in
     # ``app.utils.process_hardening`` switches a third party's collection off.
+    if any(dotted == prefix or dotted.startswith(f"{prefix}.") for prefix in HARNESS_TRACING):
+        return False
     return any("telemetry" in part.lower() for part in dotted.split(".")[:-1]) or dotted.lower().endswith(".telemetry") or dotted.lower() == "telemetry"
 
 
@@ -68,5 +77,8 @@ def test_the_check_catches_each_kind_of_import(tmp_path: Path) -> None:
     ):
         bad.write_text(source)
         assert _violations(bad, bad.parent), source
-    bad.write_text("from app.utils.process_hardening import disable_vendor_telemetry\nfrom app import platform_events\n")
+    bad.write_text(
+        "from app.utils.process_hardening import disable_vendor_telemetry\nfrom app import platform_events\n"
+        "from app.harness.telemetry import harness_tracer\nfrom harness_core.telemetry.metrics import NOOP_GATEWAY_METRICS\n"
+    )
     assert _violations(bad, bad.parent) == []

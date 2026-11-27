@@ -26,6 +26,7 @@ from app.agents.actions.util.sign_in_rejected import SIGN_IN_REJECTED_STATE
 from app.agents.agent_loop.artifact_provenance import SANDBOX_TOOL_NAMES
 from app.agents.agent_loop.connected_sources import ConnectedSources
 from app.core.org_context import OrgContext, set_request_context
+from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.activity import journals_commands
 from app.harness.adapters.content_store import LOGGER as CONTENT_LOGGER
 from app.harness.adapters.content_store import PipesHubContentStore
@@ -162,7 +163,6 @@ from app.services.featureflag.platform_settings import (
     is_scheduled_runs_on,
 )
 from app.services.rate_budget import priority_for_run_kind, rate_priority_for_class
-from app.plugins.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.run_model_scope import hold_run_model_scope
 from harness_core import bindings
 from harness_core.activity import BoundedCommandActivity
@@ -1478,7 +1478,7 @@ def _shape(
             ReadScope(run.org_id, run.actor_id or "", run.run_id),
             cacheable_reads(effects, catalog.provenance()),
             log=log,
-            metrics=READ_CACHE_METRICS,
+            metrics=read_cache_metrics(),
             executor="loop",
         ),
     )

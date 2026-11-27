@@ -30,10 +30,10 @@ import {
   stripTokenDisplayPrefix,
 } from '../../modules/oauth_provider/constants/constants';
 import {
-  AuthAttemptMethod,
-  recordAuthAttempt,
+  type AuthAttemptMethod,
   refusalOutcome,
-} from '../services/telemetry/telemetry-impl';
+} from '../utils/auth-attempt.utils';
+import { emitPlatformEvent } from '../platform-events';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
@@ -130,7 +130,7 @@ export class AuthMiddleware {
       }
 
       accepted = true;
-      recordAuthAttempt(method, 'success');
+      emitPlatformEvent('auth.attempted', { method, outcome: 'success' });
       recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
@@ -151,7 +151,10 @@ export class AuthMiddleware {
     } catch (error) {
       // A request with no credential is not an attempt; a handler's error after acceptance is not a refusal.
       if (presented && !accepted)
-        recordAuthAttempt(method, refusalOutcome(error));
+        emitPlatformEvent('auth.attempted', {
+          method,
+          outcome: refusalOutcome(error),
+        });
       next(error);
     }
   }

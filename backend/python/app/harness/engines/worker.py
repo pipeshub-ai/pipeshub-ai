@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.core.org_context import spawn_detached
+from app.harness.plugin_metrics import gateway_metrics
 from app.harness.engines.durable import DurableEngineServices, PipesHubEngineAssembler
 from app.harness.engines.org_references import BackgroundJob, org_references
 from app.harness.engines.presenter import PipesHubEngineRunPresenter
@@ -35,7 +36,6 @@ from app.harness.sandbox.egress_config import connect_tunnels_enabled
 from app.harness.skills.bundles import GraphProviderSkillSource, session_skill_bundles
 from app.harness.telemetry import harness_tracer
 from app.services.artifact_registry.limits import input_max_bytes
-from app.plugins.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
 from app.utils.env_flags import HARNESS_ENGINE_RUNS, HARNESS_ENGINE_SNAPSHOTS, env_flag
 from harness_core.engines.controller import EngineControllerConfig, KeptSandboxWatches
 from harness_core.engines.durable.kernel import EngineKernel
@@ -345,7 +345,7 @@ def engine_worker(
     admission: ProviderAdmission | None = None,
 ) -> EngineWorker:
     """The engine kernel this worker registers with its ``RunDriver`` and the gateway it serves."""
-    metrics = BackendGatewayMetrics()
+    metrics = gateway_metrics()
     gateway = ToolGatewayApp(
         OrgBoundGatewayTokenVerifier(ConfiguredGatewayKeys(services.config_service()), clock), metrics=metrics
     )

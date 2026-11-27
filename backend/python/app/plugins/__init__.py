@@ -49,6 +49,14 @@ _log = logging.getLogger(__name__)
 # What the application reads to say whether anything about its use is collected.
 USAGE_COLLECTION = "usage_collection"
 
+# What the agent harness's services ask for (``app.harness.plugin_metrics``), each a zero-argument factory. None
+# provided: the harness ports keep their no-op defaults and the internal services serve no ``/metrics`` route.
+METRICS_TEXT = "metrics_text"  # -> Callable[[], str]: this process's metrics in the Prometheus text format
+HARNESS_GATEWAY_METRICS = "harness_gateway_metrics"  # -> harness_core.telemetry.metrics.GatewayMetrics
+HARNESS_READ_CACHE_METRICS = "harness_read_cache_metrics"  # -> harness_core.telemetry.metrics.ReadCacheMetrics
+SANDBOX_BROKER_METRICS = "sandbox_broker_metrics"  # -> harness_core.sandbox.metering.BrokerMetrics
+EGRESS_VOLUME_METRICS = "egress_volume_metrics"  # -> harness_core.sandbox.egress.volume.VolumeMetrics
+
 
 @dataclass(frozen=True)
 class ServiceRuntime:

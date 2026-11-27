@@ -24,7 +24,7 @@ for the sandbox's run attempt (``NodeGatewayTokenSource``), which both
 gateways verify.
 
 C6.12: what each run's sandboxes move is counted per destination alias (``volume.py``), exported on this process's
-metrics (``app.telemetry``, pushed like every service's), and an unusual volume is journaled on the run; the
+metrics (a plug-in's, pushed like every service's), and an unusual volume is journaled on the run; the
 bounds and the optional hard cap are ``EGRESS_VOLUME_*`` and ``EGRESS_RUN_MAX_MB``, and a malformed one stops the
 proxy here. Counts and org baselines are kept in the durable state with the bindings.
 
@@ -66,9 +66,8 @@ from app.harness.sandbox.egress_config import (
 from app.harness.sandbox.egress_credentials import sealed_token_source
 from app.harness.sandbox.egress_resolver import PublicHostResolver
 from app.harness.sandbox.egress_state import durable_state, egress_sealers
-from app.plugins.telemetry.backend import METRICS_BACKEND
-from app.plugins.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
-from app.plugins.telemetry.pusher import MetricsPusher
+from app.harness.plugin_metrics import egress_volume_metrics, metrics_text
+from app.plugins import load_plugins
 from app.utils.env_flags import validate_env_flags
 from harness_core.clock import SystemClock
 from harness_core.gateway.refusal_reports import RefusalReporter
@@ -99,7 +98,10 @@ if TYPE_CHECKING:
 
 _LOG = HarnessLog.named("app.egress_proxy")
 UPSTREAM_REFRESH_S = 30.0
-TELEMETRY_SERVICE = "egress_proxy"
+SERVICE_NAME = "egress_proxy"
+
+# Before anything is built: the harness's metric ports and its /metrics route come from the plug-ins (app.harness.plugin_metrics).
+plugin_host = load_plugins(SERVICE_NAME)
 
 
 async def create_service(
@@ -156,7 +158,7 @@ async def create_service(
             volume_limits,
             clock=clock,
             bindings=bindings,
-            metrics=PrometheusVolumeMetrics(),
+            metrics=egress_volume_metrics(),
             store=state if sealer is not None else None,
             sealer=sealer if state is not None else None,
         ),
@@ -165,7 +167,7 @@ async def create_service(
     verifier = listener_auth(config_service, "egress-proxy")
     authority = await load_authority(clock, state, sealer)
     # C9.04: this process's registry for Node's control-plane metrics route, under the scraper's credential.
-    return EgressServer(proxy, verifier, instance=instance, authority=authority, metrics=METRICS_BACKEND.serialize)
+    return EgressServer(proxy, verifier, instance=instance, authority=authority, metrics=metrics_text())
 
 
 async def proxy_sealed_tokens(config_service: ConfigurationService, clock: Clock) -> SealedTokenSource | None:
@@ -232,13 +234,12 @@ async def run_proxy(data_port: int = EGRESS_PROXY_PORT, control_port: int = EGRE
     ]
     if isinstance(server.proxy.bindings, DurableEgressBindings):
         background.append(spawn_detached(keep_state(server.proxy.bindings, stopped)))
-    pusher = MetricsPusher(config_service, TELEMETRY_SERVICE, logging.getLogger("app.egress_proxy.telemetry"))
-    await pusher.start()
+    await plugin_host.start(config_service=config_service, logger=logging.getLogger("app.egress_proxy.plugins"))
     try:
         _ = await stopped.wait()
     finally:
         _ = await asyncio.gather(*background, return_exceptions=True)
-        await pusher.stop()
+        await plugin_host.stop()
         await server.stop()
         shutdown = cast("object", services.shutdown_resources())  # pyright: ignore[reportUnknownMemberType]
         if asyncio.iscoroutine(shutdown):

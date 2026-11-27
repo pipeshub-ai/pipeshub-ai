@@ -70,7 +70,7 @@ from app.modules.transformers.blob_storage import (
 from app.services.messaging.config import ConsumerType, Topic, get_message_broker_type
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.plugins.telemetry.pusher import MetricsPusher
+from app.plugins import load_plugins
 from app.utils.env_flags import validate_env_flags
 from app.utils.gc_startup import freeze_startup_heap
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -92,6 +92,9 @@ if TYPE_CHECKING:
 WORKER_LEASE_MS = 60_000
 WORKER_RENEW_MS = 20_000
 WORKER_GROUP_ID = "agent-harness-workers"
+
+# Before anything is built: the harness's metric ports and its /metrics route come from the plug-ins (app.harness.plugin_metrics).
+plugin_host = load_plugins("agent_harness_worker")
 
 
 async def run_worker(
@@ -243,9 +246,8 @@ async def run_worker(
         _ = serving.push_async_callback(engines.aclose)
         # The proxy forwards engine runs' tool calls here: up before the first claim.
         await serving.enter_async_context(engines.serving())
-    # The Tool Gateway's request metrics leave the process as every service's do (a no-op with telemetry off).
-    pusher = MetricsPusher(services.config_service(), "agent_harness_worker", logger)
-    await pusher.start()
+    # The Tool Gateway's request metrics leave the process as every service's do (a plug-in's; none without one).
+    await plugin_host.start(config_service=services.config_service(), logger=logger)
     # Everything imported and built so far lives as long as the process: no gen-2 collection walks it again (WP-77).
     _ = freeze_startup_heap(log)
     if engine_plan is not None:
@@ -298,7 +300,7 @@ async def run_worker(
             log.warning("worker.hints_stop_failed", errorType=type(exc).__name__)
         await serving.aclose()
         await revocations.stop()
-        await pusher.stop()
+        await plugin_host.stop()
         try:
             await live_layer.aclose()
         except Exception as exc:
