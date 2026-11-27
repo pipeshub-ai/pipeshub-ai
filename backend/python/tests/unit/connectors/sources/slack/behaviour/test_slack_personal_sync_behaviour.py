@@ -355,6 +355,25 @@ class TestRegroupedMessages:
 
         assert {second, third} <= set(block_ts(store, GENERAL))
 
+    async def test_a_burst_is_not_overwritten_by_a_shorter_read_while_its_tail_is_saved_nowhere(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        stamps = [ts_minutes_ago(m) for m in (10, 9, 8, 7)]
+        for ts in stamps:
+            workspace.post(GENERAL, ts, BOB, f"message {ts}")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == stamps
+
+        # Read newest-first two at a time: the page holding the last two saves nothing, and the
+        # older page builds the first two under the stored burst's id.
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and stamps[2] in block_ts_of(r)
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, GENERAL) == stamps
+
     async def test_a_thread_whose_new_replies_are_read_only_in_part_keeps_what_an_earlier_part_stored(
         self, workspace, store, checkpoints,
     ) -> None:

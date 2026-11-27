@@ -113,7 +113,8 @@ def _ts_ms(ts: str) -> int:
 
 class SlackRegroupMixin:
     """Deletes the records a regroup left behind. The host connector provides
-    ``connector_id``, ``logger`` and ``data_entities_processor``."""
+    ``connector_id``, ``logger``, ``data_entities_processor`` and ``_full_sync_read_failed``
+    (SlackFullSyncKeepMixin)."""
 
     async def _save_and_delete_regrouped(
         self,
@@ -127,13 +128,74 @@ class SlackRegroupMixin:
     ) -> None:
         """Save a batch built from ``msgs``, then (``delete``) delete the records a regroup
         left behind in this group. ``unsaved`` gathers, across the batches of one read, the
-        messages no saved record holds; a stored record spanning one of them is kept."""
+        messages no saved record holds; a stored record spanning one of them is neither
+        overwritten nor deleted, and a full sync in progress notes it kept."""
+        records = await self._hold_back_overwrites(records, external_record_group_id, unsaved)
         saved = saved_records(records, await self.data_entities_processor.on_new_records(records)) if records else []
         unsaved |= unsaved_ts(msgs, saved)
         if delete:
             await self._delete_regrouped_records(
                 regrouped_record_ids(msgs, saved, stored_ids), external_record_group_id, unsaved,
             )
+
+    async def _hold_back_overwrites(
+        self, records: list[tuple[Record, Any]], external_record_group_id: str, unsaved: set[str],
+    ) -> list[tuple[Record, Any]]:
+        """The batch without the message records that would overwrite a stored record of the
+        same id reaching past their last message onto an ``unsaved`` message (a burst read
+        whole before, now cut short where a later batch of this read saved nothing), and
+        without the file and link records under them. The stored record stays as it is. Only
+        a record with an unsaved message after its end is looked up; a failed lookup holds
+        it back too."""
+        unsaved_ms = [_ts_ms(ts) for ts in unsaved]
+        held: list[str] = []
+        for record, _ in records:
+            if not isinstance(record, MessageRecord) or not record.end_ts:
+                continue
+            end = _ts_ms(record.end_ts)
+            if not any(ms > end for ms in unsaved_ms):
+                continue
+            try:
+                stored = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=record.external_record_id,
+                )
+                if (
+                    stored is None
+                    or stored.record_type != RecordType.MESSAGE
+                    or stored.external_record_group_id != external_record_group_id
+                    or not stored.source_updated_at
+                    or not any(end < ms <= stored.source_updated_at for ms in unsaved_ms)
+                ):
+                    continue
+                await self._note_kept_record(stored)
+            except Exception as exc:
+                # What it would overwrite is unknown, so a full sync in progress unlinks nothing.
+                self._full_sync_read_failed = True
+                self.logger.warning(f"Could not look up message record {record.external_record_id}; not written: {exc}")
+            held.append(record.external_record_id)
+            self.logger.info(
+                f"Kept message record {record.external_record_id}: it holds later messages with no saved record"
+            )
+        if not held:
+            return records
+        return [
+            (r, p) for r, p in records
+            if r.external_record_id not in held and r.parent_external_record_id not in held
+        ]
+
+    async def _note_kept_record(self, stored: Record) -> None:
+        """Note a stored message record and its file and link records kept by the full sync
+        in progress, if any, so the unlink after it spares them. If they cannot be listed,
+        the full sync unlinks nothing."""
+        processor = self.data_entities_processor
+        if processor.full_sync_running(self.connector_id) is not True:
+            return
+        try:
+            children = await processor.get_records_by_parent(self.connector_id, stored.external_record_id)
+        except Exception:
+            self._full_sync_read_failed = True
+            raise
+        processor.note_kept_records(self.connector_id, [stored.id, *(r.id for r in children)])
 
     async def _delete_regrouped_records(
         self, external_ids: Iterable[str], external_record_group_id: str, unsaved: Iterable[str] = (),
@@ -161,6 +223,7 @@ class SlackRegroupMixin:
                     continue
                 first, last = stored.source_created_at, stored.source_updated_at
                 if first is None or last is None or any(first <= ms <= last for ms in unsaved_ms):
+                    await self._note_kept_record(stored)
                     self.logger.info(
                         f"Kept message record {external_id}: a message it may hold has no saved record"
                     )

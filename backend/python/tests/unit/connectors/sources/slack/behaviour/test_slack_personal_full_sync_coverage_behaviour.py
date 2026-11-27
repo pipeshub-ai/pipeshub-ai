@@ -118,7 +118,7 @@ async def full_sync(
 
     async def on_new_records(records_with_permissions) -> list:
         saved = await write_records(records_with_permissions)
-        for record, _ in records_with_permissions:
+        for record in saved:  # the processor notes a record seen when it saves it
             seen[RECORDS].add(record.id)
             if record.record_group_id:
                 seen[GROUPS].add(record.record_group_id)
