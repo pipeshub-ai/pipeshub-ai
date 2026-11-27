@@ -121,6 +121,10 @@ async def collection_delete(
         )
         for kb_id, records in ((doomed_kb, [shared, *unique]), (survivor_kb, survivors)):
             await fp.wait_for_connector_records(graph_provider, kb_id, [r.name for r in records])
+        # The survivor's own record owns its content, so enrichment still writes its taxonomy edges
+        # after it reads COMPLETED; the other collection's "before" count must include them, or the
+        # delete looks like it added them. (The holder is a copy and never runs enrichment itself.)
+        await fp.wait_for_connector_records(graph_provider, survivor_kb, [survivors[1].name], enriched=True)
 
         doomed_folder = records_folder(test_org_id, doomed_kb)
         vendor = await fp.storage_vendor(mongo_store, test_org_id, shared.virtual_record_id, within=doomed_folder)
