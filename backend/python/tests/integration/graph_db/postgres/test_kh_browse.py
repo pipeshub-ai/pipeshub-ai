@@ -1064,7 +1064,7 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     assert not set(walked) & set(KIDS), walked
 
 
-async def _children_rows_read(org: str, statements: list[tuple[int, str, tuple]]) -> dict[str, int]:
+async def _children_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> dict[str, int]:
     """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE: returned and removed by a filter), by its site. Each transaction
     of the request is replayed in one of its own, every statement in order (its settings and savepoints too), so a read is planned as it was: under the profile it ran with."""
     import asyncpg
@@ -1075,7 +1075,7 @@ async def _children_rows_read(org: str, statements: list[tuple[int, str, tuple]]
             async with con.transaction():
                 await con.execute("SELECT set_config('app.org_id', $1, true)", org)
                 for t, sql, args in statements:
-                    if t != tx:
+                    if t is not tx:
                         continue
                     body = sql.lstrip("/* ").split("*/", 1)[-1].lstrip().upper()
                     if "kg.records" not in sql or not body.startswith(("SELECT", "WITH")) or "SET_CONFIG(" in body[:200]:
@@ -1111,10 +1111,10 @@ async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_wha
         p, org = prov(pg_db), new_org()
         kids = [f"c{i:04d}" for i in range(width)]
         await seed_folder(p, pg_db, org, width, readable_kids=kids)
-        ran: list[tuple[int, str, tuple]] = []
+        ran: list[tuple[object, str, tuple]] = []
 
         async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
-            ran.append((id(self), sql, args))
+            ran.append((self, sql, args))      # the Tx itself: an id() of a finished one could be reused by the next
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
         page = await browse(p, org, "fold", ["fold", *kids], limit=10)
