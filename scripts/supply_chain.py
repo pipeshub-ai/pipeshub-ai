@@ -15,6 +15,7 @@ before anything is installed. docs/agent-harness-v2/guides/SUPPLY-CHAIN.md is th
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import hashlib
 import json
@@ -508,6 +509,20 @@ def _node_locks(repo: Path) -> list[tuple[str, dict]]:
             for p in _walk(repo, names=("package-lock.json",))]
 
 
+def _vendored_tarball_problem(repo: Path, lock_dir: Path, target: str, integrity: str) -> str | None:
+    """Why a `file:` lock entry is not a tarball vendored inside the repository whose bytes match its sha512, or None."""
+    rel = Path(target)
+    path = repo / lock_dir / rel
+    if rel.is_absolute() or ".." in rel.parts or not path.resolve().is_relative_to(repo.resolve()):
+        return f"file:{target} is not a path inside the repository"
+    if not path.is_file():
+        return f"file:{target} is not a vendored tarball in the repository"
+    digest = "sha512-" + base64.b64encode(hashlib.sha512(path.read_bytes()).digest()).decode()
+    if digest not in integrity.split():
+        return f"file:{target} does not match the sha512 integrity in the lock"
+    return None
+
+
 def check_node_locks(repo: Path) -> list[Finding]:
     findings = []
     locked_dirs = set()
@@ -521,6 +536,9 @@ def check_node_locks(repo: Path) -> list[Finding]:
             resolved, integrity = pkg.get("resolved", ""), pkg.get("integrity", "")
             if not integrity.startswith("sha512-"):
                 findings.append(Finding("NODE-INTEGRITY", rel, f"{key} has no sha512 integrity"))
+            elif resolved.startswith("file:"):
+                if why := _vendored_tarball_problem(repo, Path(rel).parent, resolved.removeprefix("file:"), integrity):
+                    findings.append(Finding("NODE-INTEGRITY", rel, f"{key}: {why}"))
             elif not resolved.startswith(NPM_HOSTS):
                 findings.append(Finding("NODE-INTEGRITY", rel, f"{key} resolves outside the npm registry: {resolved}"))
     for p in _walk(repo, names=("package.json",)):

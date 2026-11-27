@@ -6,6 +6,8 @@ backend/python/tests/cohesion/test_sec_sc_supply_chain.py collects these same ca
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -361,6 +363,34 @@ class TestSecSc10NodeInstalls(SupplyChainCase):
         self.fx.lock_json["packages"]["node_modules/left-pad"]["resolved"] = "https://evil.example/left-pad.tgz"
         self.fx.write_node_lock()
         self.assertOnly("NODE-INTEGRITY")
+
+    def _vendor(self, resolved: str, data: bytes = b"tarball bytes", integrity: str | None = None) -> None:
+        self.fx.write("frontend/vendor/pad-1.0.0.tgz", "")
+        (self.fx.root / "frontend/vendor/pad-1.0.0.tgz").write_bytes(data)
+        digest = "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
+        self.fx.lock_json["packages"]["node_modules/pad"] = {"version": "1.0.0", "resolved": resolved,
+                                                            "integrity": digest if integrity is None else integrity}
+        self.fx.write_node_lock()
+
+    def test_sec_sc_10_a_vendored_tarball_inside_the_repository_with_its_hash_passes(self) -> None:
+        self._vendor("file:vendor/pad-1.0.0.tgz")
+        self.assertEqual(sc.run_checks(self.fx.root), [])
+
+    def test_sec_sc_10_a_vendored_tarball_is_refused_unless_it_is_in_the_repository_and_matches(self) -> None:
+        other = "sha512-" + base64.b64encode(hashlib.sha512(b"other bytes").digest()).decode()
+        cases = {
+            "does not match the sha512 integrity": ("file:vendor/pad-1.0.0.tgz", other),
+            "is not a vendored tarball in the repository": ("file:vendor/missing-1.0.0.tgz", None),
+            "is not a path inside the repository": ("file:../outside/pad-1.0.0.tgz", None),
+            "is not a path inside the repository ": ("file:/tmp/pad-1.0.0.tgz", None),
+            "has no sha512 integrity": ("file:vendor/pad-1.0.0.tgz", ""),
+            "resolves outside the npm registry": ("git+https://example.com/pad.git#0123", None),
+        }
+        for why, (resolved, integrity) in cases.items():
+            with self.subTest(resolved=resolved, integrity=integrity):
+                self._vendor(resolved, integrity=integrity)
+                (finding,) = self.assertOnly("NODE-INTEGRITY")
+                self.assertIn(why.strip(), finding.message)
 
     def test_sec_sc_10_a_package_json_with_dependencies_and_no_lock_fails(self) -> None:
         self.fx.write("tools/x/package.json", json.dumps({"dependencies": {"left-pad": "1.3.0"}}))
