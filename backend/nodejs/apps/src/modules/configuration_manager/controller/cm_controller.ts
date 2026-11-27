@@ -56,6 +56,7 @@ import {
 } from '../../agent-harness/config';
 import { engineRunsServed } from '../../../libs/repositories/agent-harness/engine-runs-probe';
 import { EnvFlagEnvironment } from '../../../libs/utils/env-flags';
+import { isTelemetryEnabled } from '../../../libs/services/telemetry/flag';
 
 import {
   DefaultStorageConfig,
@@ -2796,7 +2797,16 @@ export const getMetricsCollection =
       const metricsCollection = await getMetricsCollectionConfig(
         keyValueStoreService,
       );
-      res.status(200).json(metricsCollection).end();
+      // The page shows Data Collection only while telemetry can run on this deployment, so whatever is
+      // collected can always be seen and switched off; with it off, nothing is.
+      const telemetryEnabled = isTelemetryEnabled();
+      if (!telemetryEnabled) {
+        metricsCollection.enableMetricCollection = 'false';
+      }
+      res
+        .status(200)
+        .json({ ...metricsCollection, telemetryEnabled })
+        .end();
     } catch (error: any) {
       next(error);
     }

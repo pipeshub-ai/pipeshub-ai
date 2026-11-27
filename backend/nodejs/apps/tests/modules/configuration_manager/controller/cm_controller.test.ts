@@ -1629,6 +1629,16 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('getMetricsCollection', () => {
+    let savedFlag: string | undefined
+    beforeEach(() => {
+      savedFlag = process.env.TELEMETRY_COLLECTION_FLAG
+      process.env.TELEMETRY_COLLECTION_FLAG = 'true'
+    })
+    afterEach(() => {
+      if (savedFlag === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG
+      else process.env.TELEMETRY_COLLECTION_FLAG = savedFlag
+    })
+
     it('should return empty object when no config exists', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getMetricsCollection(kvs)
@@ -1654,7 +1664,27 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ enableMetricCollection: true })).to.be.true
+      expect(res.json.calledWith({ enableMetricCollection: true, telemetryEnabled: true })).to.be.true
+    })
+
+    describe('with telemetry switched off for the deployment', () => {
+      beforeEach(() => {
+        process.env.TELEMETRY_COLLECTION_FLAG = 'false'
+      })
+
+      it('reports telemetryEnabled false and nothing as being collected, whatever the stored switch says', async () => {
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: 'true', pushIntervalMs: '60000' })),
+        })
+        mockEncService.decrypt.throws(new Error('bad ciphertext'))
+        const res = createMockResponse()
+
+        await getMetricsCollection(kvs)(createMockRequest(), res, createMockNext())
+
+        expect(res.json.firstCall.args[0]).to.deep.equal({
+          enableMetricCollection: 'false', pushIntervalMs: '60000', telemetryEnabled: false,
+        })
+      })
     })
   })
 
