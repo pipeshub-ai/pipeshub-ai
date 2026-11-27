@@ -26,6 +26,8 @@ info:
 
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
 
+    **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
+
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
 
@@ -30200,6 +30202,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    UpstreamFailure:
+      description: >-
+        A PipesHub service this route depends on failed (`HTTP_BAD_GATEWAY`). The message is generic;
+        the service's own words are in its log under the same request id. See Relayed failures in the
+        introduction.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     InsufficientScope:
       description: >-
         The bearer token is an OAuth access token without the scope this route requires
@@ -46510,6 +46521,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '503':
           description: Storage could not delete the artifact's files; nothing was changed, retry
           content:
@@ -71139,7 +71152,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71199,7 +71212,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71280,7 +71293,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71363,7 +71376,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71419,7 +71432,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected failure in the gateway or in the connectors service.
+          description: Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
           content:
             application/json:
               schema:
@@ -71470,7 +71483,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71562,7 +71575,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71622,7 +71635,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71723,7 +71736,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72059,12 +72072,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request, or a sign-in that
-            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
-            service answers `502`, which the gateway reports as `500`).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            An MCP server that could not be reached or answered with an error other than a sign-in request,
+            or a sign-in that couldn't be renewed because its provider is down, rate-limiting or busy
+            (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72120,7 +72139,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72189,7 +72208,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72268,7 +72287,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72345,7 +72364,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72408,7 +72427,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72488,7 +72507,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72551,7 +72570,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72645,8 +72664,14 @@ paths:
             Unexpected failure in the gateway or in the connectors service, including a failed dynamic client registration with the OAuth provider.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or refused the connection: the connectors service answers `502`, which the gateway reports as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The MCP server could not be reached or refused the connection (`HTTP_BAD_GATEWAY`; see Relayed
+            failures in the introduction).
           content:
             application/json:
               schema:
@@ -72716,11 +72741,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including a token endpoint
-            that could not be reached or that answered with an error other than a rejected refresh token
-            (the connectors service answers 502, which the gateway reports as 500).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            A token endpoint that could not be reached or that answered with an error other than a rejected
+            refresh token (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72793,7 +72824,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72897,7 +72928,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72984,7 +73015,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73127,7 +73158,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73207,7 +73238,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73290,7 +73321,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73354,7 +73385,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73435,7 +73466,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74632,15 +74663,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            One of:
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            One of (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction):
             - the API could not be reached, or answered with something that is not HTTP;
             - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
               or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
               refreshing after the API answered `401`. The call, or its retry, was not sent.
-
-            The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:

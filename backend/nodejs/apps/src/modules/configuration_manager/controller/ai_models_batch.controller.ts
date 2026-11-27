@@ -28,6 +28,7 @@ import {
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
 import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 import {
   AI_PUBLIC_CONFIG_KEYS,
   mergeAiModelCredentials,
@@ -188,6 +189,10 @@ export function discoverAIModels(
         },
       };
       const response = (await new AIServiceCommand(options).execute()) as AIServiceResponse;
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (response.statusCode >= 400 && response.data === undefined) {
+        throw handleBackendError(response, 'discover AI models');
+      }
       res.status(response?.statusCode ?? 502).json(response?.data ?? { status: 'error' });
     } catch (error) {
       next(error);
