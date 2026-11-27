@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -165,11 +166,41 @@ class TestBuildPreview:
         )
         assert "sk-secret-123" not in str(preview)
 
+    @pytest.mark.parametrize("name", ["x-signature", "x-client-assertion", "Cookie", "x-credential", "Authorization"])
+    def test_a_stored_credential_template_never_appears(self, alice: object, name: str) -> None:
+        preview = build_preview(
+            principal=alice,
+            workload=Workload.CHAT,
+            settings=ConnectionForwardingSettings.parse(
+                {"enabled": True, "mode": "headers", "headerTemplates": {name: "literal-secret-123"}}
+            ),
+            governance=DEFAULT_GOVERNANCE,
+            pseudonym_key=None,
+            groups=None,
+        )
+        assert "literal-secret-123" not in str(preview)
+
     def test_redaction(self) -> None:
         out = redact_headers({"Authorization": "Bearer x", "x-api-key": "k", "x-litellm-end-user-id": "u"})
         assert out["Authorization"] == REDACTED
         assert out["x-api-key"] == REDACTED
         assert out["x-litellm-end-user-id"] == "u"
+
+    def test_redaction_matches_the_node_credential_header_contract(self) -> None:
+        from pathlib import Path
+
+        from app.services.model_identity.preview import CREDENTIAL_HEADER_HINT
+
+        fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[5]
+                / "nodejs/apps/tests/contract/credential-header-hints.fixture.json"
+            ).read_text()
+        )
+        assert CREDENTIAL_HEADER_HINT.pattern == fixture["pattern"]
+        out = redact_headers(dict.fromkeys(fixture["credential"] + fixture["notCredential"], "v"))
+        assert [name for name in fixture["credential"] if out[name] != REDACTED] == []
+        assert [name for name in fixture["notCredential"] if out[name] != "v"] == []
 
 
 def _client(user, graph_user=None, groups=("g1",)) -> tuple[TestClient, SimpleNamespace]:

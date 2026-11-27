@@ -699,13 +699,17 @@ class TestSmbConnectorSync:
         assert upserted[f"{SHARE}/2/set.json"] == "sibling"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_personal_scope_owner_permission(self, mock_filters, smb_connector, mock_processor):
+    async def test_personal_scope_owner_permission(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
         mock_filters.return_value = _empty_filters()
         smb_connector.creator_email = "user@test.com"
         ds = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
         smb_connector.data_source = ds
         smb_connector.configured_share = SHARE
         await smb_connector.run_sync()
+        # A cached creator email is not looked up again.
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
         batch = mock_processor.on_new_records.await_args.args[0]
@@ -736,6 +740,38 @@ class TestSmbConnectorSync:
         _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
         assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
             (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_creator_lookup_keeps_the_stored_share_grants(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert group_perms is None
+        assert smb_connector.creator_email is None
+        mock_processor.on_new_records.assert_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_creator_lookup_that_failed_at_init_is_retried_at_sync(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        smb_connector.configured_share = SHARE
+        assert smb_connector.creator_email is None
+        await smb_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
         ]
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)

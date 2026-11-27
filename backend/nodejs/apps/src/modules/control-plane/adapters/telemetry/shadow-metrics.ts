@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 import type { ShadowMismatchCounter } from '../../ports/shadow-metrics';
 
 // The one registration of this name: the pin shadow (CPD-5) and the
