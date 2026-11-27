@@ -27,6 +27,7 @@ import { pipeshubRepositoryFetchedEventSchema } from './events/x-pipeshub-reposi
 import { pipeshubRepositoryUnavailableEventSchema } from './events/x-pipeshub-repository-unavailable';
 import { pipeshubRunHandoffEventSchema } from './events/x-pipeshub-run-handoff';
 import { pipeshubRunNoticeEventSchema } from './events/x-pipeshub-run-notice';
+import { pipeshubScheduleCreatedEventSchema } from './events/x-pipeshub-schedule-created';
 import { pipeshubTelemetryRecordedEventSchema } from './events/x-pipeshub-telemetry-recorded';
 import { pipeshubToolCallPresentedEventSchema } from './events/x-pipeshub-tool-call-presented';
 import { pipeshubToolResultPresentedEventSchema } from './events/x-pipeshub-tool-result-presented';
@@ -83,6 +84,7 @@ export { pipeshubRepositoryFetchedEventSchema } from './events/x-pipeshub-reposi
 export { pipeshubRepositoryUnavailableEventSchema } from './events/x-pipeshub-repository-unavailable';
 export { pipeshubRunHandoffEventSchema } from './events/x-pipeshub-run-handoff';
 export { pipeshubRunNoticeEventSchema } from './events/x-pipeshub-run-notice';
+export { pipeshubScheduleCreatedEventSchema } from './events/x-pipeshub-schedule-created';
 export { pipeshubTelemetryRecordedEventSchema } from './events/x-pipeshub-telemetry-recorded';
 export { pipeshubToolCallPresentedEventSchema } from './events/x-pipeshub-tool-call-presented';
 export { pipeshubToolResultPresentedEventSchema } from './events/x-pipeshub-tool-result-presented';
@@ -144,6 +146,7 @@ export type { PipeshubRepositoryFetchedEvent } from './events/x-pipeshub-reposit
 export type { PipeshubRepositoryUnavailableEvent } from './events/x-pipeshub-repository-unavailable';
 export type { PipeshubRunHandoffEvent } from './events/x-pipeshub-run-handoff';
 export type { PipeshubRunNoticeEvent } from './events/x-pipeshub-run-notice';
+export type { PipeshubScheduleCreatedEvent } from './events/x-pipeshub-schedule-created';
 export type { PipeshubTelemetryRecordedEvent } from './events/x-pipeshub-telemetry-recorded';
 export type { PipeshubToolCallPresentedEvent } from './events/x-pipeshub-tool-call-presented';
 export type { PipeshubToolResultPresentedEvent } from './events/x-pipeshub-tool-result-presented';
@@ -187,6 +190,7 @@ export const EVENT_WRITERS: Readonly<Record<string, readonly EventWriter[]>> = O
   "x.pipeshub.repository.unavailable": Object.freeze(["worker"]) as readonly EventWriter[],
   "x.pipeshub.run.handoff": Object.freeze(["worker"]) as readonly EventWriter[],
   "x.pipeshub.run.notice": Object.freeze(["node","worker"]) as readonly EventWriter[],
+  "x.pipeshub.schedule.created": Object.freeze(["node"]) as readonly EventWriter[],
   "x.pipeshub.telemetry.recorded": Object.freeze(["worker"]) as readonly EventWriter[],
   "x.pipeshub.tool.call_presented": Object.freeze(["worker"]) as readonly EventWriter[],
   "x.pipeshub.tool.result_presented": Object.freeze(["worker"]) as readonly EventWriter[],
@@ -220,6 +224,7 @@ export const EVENT_SCHEMAS: Readonly<Record<string, ZodTypeAny>> = Object.freeze
   "x.pipeshub.repository.unavailable": pipeshubRepositoryUnavailableEventSchema,
   "x.pipeshub.run.handoff": pipeshubRunHandoffEventSchema,
   "x.pipeshub.run.notice": pipeshubRunNoticeEventSchema,
+  "x.pipeshub.schedule.created": pipeshubScheduleCreatedEventSchema,
   "x.pipeshub.telemetry.recorded": pipeshubTelemetryRecordedEventSchema,
   "x.pipeshub.tool.call_presented": pipeshubToolCallPresentedEventSchema,
   "x.pipeshub.tool.result_presented": pipeshubToolResultPresentedEventSchema,

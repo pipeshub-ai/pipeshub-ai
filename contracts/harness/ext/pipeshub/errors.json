@@ -1569,10 +1569,10 @@
       "status": 409,
       "retryable": false,
       "group": "schedule",
-      "meaning": "A one-time schedule already had its run (or its time passed): it never runs again.",
+      "meaning": "A one-time schedule already ran, or its time passed and it was skipped: it never runs again.",
       "nextAction": {
         "kind": "change_request",
-        "text": "This one-time schedule already ran. Delete it or make a new one."
+        "text": "This one-time schedule already ran or its time passed. Delete it or make a new one."
       }
     },
     {
@@ -1584,6 +1584,17 @@
       "nextAction": {
         "kind": "change_request",
         "text": "This schedule was not approved as asked. Ask again and confirm the schedule."
+      }
+    },
+    {
+      "code": "SCHEDULE_APPROVAL_USED",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "The approval in chat already set up its schedule, which its person since deleted: an approval makes its schedule once, and a deleted one is not made again.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This approval already set up a schedule that was deleted. Ask again and confirm a new one."
       }
     },
     {
