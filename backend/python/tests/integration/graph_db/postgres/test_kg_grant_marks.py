@@ -442,7 +442,7 @@ ROOT_SITES = ("kg.keys_of", "kg.read_rows", "kg.root_judges", "kg.root_judge_app
 
 async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
     """The viewer's root (its chain-tops), and the index seeks of kg.records and kg.node_keys the chain-top statements of its two browses (the page and the sidebar) make
-    (``ROOT_SITES``: EXPLAIN ANALYZE of each, the loops of every index scan of the two tables)."""
+    (``ROOT_SITES``: EXPLAIN ANALYZE of each, the loops of every index scan of the two tables; any other scan of them fails)."""
     import asyncpg
 
     import app.core.db.uow as uow
@@ -464,7 +464,10 @@ async def _root_seeks(p, org: str, monkeypatch: pytest.MonkeyPatch) -> tuple[int
             async with con.transaction():
                 await con.execute("SELECT set_config('app.org_id', $1, true)", org)
                 plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
-            loops += sum(int(x.get("Actual Loops", 1)) for x in plan_gate.nodes(plan) if x.get("Relation Name") in ("records", "node_keys") and "Index" in x.get("Node Type", ""))
+            scans = [x for x in plan_gate.nodes(plan) if x.get("Relation Name") in ("records", "node_keys")]
+            # a scan that is no index search reads the table whatever the judges: never counted as a seek, it fails the test
+            assert not (whole := [x["Node Type"] for x in scans if "Index" not in x.get("Node Type", "")]), (sql[:60], whole)
+            loops += sum(int(x.get("Actual Loops", 1)) for x in scans)
     finally:
         await con.close()
     return len(page[0]), loops
