@@ -13,6 +13,7 @@ const nav = vi.hoisted(() => ({ pathname: '/artifacts/' }));
 vi.mock('next/navigation', () => ({
   usePathname: () => nav.pathname,
   useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 import { SidebarItem } from '../sidebar-item';

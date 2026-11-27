@@ -20,7 +20,7 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams('conversationId=open'),
   usePathname: () => '/chat/',
 }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 const { useChatStore } = await import('@/chat/store');

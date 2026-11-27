@@ -35,7 +35,7 @@ vi.mock('@assistant-ui/react', () => ({
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
 vi.mock('@/chat/streaming', () => streaming);
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 vi.mock('@/lib/hooks/use-chat-speech-recognition', () => ({
   useChatSpeechRecognition: () => ({
     isListening: false,

@@ -23,7 +23,12 @@ vi.mock('@/lib/hooks/use-secret-reveal-available', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/hooks/use-secret-reveal-available')>()),
   useSecretRevealAvailable: () => true,
 }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
+vi.mock('@/config', () => ({
+  isMcpInstanceReadOnly: () => false,
+  McpInheritedCallout: () => null,
+  McpManageAccess: () => null,
+  McpInstanceConfigExtras: () => null,
+}));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
 vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
@@ -50,6 +55,7 @@ vi.mock('../../../../components', async () => ({
   // The real hook and input: they only read the FormField context this mock leaves empty.
   useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
   LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
+  FormFieldTextField: (await import('../../../../components/form-field')).FormFieldTextField,
   FormField: ({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

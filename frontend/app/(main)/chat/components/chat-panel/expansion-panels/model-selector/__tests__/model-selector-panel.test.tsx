@@ -50,6 +50,8 @@ vi.mock('react-i18next', () => ({
 // models, so it takes the default, which adds none.
 vi.mock('@/config', async () => ({
   ModelSelectorExtraOptions: (await import('../model-selector-extra-options')).ModelSelectorExtraOptions,
+  // No model is unavailable to the caller by default.
+  modelUnavailableReasons: (await import('@/app/(main)/chat/utils/model-unavailable-reasons')).modelUnavailableReasons,
 }));
 vi.mock('@/chat/store', () => ({
   useChatStore: (select: (s: typeof state) => unknown) => select(state),

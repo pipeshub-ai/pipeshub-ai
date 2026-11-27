@@ -21,7 +21,7 @@ vi.mock('next/navigation', () => ({
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 const mobile = vi.hoisted(() => ({ value: false }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mobile.value, useIsBelowDesktop: () => mobile.value }));
 
 const api = vi.hoisted(() => ({ personJobs: vi.fn(), stop: vi.fn() }));
 vi.mock('@/lib/harness-jobs/jobs-api', async (load) => {

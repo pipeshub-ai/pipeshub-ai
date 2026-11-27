@@ -26,6 +26,11 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   selectMcpEnabled: () => true,
   selectActionsEnabled: () => true,
   selectSkillsEnabled: () => true,
+  // The harness and what it adds (resume, scheduled and engine runs), off by default.
+  selectAgentHarnessOn: () => false,
+  selectAgentHarnessResumeEnabled: () => false,
+  selectScheduledRunsEnabled: () => false,
+  selectEngineRunsEnabled: () => false,
 }));
 
 // Spread the real module so exports the import graph needs (initReactI18next) stay defined.

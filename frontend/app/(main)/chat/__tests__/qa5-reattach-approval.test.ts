@@ -14,7 +14,9 @@ installMemoryStorage('sessionStorage');
 
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  // The chat's extension point as the app wires it by default: no edition hooks.
+  const { defaultChatExtension } = await vi.importActual<typeof import('@/app/(main)/chat/chat-extension')>('@/app/(main)/chat/chat-extension');
+  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn(), chatExtension: defaultChatExtension };
 });
 
 const { useAuthStore } = await import('@/config');
