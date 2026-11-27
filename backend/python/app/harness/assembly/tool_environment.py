@@ -439,12 +439,14 @@ async def _turn_scope(
     user_info: dict[str, Any],
     graph: Any,  # noqa: ANN401
     logger: Any,  # noqa: ANN401
+    config_service: Any,  # noqa: ANN401
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """This attempt's filters and knowledge, as main's agent route builds them (``_resolve_turn_filters``) from the
     pin: the agent's live sources bounded by the pinned limits, the selection resolved again as the identity that
     searches, the agent's sources bound for reads by id. Projects route legacy, so no project bound."""
     from app.api.routes.agent import (
         _filter_knowledge_by_enabled_sources,
+        _licensed_for_a_run,
         _resolve_turn_filters,
     )
     from app.harness.assembly.scope import (
@@ -464,12 +466,17 @@ async def _turn_scope(
     knowledge = list((agent or {}).get("knowledge") or [])
     if not universal:
         knowledge = await bounded_agent_knowledge(knowledge, run.knowledge.source_limits, graph, run.org_id)
+    open_sources_only = False
     if agent is not None and agent.get("isServiceAccount", False):
         # As main's agent route (chat_stream): anyone runs a service-account agent on one identity, so it keeps
-        # only what the whole org shares, and a collection only when it is bound to a service account.
+        # only what the whole org shares, and a collection only when it is bound to a service account. Without a
+        # licence (or when it cannot be read) an unbound one, which searches as its creator, keeps open sources only.
+        bound = bool(agent.get("serviceAccountUserId"))
+        open_sources_only = not bound and not await _licensed_for_a_run(config_service, logger)
         knowledge = await service_account_knowledge(
             graph, knowledge, user_info.get("userId", ""), run.org_id, logger,
-            bound=bool(agent.get("serviceAccountUserId")),
+            bound=bound,
+            licensed=not open_sources_only,
         )
     requested = requested_filters(run.knowledge)
     try:
@@ -488,7 +495,9 @@ async def _turn_scope(
         raise selection_refused(exc, agent_limit=not universal and not has_selection(requested)) from exc
     if not filters.get("kb") and not universal:
         filters["kb"] = [NO_KB_SELECTED]
-    if run.knowledge.strict_scope:
+    # An agent held to open sources keeps a strict scope, so a scope with none left reads as nothing, not as
+    # everything its creator can read.
+    if run.knowledge.strict_scope or open_sources_only:
         filters["strictScope"] = True
     return filters, _filter_knowledge_by_enabled_sources(knowledge, filters)
 
@@ -619,7 +628,7 @@ async def _agent_environment(
             unavailable.append(UnavailableItem(MCP_SOURCE, str(server.get("instanceId")), name, _masked_tools(server)))
         mcp_servers = ready
 
-    filters, agent_knowledge = await _turn_scope(run, agent, user_info, graph, logger)
+    filters, agent_knowledge = await _turn_scope(run, agent, user_info, graph, logger, config_service)
     attachments, previous_conversations = await keep_accessible_attachments(
         graph,
         org_id=run.org_id,
