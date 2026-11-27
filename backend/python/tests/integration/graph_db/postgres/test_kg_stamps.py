@@ -347,7 +347,7 @@ async def test_the_verify_flags_a_stamp_that_took_the_facts_of_a_node_of_the_sam
         r = await tx.fetchrow("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = $2 AND id = 'X'", org, COLL_CODE["records"])
         g = await tx.fetchrow("SELECT r.* FROM kg.records r JOIN kg.node_keys k ON k.org_id = r.org_id AND k.sk = r.sk WHERE r.org_id = $1 AND k.coll = $2 AND k.id = 'X'", org, COLL_CODE["recordGroups"])
         await KgWriter(tx).stamps_set([{"sk": r["sk"], "coll": COLL_CODE["records"], "id": "X", "kind": 3, "path": g["path"], "class_id": g["class_id"], "self_lit": g["self_lit"], "seed": g["seed"],
-                                        "own_grant": g["own_grant"], "under_deleted": g["under_deleted"], "legacy_reason": g["legacy_reason"], "leaf": g["leaf"]}])
+                                        "own_grant": g["own_grant"], "under_deleted": g["under_deleted"], "legacy_reason": g["legacy_reason"], "leaf": g["leaf"], "r13": g["r13"]}])
     with ctx(org):
         await pg_db.run(swap, write=True)
     assert any(d.startswith("s|X") for d in await dry_diffs(p, org, "app1"))

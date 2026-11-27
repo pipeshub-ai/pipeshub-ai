@@ -602,3 +602,24 @@ async def test_one_connectors_verify_does_not_hold_up_another_connectors_stampin
             break
     assert seen.get("stamped_meanwhile") is True, seen                            # drv0 stamped while drv was being verified
     assert await _enforced(p, org) == 2
+
+
+async def test_stamping_a_copied_connector_rewrites_each_record_row_once(pg_db) -> None:
+    # the stamps and r13 go in one upsert: a second one would leave a second row version (and its index entries) for every record of a bootstrap
+    from app.services.graph_db.postgres.kg.locks import lock_apps
+    from app.services.graph_db.postgres.kg.stamp import stamp_app
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, extra=12)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "drv")                                     # the copy writes no stamps
+
+    async def page(tx) -> tuple[int, int]:
+        upd = "SELECT n_tup_upd FROM pg_stat_xact_user_tables WHERE relid = 'kg.records'::regclass"
+        before = await tx.fetchval(upd)
+        await lock_apps(tx, org, {"drv"}, org_wide=False)
+        assert await stamp_app(tx, org, "drv", None, 100, locked={"drv"}) is not None
+        stamped = await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND (class_id IS NOT NULL OR legacy_reason IS NOT NULL)", org)
+        return await tx.fetchval(upd) - before, stamped
+    with ctx(org):
+        updates, stamped = await pg_db.run(page, write=True)
+    assert stamped == 15 and updates == stamped, (updates, stamped)

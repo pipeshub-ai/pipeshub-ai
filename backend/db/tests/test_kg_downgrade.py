@@ -18,7 +18,7 @@ def test_downgrading_the_writers_leaves_a_clean_catalog_and_an_upgrade_brings_th
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_downgrading_the_writers_touches_nothing_that_is_not_theirs(db):
@@ -168,7 +168,7 @@ def test_downgrading_a_revision_that_relaxes_a_writer_keeps_the_writer_and_an_up
     with connect(cluster, name) as c:
         assert state(c) == (1, 1, 1, 0)
         assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_a_function_that_only_shares_a_writers_name_is_not_taken_away_with_the_writers(db):
@@ -269,12 +269,12 @@ def test_downgrading_the_projector_epoch_gives_the_writers_back_their_earlier_si
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert present(c, old) == [True] * 6 and present(c, new) == [False] * 6
-        clean_catalog(c, 26)                                                # the counters' two writers (kg_0015), the analyze request's (kg_0016), the trash writer (kg_0019), pc_top's (kg_0024), the grant marks' (kg_0025), the knowledge-base listing's (kg_0026) and node_parent's (kg_0027) went down too
+        clean_catalog(c, 26)                                                # the counters' two writers (kg_0015), the analyze request's (kg_0016), the trash writer (kg_0019), pc_top's (kg_0024), the grant marks' (kg_0025), the knowledge-base listing's (kg_0026), node_parent's (kg_0027) and the stamps-with-r13 one (kg_0028) went down too
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert present(c, old) == [False] * 6 and present(c, new) == [True] * 6
-        clean_catalog(c, 34)
+        clean_catalog(c, 35)
 
 
 def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_downgrade_takes_them_back(db):
@@ -316,7 +316,7 @@ def test_the_parent_child_links_revision_moves_the_floor_and_the_kinds_and_its_d
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (True, False, True)
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_parent_and_grant_revision_moves_the_floor_and_its_downgrade_takes_it_back(db):
@@ -355,7 +355,7 @@ def test_the_parent_and_grant_revision_moves_the_floor_and_its_downgrade_takes_i
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (False, True, 1)
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_columns_and_its_writer(db):
@@ -398,7 +398,7 @@ def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_col
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (False, True, 1, 2, 2, with_trash)
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 
@@ -548,7 +548,7 @@ def test_the_grant_only_revision_moves_the_floor_and_its_downgrade_takes_back_th
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         assert state(c) == (False, True, 1, True, [9, 0])
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_root_revision_moves_the_floor_and_its_downgrade_takes_back_its_column_writer_index_and_relabel(db):
@@ -595,7 +595,7 @@ def test_the_root_revision_moves_the_floor_and_its_downgrade_takes_back_its_colu
         assert state(c) == (False, True, 1, 1, 1, [9, 0])
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_root_revision_never_touches_the_graph_tables():
@@ -653,7 +653,7 @@ def test_the_grant_marks_revision_moves_the_floor_and_its_downgrade_takes_back_i
         assert state(c) == (False, True, 1, 2, 1, [10, 0])
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_grant_marks_revision_never_touches_the_graph_tables():
@@ -713,7 +713,7 @@ def test_the_knowledge_base_listing_revision_moves_the_floor_and_its_downgrade_t
         assert state(c) == (False, True, 1, 7, (True, True, 1), [11, 0])
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_grant_parent_revision_moves_the_floor_and_its_downgrade_takes_back_its_column_writer_index_and_relabel(db):
@@ -761,7 +761,7 @@ def test_the_grant_parent_revision_moves_the_floor_and_its_downgrade_takes_back_
         assert state(c) == (False, True, 1, 1, True, [12, 0])
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
-        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 34
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 35
 
 
 def test_the_grant_parent_revision_never_touches_the_graph_tables():
@@ -773,3 +773,29 @@ def test_the_grant_parent_revision_never_touches_the_graph_tables():
     text = (d / "0027_grant_parent.py").read_text(encoding="utf-8") + (d / "0027_grant_parent.sql").read_text(encoding="utf-8")
     assert "graph." not in text
     assert set(re.findall(r"ALTER TABLE (\S+) (?:NO )?FORCE ROW LEVEL SECURITY", text)) == {"kg.projection_state"}
+
+
+def test_the_stamps_r13_revision_adds_one_writer_and_its_downgrade_takes_it_back(db):
+    """kg_0028: kg.w_stamps_r13_set, its registry row and its pin; down to kg_0027 they are gone and the catalog is clean, and w_stamps_set and w_r13_set (which the previous
+    release calls) are there both ways."""
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state(c) -> tuple:
+        return tuple(c.execute("SELECT count(*) FROM pg_proc WHERE pronamespace = 'kg'::regnamespace AND proname = %s", (n,)).fetchone()[0]
+                     for n in ("w_stamps_r13_set", "w_stamps_set", "w_r13_set")) + (
+            c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0],)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (1, 1, 1, 35)
+    r = run_migrate(url, "downgrade", "kg_0027", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (0, 1, 1, 34)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (1, 1, 1, 35)
