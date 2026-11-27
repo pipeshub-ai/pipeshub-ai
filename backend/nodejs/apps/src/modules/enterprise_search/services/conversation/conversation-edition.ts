@@ -43,7 +43,8 @@ export const CHATS_NEED_MONGO =
  * refuses to start on either.
  */
 export function assertChatsDocStore(): void {
-  if (shadowEnabled() || docStore() !== 'mongo') throw new Error(CHATS_NEED_MONGO);
+  if (shadowEnabled() || docStore() !== 'mongo')
+    throw new Error(CHATS_NEED_MONGO);
 }
 
 /** Conversations as the containers bind them by default, with no extra routes. Refuses a document store chats can't use. */
