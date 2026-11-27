@@ -291,8 +291,6 @@ export function CreateScheduleDialog({
   const [form, setForm] = useState<ScheduleForm>(emptyForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The date-time field's bounds, from when the dialog opened; the time itself is checked again on every change.
-  const [openedAt, setOpenedAt] = useState(() => new Date());
   // A one-off's time found stale at submit; any change to the form asks again.
   const [submitProblem, setSubmitProblem] = useState<Exclude<OnceProblem, 'missing'> | null>(null);
 
@@ -300,7 +298,6 @@ export function CreateScheduleDialog({
     if (open) {
       setForm(initialAgent ? { ...emptyForm(), agent: initialAgent } : emptyForm());
       setError(null);
-      setOpenedAt(new Date());
       setSubmitProblem(null);
     }
   }, [open, initialAgent]);
@@ -443,12 +440,12 @@ export function CreateScheduleDialog({
                 label={t('schedules.create.onceAt')}
                 hint={t('schedules.create.onceAtHint', { timeZone: browserTimeZone() })}
               >
+                {/* No native min or max: `onceInstant` alone bounds the time, against the clock when it checks, so a
+                    bound fixed when the dialog opened can never block a time it accepts. */}
                 <TextField.Root
                   id={`${id}-once`}
                   type="datetime-local"
                   value={form.onceAt}
-                  min={localInputValue(new Date(openedAt.getTime() + ONCE_MIN_AHEAD_MS))}
-                  max={localInputValue(new Date(openedAt.getTime() + ONCE_MAX_AHEAD_MS))}
                   aria-invalid={onceProblem !== null}
                   onChange={(e) => set('onceAt', e.target.value)}
                 />

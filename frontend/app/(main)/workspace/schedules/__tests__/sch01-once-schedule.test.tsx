@@ -174,6 +174,42 @@ describe('creating a one-off', () => {
     }
   });
 
+  it('the upper bound follows the clock, not the moment the dialog opened', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-12-01T10:00:00-08:00'));
+      get.mockResolvedValue({ data: { channels: [{ channel: 'in_app', available: true, reason: null }] } });
+      const onSubmit = vi.fn(async (_input: NewSchedule) => {});
+      render(
+        <Theme>
+          <CreateScheduleDialog open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
+        </Theme>,
+      );
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Joke' } });
+      fireEvent.change(within(dialog).getByLabelText('What to ask'), { target: { value: 'Tell me a joke' } });
+      fireEvent.click(within(dialog).getByRole('radio', { name: 'Once, at a date and time' }));
+      const field = within(dialog).getByLabelText('Date and time');
+      // No native bound fixed at opening can disagree with the check (the browser would block Create on it).
+      expect(field.hasAttribute('max')).toBe(false);
+      expect(field.hasAttribute('min')).toBe(false);
+      vi.setSystemTime(new Date('2026-12-01T10:10:00-08:00'));
+      // 366 days from opening was 10:00; from now it is 10:10.
+      fireEvent.change(field, { target: { value: '2027-12-02T10:05' } });
+      expect(within(dialog).queryByRole('alert')).toBeNull();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0][0].trigger).toMatchObject({ kind: 'once', at: '2027-12-02T18:05:00.000Z' });
+      // Past 366 days from now is still refused.
+      fireEvent.change(field, { target: { value: '2027-12-02T10:11' } });
+      expect(within(dialog).getByRole('alert').textContent).toBe('Pick a time at most a year ahead.');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a form whose one-off time is not valid never becomes a body with a blank time', () => {
     const stale = { ...emptyForm(), name: 'Joke', query: 'Tell me a joke', kind: 'once' as const, onceAt: '2026-12-01T10:02' };
     expect(checkedSchedule(stale, new Date('2026-12-01T10:01:30-08:00'))).toEqual({ problem: 'tooSoon' });
