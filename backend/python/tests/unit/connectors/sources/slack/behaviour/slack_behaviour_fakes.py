@@ -444,8 +444,9 @@ class FakeSlackStore:
         self.reindexed: list[Record] = []
         # External ids of the records the connector deleted.
         self.deleted: list[str] = []
-        # Records the schema rejects: ``on_new_records`` quarantines them, unwritten, and returns them.
-        self.schema_rejects: Callable[[Record], bool] = lambda record: False
+        # Records the processor leaves unwritten (a schema rejection, a record in the trash):
+        # ``on_new_records`` neither stores them nor returns them among the saved ones.
+        self.leaves_unwritten: Callable[[Record], bool] = lambda record: False
         # Whether a full sync of the connector is in progress, as the processor tracks it.
         self.full_sync_in_progress = False
 
@@ -514,16 +515,16 @@ class FakeSlackStore:
 
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Any]]]) -> list[Record]:
         self.record_batches.append([rec for rec, _ in records_with_permissions])
-        quarantined: list[Record] = []
+        saved: list[Record] = []
         for record, _ in records_with_permissions:
-            if self.schema_rejects(record):
-                quarantined.append(record)
+            if self.leaves_unwritten(record):
                 continue
             existing = self.records.get(record.external_record_id)
             if existing:
                 record.id = existing.id
             self.records[record.external_record_id] = record
-        return quarantined
+            saved.append(record)
+        return saved
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         """A base Record, as both graph stores rebuild it: no subclass fields."""

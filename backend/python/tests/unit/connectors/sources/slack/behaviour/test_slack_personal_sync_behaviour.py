@@ -330,11 +330,30 @@ class TestRegroupedMessages:
 
         workspace.reply(GENERAL, parent, between, ALICE, "in between")
         # The one burst the thread now is: written, it would replace the record holding `late`.
-        store.schema_rejects = lambda r: isinstance(r, MessageRecord) and between in block_ts_of(r)
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and between in block_ts_of(r)
         checkpoints.sync_points.clear()
         await connector.run_sync()
 
         assert block_ts(store, thread) == [parent, answer, late]
+
+    async def test_a_burst_whose_later_messages_went_unsaved_on_another_page_is_kept(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        first, second, third = (ts_minutes_ago(m) for m in (10, 9, 8))
+        for ts, who in ((first, BOB), (second, ALICE), (third, BOB)):
+            workspace.post(GENERAL, ts, who, f"message {ts}")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == [first, second, third]
+
+        # Read newest-first two at a time: the page holding the later two saves nothing, the
+        # page holding the first saves it alone, named as the stored burst's first message.
+        workspace.page_size["conversations.history"] = 2
+        store.leaves_unwritten = lambda r: isinstance(r, MessageRecord) and second in block_ts_of(r)
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert {second, third} <= set(block_ts(store, GENERAL))
 
     async def test_a_thread_whose_new_replies_are_read_only_in_part_keeps_what_an_earlier_part_stored(
         self, workspace, store, checkpoints,

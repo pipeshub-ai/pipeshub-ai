@@ -116,12 +116,13 @@ async def full_sync(
     kept: set[str] = set()
     write_records, write_groups = store.on_new_records, store.on_new_record_groups
 
-    async def on_new_records(records_with_permissions) -> None:
-        await write_records(records_with_permissions)
+    async def on_new_records(records_with_permissions) -> list:
+        saved = await write_records(records_with_permissions)
         for record, _ in records_with_permissions:
             seen[RECORDS].add(record.id)
             if record.record_group_id:
                 seen[GROUPS].add(record.record_group_id)
+        return saved
 
     async def on_new_record_groups(groups) -> None:
         await write_groups(groups)

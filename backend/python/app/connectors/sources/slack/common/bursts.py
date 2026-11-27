@@ -62,12 +62,29 @@ def burst_revision(messages: Sequence[dict[str, Any]]) -> str:
 
 
 def saved_records(
-    records_with_permissions: Iterable[tuple[Record, Any]], rejected: Iterable[Record] | None,
+    records_with_permissions: Iterable[tuple[Record, Any]], saved: Iterable[Record] | None,
 ) -> list[Record]:
-    """The records ``on_new_records`` stored: those it did not quarantine (``rejected``,
-    its return value). A rejected record's messages keep the records they are stored in."""
-    rejected_ids = {r.id for r in rejected or ()}
-    return [r for r, _ in records_with_permissions if r.id not in rejected_ids]
+    """The records of a batch that ``on_new_records`` reports saved (its return value). One
+    it quarantined or skipped is not among them, and neither is any when it reports nothing,
+    so the messages of those keep the records they are stored in."""
+    saved_ids = {id(r) for r in saved or ()}
+    return [r for r, _ in records_with_permissions if id(r) in saved_ids]
+
+
+def _message_ranges(records: Iterable[Record]) -> list[tuple[float, float]]:
+    return [
+        (float(r.start_ts), float(r.end_ts)) for r in records
+        if isinstance(r, MessageRecord) and r.start_ts and r.end_ts
+    ]
+
+
+def unsaved_ts(msgs: Sequence[dict[str, Any]], saved: Iterable[Record]) -> set[str]:
+    """The ts of the messages read that no saved message record spans."""
+    ranges = _message_ranges(saved)
+    return {
+        ts for ts in (m.get("ts") for m in msgs)
+        if ts and not any(start <= float(ts) <= end for start, end in ranges)
+    }
 
 
 def regrouped_record_ids(
@@ -80,10 +97,7 @@ def regrouped_record_ids(
     record count: one whose record was not built keeps what is stored."""
     written = list(written)
     written_ids = {r.external_record_id for r in written}
-    ranges = [
-        (float(r.start_ts), float(r.end_ts)) for r in written
-        if isinstance(r, MessageRecord) and r.start_ts and r.end_ts
-    ]
+    ranges = _message_ranges(written)
     found: list[str] = []
     for msg in msgs:
         ts = msg.get("ts")
@@ -93,18 +107,46 @@ def regrouped_record_ids(
     return found
 
 
+def _ts_ms(ts: str) -> int:
+    return int(float(ts) * 1000)
+
+
 class SlackRegroupMixin:
     """Deletes the records a regroup left behind. The host connector provides
     ``connector_id``, ``logger`` and ``data_entities_processor``."""
 
+    async def _save_and_delete_regrouped(
+        self,
+        records: list[tuple[Record, Any]],
+        msgs: Sequence[dict[str, Any]],
+        stored_ids: Callable[[str], Iterable[str]],
+        external_record_group_id: str,
+        *,
+        unsaved: set[str],
+        delete: bool = True,
+    ) -> None:
+        """Save a batch built from ``msgs``, then (``delete``) delete the records a regroup
+        left behind in this group. ``unsaved`` gathers, across the batches of one read, the
+        messages no saved record holds; a stored record spanning one of them is kept."""
+        saved = saved_records(records, await self.data_entities_processor.on_new_records(records)) if records else []
+        unsaved |= unsaved_ts(msgs, saved)
+        if delete:
+            await self._delete_regrouped_records(
+                regrouped_record_ids(msgs, saved, stored_ids), external_record_group_id, unsaved,
+            )
+
     async def _delete_regrouped_records(
-        self, external_ids: Iterable[str], external_record_group_id: str,
+        self, external_ids: Iterable[str], external_record_group_id: str, unsaved: Iterable[str] = (),
     ) -> None:
         """Delete the stored message records under these ids in this group (a channel or a
         thread). Call it only after the records now holding their messages were saved, with
-        ids found from the saved ones (``saved_records``), never a quarantined one. A
-        failed lookup or delete keeps the record. A single's id is its bare ts, which is
-        unique only within a channel, so a record of another group is never deleted."""
+        ids found from the saved ones (``saved_records``). A stored record is deleted only
+        when every message it may hold has a saved record: its messages are not stored, but
+        it spans source_created_at to source_updated_at (first and last message, in ms), and
+        one that spans an ``unsaved`` message, or does not say its span, is kept. A failed
+        lookup or delete keeps the record. A single's id is its bare ts, which is unique
+        only within a channel, so a record of another group is never deleted."""
+        unsaved_ms = [_ts_ms(ts) for ts in unsaved]
         processor = self.data_entities_processor
         for external_id in external_ids:
             try:
@@ -116,6 +158,12 @@ class SlackRegroupMixin:
                     or stored.record_type != RecordType.MESSAGE
                     or stored.external_record_group_id != external_record_group_id
                 ):
+                    continue
+                first, last = stored.source_created_at, stored.source_updated_at
+                if first is None or last is None or any(first <= ms <= last for ms in unsaved_ms):
+                    self.logger.info(
+                        f"Kept message record {external_id}: a message it may hold has no saved record"
+                    )
                     continue
                 await processor.on_record_deleted(stored.id)
                 self.logger.info(

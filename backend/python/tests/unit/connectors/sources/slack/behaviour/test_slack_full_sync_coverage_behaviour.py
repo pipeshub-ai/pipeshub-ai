@@ -56,12 +56,13 @@ async def full_sync(connector: SlackConnector, store: FakeSlackStore, checkpoint
     seen: dict[str, set[str]] = {RECORDS: set(), GROUPS: set()}
     write_records, write_groups = store.on_new_records, store.on_new_record_groups
 
-    async def on_new_records(records_with_permissions) -> None:
-        await write_records(records_with_permissions)
+    async def on_new_records(records_with_permissions) -> list:
+        saved = await write_records(records_with_permissions)
         for record, _ in records_with_permissions:
             seen[RECORDS].add(record.id)
             if record.record_group_id:
                 seen[GROUPS].add(record.record_group_id)
+        return saved
 
     async def on_new_record_groups(groups) -> None:
         await write_groups(groups)
@@ -221,9 +222,10 @@ class TestLinksOutsideTheWindow:
         written: set[str] = set()
         write_records = store.on_new_records
 
-        async def on_new_records(records_with_permissions) -> None:
-            await write_records(records_with_permissions)
+        async def on_new_records(records_with_permissions) -> list:
+            saved = await write_records(records_with_permissions)
             written.update(r.external_record_id for r, _ in records_with_permissions)
+            return saved
 
         store.on_new_records = on_new_records
         try:

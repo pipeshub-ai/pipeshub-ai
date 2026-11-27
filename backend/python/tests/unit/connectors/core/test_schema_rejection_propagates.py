@@ -118,7 +118,7 @@ def _records(n: int) -> list[tuple[MagicMock, list]]:
 
 
 def _slice_processor(
-    bad: set[str], other_error: tuple[str, Exception] | None = None
+    bad: set[str], other_error: tuple[str, Exception] | None = None, skipped: frozenset[str] = frozenset(),
 ) -> tuple[DataSourceEntitiesProcessor, list[dict]]:
     """A processor whose _process_record rejects the records in ``bad``; returns it with its call logs."""
     proc = _processor(MagicMock(explicit=True))
@@ -144,6 +144,8 @@ def _slice_processor(
             raise SchemaValidationError("records", f"bad {record.id}")
         if other_error and record.id == other_error[0]:
             raise other_error[1]
+        if record.id in skipped:  # left unwritten without raising, as a record in the trash is
+            return None, []
         return record, []
 
     proc._process_record = process
@@ -161,9 +163,10 @@ async def test_one_bad_record_in_a_slice_of_100_is_quarantined_and_the_other_99_
     with patch(
         "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
     ) as counted:
-        quarantined = await proc.on_new_records(items)
+        saved = await proc.on_new_records(items)
 
-    assert [r.id for r in quarantined] == ["rec-37"]  # so a caller keeps what it would have replaced
+    # The saved records, without the quarantined one: a caller keeps what that one would have replaced.
+    assert [r.id for r in saved] == [r.id for r, _ in items if r.id != "rec-37"]
     assert _published(proc) == [r.id for r, _ in items if r.id != "rec-37"]  # order kept, bad one not published
     committed = [w for c in ctxs if c["committed"] for w in c["written"]]
     assert sorted(committed) == sorted(r.id for r, _ in items if r.id != "rec-37")
@@ -172,6 +175,16 @@ async def test_one_bad_record_in_a_slice_of_100_is_quarantined_and_the_other_99_
     errors = [c.args for c in proc.logger.error.call_args_list]
     assert len(errors) == 2  # the rejection report and the quarantine line, nothing per handler
     assert any("rec-37" in str(a) for args in errors for a in args)
+
+
+@pytest.mark.parametrize("bad", [set(), {"rec-1"}], ids=["whole_slice", "redone_per_record"])
+async def test_a_record_left_unwritten_is_not_among_the_saved_ones(bad: set[str]) -> None:
+    proc, _ = _slice_processor(bad, skipped=frozenset({"rec-3"}))
+    items = _records(5)
+
+    saved = await proc.on_new_records(items)
+
+    assert [r.id for r in saved] == [r.id for r, _ in items if r.id not in bad | {"rec-3"}]
 
 
 async def test_a_slice_with_only_bad_records_commits_nothing_and_does_not_raise() -> None:
@@ -187,7 +200,7 @@ async def test_slices_are_redone_one_record_each_only_for_the_slice_that_failed(
     proc, ctxs = _slice_processor({"rec-5"})
     items = _records(250)  # slices 0-99, 100-199, 200-249
 
-    assert await proc.on_new_records(items) == [items[5][0]]
+    assert await proc.on_new_records(items) == [r for r, _ in items if r.id != "rec-5"]
 
     # slice 1 (one tx of 100), slice 2 redone per record (1 failed whole + 100 singles), slice 3 whole
     assert [len(c["written"]) for c in ctxs[:2]] == [6, 1]  # the failed whole-slice tx stops at the bad record

@@ -110,8 +110,6 @@ from app.connectors.sources.slack.common.bursts import (
     bursts_to_write,
     channel_burst_id,
     channel_record_ids,
-    regrouped_record_ids,
-    saved_records,
     thread_burst_id,
     thread_group_id,
     thread_record_ids,
@@ -1507,6 +1505,8 @@ class SlackIndividualConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseCo
         # (rate limit, server error, no response). Older pages were never
         # fetched, so the checkpoint must not move past them.
         history_error: Optional[str] = None
+        # Messages read in this sync that no saved record holds: a stored record spanning one is kept.
+        unsaved: set[str] = set()
 
         while True:
             await self.rate_limiter.acquire(Tier.T3)
@@ -1551,13 +1551,10 @@ class SlackIndividualConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseCo
             )
 
             await self._enrich_link_records_linked_id(records)
+            await self._save_and_delete_regrouped(
+                records, msgs, lambda ts: channel_record_ids(channel_id, ts), channel_id, unsaved=unsaved,
+            )
             if records:
-                rejected = await self.data_entities_processor.on_new_records(records)
-                await self._delete_regrouped_records(regrouped_record_ids(
-                    msgs, saved_records(records, rejected),
-                    lambda ts: channel_record_ids(channel_id, ts),
-                ), channel_id)
-
                 total_msgs += sum(
                     1 for r, _ in records if r.record_type == RecordType.MESSAGE
                 )
@@ -2126,12 +2123,10 @@ class SlackIndividualConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseCo
                 f"[ThreadProcess] Creating {burst_msg_count} burst records and "
                 f"{burst_file_count} file records for thread ts={ts}"
             )
-            rejected = await self.data_entities_processor.on_new_records(burst_recs_batch)
-            if replies_complete:
-                await self._delete_regrouped_records(regrouped_record_ids(
-                    all_msgs, saved_records(burst_recs_batch, rejected),
-                    lambda mts: thread_record_ids(ctx.channel_id, ts, mts),
-                ), thread_group_id(ctx.channel_id, ts))
+            await self._save_and_delete_regrouped(
+                burst_recs_batch, all_msgs, lambda mts: thread_record_ids(ctx.channel_id, ts, mts),
+                thread_group_id(ctx.channel_id, ts), unsaved=set(), delete=bool(replies_complete),
+            )
 
         self.logger.info(
             f"[ThreadProcess] Completed thread processing for ts={ts}, "
@@ -2244,12 +2239,10 @@ class SlackIndividualConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseCo
             )
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
-            rejected = await self.data_entities_processor.on_new_records(burst_recs_batch)
-            if replies_complete:
-                await self._delete_regrouped_records(regrouped_record_ids(
-                    new_replies, saved_records(burst_recs_batch, rejected),
-                    lambda mts: thread_record_ids(ctx.channel_id, thread_ts, mts),
-                ), thread_group_id(ctx.channel_id, thread_ts))
+            await self._save_and_delete_regrouped(
+                burst_recs_batch, new_replies, lambda mts: thread_record_ids(ctx.channel_id, thread_ts, mts),
+                thread_group_id(ctx.channel_id, thread_ts), unsaved=set(), delete=bool(replies_complete),
+            )
 
         return replies_complete
 
