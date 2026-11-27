@@ -56,11 +56,14 @@ export function withoutReplaced(
   const names = new Set(replaced.map((r) => r.collection));
   return {
     kept: mappings.filter((m) => !names.has(m.collection)),
-    outside: replaced.map(({ collection, reason }) => ({
-      collection,
-      reason,
-      tables: [mappings.find((m) => m.collection === collection)!.table],
-    })),
+    outside: mappings
+      .filter((m) => names.has(m.collection))
+      .map((m) => ({
+        collection: m.collection,
+        reason:
+          replaced.find((r) => r.collection === m.collection)?.reason ?? '',
+        tables: [m.table],
+      })),
   };
 }
 
@@ -77,6 +80,13 @@ export const MAPPINGS: CollectionMapping[] = withEditionHeldFields(
   replaced.kept,
   EDITION_DOCSTORE_COVERAGE.heldFields,
 );
+
+/**
+ * True when this build's generic copy handles the collection: false for one an edition replaced (its carrier copies, follows and
+ * writes it back). Every step that names a collection rather than walking MAPPINGS asks this first.
+ */
+export const isMapped = (collection: string): boolean =>
+  MAPPINGS.some((m) => m.collection === collection);
 
 /** Collections that are deliberately not copied, with the reason. */
 export const IGNORED: IgnoredCollection[] = [
