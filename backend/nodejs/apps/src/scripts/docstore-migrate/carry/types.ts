@@ -18,7 +18,12 @@ export interface SourceDoc {
   doc: Doc;
   /** Set when the document cannot be carried as it is (a BSON value the store does not keep): why, with the path. */
   refused?: string;
+  /** With `oids` read: where the document held an ObjectId (now its lower-case hex), as path segments. */
+  oidPaths?: DocPath[];
 }
+
+/** A place in a document: keys and array positions. */
+export type DocPath = Array<string | number>;
 
 /** The MongoDB side a carrier reads and, at a rollback, writes. A fake implements it in the unit tests. */
 export interface CarryMongo {
@@ -44,6 +49,11 @@ export interface SourceRead {
   idPaths?: readonly string[];
   /** `id`: in `_id` order (a table numbers its rows in the order they are inserted). */
   order?: 'id';
+  /**
+   * Every ObjectId anywhere in the document is read as its lower-case hex and its place listed in `oidPaths`, for a carrier that
+   * keeps the whole document and gives it back at a rollback with its ObjectIds (`withObjectIds`).
+   */
+  oids?: true;
 }
 
 export interface Restored {

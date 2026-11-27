@@ -6,7 +6,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { Binary, Int32, Long, ObjectId } from 'mongodb';
-import { sourceDoc, canonicalText } from '../../../src/scripts/docstore-migrate/carry/plain';
+import { sourceDoc, canonicalText, withObjectIds } from '../../../src/scripts/docstore-migrate/carry/plain';
 import { DocTable } from '../../../src/scripts/docstore-migrate/carry/doc-table';
 import { DATA_KEY_AND_WORKSPACE_TABLES } from '../../../src/scripts/docstore-migrate/carry/keys-workspaces';
 import { CODING_ENGINE_CHOICES } from '../../../src/scripts/docstore-migrate/carry/choices';
@@ -63,6 +63,21 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       });
       expect(d.refused).to.equal(undefined);
       expect(d.doc).to.deep.equal({ codingEngine: 'codex', orgId: fx.ORG });
+    });
+
+    it('with oids, reads every ObjectId as hex and lists where it was, and withObjectIds gives the same document back', () => {
+      const [a, b, c] = [new ObjectId(), new ObjectId(), new ObjectId()];
+      const raw = { _id: new ObjectId(), orgId: a, name: a.toHexString(), refs: [b, 'x', { deep: c }], at: new Date(7) };
+      const d = sourceDoc(raw, 'c', { oids: true });
+      expect(d.refused).to.equal(undefined);
+      expect(d.doc).to.deep.equal({ orgId: a.toHexString(), name: a.toHexString(), refs: [b.toHexString(), 'x', { deep: c.toHexString() }], at: new Date(7) });
+      // a string that looks like an id stays a string: only the places that held an ObjectId are listed
+      expect(d.oidPaths).to.deep.equal([['orgId'], ['refs', 0], ['refs', 2, 'deep']]);
+      const { _id, ...rest } = raw;
+      expect(withObjectIds(structuredClone(d.doc), d.oidPaths!)).to.deep.equal(rest);
+      expect(sourceDoc(raw, 'c').refused, 'without oids an ObjectId inside is still refused').to.contain('orgId');
+      expect(() => withObjectIds({ a: 'nope' }, [['a']])).to.throw(/holds no ObjectId/);
+      expect(() => withObjectIds({ a: {} }, [['a', 'b', 'c']])).to.throw(/holds no ObjectId/);
     });
   });
 

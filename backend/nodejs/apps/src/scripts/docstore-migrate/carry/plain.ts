@@ -4,8 +4,9 @@
  * value the stores never write (an ObjectId inside a document, a Decimal128) cannot be given back as it was, so it is refused
  * with its path: the move stops before anything is lost.
  */
+import { ObjectId } from 'mongodb';
 import { encodeDoc } from '../../../libs/repositories/agent-harness/pg-documents/pg';
-import type { Doc, SourceDoc, SourceRead } from './types';
+import type { Doc, DocPath, SourceDoc, SourceRead } from './types';
 
 const bsonType = (v: unknown): string | undefined =>
   v !== null && typeof v === 'object'
@@ -16,11 +17,23 @@ export class UncarriableValue extends Error {
   override name = 'UncarriableValue';
 }
 
-/** A value as the harness stores hold it; throws on a BSON type that would not come back as it was. */
-export function plainValue(v: unknown, path: string): unknown {
+/**
+ * A value as the harness stores hold it; throws on a BSON type that would not come back as it was. With `oids`, an ObjectId is read
+ * as its lower-case hex and its place (`at`) is added to `oids`.
+ */
+export function plainValue(
+  v: unknown,
+  path: string,
+  oids?: DocPath[],
+  at: DocPath = [],
+): unknown {
   if (v === null || v === undefined) return v;
   if (v instanceof Date || Buffer.isBuffer(v)) return v;
   const t = bsonType(v);
+  if (oids && (t === 'ObjectId' || t === 'ObjectID')) {
+    oids.push(at);
+    return String(v).toLowerCase();
+  }
   if (t === 'Int32' || t === 'Double') return (v as { value: number }).value;
   if (t === 'Long') {
     const n = Number(String(v));
@@ -38,14 +51,48 @@ export function plainValue(v: unknown, path: string): unknown {
       `${path}: a BSON ${t}, which the PostgreSQL store does not keep`,
     );
   if (Array.isArray(v))
-    return v.map((x, i) => plainValue(x, `${path}[${String(i)}]`));
+    return v.map((x, i) =>
+      plainValue(x, `${path}[${String(i)}]`, oids, oids ? [...at, i] : at),
+    );
   if (typeof v === 'object') {
     const out: Doc = {};
     for (const [k, x] of Object.entries(v as Doc))
-      if (x !== undefined) out[k] = plainValue(x, path ? `${path}.${k}` : k);
+      if (x !== undefined)
+        out[k] = plainValue(
+          x,
+          path ? `${path}.${k}` : k,
+          oids,
+          oids ? [...at, k] : at,
+        );
     return out;
   }
   return v;
+}
+
+/**
+ * The hex text at each of `paths` (as `oidPaths` lists them) made an ObjectId again, in place; returns the document. Throws on a
+ * place that holds no ObjectId text.
+ */
+export function withObjectIds(doc: Doc, paths: readonly DocPath[]): Doc {
+  for (const p of paths) {
+    if (!p.length) throw new Error('an ObjectId path is empty');
+    let at: unknown = doc;
+    for (const seg of p.slice(0, -1))
+      at =
+        at !== null && typeof at === 'object'
+          ? (at as Record<string | number, unknown>)[seg]
+          : undefined;
+    const last = p[p.length - 1] as string | number;
+    const holder = at as Record<string | number, unknown> | null | undefined;
+    const hex =
+      holder !== null && typeof holder === 'object' ? holder[last] : undefined;
+    if (typeof hex !== 'string' || !/^[0-9a-f]{24}$/.test(hex))
+      throw new Error(
+        `${JSON.stringify(p)} holds no ObjectId text, so the document cannot be given back as it was`,
+      );
+    (holder as Record<string | number, unknown>)[last] = new ObjectId(hex);
+  }
+  return doc;
 }
 
 /**
@@ -76,7 +123,9 @@ export function sourceDoc(
       rest[p] = String(rest[p]).toLowerCase();
   }
   try {
-    return { id, oid, doc: plainValue(rest, '') as Doc };
+    if (!opts.oids) return { id, oid, doc: plainValue(rest, '') as Doc };
+    const oidPaths: DocPath[] = [];
+    return { id, oid, doc: plainValue(rest, '', oidPaths) as Doc, oidPaths };
   } catch (e) {
     if (!(e instanceof UncarriableValue)) throw e;
     return { id, oid, doc: {}, refused: `${collection} ${id}: ${e.message}` };
