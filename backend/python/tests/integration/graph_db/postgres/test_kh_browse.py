@@ -1306,8 +1306,9 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
     assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read
 
 
-async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> list[int]:
-    """The kg.records rows each window read of the page (kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after the settings its transaction set before it."""
+async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]], sites: tuple[str, ...] = ("kg.listing_page", "kg.listing_page_admitted")) -> list[int]:
+    """The kg.records rows each read of ``sites`` (by default the page's windows, kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after the settings its
+    transaction set before it."""
     import asyncpg
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     read: list[int] = []
@@ -1320,7 +1321,7 @@ async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]])
                         continue
                     if "set_config(" in sql:
                         await con.fetch(sql, *args)
-                    elif "pipeshub:kg.listing_page" in sql[:60]:
+                    elif (site := re.search(r"pipeshub:(\S+)", sql[:80])) and site.group(1) in sites:
                         plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
                         assert "JIT" not in plan[0], sql[:80]      # a sort the profile leaves (of the window) is not compiled
                         read.append(sum(int((x.get("Actual Rows", 0) + x.get("Rows Removed by Filter", 0)) * x.get("Actual Loops", 1))
@@ -1382,6 +1383,39 @@ async def test_a_connectors_flat_listing_reads_a_window_per_page_once_the_table_
         assert len(page["rows"]) == 10, page["rows"]
         read = await _page_rows_read(org, ran)
         assert read and all(n <= 150 for n in read), (width, read)
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_keys_not_the_connector(pg_db, monkeypatch) -> None:
+    """The flat listing below a folder of 5 records, in a connector of 3,000, after kg.records is analysed: the scope's rows are read by their keys (``r.sk = ANY(scope)``),
+    about the 5 of them, not the connector in the order's index (the profile that turns sorts off for an unscoped window would make that the plan)."""
+    import app.core.db.uow as uow
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(3000)]
+    await seed_folder(p, pg_db, org, 3000, readable_kids=kids)
+    small = [f"s{i}" for i in range(5)]
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "small", "recordName": "Small", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "mimeType": "application/vnd.folder"},
+                                    *({"_key": k, "recordName": f"Small {k}", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for k in small)], "records")
+        await p.batch_create_edges([edge("small", "records", k, "records", relationshipType="PARENT_CHILD") for k in small], "nodeRelations")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ["small", *small]], "permission")
+    await flip(pg_db, org)
+    await _admin("ANALYZE kg.records")
+    real = uow.Tx._run
+    for field, way in (("name", "ASC"), ("updatedAt", "DESC"), ("sizeInBytes", "DESC")):
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        with ctx(org):
+            page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=10,
+                                                                start_id="small", start_type="folder", sort_field=field, sort_dir=way, include_total=False)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert sorted(r["id"] for r in page["rows"]) == small, page["rows"]
+        read = await _page_rows_read(org, ran)
+        assert read and all(n <= 20 for n in read), (field, way, read)
 
 
 async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:

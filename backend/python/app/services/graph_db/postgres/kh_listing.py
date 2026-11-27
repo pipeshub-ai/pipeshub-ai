@@ -308,7 +308,8 @@ class KhListingMixin(PgBase):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
         if scope is not None:
-            where += f" AND r.sk = ANY({base.add(scope)}::bigint[])"
+            keys = base.add(scope)
+            where += f" AND r.sk = ANY({keys}::bigint[])"
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
         viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
@@ -329,8 +330,11 @@ class KhListingMixin(PgBase):
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
-            sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
-            got = await self._kq_page(sql, tuple(p.values), transaction)
+            if scope is None:
+                got = await self._kq_page(kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql), tuple(p.values), transaction)
+            else:      # a scope's rows by their keys, then sorted: as a condition, a new organisation's connector looked small enough to read whole in the order's index
+                sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql, kgl.keyed_scope(keys))
+                got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
             if found is not None:

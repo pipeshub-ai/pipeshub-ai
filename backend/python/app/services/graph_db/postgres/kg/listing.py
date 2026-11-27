@@ -320,6 +320,12 @@ def browse_scopes(links: str | None) -> list[tuple[str, str]]:
     return scopes
 
 
+def keyed_scope(keys: str) -> list[tuple[str, str]]:
+    """The live rows of the connector ``$2`` among the sks ``keys``, as :func:`page_sql`'s ``scopes``: each read by its key in a subquery of its own (a LIMIT keeps the planner
+    from flattening it into a join that reads the connector by an index of the order instead)."""
+    return [(f"unnest({keys}::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk = q.sk LIMIT 1) r", f"r.app_sk = $2 AND {LIVE}")]
+
+
 def _children(cols: str, where: str, links: str | None, tail: str | None = None) -> str:
     tail = _limit("$3") if tail is None else tail
     return " UNION ALL ".join(f"(SELECT {cols} FROM {rows} WHERE r.org_id = $1 AND {sc}{where}{tail})" for rows, sc in browse_scopes(links))
