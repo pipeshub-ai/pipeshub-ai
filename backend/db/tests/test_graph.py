@@ -99,6 +99,23 @@ def test_the_vetted_reads_list_organisations_and_connectors_across_organisations
         assert [r[0] for r in c.execute("SELECT org_id FROM graph.system_app('app-b')")] == [B]
 
 
+def test_the_cross_organisation_reads_answer_no_rows_to_a_unit_bound_to_an_organisation(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed(c, A, "organizations", A, '{"isActive": true}')
+        _seed(c, A, "apps", "app-a", '{"isActive": true}')
+        for role in ("pipeshub_connectors", "pipeshub_indexing"):
+            as_role(c, role, B)
+            assert c.execute("SELECT * FROM graph.system_orgs(true, false, '', '', 10)").fetchall() == []
+            assert c.execute("SELECT * FROM graph.system_apps(false, '', '', 10)").fetchall() == []
+            assert c.execute("SELECT * FROM graph.system_app('app-a')").fetchall() == []
+            as_role(c, role, A)                                                       # its own org too: these are system reads only
+            assert c.execute("SELECT * FROM graph.system_orgs(true, false, '', '', 10)").fetchall() == []
+            as_role(c, role)
+            assert [r[0] for r in c.execute("SELECT org_id FROM graph.system_orgs(true, false, '', '', 10)")] == [A]
+            assert [r[0] for r in c.execute("SELECT org_id FROM graph.system_app('app-a')")] == [A]
+
+
 def test_each_table_has_sixteen_hash_partitions_and_a_row_lands_in_one(rdb):
     cluster, name = rdb
     with connect(cluster, name) as c:

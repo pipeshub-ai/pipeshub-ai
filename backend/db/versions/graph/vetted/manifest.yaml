@@ -7,6 +7,7 @@
 # (organisation and connector-instance documents hold names, flags and settings, no credentials; the provider reads them as it reads
 # any document of these collections). Ids are unique per organisation only, so every page continues after the last (org, id) pair it
 # returned, never after an id alone.
+# A unit bound to an organisation (app.org_id set) gets no rows: these answer system-scope units only.
 functions:
   # One page of the organisations after the given (org, id) pair, in that order: internal or external, live ones only unless p_all.
   - name: graph.system_orgs
@@ -23,6 +24,7 @@ functions:
     reads: [graph.nodes]
     content_ok: true
     body: |
+      IF current_setting('app.org_id', true) <> '' THEN RETURN; END IF;
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n
         WHERE n.coll = 'organizations' AND (n.doc @> '{"isExternal": true}') = p_external
           AND (p_all OR n.doc @> '{"isActive": true}') AND (n.org_id, n.id) > (p_after, p_after_id) ORDER BY n.org_id, n.id LIMIT p_limit;
@@ -41,6 +43,7 @@ functions:
     reads: [graph.nodes]
     content_ok: true
     body: |
+      IF current_setting('app.org_id', true) <> '' THEN RETURN; END IF;
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n
         WHERE n.coll = 'apps' AND (NOT p_only_active OR n.doc @> '{"isActive": true}')
         AND (n.id, n.org_id) > (p_after_id, p_after_org) ORDER BY n.id, n.org_id LIMIT p_limit;
@@ -56,6 +59,7 @@ functions:
     reads: [graph.nodes]
     content_ok: true
     body: |
+      IF current_setting('app.org_id', true) <> '' THEN RETURN; END IF;
       RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n WHERE n.coll = 'apps' AND n.id = p_id ORDER BY n.org_id LIMIT 1;
 
 # ---- the code graph's hot lookups -------------------------------------------------------------------------------------------------
