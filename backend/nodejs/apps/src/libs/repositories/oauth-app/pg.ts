@@ -370,13 +370,15 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
   findLiveAllowedScopes(clientId: string): Promise<{
     allowedScopes: string[];
     knowledgeLimit?: KnowledgeLimit;
+    clientSecretEncrypted: string;
   } | null> {
     return this.byClient(
       clientId,
-      'allowed_scopes, knowledge_limit',
+      'allowed_scopes, knowledge_limit, client_secret_encrypted',
       true,
       (r) => ({
         allowedScopes: r.allowed_scopes,
+        clientSecretEncrypted: r.client_secret_encrypted,
         ...(r.knowledge_limit !== null && {
           knowledgeLimit: r.knowledge_limit,
         }),
@@ -384,6 +386,7 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
     ) as Promise<{
       allowedScopes: string[];
       knowledgeLimit?: KnowledgeLimit;
+      clientSecretEncrypted: string;
     } | null>;
   }
 

@@ -1,6 +1,10 @@
 import { Response, NextFunction } from 'express';
 import { ForbiddenError, UnauthorizedError } from '../errors/http.errors';
 import { AuthenticatedUserRequest } from './types';
+import {
+  observeTokenRestriction,
+  tokenRestrictionsEnforced,
+} from '../utils/token-restrictions.utils';
 
 /**
  * Rejects callers authenticated with an OAuth access token or a personal
@@ -30,5 +34,23 @@ export function requireSessionAuth(
     );
     return;
   }
+  next();
+}
+
+/**
+ * `requireSessionAuth` for a route tokens could already reach: refuses only when
+ * TOKEN_RESTRICTIONS_MODE is `enforce`; otherwise the request proceeds and the call is recorded.
+ */
+export function requireSessionAuthWhenEnforced(
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (tokenRestrictionsEnforced()) {
+    requireSessionAuth(req, res, next);
+    return;
+  }
+  if (req.user?.isOAuth === true)
+    observeTokenRestriction(req, 'session_only_route');
   next();
 }

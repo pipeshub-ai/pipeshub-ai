@@ -299,6 +299,113 @@ def register_oauth_url_rule(connector_type: str, rule: OAuthUrlRule) -> None:
     _OAUTH_URL_RULES[connector_type.replace(" ", "").lower()] = rule
 
 
+# Where an OAuth app's requests go. Every request carries the client secret.
+OAUTH_DESTINATION_KEYS = ("tokenUrl", "authorizeUrl", "instanceUrl")
+_OAUTH_SECRET_KEYS = ("clientSecret", "client_secret", "clientsecret")
+CREDENTIAL_REENTRY_MESSAGE = "Enter the credentials again to use this new endpoint."
+
+# Setting names (any case) that choose which server a saved secret is sent to.
+# A URL-typed field also counts; see ``is_destination_field``.
+DESTINATION_FIELD_NAMES = frozenset({
+    "host", "hostname", "port", "domain", "subdomain", "baseurl", "url", "endpoint",
+    "instanceurl", "instance_url", "tokenurl", "authorizeurl", "apiurl", "serverurl",
+    "server", "account", "accounturl", "siteurl", "workspaceurl", "region", "base_url",
+    "endpointurl", "consoleurl", "sharepointdomain", "accountidentifier", "loginurl",
+    # How the connection to that server is protected: weakening it exposes the secret.
+    "verifyssl", "verify_ssl", "usessl", "use_ssl", "sslca", "ssl_ca",
+})
+
+
+def is_destination_field(name: str, field_type: object = "") -> bool:
+    return name.lower() in DESTINATION_FIELD_NAMES or str(field_type or "").upper() == "URL"
+
+
+def destination_changed(incoming: object, existing: object) -> bool:
+    """True when ``incoming`` names a different scheme, user, host, port, path or query than
+    ``existing``, by the same rule as the Node ``normalizeDestination``: scheme and host ignore
+    case, a default port and a trailing dot on the host name the same address, and the user
+    and query count (either can route a request elsewhere).
+    A value that cannot be read as an address counts as changed."""
+
+    def normalize(value: object) -> str:
+        text = "" if value is None else str(value).strip()
+        parsed = urlparse(text)
+        if not (parsed.scheme and parsed.netloc):
+            # A bare host name has no scheme, and host names ignore case.
+            return text.rstrip(".").lower()
+        scheme = parsed.scheme.lower()
+        userinfo, _, _ = parsed.netloc.rpartition("@")
+        host = (parsed.hostname or "").rstrip(".")
+        port = parsed.port  # raises ValueError for a port that is not a number
+        if port is not None and port != {"http": 80, "https": 443}.get(scheme):
+            host = f"{host}:{port}"
+        query = f"?{parsed.query}" if parsed.query else ""
+        return f"{scheme}://{userinfo}@{host}{parsed.path.rstrip('/')}{query}"
+
+    try:
+        return normalize(incoming) != normalize(existing)
+    except ValueError:
+        return True
+
+
+def _filled(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def reuses_secret_for_new_destination(
+    incoming: dict[str, Any], saved: dict[str, Any], defaults: dict[str, Any] | None = None,
+) -> bool:
+    """True when ``saved`` has a client secret that ``incoming`` does not type again while
+    it changes any setting that picks where the app's requests go (see ``is_destination_field``).
+    Every spelling of the secret saved with a value must be typed again under that same spelling. ``incoming`` must not carry masked
+    placeholders. A blank saved address is compared with the provider's ``defaults``."""
+    kept = [k for k in _OAUTH_SECRET_KEYS if _filled(saved.get(k))]
+    if not kept or all(_filled(incoming.get(k)) for k in kept):
+        return False
+    return any(
+        is_destination_field(key) and address_moved(value, saved.get(key), (defaults or {}).get(key))
+        for key, value in incoming.items()
+    )
+
+
+def address_moved(value: object, stored: object, default: object = None) -> bool:
+    """True when ``value`` is not the address that is in force: the stored one, or the
+    field's own default when none is stored. A blank address, sent or stored, means the default."""
+    blank = (None, "")
+    return destination_changed(default if value in blank else value, default if stored in blank else stored)
+
+
+def schema_field_defaults(fields: list[Any]) -> dict[str, Any]:
+    """Default value of each declared field that has one."""
+    return {
+        f["name"]: f.get("defaultValue", f.get("default_value"))
+        for f in fields
+        if isinstance(f, dict) and f.get("name") and f.get("defaultValue", f.get("default_value")) not in (None, "")
+    }
+
+
+def kept_secret_follows_new_address(
+    sent: dict[str, Any],
+    stored: dict[str, Any] | None,
+    secret_fields: frozenset[str] | set[str],
+    fields: list[Any] | None = None,
+) -> bool:
+    """True when a save leaves a stored secret in place (``sent`` has no value for it) while
+    it moves a destination setting. ``sent`` must have had masked secrets removed; ``fields``
+    are the schema's field definitions (their URL types and defaults count)."""
+    stored = stored or {}
+    kept = any(_filled(stored.get(k)) and k not in sent for k in secret_fields)
+    if not kept:
+        return False
+    declared = [f for f in fields or [] if isinstance(f, dict) and f.get("name")]
+    named = {f["name"] for f in declared if is_destination_field(f["name"], f.get("fieldType"))}
+    defaults = schema_field_defaults(declared)
+    return any(
+        (key in named or is_destination_field(key)) and address_moved(value, stored.get(key), defaults.get(key))
+        for key, value in sent.items()
+    )
+
+
 def check_oauth_url_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
     rule = _rule_for(connector_type)
     if rule:

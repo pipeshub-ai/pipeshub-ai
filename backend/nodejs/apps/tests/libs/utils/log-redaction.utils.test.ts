@@ -782,6 +782,49 @@ describe('log-redaction.utils', () => {
   })
 
   describe('redactLogMetadata', () => {
+    it('keeps the scope and claim fields the first logging pass keeps', () => {
+      const out = redactLogMetadata({
+        tokenScopes: ['kb:write'],
+        tokenUsage: { input: 1 },
+      }) as Record<string, unknown>;
+      expect(out.tokenScopes).to.deep.equal(['kb:write']);
+      expect(out.tokenUsage).to.deep.equal({ input: 1 });
+    });
+
+    it('masks connection strings and the other log-only credential names', () => {
+      const out = JSON.stringify(
+        redactLogMetadata({
+          connectionString: 'postgres://u:FAKE-pw@h/db',
+          connection_string: 'FAKE-2',
+          passphrase: 'FAKE-3',
+          privatekey: 'FAKE-4',
+          accessKey: 'FAKE-5',
+          secretkey: 'FAKE-6',
+        }),
+      );
+      expect(out).to.not.contain('FAKE');
+    });
+
+    it('masks credential-named fields at any depth and keeps the rest', () => {
+      const out = redactLogMetadata({
+        provider: 'openai',
+        modelKey: 'm1',
+        tokenCount: 3,
+        configuration: {
+          model: 'gpt-4',
+          apiKey: 'sk-FAKE-1',
+          awsAccessSecretKey: 'FAKE-aws',
+          serviceAccountJson: '{"private_key":"FAKE-json"}',
+          identityForwardingServiceApiKey: 'FAKE-fwd',
+        },
+      });
+      const logged = JSON.stringify(out);
+      for (const v of ['sk-FAKE-1', 'FAKE-aws', 'FAKE-json', 'FAKE-fwd'])
+        expect(logged).to.not.contain(v);
+      expect(logged).to.contain('gpt-4');
+      expect(logged).to.contain('"tokenCount":3');
+    });
+
     it('redacts URL-valued fields and secret headers at any depth', () => {
       const out = redactLogMetadata({
         context: {

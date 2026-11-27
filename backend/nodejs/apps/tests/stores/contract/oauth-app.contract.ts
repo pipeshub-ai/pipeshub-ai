@@ -287,7 +287,10 @@ export function describeOAuthAppContract(fx: OAuthAppFixture): void {
       const org = fx.newId();
       const me = fx.newId();
       const app = await repo.create(mk(org, me, { allowedScopes: ['a', 'b'] }));
-      expect(await repo.findLiveAllowedScopes(app.clientId)).to.deep.equal({ allowedScopes: ['a', 'b'] });
+      expect(await repo.findLiveAllowedScopes(app.clientId)).to.deep.equal({
+        allowedScopes: ['a', 'b'],
+        clientSecretEncrypted: app.clientSecretEncrypted,
+      });
       await repo.updateOwned(org, me, app._id, { isDeleted: true });
       expect(await repo.findLiveAllowedScopes(app.clientId)).to.equal(null);
     });

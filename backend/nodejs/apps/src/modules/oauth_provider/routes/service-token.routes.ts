@@ -7,6 +7,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { ServiceTokenController } from '../controller/service-token.controller';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { requireSessionAuthWhenEnforced } from '../../../libs/middlewares/require-session-auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
@@ -30,6 +31,8 @@ export function createServiceTokenRouter(container: Container): Router {
   );
 
   router.use(authMiddleware.authenticate.bind(authMiddleware));
+  // Minting a credential is done in person, never with a bearer token the caller already holds.
+  router.use(requireSessionAuthWhenEnforced);
   router.use(rateLimiter);
 
   // Admin-only throughout. A service token grants a machine its own view of
@@ -37,11 +40,11 @@ export function createServiceTokenRouter(container: Container): Router {
   // — unlike a personal access token, which only ever hands someone what they
   // could already reach themselves.
   //
-  // The scope checks on each route below are the other half of that, and they
-  // are not redundant: requireScopes is a no-op for session JWTs and the only
-  // thing enforced for OAuth tokens and personal access tokens. Without it an
-  // administrator's narrowly scoped PAT could mint a credential with more
-  // reach than the PAT itself has.
+  // The scope checks on each route are the other half of that, and they are not
+  // redundant: requireScopes is a no-op for session JWTs and the only thing enforced
+  // for OAuth tokens and personal access tokens unless the guard above enforces. Without
+  // it an administrator's narrowly scoped PAT could mint a credential with more reach
+  // than the PAT itself has.
   router.use(userAdminCheck);
 
   router.get(

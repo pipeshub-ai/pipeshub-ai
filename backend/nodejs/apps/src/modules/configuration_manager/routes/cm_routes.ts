@@ -137,7 +137,10 @@ import {
 } from '../slack-identity/slack-identity.controller';
 import { slackIdentityLinks } from '../slack-identity/slack-linked-account';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import {
+  requireScopes,
+  requireScopesWhenEnforced,
+} from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
@@ -580,6 +583,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/slack-bot',
     authMiddleware.authenticate,
+    requireScopesWhenEnforced(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getSlackBotConfigs(serviceStore),
   );
@@ -592,6 +596,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/slack-bot',
     authMiddleware.authenticate,
+    requireScopesWhenEnforced(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(createSlackBotConfigSchema),
     createSlackBotConfig(adminStore),
@@ -600,6 +605,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.put(
     '/slack-bot/:configId',
     authMiddleware.authenticate,
+    requireScopesWhenEnforced(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(updateSlackBotConfigSchema),
     updateSlackBotConfig(adminStore),
@@ -608,6 +614,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.delete(
     '/slack-bot/:configId',
     authMiddleware.authenticate,
+    requireScopesWhenEnforced(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(deleteSlackBotConfigSchema),
     deleteSlackBotConfig(adminStore),

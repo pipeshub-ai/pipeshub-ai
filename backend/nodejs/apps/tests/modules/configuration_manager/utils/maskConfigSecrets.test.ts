@@ -30,6 +30,8 @@ import {
   redactCredentialTemplates,
   CREDENTIAL_HEADER_HINT,
   isCredentialHeaderName,
+  smtpHostMovedWithSavedLogin,
+  webSearchBaseUrlMovedWithSavedKey,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
 const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
@@ -487,5 +489,37 @@ describe('withoutForwardingCredentials', () => {
 
   it('leaves a model without forwarding settings alone', () => {
     expect(withoutForwardingCredentials({ apiKey: 'a' })).to.deep.equal({ apiKey: 'a' })
+  })
+})
+
+describe('a kept secret and the address it goes to', () => {
+  const P = CONFIG_SECRET_PLACEHOLDER
+  const smtp = { host: 'smtp.example.com', port: 587, username: 'u', password: 'p' }
+
+  it('counts a new SMTP port as a move, since the port also picks TLS', () => {
+    expect(smtpHostMovedWithSavedLogin({ ...smtp, port: 25, password: P }, smtp)).to.equal(true)
+    expect(smtpHostMovedWithSavedLogin({ ...smtp, host: P, port: 465, username: P }, smtp)).to.equal(true)
+    expect(smtpHostMovedWithSavedLogin({ ...smtp, password: P }, smtp)).to.equal(false)
+  })
+
+  it('reads a trailing dot as the same SMTP host', () => {
+    expect(smtpHostMovedWithSavedLogin({ ...smtp, host: 'SMTP.example.com.', password: P }, smtp)).to.equal(false)
+  })
+
+  const searx = { apiKey: 'k', baseUrl: 'https://search.example.com' }
+  const moved = (baseUrl: unknown, existing: Record<string, unknown> = searx, provider = 'searxng') =>
+    webSearchBaseUrlMovedWithSavedKey({ apiKey: P, baseUrl }, existing, provider, provider)
+
+  it('reads an explicit default port and a trailing dot as the same address', () => {
+    expect(moved('https://search.example.com:443/')).to.equal(false)
+    expect(moved('https://search.example.com./')).to.equal(false)
+    expect(moved('https://search.example.com:8443')).to.equal(true)
+  })
+
+  it("reads a blank saved address as the provider's default", () => {
+    const cloud = { apiKey: 'k' }
+    expect(moved('https://api.firecrawl.dev', cloud, 'firecrawl')).to.equal(false)
+    expect(moved(undefined, { apiKey: 'k', baseUrl: 'https://api.firecrawl.dev' }, 'firecrawl')).to.equal(false)
+    expect(moved('https://collect.attacker.test', cloud, 'firecrawl')).to.equal(true)
   })
 })

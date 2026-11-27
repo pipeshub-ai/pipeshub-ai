@@ -1377,6 +1377,8 @@ adds what is specific to its role after it (the main pod: Node and the agent har
               value: {{ .Values.config.logLevel | quote }}
             - name: LOG_FORMAT
               value: {{ .Values.config.logFormat | default "text" | quote }}
+            - name: TOKEN_RESTRICTIONS_MODE
+              value: {{ .Values.config.tokenRestrictionsMode | default "log" | quote }}
             - name: HIDE_SECRET_CONFIG
               value: {{ .Values.config.hideSecretConfig | quote }}
 {{- if ne (toString .Values.telemetry.collection.enabled) "" }}

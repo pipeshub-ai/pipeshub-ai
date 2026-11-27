@@ -230,15 +230,19 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.sources.client.http.address_guard import AddressNotAllowedError, check_url_allowed
 from app.utils.oauth_config import (
+    CREDENTIAL_REENTRY_MESSAGE,
     OAUTH_APP_OWNER_FIELD,
+    OAUTH_DESTINATION_KEYS,
     SALESFORCE_LOGIN_URL_ERROR,
     check_oauth_url_settings,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
+    kept_secret_follows_new_address,
     oauth_app_owner,
     oauth_app_usable_by,
     pin_oauth_urls,
+    reuses_secret_for_new_destination,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.credential_refresh_log import token_endpoint_error_class
@@ -1366,6 +1370,25 @@ def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[
         for key, value in auth.items()
         if not (key in secret_auth_fields and value == REDACTED_PLACEHOLDER)
     }
+
+
+async def _auth_schema_fields(connector_registry: ConnectorRegistry, connector_type: str) -> list[Any]:
+    """Every auth field the connector's registry schemas declare."""
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    schemas = ((metadata.get(OAuthConfigKeys.CONFIG) or {}).get(OAuthConfigKeys.AUTH) or {}).get("schemas") if isinstance(metadata, dict) else None
+    return [
+        field
+        for schema in (schemas.values() if isinstance(schemas, dict) else [])
+        for field in (schema.get("fields") if isinstance(schema, dict) else None) or []
+    ]
+
+
+def _refuse_kept_secret_for_new_address(
+    sent_auth: dict[str, Any], stored_auth: dict[str, Any] | None, secret_auth_fields: frozenset[str], fields: list[Any],
+) -> None:
+    """400 when a save keeps a stored secret (sent back masked) while it moves the server."""
+    if kept_secret_follows_new_address(sent_auth, stored_auth, secret_auth_fields, fields):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=CREDENTIAL_REENTRY_MESSAGE)
 
 
 def _require_auth_is_object(auth: object, *, allow_null: bool = False) -> None:
@@ -4805,6 +4828,8 @@ async def _full_save_oauth_app(
         return values
 
     sent = _values(incoming_auth)
+    # What the request typed: a secret sent back as the mask is not retyped.
+    typed = {name: value for name, value in sent.items() if value != REDACTED_PLACEHOLDER}
     stored = _values(stored_auth)
     named_app_id = incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
     current_app_id = named_app_id or stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
@@ -4833,6 +4858,24 @@ async def _full_save_oauth_app(
             )
         # Values the request did not change come from the linked app, when it still exists.
         unchanged = app_values if current_app else stored
+        if current_app and (
+            current_app.get("orgId") not in (None, org_id)
+            or current_app.get("_resolved_from") not in (None, "own")
+        ):
+            # An app this caller does not own keeps its client ID and secret: the
+            # new app takes the ones this request sends.
+            own_fields = {AuthFieldKeys.CLIENT_ID, *secret_fields}
+            if AuthFieldKeys.CLIENT_ID not in sent or not any(name in sent for name in secret_fields):
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="This OAuth app is not yours. Enter your own client ID and client secret.",
+                )
+            changed = {**changed, **{name: value for name, value in sent.items() if name in own_fields}}
+            unchanged = {name: value for name, value in unchanged.items() if name not in own_fields}
+        if reuses_secret_for_new_destination(
+            typed, unchanged, {k: (current_app or {}).get(k) for k in OAUTH_DESTINATION_KEYS}
+        ):
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=CREDENTIAL_REENTRY_MESSAGE)
     else:
         if not sent:
             return None
@@ -4857,7 +4900,10 @@ async def _full_save_oauth_app(
 
     if named_app_id:
         # Only what changed, so a value echoed from an older copy cannot reach a shared app.
-        app_auth: dict[str, Any] = {**changed, OAuthConfigKeys.OAUTH_CONFIG_ID: named_app_id}
+        # A secret typed again equals the app's, so it is not in `changed`, but the app's own
+        # save must still see it was typed.
+        retyped = {name: typed[name] for name in secret_fields if name in typed}
+        app_auth: dict[str, Any] = {**changed, **retyped, OAuthConfigKeys.OAUTH_CONFIG_ID: named_app_id}
         if AuthFieldKeys.CLIENT_ID in changed:
             # A new client ID goes with the secret sent for it, even one equal to the old secret.
             app_auth.update({name: sent[name] for name in secret_fields if name in sent})
@@ -5950,6 +5996,10 @@ async def update_connector_instance_auth_config(
         auth_config_raw = _without_masked_secrets(
             _without_server_set_auth_fields(body.get(OAuthConfigKeys.AUTH, {})), secret_auth_fields
         )
+        _refuse_kept_secret_for_new_address(
+            auth_config_raw, _auth_section(cast(object, existing_config)), secret_auth_fields,
+            await _auth_schema_fields(connector_registry, connector_type),
+        )
         _reject_auth_the_connector_refuses(connector_type, auth_config_raw, _auth_section(cast(object, existing_config)))
 
         # Auto-create or update OAuth config if OAuth fields are provided and user is admin
@@ -6406,6 +6456,10 @@ async def update_connector_instance_config(
         # connector on every save.
         _incoming_auth = body.get("auth")
         _stored_auth = (existing_config or {}).get("auth") or {}
+        if isinstance(_incoming_auth, dict):
+            _refuse_kept_secret_for_new_address(
+                _incoming_auth, _stored_auth, secret_auth_fields, await _auth_schema_fields(connector_registry, connector_type)
+            )
         # A linked connector keeps no copy of its app's secrets, so a secret sent back in
         # full has nothing here to differ from; one that changes the app is caught when
         # the app is written below. A secret still stored on the connector does count.
@@ -9632,10 +9686,8 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     auth_type = body.get("authType")
     if isinstance(auth_type, str) and auth_type and "authType" not in auth:
         auth = {**auth, "authType": auth_type}
-    auth = _without_masked_secrets(
-        _without_server_set_auth_fields(auth),
-        await _secret_auth_field_names(connector_registry, connector_type),
-    )
+    secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
+    auth = _without_masked_secrets(_without_server_set_auth_fields(auth), secret_auth_fields)
 
     connector_id = body.get("connectorId")
     stored_auth: dict[str, Any] | None = None
@@ -9657,6 +9709,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
         fixed_type = instance.get("authType") or stored_auth.get("authType")
         if fixed_type:
             auth = {**auth, "authType": fixed_type}
+    if kept_secret_follows_new_address(
+        auth, stored_auth, secret_auth_fields, await _auth_schema_fields(connector_registry, connector_type)
+    ):
+        return ConnectionCheckResult(success=False, message=CREDENTIAL_REENTRY_MESSAGE).model_dump()
     # The save would refuse these settings anyway; the form says why before it tries.
     problem = _auth_save_problem(connector_type, auth, stored_auth)
     if problem:
@@ -10234,6 +10290,14 @@ async def _create_or_update_oauth_config(
                     if OAuthConfigKeys.CONFIG not in oauth_cfg:
                         oauth_cfg[OAuthConfigKeys.CONFIG] = {}
 
+                    typed = {n: _oauth_field_value(auth_config, n) for n in oauth_field_names}
+                    if reuses_secret_for_new_destination(
+                        {k: v for k, v in typed.items() if v is not None},
+                        oauth_cfg[OAuthConfigKeys.CONFIG],
+                        {k: oauth_cfg.get(k) for k in OAUTH_DESTINATION_KEYS},
+                    ):
+                        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=CREDENTIAL_REENTRY_MESSAGE)
+
                     # Update all OAuth credential fields dynamically from auth_config
                     # This allows overriding existing OAuth config credentials
                     for field_name in oauth_field_names:
@@ -10325,6 +10389,8 @@ async def _create_or_update_oauth_config(
         logger.info(f"Successfully saved OAuth config for connector {connector_type}")
         return oauth_app_id
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating/updating OAuth config: {e}", exc_info=True)
         return None
@@ -10683,7 +10749,7 @@ async def list_oauth_configs(
                 {
                     **row,
                     OAuthConfigKeys.CONFIG: mask_oauth_config_for_response(
-                        row, user_context["org_id"], is_admin=True, reveal=reveal
+                        row, user_context["org_id"], is_admin=True, reveal=reveal, request=request
                     )["config"],
                 }
                 if isinstance(row.get(OAuthConfigKeys.CONFIG), dict)
@@ -10778,6 +10844,7 @@ async def get_oauth_config_by_id(
             user_context["org_id"],
             is_admin=user_context["is_admin"],
             reveal=can_reveal_secrets(request),
+            request=request,
         )
 
         # For admins: return full config (edition may redact inherited secrets)
@@ -10891,6 +10958,10 @@ async def update_oauth_config(
         if new_config:
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
+            if reuses_secret_for_new_destination(
+                cleaned, existing_cfg, {k: oauth_config.get(k) for k in OAUTH_DESTINATION_KEYS}
+            ):
+                raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=CREDENTIAL_REENTRY_MESSAGE)
             merged = {**existing_cfg, **cleaned}
             _check_oauth_app_urls(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
