@@ -107,6 +107,57 @@ class Imports(unittest.TestCase):
         self.assertEqual(edition_guard.check([], changed).errors, [])
 
 
+class OpenEditionRoots(unittest.TestCase):
+    """The ee/ directories this repository ships pass rules 1 and 2; nothing beside them does."""
+
+    def test_files_under_an_open_root_pass(self) -> None:
+        for path in (
+            "backend/python/app/ee/permission_sync/box.py",
+            "backend/python/tests/unit/ee/__init__.py",
+            "backend/python/tests/unit/ee/permission_sync/test_box_gate.py",
+            "backend/nodejs/apps/src/ee/modules/license/license-codec.ts",
+            "backend/nodejs/apps/tests/ee/modules/license/license-core.test.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(edition_guard.check([path], "").errors, [])
+
+    def test_ee_paths_beside_an_open_root_still_fail(self) -> None:
+        for path in (
+            "backend/python/app/ee/harness/thing.py",
+            "backend/python/app/ee/permission_sync_extra/x.py",
+            "backend/python/app/ee/__init__.py",
+            "backend/python/tests/unit/ee/other/test_x.py",
+            "backend/nodejs/apps/src/ee/modules/billing/x.ts",
+            "backend/nodejs/apps/src/ee/modules/license.ts",
+            "frontend/ee/modules/license/x.ts",
+            "x/backend/python/app/ee/permission_sync/box.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(len(edition_guard.check([path], "").errors), 1)
+
+    def test_imports_of_an_open_root_pass(self) -> None:
+        for path, line in (
+            ("backend/python/app/connectors/sources/box/connector.py",
+             "from app.ee.permission_sync.box import BoxPermissionsMixin"),
+            ("backend/python/app/x.py", "import app.ee.permission_sync"),
+            ("backend/nodejs/apps/src/config.ts",
+             "export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(edition_guard.check([], diff(path, line)).errors, [])
+
+    def test_imports_beside_an_open_root_still_fail(self) -> None:
+        for path, line in (
+            ("backend/python/app/x.py", "from app.ee.harness import edition"),
+            ("backend/python/app/x.py", "from app.ee import permission_sync"),
+            ("backend/python/app/x.py", "from app.ee.permission_syncer import x"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/billing/x';"),
+            ("frontend/config.ts", "import { Y } from '@/ee/lib/license';"),
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(len(edition_guard.check([], diff(path, line)).errors), 1)
+
+
 class Licence(unittest.TestCase):
     def test_a_proprietary_licence_marker_fails_in_any_file(self) -> None:
         for path in ("backend/python/app/x.py", "frontend/x.ts", "README.md"):

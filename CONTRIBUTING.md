@@ -322,9 +322,15 @@ Docs cover this repository's code only, and only as reference: design, decisions
 tracking (status boards, work logs, evidence captures, work-package records, research and review notes) is kept
 outside this repository, as is an edition's own design notes; nothing adds marked rows here for a test to skip.
 
+Two paid features ship in this repository, each in its own named `ee/` directory, and a licence key turns them
+on: permission sync's readers (`backend/python/app/ee/permission_sync/`, tests in
+`backend/python/tests/unit/ee/permission_sync/`) and the licence check (`backend/nodejs/apps/src/ee/modules/license/`,
+tests in `backend/nodejs/apps/tests/ee/modules/license/`). The guard admits only these directories and imports of
+them (`OPEN_EE_ROOTS`); every other `ee/` path or import fails as before.
+
 `scripts/edition_guard.py` keeps the repository neutral (CI: `.github/workflows/edition-guard.yml`). It fails a
-change that adds a file under an `ee/` directory or an edition-only build file, adds an import of an `ee` package
-or directory, adds a file to a directory that accepts fixes only, adds a proprietary licence marker, or adds a
+change that adds a file under an `ee/` directory (other than those above) or an edition-only build file, adds an
+import of an `ee` package or directory, adds a file to a directory that accepts fixes only, adds a proprietary licence marker, or adds a
 project-tracking document under `docs/agent-harness-v2/`. Run it
 before you push; `scripts/verify.sh` runs it on what you have not committed yet:
 

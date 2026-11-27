@@ -5,9 +5,10 @@ Other editions build on this repository through its extension points (see CONTRI
 points"); their own code lives in their own repositories. A change here therefore fails when it
 
 1. adds a file under an ``ee/`` directory at any depth, or an edition-only build file
-   (``Dockerfile.ee``, a workflow named ``*-ee.yml``, a deployment file named ``*.ee.*``);
+   (``Dockerfile.ee``, a workflow named ``*-ee.yml``, a deployment file named ``*.ee.*``), except under one of the
+   ``OPEN_EE_ROOTS`` this repository ships (see below);
 2. adds an import of an ``ee`` package or directory (Python ``app.ee``; TypeScript ``@/ee/``, ``./ee/``,
-   ``../ee/``);
+   ``../ee/``), except of one of those roots;
 3. adds a file to a directory that accepts fixes only (``FROZEN``);
 4. adds a proprietary licence marker;
 5. names a private edition repository, in an added line or a commit message: both are public once pushed;
@@ -48,6 +49,19 @@ EDITION_PATHS = (
     re.compile(r"^\.github/workflows/.*-ee\.ya?ml$"),
     re.compile(r"^deployment/.*\.ee\."),
 )
+
+# The ee/ directories this repository ships: the paid features a licence key turns on (permission sync's readers
+# and the licence check), kept in their own named directories so the line between free and paid stays visible.
+# A file under one of these, or an import of one, passes rules 1 and 2. Every other ee/ path or import still fails.
+OPEN_EE_ROOTS = (
+    "backend/python/app/ee/permission_sync/",
+    "backend/python/tests/unit/ee/__init__.py",
+    "backend/python/tests/unit/ee/permission_sync/",
+    "backend/nodejs/apps/src/ee/modules/license/",
+    "backend/nodejs/apps/tests/ee/modules/license/",
+)
+OPEN_EE_PYTHON = re.compile(r"\bapp\.ee\.permission_sync(?:\.|\s|$)")
+OPEN_EE_SCRIPT = re.compile(r"""["'](?:@/ee/|(?:\.{1,2}/)+ee/)modules/license/""")
 
 PYTHON_SOURCES = (".py", ".pyi")
 SCRIPT_SOURCES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
@@ -149,7 +163,7 @@ def _frozen(path: str) -> bool:
 def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -> Report:
     report = Report()
     for path in added_paths:
-        if any(pattern.search(path) for pattern in EDITION_PATHS):
+        if any(pattern.search(path) for pattern in EDITION_PATHS) and not path.startswith(OPEN_EE_ROOTS):
             report.errors.append(f"{path}: an edition-only path; it belongs in that edition's repository")
         if _frozen(path):
             report.errors.append(f"{path}: a new file in a directory that accepts fixes only")
@@ -157,9 +171,11 @@ def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -
             report.errors.append(f"{path}: a project-tracking document; the tracker is kept outside this repository")
     for line in added_lines(diff):
         where = f"{line.path}:{line.number}"
-        if line.path.endswith(PYTHON_SOURCES) and any(p.search(line.text) for p in PYTHON_IMPORTS):
+        python_import = any(p.search(line.text) for p in PYTHON_IMPORTS) and not OPEN_EE_PYTHON.search(line.text)
+        script_import = any(p.search(line.text) for p in SCRIPT_IMPORTS) and not OPEN_EE_SCRIPT.search(line.text)
+        if line.path.endswith(PYTHON_SOURCES) and python_import:
             report.errors.append(f"{where}: imports an edition package; use an extension point instead")
-        if line.path.endswith(SCRIPT_SOURCES) and any(p.search(line.text) for p in SCRIPT_IMPORTS):
+        if line.path.endswith(SCRIPT_SOURCES) and script_import:
             report.errors.append(f"{where}: imports an edition directory; use an extension point instead")
         if LICENCE_MARKER in line.text:
             report.errors.append(f"{where}: a proprietary licence marker; this repository's code is Apache-2.0")
