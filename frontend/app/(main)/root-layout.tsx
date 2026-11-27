@@ -7,7 +7,6 @@ import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
 import { SWRConfig } from "swr"
 import { axiosFetcher } from "@/lib/api"
-import { logoutAndRedirect } from "@/config"
 import { UploadProgressTracker } from "../components/upload-progress-tracker"
 import { ToastContainer } from "../components/feedback"
 import { I18nextProvider, useTranslation } from 'react-i18next'
@@ -148,11 +147,8 @@ function AppLayout({
     <SWRConfig
       value={{
         fetcher: axiosFetcher,
-        onError: (error) => {
-          if (error?.type === 'AUTHENTICATION_ERROR') {
-            logoutAndRedirect()
-          }
-        },
+        // apiClient owns sign-out. A 401 that reaches a hook came back after a successful refresh: a retry cannot fix it and costs a refresh.
+        shouldRetryOnError: (error) => error?.statusCode !== 401,
       }}
     >
       <NotificationProvider />

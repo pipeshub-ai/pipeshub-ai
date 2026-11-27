@@ -2260,7 +2260,9 @@ async def merge_pattern_match_results(
     and filtered before the expensive blob fetch.
     """
     scope = requested_scope_ids(filters)
-    if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
+    # Strict with no app named means nothing, unless a selection below app level
+    # stands in for the apps: its scope (resolved below) then bounds every hit.
+    if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY) and not has_selection(filters):
         return []
 
     # Rank across connectors before the cap; each connector's list is already

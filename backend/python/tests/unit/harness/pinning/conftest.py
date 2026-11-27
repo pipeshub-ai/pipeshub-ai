@@ -17,11 +17,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
+@pytest.fixture
+def world_skills() -> bool:
+    """Whether the world's deployment runs skills; a module that needs them overrides this fixture."""
+    return False
+
+
 @pytest.fixture(autouse=True)
-def assembly_world(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def assembly_world(monkeypatch: pytest.MonkeyPatch, world_skills: bool) -> Iterator[None]:
     monkeypatch.setenv(HARNESS_FLOW_GUARD, "false")
     monkeypatch.setenv(TOOLSET_ENABLED_ENV, "false")
     monkeypatch.delenv(FLOW_LEVEL_ENV, raising=False)
     monkeypatch.delenv(FLOW_ABOVE_ENV, raising=False)
-    with w.deployment():
+    with w.deployment(skills=world_skills):
         yield

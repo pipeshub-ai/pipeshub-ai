@@ -91,7 +91,13 @@ class Invoker:
             digest if digest is not None else args_digest(call.arguments),
         )
 
-    def context(self, invocation_id: str, turn_text: str = "") -> ToolContext:
+    def context(
+        self,
+        invocation_id: str,
+        turn_text: str = "",
+        interaction_id: str | None = None,
+        args_digest: str | None = None,
+    ) -> ToolContext:
         scope = self._scope
         return ToolContext(
             scope.run_id,
@@ -100,6 +106,8 @@ class Invoker:
             scope.attempt_id,
             idempotency_key(scope.org_id, scope.run_id, invocation_id),
             turn_text,
+            interaction_id,
+            args_digest,
         )
 
     async def read(self, call: EffectCall, ctx: ToolContext) -> ToolExecution:

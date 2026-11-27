@@ -211,8 +211,8 @@ async def test_linked_to_unreadable_record_denied_though_uploaded_by_caller(p: P
 
 
 async def test_oversize_upload_status_on_real_storage(p: Pushes) -> None:
-    """The real upload route answers 400 (not 413) over the 30 MiB default and ``create`` maps it to 413: exactly the limit
-    is stored, limit + 1 is refused with the limit that was read."""
+    """The real upload route answers 413 over the 30 MiB default and ``create`` carries the limit it read: exactly the
+    limit is stored, limit + 1 is refused with that limit."""
     limit = await p.docs.upload_limit()
     assert limit == 30 << 20, "this cell assumes the default platform setting"
     tmp = tempfile.mkdtemp(prefix="pb")

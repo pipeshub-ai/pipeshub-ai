@@ -2353,7 +2353,7 @@ describe('Enterprise Search Controller', () => {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
-      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      stubResolves(ChatSession, 'findOne', mockConversation)
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
@@ -2361,6 +2361,8 @@ describe('Enterprise Search Controller', () => {
         shareLink: undefined,
         sharedWith: [],
       } as any)
+      stubChatSessionMessageLeanFind([])
+      capturePermissionSyncCalls()
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -2373,11 +2375,10 @@ describe('Enterprise Search Controller', () => {
       const handler = unshareConversationById(createMockAppConfig())
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response).to.have.property('unsharedUsers')
-      }
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.include({ isShared: false })
+      expect(res.json.firstCall.args[0].unsharedUsers).to.deep.equal([VALID_OID3])
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -2436,29 +2437,31 @@ describe('Enterprise Search Controller', () => {
         userIds: [VALID_OID3],
       })
       expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      // The strict revokes get the full budget; the post-commit repeat gets the view's.
+      expect(calls.map((c) => [c.uri.split('/chat/')[1], c.method, c.timeoutMs, c.maxAttempts])).to.deep.equal([
+        ['attachments/permissions', 'DELETE', 15_000, 3],
+        ['artifacts/permissions', 'DELETE', 15_000, 3],
+        ['attachments/permissions', 'DELETE', 3_000, 1],
+        ['artifacts/permissions', 'DELETE', 3_000, 1],
+      ])
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should still unshare the conversation when revoking artifact permissions fails', async () => {
+    it('a refused artifact revoke fails the unshare with 503 and leaves the list unchanged', async () => {
       const mockConversation = {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
-      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      stubResolves(ChatSession, 'findOne', mockConversation)
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
-      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
-        _id: VALID_OID,
-        isShared: false,
-        shareLink: undefined,
-        sharedWith: [],
-      } as any)
-
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID, sharedWith: [] } as any)
       stubChatSessionMessageLeanFind([])
-
-      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 503,
+        data: { detail: 'DATABASE_UNREACHABLE' },
+        headers: { 'retry-after': '5' },
+      } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -2468,13 +2471,13 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      const handler = unshareConversationById(createMockAppConfig())
-      await handler(req, res, next)
+      await unshareConversationById(createMockAppConfig())(req, res, next)
 
-      expect(next.called).to.be.false
-      expect(res.status.calledWith(200)).to.be.true
-      const response = res.json.firstCall.args[0]
-      expect(response).to.have.property('unsharedUsers')
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(503)
+      expect(next.firstCall.args[0].metadata).to.deep.include({ retryAfter: '5' })
+      expect(update.called).to.be.false
+      expect(res.status.called).to.be.false
     })
   })
 
@@ -5194,13 +5197,17 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       })
 
-      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      // The repository awaits findOne itself (no .exec()), so it must resolve to the document.
+      stubResolves(ChatSession, 'findOne', mockConversation)
       sinon.stub(Users, 'find').resolves([{ _id: VALID_OID3, email: 'test@test.com' }] as any)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         isShared: false,
         sharedWith: [],
       } as any)
+      stubChatSessionMessageLeanFind([])
+      capturePermissionSyncCalls()
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -5213,9 +5220,10 @@ describe('Enterprise Search Controller', () => {
       const handler = unshareConversationById(createMockAppConfig())
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].isShared).to.equal(false)
+      expect(update.firstCall.args[1]).to.deep.include({ isShared: false, sharedWith: [] })
     })
 
     it('should keep isShared true when some shares remain', async () => {
@@ -5230,13 +5238,17 @@ describe('Enterprise Search Controller', () => {
         ],
       })
 
-      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      // The repository awaits findOne itself (no .exec()), so it must resolve to the document.
+      stubResolves(ChatSession, 'findOne', mockConversation)
       sinon.stub(Users, 'find').resolves([{ _id: VALID_OID3, email: 'test@test.com' }] as any)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const update = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         isShared: true,
         sharedWith: [{ userId: user4, accessLevel: 'write' }],
       } as any)
+      stubChatSessionMessageLeanFind([])
+      capturePermissionSyncCalls()
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -5249,9 +5261,11 @@ describe('Enterprise Search Controller', () => {
       const handler = unshareConversationById(createMockAppConfig())
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].isShared).to.equal(true)
+      expect(update.firstCall.args[1]).to.not.have.property('isShared')
+      expect((update.firstCall.args[1] as any).sharedWith.map((x: any) => String(x.userId))).to.deep.equal([String(user4)])
     })
   })
 
@@ -8823,6 +8837,8 @@ describe('Enterprise Search Controller', () => {
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
+      stubChatSessionMessageLeanFind([])
+      capturePermissionSyncCalls()
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -8836,6 +8852,7 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('Failed to update conversation sharing settings')
     })
   })
 
@@ -14884,6 +14901,7 @@ describe('Enterprise Search Controller', () => {
       // unshareConversationById revokes attachment permissions via a bare
       // `.find(...).lean()` (no .exec()); give it a real resolving promise.
       stubChatSessionMessageLeanFind([])
+      capturePermissionSyncCalls()
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },

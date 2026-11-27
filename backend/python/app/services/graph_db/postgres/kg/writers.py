@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 CAP = 5000
-STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf")
+STAMP_COLS = ("sk", "coll", "id", "kind", "path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf", "r13")
 RECORD_COLS = ("sk", "coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms",
                "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted")
 # The per-item checks of w_records_upsert (kg manifest) on the values a node's document supplies: one row that fails a check refuses the whole call. The id is not here: a key
@@ -152,20 +152,12 @@ class KgWriter:
                                            [r[0] for r in p], [r[1] for r in p], [r[2] for r in p]) for p in _chunks(sorted(rows))])
 
     async def stamps_set(self, rows: list[dict]) -> int:
-        """The access stamps of records (path, class, flags): one upsert whose update list is the stamp columns and nothing else."""
+        """The access stamps of records (path, class, flags) and their r13: one upsert whose update list is those columns and nothing else, so a row is rewritten once."""
         n = 0
         for part in _chunks(rows):
             n += await self.tx.fetchval(
-                "/* pipeshub:kg.w_stamps_set */ SELECT kg.w_stamps_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bytea[], $6::bigint[], $7::boolean[], $8::boolean[], $9::boolean[], "
-                "$10::boolean[], $11::smallint[], $12::boolean[], $13)", *[[r[c] for r in part] for c in STAMP_COLS], CODE_EPOCH)
-        return n
-
-    async def r13_set(self, rows: list[tuple[int, int, str, int, bool]]) -> int:
-        """Whether a record of no connector is opened by a grant on it alone: rows are (sk, coll code, id, kind code, r13), of records the caller has just stamped (the writer is an upsert)."""
-        n = 0
-        for part in _chunks(sorted(rows)):
-            n += await self.tx.fetchval("/* pipeshub:kg.w_r13_set */ SELECT kg.w_r13_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[])",
-                                        *[[r[i] for r in part] for i in range(5)])
+                "/* pipeshub:kg.w_stamps_r13_set */ SELECT kg.w_stamps_r13_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::bytea[], $6::bigint[], $7::boolean[], $8::boolean[], "
+                "$9::boolean[], $10::boolean[], $11::smallint[], $12::boolean[], $13::boolean[], $14)", *[[r[c] for r in part] for c in STAMP_COLS], CODE_EPOCH)
         return n
 
     async def scopes_set(self, rows: list[tuple[int, int, int, bool, bool, bool, bool]]) -> int:
