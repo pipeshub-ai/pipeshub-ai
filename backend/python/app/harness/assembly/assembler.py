@@ -145,12 +145,22 @@ from app.harness.reconcile import build_reconcile_hooks
 from app.harness.run_gates import pipeshub_verify_ports
 from app.harness.run_policy.resolved import bind_run_tuning
 from app.harness.run_policy.select import RunPolicies
+from app.harness.schedules import (
+    SCHEDULE_CREATE_TOOL,
+    SCHEDULE_TOOL_ID,
+    NodeSchedules,
+    ScheduleCreateTool,
+    schedule_asks,
+)
 from app.harness.tool_provenance import platform_rule
 from app.harness.web_addresses import run_addresses
 from app.harness.worker.claimer import RUN_JOB_SOURCE
 from app.harness.write_identity.ports import write_identity_port
 from app.harness.write_identity.settings import use_write_identity
-from app.services.featureflag.platform_settings import bind_pinned_stages
+from app.services.featureflag.platform_settings import (
+    bind_pinned_stages,
+    is_scheduled_runs_on,
+)
 from app.services.rate_budget import priority_for_run_kind, rate_priority_for_class
 from app.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.run_model_scope import hold_run_model_scope
@@ -760,6 +770,7 @@ class PipesHubRuntimeAssembler:
             .gate(rules, route=getattr(claim, "attempt_route", None), claim=claim, log=log)
             .policy
         )
+        rules = schedule_asks(rules, offered=tools.registry.has(SCHEDULE_CREATE_TOOL))
         return AssembledRuntime(
             model=model_port,
             model_policy=model_policy,
@@ -1179,6 +1190,10 @@ async def load_run_tools(
     if remember is not None:
         sourced.append(remember)
         by_source["memory"] = 1
+    scheduling = await schedule_tool(services, run, claim, registry)
+    if scheduling is not None:
+        sourced.append(scheduling)
+        by_source["schedules"] = 1
     for viewing in workspace_tools(workspace):
         registry.register_tool(viewing)
         workspace_id = f"{PLATFORM}@workspace/{viewing.name}"
@@ -1626,6 +1641,23 @@ def remember_tool(memory: _RunMemory | None, registry: ToolRegistry) -> SourcedT
         return None
     registry.register_tool(RememberTool(memory.source, memory.write_scopes))
     return SourcedTool(REMEMBER_TOOL, f"{PLATFORM}@memory/{REMEMBER_TOOL}", None, provenance=NO_CONTENT_RULE)
+
+
+async def schedule_tool(
+    services: RunServices, run: RunContext, claim: NodeClaim, registry: ToolRegistry
+) -> SourcedTool | None:
+    """Registers ``schedule_create`` (ADR-SCH-01 D2) for a run a person started in chat, when the org's harness and
+    its Labs scheduled runs are on; the loop and an engine run are offered it the same way, through the run's tool
+    gateway. A child run (a sub-agent, or a ``code_task`` engine child, which has no sub-agent ref) and a run a
+    schedule fired are not: a schedule is asked for in chat, by the person."""
+    route = getattr(claim, "attempt_route", None)
+    child = claim.spec.run_kind == "child" or run.sub_agent is not None
+    if route is None or child or getattr(claim, "trigger_context", None) is not None:
+        return None
+    if not await is_scheduled_runs_on(services.config_service()):
+        return None
+    registry.register_tool(ScheduleCreateTool(NodeSchedules(route), timezone=run.timezone))
+    return SourcedTool(SCHEDULE_CREATE_TOOL, SCHEDULE_TOOL_ID, None, provenance=NO_CONTENT_RULE)
 
 
 def run_memory(run: RunContext, claim: NodeClaim, log: HarnessLog) -> _RunMemory | None:

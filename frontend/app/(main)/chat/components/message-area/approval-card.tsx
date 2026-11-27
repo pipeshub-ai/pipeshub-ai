@@ -4,7 +4,8 @@ import React, { useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Card, Checkbox, Flex, Link, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { maskedReason, previewPayload, safeText, sourceHref, type PreviewField } from '../../approval-preview';
+import { maskedReason, previewPayload, safeText, scheduleCallOf, sourceHref, type PreviewField } from '../../approval-preview';
+import { whenWords } from '@/app/(main)/workspace/schedules/schedule-words';
 import { DisplaySafetyNote, MarkedText } from './display-safety';
 import {
   allowConversationText,
@@ -15,6 +16,7 @@ import {
   interactionTitle,
   interactionWhy,
   isClone,
+  isScheduleCreate,
   isSiteUpload,
   SITE_UPLOAD_RULE,
 } from '../../interaction-wording';
@@ -250,6 +252,60 @@ export function WhatWillBeSent({ args }: { args: string }) {
   );
 }
 
+const NOTICE_CHANNEL_LABELS: Readonly<Record<string, string>> = {
+  in_app: 'schedules.create.notifyInApp',
+  email: 'schedules.create.notifyEmail',
+  slack: 'schedules.create.notifySlack',
+};
+
+/**
+ * The schedule a `schedule_create` call makes (ADR-SCH-01 D4), in plain words: its name, when it runs ("Every
+ * weekday at 9:00 AM (America/Los_Angeles)") and what each run is asked. Arguments that are not a schedule are
+ * listed as any call's.
+ */
+export function ScheduleSummary({ args }: { args: string }) {
+  const { t, i18n } = useTranslation();
+  const call = useMemo(() => scheduleCallOf(args), [args]);
+  if (call === null) return <WhatWillBeSent args={args} />;
+  const channels = call.notify.map((channel) => (NOTICE_CHANNEL_LABELS[channel] ? t(NOTICE_CHANNEL_LABELS[channel]) : channel));
+  return (
+    <Flex
+      direction="column"
+      gap="2"
+      data-testid="schedule-summary"
+      style={{ padding: 'var(--space-2)', borderRadius: 'var(--radius-2)', backgroundColor: 'var(--olive-3)' }}
+    >
+      <PreviewValue field={{ ...call.name, label: t('approvalCard.schedule.name') }} />
+      <Box>
+        <Text as="div" size="1" color="gray" style={{ marginBottom: 2 }}>
+          {t('approvalCard.schedule.when')}
+        </Text>
+        <Text as="div" size="2" data-testid="schedule-when">
+          <MarkedText text={whenWords(t, call.when, i18n.language)} />
+        </Text>
+      </Box>
+      <PreviewValue field={{ ...call.ask, label: t('approvalCard.schedule.ask') }} />
+      {channels.length > 0 ? (
+        <Box>
+          <Text as="div" size="1" color="gray" style={{ marginBottom: 2 }}>
+            {t('approvalCard.schedule.notify')}
+          </Text>
+          <Text as="div" size="2">
+            <MarkedText text={channels.join(', ')} />
+          </Text>
+        </Box>
+      ) : null}
+      <Text size="1" color="gray">
+        {t('approvalCard.schedule.where')}
+      </Text>
+    </Flex>
+  );
+}
+
+/** The call's arguments as its card shows them: a schedule in words, any other call as labelled values. */
+const CallPreview = ({ args, schedule }: { args: string; schedule: boolean }) =>
+  schedule ? <ScheduleSummary args={args} /> : <WhatWillBeSent args={args} />;
+
 function Sources({ reason }: { reason: ApprovalReason }) {
   const { t } = useTranslation();
   if (reason.sources.length === 0 && reason.moreSources === 0) return null;
@@ -435,6 +491,7 @@ export function ApprovalCard({
   // WP-63: a clone shows what it brings, not its arguments; the upload hold is decided for this run only.
   const clone = isClone(approval) && cloneDetails(approval.reason?.destination) !== null;
   const siteUpload = isSiteUpload(approval);
+  const schedule = isScheduleCreate(approval);
   const conversationText = clone
     ? isMobile
       ? t('approvalCard.clone.allowConversationShort')
@@ -519,14 +576,18 @@ export function ApprovalCard({
             onApprove={(edits) => onApproveEdited?.(edits)}
           />
         ) : edited ? (
-          <EditedReceipt args={approval.args} editedArgs={edited} renderAll={(args) => <WhatWillBeSent args={args} />} />
+          <EditedReceipt
+            args={approval.args}
+            editedArgs={edited}
+            renderAll={(args) => <CallPreview args={args} schedule={schedule} />}
+          />
         ) : effect?.diff ? (
           // UX-03: an edit shows what it changes; its arguments are the same text before and after.
           <EffectDiff diff={effect.diff} truncated={effect.diffTruncated === true} />
         ) : clone ? (
           <CloneSummary approval={approval} />
         ) : siteUpload ? null : (
-          <WhatWillBeSent args={approval.args} />
+          <CallPreview args={approval.args} schedule={schedule} />
         )}
         {effect?.costEstimate ? <EffectCost usd={effect.costEstimate.usd} /> : null}
         {!argsHidden && reason ? <Sources reason={reason} /> : null}

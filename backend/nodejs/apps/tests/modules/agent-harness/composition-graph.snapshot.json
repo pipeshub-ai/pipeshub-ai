@@ -9709,6 +9709,252 @@
    "snapshot": "null",
    "timer": "null"
   },
+  "AgentHarnessChatSchedules": {
+   "class": "ChatScheduleService",
+   "logger": "fake:logger",
+   "options": {
+    "class": "Object",
+    "actors": "fake:schedules.actors",
+    "logger": "fake:logger",
+    "marks": {
+     "class": "JournalScheduleMarks",
+     "journals": {
+      "class": "JournalService",
+      "cipher": "EnvelopeCipher",
+      "inlineMaxBytes": "number",
+      "payloads": "fake:payloads",
+      "recorders": []
+     },
+     "store": {
+      "class": "AuditedJournalStore",
+      "audit": "MongoAuditChainStore",
+      "inner": "SnapshotRecordingJournalStore"
+     },
+     "transaction": "function"
+    },
+    "runs": {
+     "class": "ExecutionService",
+     "asksListeners": [
+      "function"
+     ],
+     "budgets": {
+      "class": "MongoBudgetLedger",
+      "costs": "null",
+      "time": "Object"
+     },
+     "capabilities": {
+      "class": "HarnessCapabilityService",
+      "intervalMs": "number",
+      "logger": "fake:logger",
+      "now": "function",
+      "probes": [
+       "JournalDurabilityProbe",
+       "DispatchCapabilityProbe",
+       "fake:capabilityProbe",
+       "HttpSandboxIsolationProbe"
+      ],
+      "refreshing": "null",
+      "retryDelayMs": "number",
+      "retryTimer": "null",
+      "snapshot": "null",
+      "timer": "null"
+     },
+     "children": {
+      "class": "MongoChildRunStore",
+      "budgets": "MongoBudgetLedger",
+      "dispatches": "MongoDispatchOutbox",
+      "inputs": "RunInputSeal",
+      "journal": "AuditedJournalStore",
+      "runKeys": "HmacRunKeyDigest",
+      "time": "Object"
+     },
+     "clock": {
+      "class": "Object",
+      "now": "function"
+     },
+     "endedListeners": [
+      "function",
+      "function"
+     ],
+     "engineEligibility": {
+      "class": "Object",
+      "check": "function"
+     },
+     "engineImages": {
+      "class": "HttpEngineAvailability",
+      "cached": "null",
+      "credential": "function",
+      "endpoint": "function",
+      "fetchImpl": "function",
+      "options": "Object"
+     },
+     "floor": {
+      "class": "ClaimFloor",
+      "claims": "number",
+      "floorEvery": "number"
+     },
+     "grantableAskListeners": [
+      "function"
+     ],
+     "guardedFeatures": [
+      "string",
+      "string",
+      "string",
+      "string",
+      "string",
+      "string",
+      "string"
+     ],
+     "history": {
+      "class": "RunHistoryContent",
+      "blobs": "fake:payloads",
+      "cipher": "EnvelopeCipher",
+      "partBytes": "number",
+      "references": "null"
+     },
+     "inputs": {
+      "class": "RunInputSeal",
+      "cipher": "EnvelopeCipher"
+     },
+     "journal": {
+      "class": "AuditedJournalStore",
+      "audit": "MongoAuditChainStore",
+      "inner": "SnapshotRecordingJournalStore"
+     },
+     "journals": {
+      "class": "JournalService",
+      "cipher": "EnvelopeCipher",
+      "inlineMaxBytes": "number",
+      "payloads": "fake:payloads",
+      "recorders": []
+     },
+     "labelledListeners": [
+      "function"
+     ],
+     "labelledRuns": {
+      "class": "Set"
+     },
+     "logger": "fake:logger",
+     "metrics": {
+      "class": "Object",
+      "approvalsRequested": "function",
+      "claimed": "function",
+      "commitReplayed": "function",
+      "modelCharged": "function",
+      "runCacheRead": "function",
+      "runQuarantined": "function",
+      "turnEnded": "function"
+     },
+     "movedListeners": [
+      "function"
+     ],
+     "resolveSpec": "function",
+     "runJournal": {
+      "class": "RunJournalReader",
+      "bytes": "number",
+      "clock": "Object",
+      "followers": "Map",
+      "held": "Map",
+      "idleMs": "number",
+      "journal": "AuditedJournalStore",
+      "journals": "JournalService",
+      "logger": "fake:logger",
+      "maxBytes": "number",
+      "pageSize": "number"
+     },
+     "store": {
+      "class": "MongoExecutionStore",
+      "approverNotices": "null",
+      "conversations": "fake:conversations",
+      "dispatches": "MongoDispatchOutbox",
+      "journal": "AuditedJournalStore",
+      "time": "Object"
+     },
+     "sweptTranscripts": {
+      "class": "Object",
+      "expired": "function",
+      "openCalls": "function",
+      "project": "function",
+      "settled": "function"
+     },
+     "unlabelledListeners": [
+      "function"
+     ],
+     "upcasters": {
+      "2": "function",
+      "class": "Object"
+     },
+     "waitingListeners": [],
+     "wakeup": "fake:wakeup",
+     "workerFeatures": {
+      "class": "WorkerFeatureAvailability",
+      "cached": "Map",
+      "clock": "Object",
+      "known": "Map",
+      "logger": "fake:logger",
+      "metrics": "Object",
+      "sightings": "MongoWorkerFeatureSightings",
+      "windowMs": "number",
+      "writeFailed": "boolean",
+      "written": "Map"
+     },
+     "workingListeners": [
+      "function"
+     ]
+    },
+    "schedules": {
+     "class": "ScheduleService",
+     "actors": "fake:schedules.actors",
+     "agentVersions": {
+      "class": "ActorAgentVersions",
+      "access": "fake:agentAccess",
+      "actors": "fake:schedules.actors"
+     },
+     "agents": "null",
+     "budgets": "null",
+     "firer": {
+      "class": "ScheduleFirer",
+      "actors": "fake:schedules.actors",
+      "admission": "RunAdmissionScheduledRuns",
+      "connectorEvents": "BrokerTriggerSource",
+      "digests": "RunTimelineService",
+      "harnessOn": "function",
+      "logger": "fake:logger",
+      "newId": "function",
+      "notifier": "InboxAwareScheduleNotifier",
+      "records": "fake:recordAccess",
+      "runs": "MongoRunStatusReader",
+      "setting": "fake:schedules.setting",
+      "settings": "Object",
+      "store": "fake:schedules.store",
+      "ticking": "null",
+      "timer": "null",
+      "waitNotices": "undefined"
+     },
+     "logger": "fake:logger",
+     "newId": "function",
+     "newSecret": "function",
+     "newToken": "function",
+     "reach": "null",
+     "rollout": "fake:rollout",
+     "setting": "fake:schedules.setting",
+     "slackBots": "undefined",
+     "store": "fake:schedules.store",
+     "transaction": "fake:controlPlane",
+     "triggers": {
+      "class": "Object",
+      "notifyChannels": "function",
+      "webhookMaxBytes": "function",
+      "webhookPerMinute": "function"
+     }
+    },
+    "store": "fake:schedules.store",
+    "vias": {
+     "class": "Object",
+     "via": "function"
+    }
+   }
+  },
   "AgentHarnessChildRuns": {
    "class": "ChildRunService",
    "children": {
@@ -16610,6 +16856,7 @@
      }
     }
    },
+   "harnessOn": "function",
    "logger": "fake:logger",
    "newId": "function",
    "notifier": {
@@ -16729,6 +16976,7 @@
       "writers": "MongoWorkspaceWriterStore"
      }
     },
+    "harnessOn": "function",
     "logger": "fake:logger",
     "newId": "function",
     "notifier": {
