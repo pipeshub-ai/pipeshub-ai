@@ -13,7 +13,7 @@ import asyncpg
 import pytest
 
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import drainer, modes
+from app.services.graph_db.postgres.kg import drainer, modes, reader
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -26,7 +26,7 @@ from app.services.graph_db.postgres.kg.verify import (
 from app.services.graph_db.postgres.kg.writers import RECORD_COLS, KgWriter
 
 from .pg_support import new_org
-from .test_kg_derivation import ctx, prov
+from .test_kg_derivation import ctx, edge, prov
 from .test_kg_projection import add_edge, delete_edge
 from .test_kg_projection_races import OPS, world2
 from .test_kg_read import _admin
@@ -94,6 +94,51 @@ async def test_a_backfill_copies_a_connector_and_flips_it_to_shadow_with_its_dig
     assert res.ok and res.digest == out.result.digest and res.expected > 0
     again = await bf.backfill(pg_db, org, "app1", page=3)                   # a second call finds nothing to copy and verifies again
     assert again.flipped and again.batches == 0 and again.result.digest == out.result.digest
+
+
+async def test_the_principals_verify_reads_no_record_the_users_have_a_permission_on(pg_db, monkeypatch) -> None:
+    """The closure is all the principals' verify compares, and no record goes into it: a page of users of a large org has permissions on hundreds of thousands of records, and
+    reading each one's document and children outlasted the statement budget. u1 has a permission on f1, so the old snapshot read it."""
+    p, org = await fresh_world(pg_db)
+    assert (await bf.backfill(pg_db, org, "app1", page=3)).flipped
+    asked: set = set()
+    for name in ("load_nodes", "load_has_children", "load_sks"):
+        real = getattr(reader, name)
+
+        async def spy(tx, o, keys, *a, _real=real, **k) -> object:
+            asked.update(keys)
+            return await _real(tx, o, keys, *a, **k)
+        monkeypatch.setattr(reader, name, spy)
+
+    async def go(tx) -> Result:
+        return await verify_principals(tx, org)
+    res = await run_in(pg_db, org, go)
+    assert res.ok and res.expected > 0
+    assert ("users", "u1") in asked and not {k for k in asked if k[0] in ("records", "recordGroups")}
+
+
+async def test_the_principals_verify_still_names_each_closure_row_kg_lacks_or_the_graph_gained(pg_db) -> None:
+    """The narrower read hides nothing the closure holds: a membership, the organisation, a source account and its badge group, each taken out of kg, are named missing; a
+    membership the graph gained after the copy is named missing too."""
+    p, org = await fresh_world(pg_db)
+    assert (await bf.backfill(pg_db, org, "app1", page=3)).flipped
+
+    async def principals() -> Result:
+        return await run_in(pg_db, org, lambda tx: verify_principals(tx, org))
+    assert (await principals()).ok
+    u1, acct, app1 = [await sk_of(pg_db, org, k) for k in (("users", "u1"), ("users", "acct"), ("apps", "app1"))]
+    rows = [(u1, await sk_of(pg_db, org, ("teams", "team1")), 0, "membership"), (u1, await sk_of(pg_db, org, ("organizations", org)), 0, "org"),
+            (u1, acct, app1, "link"), (u1, await sk_of(pg_db, org, ("groups", "grp")), app1, "link_badge")]
+    for u, q, a, via in rows:
+        await corrupt(pg_db, org, lambda tx, w, k=(u, q, a): w.closure_delete([k]))
+        res = await principals()
+        assert not res.ok and f"c|{u}|{q}|{a} {via}" in res.missing, (via, res.missing)
+        await corrupt(pg_db, org, lambda tx, w, r=(u, q, a, via): w.closure_set([r]))
+        assert (await principals()).ok, via
+    with ctx(org):
+        await p.batch_create_edges([edge("u1", "users", "grp", "groups", type="USER")], "permission")      # not drained: kg is behind the graph
+    res = await principals()
+    assert not res.ok and any(m.startswith(f"c|{u1}|{rows[3][1]}|0 ") for m in res.missing), res.missing
 
 
 async def test_a_connector_copied_after_its_neighbour_takes_the_neighbours_parent_out_of_leaf(pg_db) -> None:
