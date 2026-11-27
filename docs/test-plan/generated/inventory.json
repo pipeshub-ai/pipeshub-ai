@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2049,
- "claimedTestFiles": 3982,
- "claimedTests": 42727,
+ "claimedTestFiles": 3984,
+ "claimedTests": 42772,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3253
+  "unit": 3255
  },
  "components": [
   {
@@ -15987,15 +15987,15 @@
    "id": "SCH",
    "name": "Scheduler",
    "status": "built, Labs off by default",
-   "files": 37,
-   "tests": 265,
+   "files": 39,
+   "tests": 310,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
     "e2e-browser": 1,
     "integration": 5,
     "integration-docker": 1,
-    "unit": 27
+    "unit": 29
    },
    "testsByLevel": {
     "component": 10,
@@ -16003,7 +16003,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 210
+    "unit": 255
    },
    "markers": {
     "docker": 1
@@ -16028,6 +16028,12 @@
      "level": "integration",
      "markers": [],
      "tests": 4
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/sch01-schedule-from-chat.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 23
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16180,6 +16186,12 @@
       "docker"
      ],
      "tests": 1
+    },
+    {
+     "path": "backend/python/tests/unit/harness/test_sch01_schedule_from_chat.py",
+     "level": "unit",
+     "markers": [],
+     "tests": 22
     },
     {
      "path": "backend/python/tests/unit/harness/test_tr03_trigger_context.py",
@@ -29392,7 +29404,6 @@
   "backend/nodejs/apps/tests/cohesion/c35-one-digest-scheme.test.ts",
   "backend/nodejs/apps/tests/contracts/ma1-child-spawned.test.ts",
   "backend/nodejs/apps/tests/contracts/uxrb1-planned-run.test.ts",
-  "backend/nodejs/apps/tests/modules/agent-harness/sch01-schedule-from-chat.test.ts",
   "backend/python/tests/cohesion/test_c24_selection_parity.py",
   "backend/python/tests/cohesion/test_c35_one_digest_scheme.py",
   "backend/python/tests/cohesion/test_c36_flags_and_dimensions.py",
@@ -29418,7 +29429,6 @@
   "backend/python/tests/cohesion/test_v2_spec_trackers.py",
   "backend/python/tests/cohesion/test_wp18_ux06_next_actions.py",
   "backend/python/tests/cohesion/test_wp56_priority_docs.py",
-  "backend/python/tests/contracts/test_ma1_role_child_journal.py",
-  "backend/python/tests/unit/harness/test_sch01_schedule_from_chat.py"
+  "backend/python/tests/contracts/test_ma1_role_child_journal.py"
  ]
 }
