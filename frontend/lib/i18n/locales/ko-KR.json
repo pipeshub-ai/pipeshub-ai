@@ -2607,6 +2607,8 @@
       "configSaveErrorFallback": "모델 구성을 저장하지 못했습니다",
       "configSaveOutboundError": "PipesHub가 컨테이너 내부에서 이 모델 제공자에 연결할 수 없습니다. 클라우드 제공자에는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
       "configSaveTimeoutError": "모델을 검증하는 동안 요청 시간이 초과되었습니다. 클라우드 제공자에는 PipesHub 컨테이너에서 나가는 아웃바운드 인터넷이 필요합니다 — deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity를 참조하세요.",
+      "configSaveCredentialReentry": "이 새 엔드포인트를 사용하려면 자격 증명을 다시 입력하세요.",
+      "configForwardingCredentialsCleared": "엔드포인트가 변경되어 전달 자격 증명이 제거되었습니다. ID 전달에서 다시 추가하세요.",
       "configNoConfigRequired": "이 제공업체에는 구성이 필요하지 않습니다.",
       "configDefaultModelNotice": "시스템에서 기본적으로 \"{{modelName}}\"을(를) 사용합니다.",
       "configSectionModelConfiguration": "모델 구성",
@@ -2722,6 +2724,7 @@
       "rotateCredentialsPlaceholder": "새 API 키",
       "rotateCredentialsSave": "키 업데이트",
       "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "connectionEndpointsDiffer": "이 연결의 다음 모델은 {{reference}}와(과) 다른 엔드포인트를 사용합니다: {{models}}. 연결의 모든 모델이 같은 엔드포인트를 사용하도록 설정한 후 다시 시도하세요.",
       "identity": {
         "menuItem": "ID 전달",
         "title": "ID 전달",

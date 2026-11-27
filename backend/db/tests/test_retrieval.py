@@ -721,9 +721,12 @@ def test_a_fill_batch_reads_the_rows_without_a_bound_and_not_the_filled_ones(rdb
     with connect_as(cluster, name, "pipeshub_jobs") as jobs:
         assert fold.fill_bounds(jobs)[1] == {}
     assert pending_bounds(cluster, name) == []
-    with cluster.admin(name) as c:                                # the index holds the rows without a bound, and none once they are filled
-        c.execute("VACUUM (INDEX_CLEANUP ON) retrieval.lexical_df")
-        assert c.execute("SELECT reltuples FROM pg_class WHERE oid = 'retrieval.lexical_df_unbounded'::regclass").fetchone()[0] == 0
+    with cluster.admin(name) as c, c.transaction():                # once filled, the index finds no row without a bound: live rows, read
+        c.execute("SET LOCAL enable_seqscan = off")                   # through it (its entry count after a VACUUM also counts dead entries
+        c.execute("SET LOCAL enable_bitmapscan = off")                # that another session's snapshot still keeps)
+        assert "lexical_df_unbounded" in "".join(r[0] for r in c.execute(
+            "EXPLAIN SELECT count(*) FROM retrieval.lexical_df WHERE org_id = %s AND wmax IS NULL", (ORG_A,)))
+        assert c.execute("SELECT count(*) FROM retrieval.lexical_df WHERE org_id = %s AND wmax IS NULL", (ORG_A,)).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("w", [1000.0, -1000.0])

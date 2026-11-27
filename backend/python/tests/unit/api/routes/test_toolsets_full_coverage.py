@@ -2072,18 +2072,22 @@ class TestAgentCredentialEndpointErrors:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_remove_agent_creds_delete_config_exception(self):
-        """Lines 3169-3170 — delete_config raises, still returns 200."""
+    @pytest.mark.parametrize(("error", "status"), [(RuntimeError("etcd fail"), 500), (ConnectionError("etcd down"), 503)])
+    async def test_remove_agent_creds_delete_config_exception(self, error, status):
+        """delete_config raises: never a success; a store that can't answer is a 503, anything else a 500."""
         from app.api.routes.toolsets import remove_agent_toolset_credentials
         cs = AsyncMock()
-        cs.delete_config = AsyncMock(side_effect=RuntimeError("etcd fail"))
+        cs.delete_config = AsyncMock(side_effect=error)
 
         req = _make_request()
 
         with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
-            result = await remove_agent_toolset_credentials("a1", "i1", req, config_service=cs)
-        assert result["status"] == "success"
+            with pytest.raises(HTTPException) as exc:
+                await remove_agent_toolset_credentials("a1", "i1", req, config_service=cs)
+        assert exc.value.status_code == status
+        if status == 500:
+            assert exc.value.detail == "Failed to remove agent credentials."
 
 
 # ===================================================================
