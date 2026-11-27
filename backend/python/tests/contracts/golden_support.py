@@ -40,6 +40,7 @@ from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.models.entities import ArtifactType
 from app.services.artifact_registry.models import ArtifactMetadata
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from tests.support import edition_defaults
 from tests.support.config_service import FakeConfigurationService
 from tests.support.record_access import InMemoryRecordAccess
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
@@ -470,6 +471,7 @@ async def record_stream(
         # the recording calls below it, in a test task a durable run before it may have bound to its own org.
         stack.callback(org_context.pop, org_context.push(None))
         stack.enter_context(org_context.bind(org_context.OrgContext(ORG_ID, USER_ID, "user", "jwt", "-")))
+        await edition_defaults.verify_loop_caller({"userId": USER_ID, "orgId": ORG_ID, "email": "user@corp.example"})
         for target, value in (
             ("app.agents.agent_loop.factory.LangChainTransport", lambda *a, **k: transport),
             ("app.agents.registry.toolset_registry.get_toolset_registry", scenario.toolset_registry()),
@@ -477,6 +479,7 @@ async def record_stream(
             ("app.services.artifact_registry.ArtifactRegistryService", _FakeArtifactRegistry),
             ("app.models.citation_source.uuid4", live_ids()),
             *prefetch_patches(),
+            *edition_defaults.golden_contract_patches(),
         ):
             stack.enter_context(patch(target, new=value))
         for key, value in (

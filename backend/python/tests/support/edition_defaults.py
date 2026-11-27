@@ -46,3 +46,21 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
     """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
     identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
     return {}
+
+
+def agents_run_as_the_caller() -> bool:
+    """Whether every agent run, a service-account agent's included, is the identified person asking: no service
+    token starts one, and its tools list and run with that person's own credentials. Here not: a service-account
+    agent runs as its creator, bounded by the person asking."""
+    return False
+
+
+async def verify_loop_caller(user: dict[str, object]) -> None:
+    """What an agent-loop route verifies of the person asking before the loop runs, for a driver that calls the
+    route handler or the loop below the route (``tests/contracts/golden_support.py``). Here nothing."""
+
+
+def golden_contract_patches() -> tuple[tuple[str, object], ...]:
+    """``(target, value)`` patches the contract recordings (``tests/contracts``) apply while they run a golden
+    scenario, for a rule this build adds that the shared goldens do not record. Here none."""
+    return ()
