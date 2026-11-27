@@ -53,7 +53,8 @@ describe('foundation tokens', () => {
     expect(block(':root, .light, .light-theme')).toContain(
       '--effects-translucent: color-mix(in oklab, var(--gray-1) 80%, transparent);',
     );
-    expect(block('.dark, .dark-theme')).toContain(
+    // The dark block starts its line: the light-only step-11 block names `.dark, .dark-theme` inside its `:not()`.
+    expect(block('\n.dark, .dark-theme')).toContain(
       '--effects-translucent: color-mix(in oklab, var(--gray-2) 70%, transparent);',
     );
   });

@@ -18,7 +18,8 @@ function token(scope: string, name: string): string {
 }
 
 const light = block(':root, .light, .light-theme');
-const dark = block('.dark, .dark-theme');
+// The dark block starts its line: the light-only step-11 block names `.dark, .dark-theme` inside its `:not()`.
+const dark = block('\n.dark, .dark-theme');
 const white = '#ffffff';
 
 describe('jade accent contrast', () => {
