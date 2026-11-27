@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 MARKER = "code-path-scope-v1"
+# shortcut: each batch looks for unfilled rows from the start of the org, so a batch slows as the org fills (0.3 s to 0.6 s over 130k code
+# files, about 2.5 s near 1M; about 5 min in all, every transaction short); give the stores a keyset cursor if a run gets much longer.
 _BATCH = 5000
 _IDLE_PASSES = 100
 
