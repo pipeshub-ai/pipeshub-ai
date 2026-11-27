@@ -119,7 +119,7 @@ export class PostgresDistributedKeyValueStore<
 
   /** True when the row has an expiry (a rewrite would clear it). */
   async hasExpiry(key: string): Promise<boolean> {
-    const r = await this.unit(false, (tx) =>
+    const r = await this.unit(false, key, (tx) =>
       tx.query<{ e: boolean }>(
         '/* pipeshub:kv.hasExpiry */ SELECT expires_at IS NOT NULL AS e FROM platform.kv_entries WHERE key = $1',
         [key],
