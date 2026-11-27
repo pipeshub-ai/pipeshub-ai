@@ -181,6 +181,8 @@ export const completeTurn = async (
         errorType,
         stack,
         undefined,
+        undefined,
+        undefined,
         options.run,
       );
     } catch (markError: unknown) {

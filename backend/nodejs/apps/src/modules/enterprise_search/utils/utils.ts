@@ -3419,6 +3419,10 @@ interface FailedTurnOptions {
   errorType?: string;
   stack?: string;
   metadata?: Map<string, unknown>;
+  /** What the run did before it failed, kept on its error message. */
+  parts?: IMessagePart[];
+  /** A durable run's failure as its error message keeps it (its run, code, servers, stop and outcome). */
+  failure?: RunFailureFields;
   run?: TurnRun;
   agent?: boolean;
   /** The label the AI backend sent with the error, unchecked. */
@@ -3434,12 +3438,17 @@ const persistFailedTurn = async (
   const noun = options.agent ? 'agent conversation' : 'conversation';
   try {
     const failedMessage = stampTurnRow(
-      buildAIFailureResponseMessage(failReason, undefined, undefined, {
-        errorCode: adminRefusals().isCode(options.errorType)
-          ? options.errorType
-          : undefined,
-        provenance: options.provenance,
-      }),
+      buildAIFailureResponseMessage(
+        failReason,
+        options.parts,
+        options.failure,
+        {
+          errorCode: adminRefusals().isCode(options.errorType)
+            ? options.errorType
+            : undefined,
+          provenance: options.provenance,
+        },
+      ),
       run,
     );
     const errorsBefore = conversation.conversationErrors?.length ?? 0;
@@ -3508,6 +3517,10 @@ const persistFailedTurn = async (
   }
 };
 
+/**
+ * Saves a turn's failure: its error message (with the run's `parts` and, for a durable run, its `failure` fields) and
+ * the conversation's failed state, which only the owner's own failure copies its reason onto.
+ */
 export const markConversationFailed = (
   conversation: IChatSessionDocument,
   failReason: string,
@@ -3515,6 +3528,8 @@ export const markConversationFailed = (
   errorType?: string,
   stack?: string,
   metadata?: Map<string, unknown>,
+  parts?: IMessagePart[],
+  failure?: RunFailureFields,
   run?: TurnRun,
   provenance?: unknown,
 ): Promise<void> =>
@@ -3523,6 +3538,8 @@ export const markConversationFailed = (
     errorType,
     stack,
     metadata,
+    parts,
+    failure,
     run,
     provenance,
   });
@@ -3724,7 +3741,7 @@ export const saveCompleteAgentConversation = (
   });
 
 /**
- * Mark agent conversation as failed
+ * Mark agent conversation as failed: `markConversationFailed`, with the same arguments, for an agent's chat.
  */
 export const markAgentConversationFailed = (
   conversation: IChatSessionDocument,
@@ -3733,6 +3750,8 @@ export const markAgentConversationFailed = (
   errorType?: string,
   stack?: string,
   metadata?: Map<string, unknown>,
+  parts?: IMessagePart[],
+  failure?: RunFailureFields,
   run?: TurnRun,
   provenance?: unknown,
 ): Promise<void> =>
@@ -3741,6 +3760,8 @@ export const markAgentConversationFailed = (
     errorType,
     stack,
     metadata,
+    parts,
+    failure,
     run,
     provenance,
     agent: true,
