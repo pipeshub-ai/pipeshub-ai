@@ -422,14 +422,15 @@ async def _save_org_instances(
     Writing those back as the whole list erased other orgs' instances and any instance a concurrent request
     added (R2 F21). Instead the change (``loaded`` -> ``updated``) is replayed onto a fresh read. The lock
     closes the window within this process; across replicas it stays open until the control plane's
-    installation store, which has compare-and-set, is the store of record (CPD-7).
+    installation store, which has compare-and-set, is the store of record (CPD-7). A failed re-read raises: read as
+    empty, it would erase every org's rows.
     """
     before = {i.get("_id"): i for i in loaded}
     after = {i.get("_id"): i for i in updated}
     removed = before.keys() - after.keys()
     changed = [i for key, i in after.items() if before.get(key) != i]
     async with _INSTANCE_WRITES:
-        current = await config_service.get_config(_get_instances_path(org_id), default=[])
+        current = await config_service.get_config(_get_instances_path(org_id), default=[], raise_on_error=True)
         rows = [i for i in _validate_list(value=current, field_name="toolset instances")
                 if not (org_of(i) == org_id and i.get("_id") in removed)]
         positions = {i.get("_id"): n for n, i in enumerate(rows)}
@@ -1539,6 +1540,7 @@ async def create_toolset_instance(
     try:
         await _save_org_instances(org_id, instances, [*instances, new_instance], config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to save toolset instance. Please try again."
@@ -1942,6 +1944,7 @@ async def update_toolset_instance(
     try:
         await _save_org_instances(org_id, loaded, updated, config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update toolset instance. Please try again.") from e
 
     # Deauthenticate all users in parallel if credentials changed
@@ -2012,17 +2015,16 @@ async def delete_toolset_instance(
 
     await _assert_instance_not_in_use(request, instance)
 
-    # After agent check passes, delete all user credentials for this instance
-    # This happens AFTER agent check to prevent deleting credentials if agents are using the instance
-    deleted_credentials_count = await toolset_store.delete_instance_credentials(config_service, instance_id)
-
     updated = [i for i in instances if i.get("_id") != instance_id]
 
     try:
         await _save_org_instances(org_id, instances, updated, config_service)
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
+    # Sign-ins go after the agent check and after the save, so a refused delete leaves a still-listed instance's users signed in
+    deleted_credentials_count = await toolset_store.delete_instance_credentials(config_service, instance_id)
     await toolset_store.delete_instance_rules(config_service, instance_id)
 
     message = "Toolset instance deleted successfully."

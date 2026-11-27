@@ -112,7 +112,7 @@ def test_fu1_ig4_the_workers_module_loads_no_graph_driver_until_its_warm_up_name
 def test_fu1_ig5_the_edition_services_still_resolve_lazily() -> None:
     import app.edition_services as edition
 
-    for name in ("Neo4jProvider", "TokenRefreshService", "ToolsetTokenRefreshService", "MCPTokenRefreshService"):
+    for name in ("Neo4jProvider", "PostgresGraphProvider", "TokenRefreshService", "ToolsetTokenRefreshService", "MCPTokenRefreshService"):
         assert isinstance(getattr(edition, name), type), name
     assert callable(edition.get_oauth_config_registry)
 

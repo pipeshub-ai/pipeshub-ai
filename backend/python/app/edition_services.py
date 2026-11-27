@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         get_oauth_config_registry,
     )
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider  # noqa: F401
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider  # noqa: F401
 
 # Which indexing lane a connector is given on Redis Streams, whether an
 # administrator may move it, and which pool of lanes an org belongs in. An
@@ -39,6 +40,7 @@ _LAZY_SERVICES = {
     "MCPTokenRefreshService": "app.connectors.core.base.token_service.mcp_token_refresh_service",
     "get_oauth_config_registry": "app.connectors.core.registry.oauth_config_registry",
     "Neo4jProvider": "app.services.graph_db.neo4j.neo4j_provider",
+    "PostgresGraphProvider": "app.services.graph_db.postgres.provider",
 }
 
 
@@ -134,6 +136,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agents.agent_loop.context import AgentContext
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.config.configuration_service import ConfigurationService
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
@@ -182,6 +185,14 @@ def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, 
 def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
     """Wrap an embeddings client with edition extras. OSS: none."""
     return embeddings
+
+
+async def startup_embedding_configs(config_service: "ConfigurationService") -> list[dict]:
+    """The embedding models the deployment indexes with, read while a service starts and no org is bound."""
+    from app.config.constants.service import config_node_constants
+
+    ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
+    return (ai_models or {}).get("embedding") or []
 
 
 def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":  # noqa: ANN401 - an untyped dependency-injection object
