@@ -131,6 +131,8 @@ class OpenEditionRoots(unittest.TestCase):
             "backend/nodejs/apps/src/ee/modules/license.ts",
             "frontend/ee/modules/license/x.ts",
             "x/backend/python/app/ee/permission_sync/box.py",
+            "backend/python/tests/unit/ee/__init__.pyi",
+            "backend/python/tests/unit/ee/__init__.py.bak",
         ):
             with self.subTest(path=path):
                 self.assertEqual(len(edition_guard.check([path], "").errors), 1)
@@ -140,6 +142,9 @@ class OpenEditionRoots(unittest.TestCase):
             ("backend/python/app/connectors/sources/box/connector.py",
              "from app.ee.permission_sync.box import BoxPermissionsMixin"),
             ("backend/python/app/x.py", "import app.ee.permission_sync"),
+            ("backend/python/app/x.py", "module = importlib.import_module(" + '"app.ee.permission_sync")'),
+            ("backend/python/app/x.py", "import app.ee.permission_sync.box, app.ee.permission_sync.zoom"),
+            ("backend/nodejs/apps/src/modules/x/y.ts", "import { X } from '../../ee/modules/license/license-state';"),
             ("backend/nodejs/apps/src/config.ts",
              "export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';"),
         ):
@@ -153,6 +158,17 @@ class OpenEditionRoots(unittest.TestCase):
             ("backend/python/app/x.py", "from app.ee.permission_syncer import x"),
             ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/billing/x';"),
             ("frontend/config.ts", "import { Y } from '@/ee/lib/license';"),
+            # Each target on a line is judged on its own; an open one, or one in a comment, does not clear another.
+            ("backend/python/app/x.py", "from app.ee.harness import edition  # app.ee.permission_sync"),
+            ("backend/python/app/x.py", "from app.ee.permission_sync.box import X; from app.ee.harness import edition"),
+            ("backend/python/app/x.py", "import app.ee.permission_sync, app.ee.harness"),
+            ("backend/nodejs/apps/src/config.ts",
+             "import { X } from './ee/modules/billing/x'; import { Y } from './ee/modules/license/y';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from \"@/ee/lib/secret\"; // \"./ee/modules/license/\""),
+            # Resolved against the importing file: the frontend has no open root, and `..` cannot climb out of one.
+            ("frontend/config.ts", "import { X } from './ee/modules/license/x';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/license/../billing/x';"),
+            ("backend/nodejs/apps/src/config.ts", "import { X } from '@/ee/modules/license/x';"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(len(edition_guard.check([], diff(path, line)).errors), 1)

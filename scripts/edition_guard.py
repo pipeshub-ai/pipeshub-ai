@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import posixpath
 import re
 import subprocess
 import sys
@@ -60,8 +61,33 @@ OPEN_EE_ROOTS = (
     "backend/nodejs/apps/src/ee/modules/license/",
     "backend/nodejs/apps/tests/ee/modules/license/",
 )
-OPEN_EE_PYTHON = re.compile(r"\bapp\.ee\.permission_sync(?:\.|\s|$)")
-OPEN_EE_SCRIPT = re.compile(r"""["'](?:@/ee/|(?:\.{1,2}/)+ee/)modules/license/""")
+# Every ee module or path a line names, each judged on its own: a line passes only when all of them are open.
+_PYTHON_EE_TARGET = re.compile(r"\bapp\.ee(?:\.\w+)*")
+_SCRIPT_EE_TARGET = re.compile(r"""["']((?:@/|(?:\.{1,2}/)+)ee/[^"']*)["']""")
+
+
+def _open_ee_path(path: str) -> bool:
+    """A directory root admits what is under it; a file root admits that file only."""
+    return any(path.startswith(root) if root.endswith("/") else path == root for root in OPEN_EE_ROOTS)
+
+
+def _open_python_import(text: str) -> bool:
+    targets = _PYTHON_EE_TARGET.findall(text)
+    return bool(targets) and all(t == "app.ee.permission_sync" or t.startswith("app.ee.permission_sync.") for t in targets)
+
+
+def _open_script_import(path: str, text: str) -> bool:
+    """Relative specifiers are resolved against the importing file; an alias (``@/ee/``) never names an open root."""
+    targets = _SCRIPT_EE_TARGET.findall(text)
+    return bool(targets) and all(
+        not spec.startswith("@/")
+        and any(
+            posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)).startswith(root)
+            for root in OPEN_EE_ROOTS
+            if root.endswith("/")
+        )
+        for spec in targets
+    )
 
 PYTHON_SOURCES = (".py", ".pyi")
 SCRIPT_SOURCES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
@@ -163,7 +189,7 @@ def _frozen(path: str) -> bool:
 def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -> Report:
     report = Report()
     for path in added_paths:
-        if any(pattern.search(path) for pattern in EDITION_PATHS) and not path.startswith(OPEN_EE_ROOTS):
+        if any(pattern.search(path) for pattern in EDITION_PATHS) and not _open_ee_path(path):
             report.errors.append(f"{path}: an edition-only path; it belongs in that edition's repository")
         if _frozen(path):
             report.errors.append(f"{path}: a new file in a directory that accepts fixes only")
@@ -171,8 +197,10 @@ def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -
             report.errors.append(f"{path}: a project-tracking document; the tracker is kept outside this repository")
     for line in added_lines(diff):
         where = f"{line.path}:{line.number}"
-        python_import = any(p.search(line.text) for p in PYTHON_IMPORTS) and not OPEN_EE_PYTHON.search(line.text)
-        script_import = any(p.search(line.text) for p in SCRIPT_IMPORTS) and not OPEN_EE_SCRIPT.search(line.text)
+        python_import = any(p.search(line.text) for p in PYTHON_IMPORTS) and not _open_python_import(line.text)
+        script_import = any(p.search(line.text) for p in SCRIPT_IMPORTS) and not _open_script_import(
+            line.path, line.text
+        )
         if line.path.endswith(PYTHON_SOURCES) and python_import:
             report.errors.append(f"{where}: imports an edition package; use an extension point instead")
         if line.path.endswith(SCRIPT_SOURCES) and script_import:
