@@ -71,8 +71,9 @@ export interface OutboxRepository {
   eraseDeliveredForOrg(orgId: string, limit: number): Promise<number>;
   /**
    * Removes every event of the org, delivered or not, and answers how many: for an org whose data is wiped with nothing
-   * left to deliver. MongoDB keeps no org on the row, so there it is the events about the org or one of its people
-   * (ordering key `org:<id>` or `user:<id>:...`); PostgreSQL removes every event appended as the org.
+   * left to deliver. MongoDB keeps no org on the row, so there it is the events whose payload names the org or whose
+   * ordering key is about the org or one of its people (`org:<id>`, `user:<id>:...`), as the PostgreSQL copy assigns
+   * them; PostgreSQL removes every event of the org.
    */
   deleteAllForOrg(orgId: string): Promise<number>;
   /** How many events `deleteAllForOrg` would remove. */

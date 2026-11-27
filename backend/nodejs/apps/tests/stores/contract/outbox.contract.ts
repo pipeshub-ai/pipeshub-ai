@@ -134,6 +134,26 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     });
   });
 
+  describe('deleteAllForOrg / countForOrg: events named by their payload', () => {
+    it("removes and counts the org's control-plane and run-keyed events too, never another org's", async () => {
+      const [org, elsewhere] = [fx.newId(), fx.newId()];
+      const append = (orgId: string, key: string, orderingKey: string) =>
+        (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+          orgId,
+          ev({ key, orderingKey, value: JSON.stringify({ eventType: key, payload: { orgId, runId: orderingKey } }) }),
+        );
+      for (const orgId of [org, elsewhere]) {
+        await append(orgId, `cp-${orgId}`, `cp:${orgId}`);
+        await append(orgId, `run-${orgId}`, fx.newId());
+      }
+      expect(await repo.countForOrg(org)).to.equal(2);
+      expect(await repo.deleteAllForOrg(org)).to.equal(2);
+      expect(await repo.countForOrg(org)).to.equal(0);
+      expect(await repo.countForOrg(elsewhere)).to.equal(2);
+      expect((await fx.allRows()).map((row) => row.key).sort()).to.deep.equal([`cp-${elsewhere}`, `run-${elsewhere}`].sort());
+    });
+  });
+
   describe('claimNext', () => {
     it('takes the oldest due event first and marks it publishing', async () => {
       const [a, b] = await appendAll([ev({ key: 'a', orderingKey: 'o1' }), ev({ key: 'b', orderingKey: 'o2' })]);

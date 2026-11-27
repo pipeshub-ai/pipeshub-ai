@@ -12,10 +12,19 @@ import type {
   OutboxStatus,
 } from './types';
 
-/** The org's events: those about the org itself or one of its people (`orderingKeyFor`). */
-const orgEvents = (orgId: string): { orderingKey: { $regex: string } } => ({
-  orderingKey: { $regex: `^(org|user):${escapeRegExp(orgId)}(:|$)` },
-});
+/**
+ * The org's events, named as the PostgreSQL copy names them (`orgOf` in pg-import.ts): the payload's `orgId`, else an
+ * ordering key about the org or one of its people (`orderingKeyFor`).
+ */
+const orgEvents = (orgId: string): QueryFilter<IOutboxEvent> => {
+  const id = escapeRegExp(orgId);
+  return {
+    $or: [
+      { value: { $regex: `"orgId":"${id}"` } },
+      { orderingKey: { $regex: `^(org|user):${id}(:|$)` } },
+    ],
+  };
+};
 
 export class MongoOutboxRepository implements OutboxRepository {
   async append(event: NewOutboxEvent, tx?: Tx): Promise<void> {
