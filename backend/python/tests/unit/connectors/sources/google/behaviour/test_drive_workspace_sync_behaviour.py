@@ -352,6 +352,34 @@ async def test_a_suspended_person_is_not_in_the_audience(ws: Workspace) -> None:
     assert BOB not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
 
 
+async def test_audience_groups_dropped_while_unlicensed_are_written_by_the_first_licensed_run(ws: Workspace) -> None:
+    """Without a licence the processor drops group writes without raising: the groups' new members must not be
+    recorded as written, or the first licensed run keeps the people the source no longer counts."""
+    await ws.sync()
+    new = "carol@example.com"
+    assert new not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+    licensed = False
+    write = ws.records.on_new_user_groups
+
+    async def gated_write(groups: list) -> None:
+        if licensed:
+            await write(groups)
+
+    async def skips(_: str | None) -> bool:
+        return not licensed
+
+    ws.records.on_new_user_groups = gated_write
+    ws.records.skips_permission_writes = skips
+    ws.world.add_user(new)
+    await ws.sync()
+    assert new not in {m.email for m in ws.records.user_groups["workspace-members"][1]}, "nothing written while unlicensed"
+
+    licensed = True
+    await ws.sync()
+    assert new in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
 async def test_a_members_only_drive_ignores_a_discoverable_share_and_a_domain_only_drive_keeps_it(ws: Workspace) -> None:
     ws.world.add_drive("sd-m", "Members", {ALICE: "organizer"}, MEMBERS_ONLY)
     ws.world.add_item("fm", "m.txt", parent="sd-m", perms=[discoverable("domain", domain="example.com")])
