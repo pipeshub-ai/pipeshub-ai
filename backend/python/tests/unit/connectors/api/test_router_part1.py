@@ -1922,7 +1922,7 @@ class TestGetConnectorInstanceConfig:
         })
 
         config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=Exception("not found"))
+        config_service.get_config = AsyncMock(return_value=None)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())

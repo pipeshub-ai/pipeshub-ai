@@ -7,6 +7,11 @@ import { AddressInfo } from 'node:net'
 import { BaseCommand, ICommand } from '../../../src/libs/commands/command.interface'
 import { ConnectorServiceCommand } from '../../../src/libs/commands/connector_service/connector.service.command'
 import { AIServiceCommand } from '../../../src/libs/commands/ai_service/ai.service.command'
+import { ConfigurationManagerServiceCommand } from '../../../src/libs/commands/configuration_manager/cm.service.command'
+import { IAMServiceCommand } from '../../../src/libs/commands/iam/iam.service.command'
+import { handleBackendError } from '../../../src/libs/errors/backend-error'
+import { BaseError } from '../../../src/libs/errors/base.error'
+import { classifyRequestError } from '../../../src/libs/utils/error-class'
 import { runWithRequestContext } from '../../../src/libs/context/request-context'
 import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
 import { InternalServerError } from '../../../src/libs/errors/http.errors'
@@ -645,5 +650,92 @@ describe('command.interface', () => {
       const result = await cmd.execute()
       expect(result).to.equal('default')
     })
+  })
+
+  // API1-P3 (A-04): a proxy's HTML or an ingress's text in front of a service. The status must survive the body.
+  describe('readBody: an error answer that is not JSON keeps its status, on every command', () => {
+    const URI = 'http://up.local/a'
+    const commands: [string, () => Promise<{ statusCode: number; data?: unknown }>][] = [
+      ['connector', () => new ConnectorServiceCommand({ uri: URI, method: HttpMethod.GET, retries: 1 }).execute()],
+      ['ai', () => new AIServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {}, maxAttempts: 1 }).execute()],
+      ['cm', () => new ConfigurationManagerServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {} }).execute()],
+      ['iam', () => new IAMServiceCommand({ uri: URI, method: HttpMethod.GET, headers: {} }).execute()],
+    ]
+    let fetchStub: sinon.SinonStub
+    beforeEach(() => {
+      registerUpstreams({ up: ['http://up.local'] })
+      fetchStub = sinon.stub(globalThis, 'fetch')
+    })
+
+    const answer = (status: number, body: string | null, statusText: string, headers: Record<string, string> = {}) =>
+      new Response(body, { status, statusText, headers: { 'content-type': 'text/html', ...headers } })
+    const mapped = async (run: () => Promise<unknown>): Promise<BaseError> =>
+      handleBackendError(await run(), 'do the thing') as BaseError
+    const rejection = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run()
+      } catch (error) {
+        return error
+      }
+      return undefined
+    }
+
+    for (const [name, run] of commands) {
+      it(`${name}: a proxy's HTML 503 stays 503 and keeps its Retry-After`, async () => {
+        fetchStub.resolves(answer(503, '<html>upstream connect error</html>', 'Service Unavailable', { 'retry-after': '5' }))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(503)
+        expect(result.metadata?.retryAfter).to.equal('5')
+        expect(result.message).to.include('5 seconds')
+      })
+
+      it(`${name}: a proxy's HTML 400 stays 400`, async () => {
+        fetchStub.resolves(answer(400, '<html>400 Bad Request</html>', 'Bad Request'))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(400)
+        expect(result.message).to.equal('Bad Request')
+      })
+
+      it(`${name}: nginx's HTML 413 stays 413 in its status text's words, never the page`, async () => {
+        fetchStub.resolves(answer(413, '<html>413 Request Entity Too Large</html>', 'Request Entity Too Large'))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(413)
+        expect(result.message).to.equal('Request Entity Too Large')
+      })
+
+      it(`${name}: a 413 with an empty status text reads the standard reason phrase`, async () => {
+        fetchStub.resolves(answer(413, 'too big', ''))
+        expect((await mapped(run)).message).to.equal('Payload Too Large')
+      })
+
+      it(`${name}: Starlette's text 500 is an upstream 5xx answered 502, not our bug`, async () => {
+        fetchStub.resolves(answer(500, 'Internal Server Error', 'Internal Server Error', { 'content-type': 'text/plain' }))
+        const result = await mapped(run)
+        expect(result.statusCode).to.equal(502)
+        expect(classifyRequestError(result, 502)).to.equal('upstream_5xx')
+      })
+
+      it(`${name}: a 204 has no data and its body is not read`, async () => {
+        const response = new Response(null, { status: 204 })
+        const json = sinon.spy(response, 'json')
+        fetchStub.resolves(response)
+        const result = await run()
+        expect(result.statusCode).to.equal(204)
+        expect(result.data).to.equal(undefined)
+        expect(json.called).to.equal(false)
+      })
+
+      it(`${name}: a 200 that is not JSON still fails, so a broken success is not hidden`, async () => {
+        fetchStub.resolves(answer(200, '<html>ok</html>', 'OK'))
+        expect(await rejection(run)).to.be.instanceOf(SyntaxError)
+      })
+
+      it(`${name}: a 4xx whose body cannot be read for another reason still fails`, async () => {
+        const response = answer(404, '{}', 'Not Found')
+        sinon.stub(response, 'json').rejects(new TypeError('terminated'))
+        fetchStub.resolves(response)
+        expect(await rejection(run)).to.be.instanceOf(TypeError)
+      })
+    }
   })
 })

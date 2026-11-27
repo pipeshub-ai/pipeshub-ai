@@ -14,13 +14,14 @@ from fastapi import HTTPException, Request
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.token_service.oauth_service import read_oauth_app_list
 from app.config.redaction import (
     OAUTH_CLIENT_SECRET_FIELDS,
     REDACTED_PLACEHOLDER,
     hide_secrets_by_default,
 )
 from app.api.middlewares.auth import is_request_admin
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import await_or_503, get_document_or_503, get_user_or_503
 from app.utils.user_messages import not_found
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ async def authorize_connector_stats(
     user_id = request.state.user.get("userId")
     is_admin = is_request_admin(request)
 
-    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    app_doc = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
     # Another org's connector answers like a missing one, so its id is not confirmed.
     if not app_doc or not org_id or not await connector_registry.belongs_to_org(app_doc, org_id):
         raise HTTPException(
@@ -130,10 +131,7 @@ async def resolve_oauth_configs(
 ) -> list[dict[str, Any]]:
     """OSS: read configs from etcd via config_service (own org filtered by callers)."""
     del container, org_id, scope
-    configs = await config_service.get_config(config_path, default=[])
-    if not isinstance(configs, list):
-        return []
-    return configs
+    return await await_or_503(read_oauth_app_list(config_service, config_path))
 
 
 async def resolve_oauth_config(
@@ -184,9 +182,7 @@ async def resolve_shared_oauth_config_for_flow(
 ) -> Optional[dict[str, Any]]:
     """OSS: local etcd lookup only (own org)."""
     del container, logger_
-    oauth_configs = await config_service.get_config(oauth_config_path, default=[])
-    if not isinstance(oauth_configs, list):
-        oauth_configs = []
+    oauth_configs = await await_or_503(read_oauth_app_list(config_service, oauth_config_path))
     for oauth_cfg in oauth_configs:
         if oauth_cfg.get("_id") == oauth_config_id and oauth_cfg.get("orgId") == org_id:
             return oauth_cfg

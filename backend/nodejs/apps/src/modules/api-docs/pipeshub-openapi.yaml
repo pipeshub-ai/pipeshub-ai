@@ -26,6 +26,8 @@ info:
 
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
 
+    **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
+
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
 
@@ -23793,6 +23795,69 @@ components:
           example: "LLM provider added successfully"
         details:
           $ref: '#/components/schemas/AIModelProviderAddedDetails'
+    CredentialReentryRequiredError:
+      type: object
+      additionalProperties: false
+      description: |
+        A save that would send a saved secret (sent back as the mask) to a different server
+        address. Nothing is stored; send the secret again in full with the new address.
+      required: [status, error_code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          example: Enter the credentials again to use this new endpoint.
+    ConnectionEndpointsDifferError:
+      type: object
+      additionalProperties: false
+      description: |
+        A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          description: Names the models on another endpoint.
+        models:
+          type: array
+          description: The connection's models whose endpoint differs from its first model's.
+          items:
+            type: object
+            additionalProperties: false
+            required: [modelKey, modelType, name]
+            properties:
+              modelKey:
+                type: string
+              modelType:
+                type: string
+              name:
+                type: string
+                description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -23806,6 +23871,10 @@ components:
         status:
           type: string
           enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+          description: Set when a changed endpoint needs its credentials entered again.
         message:
           type: string
     PrepareEmbeddingModelRequest:
@@ -24065,6 +24134,10 @@ components:
         isReasoning:
           type: boolean
           description: Whether this is a reasoning model
+        forwardingCredentialsCleared:
+          type: boolean
+          enum: [true]
+          description: Present when the update moved the model to a new endpoint and removed its saved identity forwarding service key and credential headers.
     UpdateAIModelProviderResponse:
       type: object
       additionalProperties: false
@@ -30066,6 +30139,21 @@ components:
                 maxUserBytes:
                   type: integer
   responses:
+    StoreUnavailable:
+      description: >-
+        The database could not answer just now (the graph store, or the config store on a read, lost its connection,
+        timed out or is restarting); nothing is wrong with the request, and nothing was changed. Retry after
+        `Retry-After` seconds.
+        It is never sent for a connector, setting or app that really is missing, which keeps its own answer.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (5).
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
       content:
@@ -30110,6 +30198,15 @@ components:
         An unexpected failure on PipesHub's side (`INTERNAL_ERROR`). A body the app-wide parsers
         refuse is not answered here: malformed JSON is a `400`, a body past the size limits a `413`
         and an unsupported encoding a `415` (see Body parsers in the introduction).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UpstreamFailure:
+      description: >-
+        A PipesHub service this route depends on failed (`HTTP_BAD_GATEWAY`). The message is generic;
+        the service's own words are in its log under the same request id. See Relayed failures in the
+        introduction.
       content:
         application/json:
           schema:
@@ -46424,6 +46521,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '503':
           description: Storage could not delete the artifact's files; nothing was changed, retry
           content:
@@ -57991,6 +58090,13 @@ paths:
             server's search deadline (`SEARCH_DEADLINE_SECONDS`, 50 by default)
             and was stopped ("This search took too long, so it was stopped and
             no results are shown. ..."): try again, or narrow it with filters.
+            Also returned when the embedding model's provider is limiting
+            requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -58181,6 +58287,13 @@ paths:
 
             When the service could not check what the caller may read, the usual error envelope
             also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
+
+            Also returned when the embedding model's provider is limiting requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -59914,7 +60027,11 @@ paths:
         '403': { description: "The token lacks agent:write; an engine agent needs an org admin; or the caller may not set the agent's policy" }
         '409': { description: An engine named in the profile cannot be used in this org now }
         '422': { description: A policy section widens the org's ceilings or is set on its own page (CP_* code naming the dimension) }
-        '503': { description: The document holds policy and this deployment keeps no agent policy }
+        '503':
+          description: |-
+            The document holds policy and this deployment keeps no agent policy, or the store holding the
+            organization's toolset instance list did not answer (nothing is imported; retry after the
+            `Retry-After` seconds).
   /agents/conversations/show/archives:
     get:
       tags:
@@ -62956,7 +63073,12 @@ paths:
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: Service unavailable - Connector service is unreachable
+          description: Service unavailable - Connector service is unreachable. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -63330,6 +63452,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/active:
     get:
       tags:
@@ -63767,6 +63891,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - Connector Instances
@@ -63881,6 +64007,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/stats:
     get:
       tags:
@@ -63965,6 +64093,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/explain:
     get:
       tags:
@@ -64247,7 +64377,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached. Safe to retry.
+          description: The connector service could not be reached. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64329,6 +64464,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Connector Instances
@@ -64382,7 +64519,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The source could not be reached to check the credential. Safe to retry.
+          description: The source could not be reached to check the credential. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64411,6 +64553,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/oauth/authorize:
     parameters:
       - name: connectorId
@@ -64458,6 +64602,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users:
     get:
       tags:
@@ -64494,6 +64640,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users/{userId}:
     delete:
       tags:
@@ -64533,6 +64681,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/roster:
     get:
       tags:
@@ -64610,6 +64760,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/invites:
     post:
       tags:
@@ -64699,6 +64851,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/reminders:
     post:
       tags:
@@ -64743,6 +64897,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/info:
     post:
       tags:
@@ -64792,6 +64948,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/authorize:
     post:
       tags:
@@ -64836,6 +64994,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/complete:
     post:
       tags:
@@ -64920,6 +65080,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/filter:
     patch:
       tags:
@@ -65033,6 +65195,12 @@ paths:
             admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
             only if `filter.mode` is not already the one you want. That read needs `connector:read` for an OAuth
             client or personal access token (`connector:write` does not grant it); a session needs no scope.
+            Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -65795,6 +65963,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/resync:
     post:
       tags:
@@ -66013,6 +66183,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -66118,6 +66290,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Configuration --------------------
   /connectors/{connectorId}/config:
@@ -66201,6 +66375,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - Connector Configuration
@@ -66340,6 +66516,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/auth:
     put:
       tags:
@@ -66434,6 +66612,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/filters-sync:
     put:
       tags:
@@ -66538,6 +66718,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/toggle:
     post:
       tags:
@@ -66652,6 +66834,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -66747,6 +66931,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/oauth/callback:
     get:
       tags:
@@ -66959,6 +67145,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       deprecated: true
       x-speakeasy-deprecation-message: >-
@@ -67061,6 +67249,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
@@ -67244,6 +67434,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Service Configuration (internal) --------------------
   /connectors/getTokenFromCode:
@@ -69454,7 +69646,12 @@ paths:
             The caller asked for no `scope`, or for `org`, and is not confirmed as an administrator, but
             their role could not be confirmed either, so nothing was created (`SERVICE_UNAVAILABLE`; the
             connector service's wording is replaced with `This part of PipesHub is briefly unavailable.
-            Please try again in a few seconds.`). Asking for `personal` avoids the role check.
+            Please try again in a few seconds.`). Asking for `personal` avoids the role check. Also for an
+            organization instance when the store holding the instance list did not answer while it was read
+            or re-read for the write: the instance is not created and no other instance is changed. A new OAuth
+            configuration saved just before may remain and keeps its name, so retrying with the same inline OAuth
+            credentials answers `409` until that configuration is linked (`oauthConfigId`) or deleted; any other
+            create can be retried after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -69686,6 +69883,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so no instance was changed. New `authConfig` values saved to the OAuth
+            configuration just before may remain. When the instance had a linked OAuth configuration, a
+            retry after the `Retry-After` seconds updates it in place. When it had none, that save created
+            a new configuration that no instance links to: retry with its `oauthConfigId`, or delete it
+            first, or a retry with the same `authConfig` creates another one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -69775,6 +69984,15 @@ paths:
             The agent-usage check or the store could not be read or written.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so the instance stays, with its users' sign-ins and its rules, and no other
+            instance is changed. Safe to retry after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -70934,7 +71152,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -70994,7 +71212,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71075,7 +71293,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71158,7 +71376,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71214,7 +71432,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected failure in the gateway or in the connectors service.
+          description: Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
           content:
             application/json:
               schema:
@@ -71265,7 +71483,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71357,7 +71575,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71417,7 +71635,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71435,8 +71653,10 @@ paths:
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
         a change of auth mode or catalog type counts, and of URL when the template lets it be
-        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
-        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
+        typed (Okta). With `CONTROL_PLANE_CREDENTIALS` on, every connection made on the instance
+        is revoked too. When a credential can't be confirmed removed, nothing is saved: a store
+        or credential service that kept it or could not answer gives 503 with `Retry-After`, any
+        other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71518,7 +71738,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71530,8 +71750,8 @@ paths:
             A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
             catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
             of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
-            store kept one of them or could not answer: the instance was not changed, though some credentials may
-            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
+            answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
           headers:
             Retry-After:
@@ -71548,7 +71768,11 @@ paths:
       summary: Delete an MCP server instance
       description: |
         Organization instances are deleted by administrators, a personal instance by its owner.
-        Removes every stored credential and the OAuth app configuration too.
+        Also removes the instance's stored credentials and OAuth app configuration, and with
+        `CONTROL_PLANE_CREDENTIALS` on revokes every connection made on the instance. That
+        clean-up is best effort: when a credential delete or the revoke can't be confirmed, the
+        instance is still deleted and the failure is only logged, so those credentials or
+        connections can stay stored, with no instance left to use them.
       operationId: deleteMcpInstance
       security:
         - bearerAuth: []
@@ -71854,12 +72078,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request, or a sign-in that
-            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
-            service answers `502`, which the gateway reports as `500`).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            An MCP server that could not be reached or answered with an error other than a sign-in request,
+            or a sign-in that couldn't be renewed because its provider is down, rate-limiting or busy
+            (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -71915,7 +72145,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -71984,7 +72214,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72063,7 +72293,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72140,7 +72370,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72203,7 +72433,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72283,7 +72513,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72346,7 +72576,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72440,8 +72670,14 @@ paths:
             Unexpected failure in the gateway or in the connectors service, including a failed dynamic client registration with the OAuth provider.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
-
-            The MCP server could not be reached or refused the connection: the connectors service answers `502`, which the gateway reports as `500`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            The MCP server could not be reached or refused the connection (`HTTP_BAD_GATEWAY`; see Relayed
+            failures in the introduction).
           content:
             application/json:
               schema:
@@ -72511,11 +72747,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service, including a token endpoint
-            that could not be reached or that answered with an error other than a rejected refresh token
-            (the connectors service answers 502, which the gateway reports as 500).
+            Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            A token endpoint that could not be reached or that answered with an error other than a rejected
+            refresh token (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction).
           content:
             application/json:
               schema:
@@ -72588,7 +72830,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72692,7 +72934,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72779,7 +73021,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -72922,7 +73164,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73002,7 +73244,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73085,7 +73327,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73149,7 +73391,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -73230,7 +73472,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected failure in the gateway or in the connectors service.
+            Unexpected failure in the gateway (a connectors service failure is relayed as Relayed failures in the introduction describes).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74427,15 +74669,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            One of:
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: |
+            One of (`HTTP_BAD_GATEWAY`; see Relayed failures in the introduction):
             - the API could not be reached, or answered with something that is not HTTP;
             - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
               or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
               refreshing after the API answered `401`. The call, or its retry, was not sent.
-
-            The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:
@@ -77274,6 +77521,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - OAuth Configuration
@@ -77448,6 +77697,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - OAuth Configuration
@@ -79054,7 +79305,13 @@ paths:
                 connectionId:
                   type: string
                   format: uuid
-                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                  description: |
+                    Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
+                    with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
                   description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
@@ -79099,13 +79356,19 @@ paths:
                 $ref: '#/components/schemas/AIModelBatchSSEEvent'
         '400':
           description: |
-            Invalid body, or connectionId does not match a saved connection for this provider
+            Invalid body, or connectionId does not match a saved connection for this provider.
+            `error_code: credential_reentry_required` when connectionId names a connection whose
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79135,7 +79398,12 @@ paths:
       tags:
         - AI Models Providers
       summary: Rotate credentials for every model in a connection
-      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      description: |
+        Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+        The new credentials are health-checked against the connection's first model and written to every
+        model of the connection. When the connection's models do not all share one endpoint and baseUrl
+        (a model was moved to another endpoint), the request is refused with 400
+        `credential_reentry_required` before any health check, and nothing is stored.
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
@@ -79169,15 +79437,32 @@ paths:
       responses:
         '200':
           description: Credentials updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+                    description: Models whose credentials were replaced.
         '400':
           description: |
-            Health check rejected the new credentials, or the body included a non-credential field
+            Health check rejected the new credentials, or the body included a non-credential field.
+
+            Also returned as `ConnectionEndpointsDifferError` (`credential_reentry_required`) when the connection's models use more than one endpoint; nothing is checked or stored.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79213,7 +79498,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Set identity forwarding for every model in a connection
-      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      description: |
+        Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+        A save carrying a new secret (a non-empty `serviceApiKey`, or a typed value for a credential header such as `Authorization`) is refused with 400 `credential_reentry_required` when the connection's models do not all share one endpoint and baseUrl; nothing is stored. A save without a new secret applies to every entry whatever its endpoint.
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
@@ -79277,7 +79564,13 @@ paths:
                   updated:
                     type: integer
         '400':
-          description: Invalid settings
+          description: Invalid settings, or a new secret for a connection whose models use more than one endpoint (`ConnectionEndpointsDifferError`; nothing is stored).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Authentication required
         '403':
@@ -79547,6 +79840,14 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -79571,6 +79872,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:
@@ -89418,6 +89728,41 @@ paths:
         '400': { description: A malformed body }
         '401': { description: "No service token, or one without scope control-plane:bindings" }
         '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: the binding changed while it was being revoked; repeat the call" }
+  /control-plane/internal/bindings/revoke-installation:
+    post:
+      tags: [Connections]
+      summary: Revoke every binding of an installation (internal)
+      operationId: revokeInstallationBindings
+      description: An MCP server's connection target changed or the server was removed, with `CONTROL_PLANE_CREDENTIALS` on. Revokes each binding not revoked yet; safe to repeat. Audited as the token's user when it names one.
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [installation]
+              properties:
+                installation: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        '200':
+          description: The bindings this call revoked (empty when none was live)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bindings]
+                properties:
+                  bindings: { type: array, items: { $ref: '#/components/schemas/BindingRecord' } }
+        '400': { description: A malformed body }
+        '401': { description: "No service token, or one without scope control-plane:bindings" }
+        '403': { description: "CP_FORBIDDEN: the token names no org" }
+        '409': { description: "CP_REVISION_CONFLICT: a binding changed while it was being revoked; repeat the call" }
+        '503': { description: Connections are not configured on this deployment }
   /control-plane/internal/bindings/due:
     get:
       tags: [Connections]

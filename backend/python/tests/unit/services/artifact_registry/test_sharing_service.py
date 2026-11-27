@@ -53,7 +53,7 @@ class FakeGraph:
             return next((u for u in self.users.values() if u["_key"] == key), None)
         return None
 
-    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> dict | None:
+    async def get_user_by_user_id(self, user_id, org_id=None, *, raise_on_error=False) -> dict | None:
         return self.users.get(user_id)
 
     async def get_edge(self, from_id, from_collection, to_id, to_collection, collection,
@@ -187,11 +187,11 @@ class TestShare:
         graph = FakeGraph()
         lookups = graph.get_user_by_user_id
 
-        async def failing_lookup(user_id, *, raise_on_error=False) -> dict | None:
+        async def failing_lookup(user_id, org_id=None, *, raise_on_error=False) -> dict | None:
             if user_id == "bob":
                 assert raise_on_error
                 raise RuntimeError("graph down")
-            return await lookups(user_id)
+            return await lookups(user_id, org_id)
 
         graph.get_user_by_user_id = failing_lookup
         with pytest.raises(RuntimeError, match="graph down"):

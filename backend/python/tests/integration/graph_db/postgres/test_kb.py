@@ -392,6 +392,7 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
     assert await w.p.get_and_validate_folder_in_kb("kb2", "top") is None
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_folder_name_check_reads_the_parent_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Creating a folder asks whether its name is taken under the parent (or at the collection's root). The check reads that parent's children or that
     collection's records, so its cost does not grow with the records of the organisation's other connectors."""

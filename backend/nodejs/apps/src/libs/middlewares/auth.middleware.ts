@@ -33,7 +33,7 @@ import {
   AuthAttemptMethod,
   recordAuthAttempt,
   refusalOutcome,
-} from '../services/telemetry/modules/auth-metrics';
+} from '../services/telemetry/telemetry-impl';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';

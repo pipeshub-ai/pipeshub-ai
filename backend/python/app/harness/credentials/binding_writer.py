@@ -159,6 +159,10 @@ class BindingNotImported(RuntimeError):
 class BindingWriteFailed(RuntimeError):
     reason_code = "binding_write_failed"
 
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class BindingWriter(Protocol):
     async def import_record(self, org_id: str, request: ImportRequest, *, user_id: str | None = None) -> Imported: ...
@@ -168,6 +172,10 @@ class BindingWriter(Protocol):
     async def revoke_owner(
         self, org_id: str, installation: str, owner: str, *, user_id: str | None = None
     ) -> BindingRow | None: ...
+
+    async def revoke_installation(self, org_id: str, installation: str, *, user_id: str | None = None) -> list[BindingRow]:
+        """Every owner's binding of the installation that was not revoked yet, now revoked."""
+        ...
 
     async def due(self, before_ms: int, limit: int, holder: str) -> list[DueBinding]:
         """The due bindings ``holder`` (a refresher replica) now holds until it writes or the claim lapses."""
@@ -224,7 +232,9 @@ class NodeBindingWriter:
             code = str(cast("dict[str, Any]", response.json()).get("error", {}).get("code", ""))
             raise BindingNotImported(path) if "NOT_IMPORTED" in code else BindingConflict(path)
         if response.status_code != 200:
-            raise BindingWriteFailed(f"{method} {path}: {response.status_code}")
+            # Only Node's own failures carry the status (a 503 or 504 is worth retrying); a 4xx to our own call is a bug of ours.
+            status = response.status_code if response.status_code >= 500 else None
+            raise BindingWriteFailed(f"{method} {path}: {response.status_code}", status)
         return cast("dict[str, Any]", response.json())
 
     @staticmethod
@@ -248,6 +258,12 @@ class NodeBindingWriter:
             "POST", "/revoke", org_id=org_id, user_id=user_id, body={"installation": installation, "owner": owner}
         )
         return self._row(answer.get("binding"))
+
+    async def revoke_installation(self, org_id: str, installation: str, *, user_id: str | None = None) -> list[BindingRow]:
+        answer = await self._call(
+            "POST", "/revoke-installation", org_id=org_id, user_id=user_id, body={"installation": installation}
+        )
+        return [BindingRow.of(b) for b in cast("list[dict[str, Any]]", answer.get("bindings", []))]
 
     async def due(self, before_ms: int, limit: int, holder: str) -> list[DueBinding]:
         answer = await self._call(

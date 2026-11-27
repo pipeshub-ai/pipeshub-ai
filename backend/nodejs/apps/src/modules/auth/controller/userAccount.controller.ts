@@ -103,8 +103,10 @@ import {
   type SessionReplayAudit,
 } from '../session-replay-audit';
 import { orgLifecycle } from '../../../libs/org-lifecycle';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  recordEvent,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
@@ -130,7 +132,7 @@ import {
   recordAuthAttempt,
   refusalOutcome,
   signInMethod,
-} from '../../../libs/services/telemetry/modules/auth-metrics';
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   executeConnectorCommand,
   handleBackendError,

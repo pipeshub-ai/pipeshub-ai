@@ -21,6 +21,7 @@ import {
   listAllArchivesConversation,
   searchArchivedConversations,
   search,
+  retrieve,
   searchHistory,
   getSearchById,
   deleteSearchById,
@@ -2971,14 +2972,64 @@ describe('Enterprise Search Controller', () => {
     })
 
     // The error goes through the real error middleware, so the body is what a client gets.
-    const bodyOf = (error: any, requestId?: string): { status: number; body: any } => {
+    const bodyOf = (error: any, requestId?: string): { status: number; body: any; setHeader: any } => {
       const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
       res.status.returns(res)
       res.json.returns(res)
       ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub() as any)
-      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0], setHeader: res.setHeader }
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
+
+    it('relays the Retry-After of a search the embedding provider refused as rate limited', async () => {
+      const message =
+        "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. Please try again in a minute."
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'embedding_rate_limited', status_code: 503, message },
+        headers: { 'retry-after': '60' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(503)
+        expect(error.message).to.equal(message)
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
+      }
+    })
+
+    it('passes on no other header of a failed search', async () => {
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'error', status_code: 503, message: 'x' },
+        headers: { 'retry-after': '60', 'set-cookie': 'sid=secret', server: 'secret', 'x-internal': 'secret' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        const res = createMockResponse()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          res,
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
+        expect(JSON.stringify({ ...error, message: error.message })).to.not.contain('secret')
+      }
+    })
 
     for (const [status, notices] of [
       [404, NOTICES],
@@ -3031,6 +3082,58 @@ describe('Enterprise Search Controller', () => {
 
       const { body } = bodyOf(next.firstCall.args[0])
       expect(Object.keys(body)).to.deep.equal(['error'])
+    })
+
+    // A proxy's HTML page in front of the AI service: the command keeps the status and drops the body.
+    for (const [status, statusText] of [[404, 'Not Found'], [503, 'Service Unavailable']] as const) {
+      it(`keeps the status of a ${status} whose body was not JSON`, async () => {
+        const handler = search(createMockAppConfig())
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: status, data: undefined, msg: statusText } as any)
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const { status: sent, body } = bodyOf(next.firstCall.args[0])
+        expect(sent).to.equal(status)
+        expect(body.error.message).to.not.equal('Failed to get response from AI service')
+      })
+    }
+
+    for (const data of [undefined, { detail: 'busy' }]) {
+      it(`keeps the Retry-After of a 503 (${data ? 'JSON' : 'not JSON'})`, async () => {
+        const handler = search(createMockAppConfig())
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+          statusCode: 503, data, msg: 'Service Unavailable', headers: { 'retry-after': '5' },
+        } as any)
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        expect(next.firstCall.args[0].statusCode).to.equal(503)
+        expect(next.firstCall.args[0].metadata.retryAfter).to.equal('5')
+      })
+    }
+
+    it('answers a 200 with no body as our failure', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: undefined } as any)
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
     })
 
     it('logs a 402 refusal as a warning, not an error', async () => {
@@ -14255,6 +14358,26 @@ describe('Enterprise Search Controller', () => {
         expect(res.status.calledWith(201)).to.be.true
       })
     })
+
+    // A proxy's page in front of the AI service: mapped, so the client gets the envelope and Retry-After, not `{}`.
+    for (const [name, build, user] of [
+      ['uploadChatAttachments', uploadChatAttachments, undefined],
+      ['uploadChatAttachmentsInternal', uploadChatAttachmentsInternal, { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) }],
+    ] as const) {
+      it(`${name}: an error answer that was not JSON is mapped with its status and Retry-After`, async () => {
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+          statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' },
+        } as any)
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await build(createMockAppConfig())(createMockRequest({ files: [pdfMulterFile], ...(user ? { user } : {}) }), res, next)
+
+        expect(res.status.called).to.be.false
+        expect(next.firstCall.args[0].statusCode).to.equal(503)
+        expect(next.firstCall.args[0].metadata.retryAfter).to.equal('5')
+      })
+    }
 
     describe('deleteChatAttachment', () => {
       it('should DELETE via fetch and mirror upstream status', async () => {
