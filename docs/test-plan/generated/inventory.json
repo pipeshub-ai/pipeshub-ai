@@ -3,7 +3,7 @@
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2049,
  "claimedTestFiles": 3985,
- "claimedTests": 42795,
+ "claimedTests": 42801,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -15988,7 +15988,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 39,
-   "tests": 322,
+   "tests": 328,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -16003,7 +16003,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 266
+    "unit": 272
    },
    "markers": {
     "docker": 1
@@ -16033,7 +16033,7 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch01-schedule-from-chat.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 30
+     "tests": 32
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -16191,7 +16191,7 @@
      "path": "backend/python/tests/unit/harness/test_sch01_schedule_from_chat.py",
      "level": "unit",
      "markers": [],
-     "tests": 25
+     "tests": 28
     },
     {
      "path": "backend/python/tests/unit/harness/test_tr03_trigger_context.py",
@@ -16209,13 +16209,13 @@
      "path": "frontend/app/(main)/workspace/schedules/__tests__/sch01-once-schedule.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 8
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/sch01-schedule-words.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 7
+     "tests": 6
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/schedules-api.test.ts",
@@ -25731,14 +25731,14 @@
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
    "files": 293,
-   "tests": 2131,
+   "tests": 2132,
    "filesByLevel": {
     "e2e-browser": 15,
     "unit": 278
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2078
+    "unit": 2079
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -27101,13 +27101,13 @@
      "path": "frontend/app/(main)/workspace/schedules/__tests__/sch01-once-schedule.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 8
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/sch01-schedule-words.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 7
+     "tests": 6
     },
     {
      "path": "frontend/app/(main)/workspace/schedules/__tests__/schedules-api.test.ts",

@@ -103,6 +103,13 @@ is the person's act on the Schedules page, and a list is something a person read
 ## Deviations
 
 - Approval is the existing approval card, not a question card with a confirm route (D3).
+- Every refusal notice of a schedule, not only a one-off's, now waits on the org's harness predicate and Labs
+  `ENABLE_SCHEDULED_RUNS` (ADR-OPS-08: what a person sees is gated on both): an org that switched scheduled runs off
+  no longer gets the daily "your schedule could not run" notice. Firings are still settled and recorded.
+- The tool's arguments have one contract (`ext/pipeshub/api/schedule-create-arguments.schema.json` and its vectors),
+  which Node validates and the worker checks before any card. The generated Python model cannot say "absent, never
+  null" or "each channel once", so the worker refuses those two cases explicitly; the shared vectors hold both sides
+  to the same verdicts.
 
 ## Owner amendments
 
