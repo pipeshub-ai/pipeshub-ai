@@ -52,7 +52,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
     this.method = options.method;
     this.signal = options.signal;
     this.body = this.sanitizeBody(options.body);
-    this.headers = withRunBearer(this.sanitizeHeaders(options.headers!));
+    // Headers are optional: a command built without them sends only the defaults, as the base command does.
+    this.headers = withRunBearer(this.sanitizeHeaders(options.headers ?? {}));
     this.timeoutMs = options.timeoutMs ?? AI_SERVICE_TIMEOUT_MS;
     this.maxAttempts = options.maxAttempts ?? 3;
   }
