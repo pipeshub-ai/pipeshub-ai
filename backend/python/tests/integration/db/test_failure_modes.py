@@ -702,3 +702,41 @@ async def test_cancellation_variants(env, make, where) -> None:
     assert idle == 0 and ok == 1
     if px:
         await px.stop()
+
+
+async def test_a_unit_that_notifies_waits_at_commit_for_another_notifying_commit_instead_of_failing_on_its_lock_timeout(env, make) -> None:
+    """A COMMIT that queued a NOTIFY takes the notification-queue lock, which another notifying commit holds until it is durable. Here that
+    commit waits for a synchronous standby that never answers, holding the lock; the unit's 5 s lock_timeout must not cancel the unit's COMMIT."""
+    admin, holder = await env.admin(), await env.admin()
+    await admin.execute(f"ALTER DATABASE {env.db} SET synchronous_commit = local")         # this database's units never wait for the standby
+    await admin.execute("ALTER SYSTEM SET synchronous_standby_names = 'nosuchstandby'")
+    await admin.execute("SELECT pg_reload_conf()")
+    hold = None
+    try:
+        db = await make("indexing", pool_max=2)                                            # lock_timeout 5 s, statement_timeout 60 s
+        await holder.execute("SET synchronous_commit = on")
+        await holder.execute("BEGIN")
+        await holder.execute("INSERT INTO kx.log VALUES ('bbbbbbbbbbbbbbbbbbbbbbbb', 'holder')")
+        await holder.execute("SELECT pg_notify('pipeshub_test', 'holder')")
+        hold = asyncio.create_task(holder.execute("COMMIT"))                              # waits for the standby, holding the queue lock
+        for _ in range(50):
+            if await admin.fetchval("SELECT wait_event FROM pg_stat_activity WHERE pid = $1", holder.get_server_pid()) == "SyncRep":
+                break
+            await asyncio.sleep(0.1)
+
+        async def fn(tx) -> None:
+            await tx.execute("INSERT INTO kx.log VALUES ('aaaaaaaaaaaaaaaaaaaaaaaa', 'notified')")
+            await tx.execute("/* t */ SELECT pg_notify('pipeshub_test', '')")
+        loop = asyncio.get_running_loop()
+        loop.call_later(7, lambda: loop.create_task(admin.execute("SELECT pg_cancel_backend($1)", holder.get_server_pid())))      # past the lock_timeout
+        with as_org("aaaaaaaaaaaaaaaaaaaaaaaa"):
+            await db.run(fn, write=True)
+        assert await admin.fetchval("SELECT count(*) FROM kx.log WHERE note = 'notified'") == 1
+    finally:
+        await admin.execute("ALTER SYSTEM RESET synchronous_standby_names")
+        await admin.execute("SELECT pg_reload_conf()")
+        if hold is not None:
+            with contextlib.suppress(Exception):
+                await hold
+        await holder.close()
+        await admin.close()

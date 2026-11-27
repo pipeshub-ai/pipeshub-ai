@@ -80,6 +80,11 @@ _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
 # A statement that writes the graph's documents or edges: the guard of the projection into kg (app.services.graph_db.postgres.kg) looks at these before they run. What the unit
 # wrote is not decided by this text but by the capture trigger, which marks the transaction (kg.wrote), so a form this misses is still projected.
+_NOTIFY = re.compile(r"\bpg_notify\s*\(|^\s*notify\b", re.I | re.M)
+# A unit that queued a NOTIFY takes the database-wide notification-queue lock at COMMIT, held by every other notifying unit until its commit is
+# durable. The unit's lock_timeout would then cancel the COMMIT itself (55P03) whenever another commit is slow: it waits instead, bounded by
+# statement_timeout, which still applies to the COMMIT.
+COMMIT_LOCK_WAIT = "/* pipeshub:kernel.commit_lock_wait */ SET LOCAL lock_timeout = 0"
 _GRAPH_DML = re.compile(r'\b(?:insert\s+into|update(?:\s+only)?|delete\s+from(?:\s+only)?|merge\s+into(?:\s+only)?)\s+"?graph"?\s*\.\s*"?(?:nodes|edges)"?\b', re.I)
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
@@ -150,6 +155,7 @@ class Tx:
         self.failed = False  # a statement failed and no savepoint rollback has undone it since
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
+        self.notified = False  # a statement of this unit queued a NOTIFY (COMMIT_LOCK_WAIT)
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
         self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
@@ -174,6 +180,8 @@ class Tx:
             if (hook := self._db.graph_write_hook) is not None and _GRAPH_DML.search(_SQL_NOISE.sub(" ", sql)):
                 hook(self, sql)  # may refuse (strict mode): before the statement runs
                 self.kg_dirty = True
+            if _NOTIFY.search(_COMMENTS.sub(" ", sql)):
+                self.notified = True
         catalog.record(sql, args)
         site = _site(sql)
         t0 = time.perf_counter()
@@ -557,6 +565,8 @@ class KernelDB:
                 await self.pre_commit_hook(tx)
             for step in tx.before_commit:
                 await step(tx)
+            if tx.notified and not tx.failed:      # a failed unit's COMMIT reports the failure, as before
+                await tx._run("execute", COMMIT_LOCK_WAIT, internal=True)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()
