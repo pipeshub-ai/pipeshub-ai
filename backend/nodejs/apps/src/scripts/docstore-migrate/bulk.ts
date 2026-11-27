@@ -14,7 +14,7 @@ import { idString, readBatches } from './mongo-read';
 import type { MigrationRuntime } from './runtime';
 import { SourceReport, toNeutral } from './source';
 import type { CollectionProgress, JobState } from './state';
-import { carriersFor, copyCarried } from './carry/run';
+import { carriersFor, copyCarried, writeWithDocuments } from './carry/run';
 import { recordKeys } from './keyed-rows';
 import { carryMongo, carryPg } from './carry/steps';
 import { putRefusals } from './refusals';
@@ -136,6 +136,12 @@ export async function bulk(
           ? await rt.jobs(async (tx, k) => {
               await js.guardWrite(k);
               const st = await repo.importBatch(m.collection, docs, tx);
+              await writeWithDocuments(
+                k,
+                m.collection,
+                offered,
+                new Set(st.skipped.map((x) => x.id.toLowerCase())),
+              );
               await putRefusals(k, m.collection, st.skipped);
               await recordKeys(
                 k,

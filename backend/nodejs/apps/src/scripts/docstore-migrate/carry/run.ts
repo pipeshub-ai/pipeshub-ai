@@ -84,6 +84,36 @@ export function mongoCarry(db: Db): CarryMongo {
   };
 }
 
+/** The collection's fields are written with its documents (`withDocument`), not by the carrier's own step. */
+const withDocument = (c: Carrier, collection: string): boolean =>
+  c.withDocument === true && !c.collections.includes(collection);
+
+/**
+ * In the unit that wrote these documents of a mapped collection: the fields `withDocument` carriers keep of them. `skipped`: ids
+ * (lower-case) of documents the importer did not take, whose fields have no row to hang on.
+ */
+export async function writeWithDocuments(
+  k: KernelTx,
+  collection: string,
+  raw: readonly Doc[],
+  skipped: ReadonlySet<string> = new Set(),
+  carriers: readonly Carrier[] = CARRIERS,
+): Promise<void> {
+  for (const c of carriers) {
+    if (!withDocument(c, collection) || !(c.fields[collection] ?? []).length)
+      continue;
+    const docs = raw
+      .map((d) => sourceDoc(d, collection, readOf(c, collection)))
+      .filter((d) => !skipped.has(d.id.toLowerCase()));
+    const bad = docs.find((d) => d.refused);
+    if (bad)
+      throw new Error(
+        `${bad.refused ?? ''}: nothing of this batch was written; correct the document, then run again`,
+      );
+    if (docs.length) await c.write(k, collection, docs);
+  }
+}
+
 /** Carriers that read any of the collections named (all of them without a list). */
 export const carriersFor = (only?: readonly string[]): Carrier[] =>
   only
@@ -97,10 +127,13 @@ export async function copyCarried(
   carriers: readonly Carrier[],
   log: (event: string, data?: Record<string, unknown>) => void = () =>
     undefined,
+  withDocuments = false,
 ): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
   for (const c of carriers)
     for (const coll of carriedSources(c)) {
+      // copied with the documents, except when the carrier's rows are written again on their own (a resync)
+      if (withDocument(c, coll) && !withDocuments) continue;
       let n = 0;
       let batch: SourceDoc[] = [];
       const flush = async (): Promise<void> => {
@@ -135,9 +168,9 @@ export async function applyCarried(
   if (!upserts.length && !deletes.length) return;
   for (const c of carriers) {
     if (!carriedSources(c).includes(collection)) continue;
-    const docs = upserts.map((raw) =>
-      sourceDoc(raw, collection, readOf(c, collection)),
-    );
+    const docs = withDocument(c, collection)
+      ? []
+      : upserts.map((raw) => sourceDoc(raw, collection, readOf(c, collection)));
     const bad = docs.find((d) => d.refused);
     if (bad)
       throw new Error(
@@ -310,6 +343,6 @@ export async function resyncCarried(
 ): Promise<void> {
   for (const c of carriers) {
     await pg((k) => c.clear(k), true);
-    await copyCarried(pg, mongo, [c]);
+    await copyCarried(pg, mongo, [c], undefined, true);
   }
 }

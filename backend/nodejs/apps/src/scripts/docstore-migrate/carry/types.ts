@@ -66,6 +66,12 @@ export interface Carrier {
   readonly reads?: Readonly<Record<string, SourceRead>>;
   /** Tables its rows live in. */
   readonly tables: readonly string[];
+  /**
+   * Its fields of a mapped collection are written in the unit that writes the documents (the copy, the follower, a repair), after
+   * the document's rows: a document is never in PostgreSQL without them, and a failure in either undoes both. The carrier step
+   * after the copy and the follower's carrier step leave those collections to that unit (a follower delete still reaches `remove`).
+   */
+  readonly withDocument?: true;
   /** Writes the rows of these documents (insert or replace); rows a document no longer yields are removed. */
   write(k: KernelTx, collection: string, docs: SourceDoc[]): Promise<void>;
   /** The documents with these ids are gone from MongoDB: their rows go too (an erasure during the follow must not survive). */

@@ -15,6 +15,8 @@ import { EDITION_DOCSTORE_COVERAGE } from '../../../src/edition';
 import {
   applyCarried,
   copyCarried,
+  resyncCarried,
+  writeWithDocuments,
   restoreCarried,
   verifyCarried,
   type CarryPg,
@@ -169,6 +171,32 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       async clear() {
         calls.push({ op: 'clear', collection: '', ids: [] });
       },
+    });
+
+    it('a withDocument carrier: its fields are written with the documents, skipped ones left out; its own step and the follower leave them, a delete still reaches it', async () => {
+      const calls: Call[] = [];
+      const c: Carrier = { ...fake(new Map(), calls), withDocument: true };
+      const U1 = 'a'.repeat(24);
+      const U2 = 'b'.repeat(24);
+      await writeWithDocuments({} as never, 'users', [{ _id: new ObjectId(U1), codingEngine: 'x' }, { _id: new ObjectId(U2) }], new Set([U2]), [c]);
+      expect(calls).to.deep.equal([{ op: 'write', collection: 'users', ids: [U1] }]);
+      // nothing of the batch is written when one document cannot be read: the unit fails, the documents' rows with it
+      let err: Error | undefined;
+      await writeWithDocuments({} as never, 'users', [{ _id: U1, bad: { ref: new ObjectId() } }], new Set(), [{ ...c, reads: { users: { pick: ['bad'] } } }]).catch((e: Error) => (err = e));
+      expect(err?.message).to.contain('nothing of this batch was written');
+      // a collection the carrier takes whole is not a field: writeWithDocuments never writes it
+      calls.length = 0;
+      await writeWithDocuments({} as never, 'agentWorkspaceHeads', [{ _id: 'h' }], new Set(), [c]);
+      expect(calls).to.deep.equal([]);
+      const mongo = new FakeCarryMongo({ agentWorkspaceHeads: [{ _id: 'h', revision: 1 }], users: [{ _id: new ObjectId(U1), codingEngine: 'x' }] });
+      await copyCarried(noPg, mongo, [c]);
+      expect(calls.map((x) => x.collection), 'the carrier step copies only what is not written with the documents').to.deep.equal(['agentWorkspaceHeads']);
+      calls.length = 0;
+      await applyCarried(noPg, 'users', [{ _id: new ObjectId(U1), codingEngine: 'y' }], [U2], [c]);
+      expect(calls).to.deep.equal([{ op: 'remove', collection: 'users', ids: [U2] }]);
+      calls.length = 0;
+      await resyncCarried(noPg, mongo, [c]);
+      expect(calls.map((x) => `${x.op}:${x.collection}`), 'a resync clears the carrier and writes all of it again').to.deep.equal(['clear:', 'write:agentWorkspaceHeads', 'write:users']);
     });
 
     it('verify reports missing, extra, differing (by field name only) and duplicate entries, and never a carried value', async () => {
