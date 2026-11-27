@@ -50,6 +50,9 @@ const FIELDS: Record<string, readonly string[]> = {
     'resultSummary',
     'approval',
     'resultView',
+    // A failed call's reason and that it sent nothing: the live row words the failure as a reload does.
+    'errorCode',
+    'nothingSent',
   ],
   STATE_DELTA: ['delta'],
   STATE_SNAPSHOT: ['snapshot'],

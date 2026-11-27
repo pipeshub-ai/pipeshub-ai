@@ -92,6 +92,14 @@ describe('stream relay: what reaches the browser', () => {
     })
   })
 
+  it("forwards why a tool failed and that it sent nothing, so the live row words the failure as a reload does", () => {
+    const relay = new StreamRelay()
+    const result = { type: 'TOOL_CALL_RESULT', toolCallId: 'c1', runId: RUN, content: 'Rate limited', status: 'failed', resultSummary: 'Not sent' }
+    expect(relayed(relay, 'TOOL_CALL_RESULT', { ...result, errorCode: 'rate_limited', nothingSent: true, provenance: LABEL })).to.deep.equal({
+      ...result, errorCode: 'rate_limited', nothingSent: true,
+    })
+  })
+
   it('sends the final snapshot as a bare "the answer is settled", never the answer data it carried', () => {
     const relay = new StreamRelay()
     const snapshot = { final: true, answer: 'Revenue grew.', citations: [], provenance: LABEL, modelRouting: { escalated: false } }
