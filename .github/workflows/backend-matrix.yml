@@ -471,8 +471,9 @@ jobs:
         run: |
           docker run -d --name pg-kv-it -p 127.0.0.1:5442:5432 -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE"
           for _ in $(seq 1 60); do pg_isready -h 127.0.0.1 -p 5442 -U postgres && break; sleep 1; done
-          pip install -r backend/db/requirements.txt
-          eval "$(PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5442/postgres scripts/prepare_pg_test_db.sh pipeshub_kv)"
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
+          eval "$(PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_ADMIN_URL=postgresql://postgres@127.0.0.1:5442/postgres scripts/prepare_pg_test_db.sh pipeshub_kv)"
           for v in PG_CORE_URL PG_NODE_URL PG_POOLER PG_RUNTIME_SERVICE; do echo "$v=${!v}" >> "$GITHUB_ENV"; done
 
       - name: Start ${{ matrix.backend }}
