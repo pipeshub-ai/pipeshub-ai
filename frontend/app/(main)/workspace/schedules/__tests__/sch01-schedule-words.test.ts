@@ -21,6 +21,8 @@ describe('cronWords', () => {
     ['* * * * *', 'Every minute'],
     ['*/5 * * * *', 'Every 5 minutes'],
     ['*/15 * * * *', 'Every 15 minutes'],
+    ['*/30 * * * *', 'Every 30 minutes'],
+    ['*/20 * * * *', 'Every 20 minutes'],
     ['7 * * * *', 'Every hour at :07'],
     ['30 8 * * *', 'Every day at 8:30 AM'],
     ['0 9 * * 1-5', 'Every weekday at 9:00 AM'],
@@ -36,6 +38,11 @@ describe('cronWords', () => {
   });
 
   it.each([
+    // A step that does not divide 60 restarts each hour (`*/35` is :00 and :35): not a steady interval.
+    '*/35 * * * *',
+    '*/7 * * * *',
+    '*/45 * * * *',
+    '*/59 * * * *',
     '0 9 1-15 * *',
     '0 9 * 1 *',
     '0 9,17 * * *',

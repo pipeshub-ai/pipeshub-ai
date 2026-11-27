@@ -13,6 +13,7 @@ import { isSystemStatus } from '../copy';
 import { ScheduleRow } from '../components/schedule-row';
 import {
   browserTimeZone,
+  checkedSchedule,
   CreateScheduleDialog,
   emptyForm,
   localInputValue,
@@ -139,6 +140,44 @@ describe('creating a one-off', () => {
       expect.anything(),
     );
     expect(created.schedule.trigger).toEqual(ONCE);
+  });
+
+  it('the time is checked again at submit: one that is no longer a minute ahead is not sent', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-12-01T10:00:00-08:00'));
+      get.mockResolvedValue({ data: { channels: [{ channel: 'in_app', available: true, reason: null }] } });
+      const onSubmit = vi.fn(async (_input: NewSchedule) => {});
+      render(
+        <Theme>
+          <CreateScheduleDialog open onOpenChange={() => {}} agents={[]} onSubmit={onSubmit} />
+        </Theme>,
+      );
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Joke' } });
+      fireEvent.change(within(dialog).getByLabelText('What to ask'), { target: { value: 'Tell me a joke' } });
+      fireEvent.click(within(dialog).getByRole('radio', { name: 'Once, at a date and time' }));
+      const field = within(dialog).getByLabelText('Date and time');
+      fireEvent.change(field, { target: { value: '2026-12-01T10:02' } });
+      expect(within(dialog).queryByRole('alert')).toBeNull();
+      vi.setSystemTime(new Date('2026-12-01T10:01:30-08:00'));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+      expect(within(dialog).getByRole('alert').textContent).toBe('Pick a time at least a minute from now.');
+      expect(onSubmit).not.toHaveBeenCalled();
+      // A time still far enough ahead goes as picked.
+      fireEvent.change(field, { target: { value: '2026-12-01T10:05' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+      expect(onSubmit.mock.calls[0][0].trigger).toEqual({ kind: 'once', at: '2026-12-01T18:05:00.000Z', timeZone: browserTimeZone() });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a form whose one-off time is not valid never becomes a body with a blank time', () => {
+    const stale = { ...emptyForm(), name: 'Joke', query: 'Tell me a joke', kind: 'once' as const, onceAt: '2026-12-01T10:02' };
+    expect(checkedSchedule(stale, new Date('2026-12-01T10:01:30-08:00'))).toEqual({ problem: 'tooSoon' });
+    expect(() => toNewSchedule(stale, new Date('2026-12-01T10:01:30-08:00'))).toThrow();
   });
 
   it('the dialog’s "Once" option sends the picked time', async () => {

@@ -102,18 +102,38 @@ const ONCE_PROBLEM_KEYS: Readonly<Record<Exclude<OnceProblem, 'missing'>, string
   tooFar: 'schedules.create.onceTooFar',
 };
 
-function triggerOf(form: ScheduleForm, now: Date): NewSchedule['trigger'] {
-  if (form.kind === 'cron') return { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim(), catchUp: form.catchUp };
+/** The form's trigger, or why a one-off's time can't be made, from one check against `now`. */
+function triggerOf(form: ScheduleForm, now: Date): { trigger: NewSchedule['trigger'] } | { problem: OnceProblem } {
+  if (form.kind === 'cron') {
+    return { trigger: { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim(), catchUp: form.catchUp } };
+  }
   if (form.kind === 'once') {
     const instant = onceInstant(form.onceAt, now);
+    if ('problem' in instant) return instant;
     // The field is in the browser's zone, so that is the zone the schedule is read in.
-    return { kind: 'once', at: 'at' in instant ? instant.at : '', timeZone: browserTimeZone() };
+    return { trigger: { kind: 'once', at: instant.at, timeZone: browserTimeZone() } };
   }
-  return { kind: 'webhook', auth: form.tokenAuth ? 'token' : 'signature' };
+  return { trigger: { kind: 'webhook', auth: form.tokenAuth ? 'token' : 'signature' } };
 }
 
-/** The form as the create route's body; a blank optional number is absent, not zero. */
+/**
+ * The form as the create route's body, checked against the clock once, at submit: a time that was a minute ahead
+ * when picked may not be by then. A blank optional number is absent, not zero.
+ */
+export function checkedSchedule(form: ScheduleForm, now: Date = new Date()): { schedule: NewSchedule } | { problem: OnceProblem } {
+  const when = triggerOf(form, now);
+  if ('problem' in when) return when;
+  return { schedule: scheduleBody(form, when.trigger) };
+}
+
+/** `checkedSchedule` for a form known to be valid; a one-off's time that is not throws, it is never sent blank. */
 export function toNewSchedule(form: ScheduleForm, now: Date = new Date()): NewSchedule {
+  const checked = checkedSchedule(form, now);
+  if ('problem' in checked) throw new Error(`The one-off's time can't be made: ${checked.problem}`);
+  return checked.schedule;
+}
+
+function scheduleBody(form: ScheduleForm, trigger: NewSchedule['trigger']): NewSchedule {
   const budget = form.budget.trim() === '' ? null : Number(form.budget);
   const hours = form.deadlineHours.trim() === '' ? null : Number(form.deadlineHours);
   return {
@@ -121,7 +141,7 @@ export function toNewSchedule(form: ScheduleForm, now: Date = new Date()): NewSc
     agentKey: form.agent === ASSISTANT ? null : form.agent,
     ...(form.agent !== ASSISTANT && form.version === 'latest' ? { agentVersion: 'latest' as const } : {}),
     query: form.query,
-    trigger: triggerOf(form, now),
+    trigger,
     maxCostUsd: budget,
     deadlineS: hours === null ? null : Math.round(hours * 3600),
     overlap: form.overlap,
@@ -273,16 +293,22 @@ export function CreateScheduleDialog({
   const [error, setError] = useState<string | null>(null);
   // The date-time field's bounds, from when the dialog opened; the time itself is checked again on every change.
   const [openedAt, setOpenedAt] = useState(() => new Date());
+  // A one-off's time found stale at submit; any change to the form asks again.
+  const [submitProblem, setSubmitProblem] = useState<Exclude<OnceProblem, 'missing'> | null>(null);
 
   useEffect(() => {
     if (open) {
       setForm(initialAgent ? { ...emptyForm(), agent: initialAgent } : emptyForm());
       setError(null);
       setOpenedAt(new Date());
+      setSubmitProblem(null);
     }
   }, [open, initialAgent]);
 
-  const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) => setForm((prev) => ({ ...prev, [key]: value }));
+  const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) => {
+    setSubmitProblem(null);
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
   const assistant = form.agent === ASSISTANT;
   const { choices, failed } = useNoticeChannels(open, assistant ? null : form.agent);
   const choiceOf = (channel: NotifyChannel): NoticeChannelChoice | undefined =>
@@ -298,8 +324,10 @@ export function CreateScheduleDialog({
     });
   }, [choices]);
   const once = form.kind === 'once' ? onceInstant(form.onceAt) : null;
-  const onceProblem = once !== null && 'problem' in once && once.problem !== 'missing' ? once.problem : null;
+  const onceProblem =
+    submitProblem ?? (once !== null && 'problem' in once && once.problem !== 'missing' ? once.problem : null);
   const complete =
+    submitProblem === null &&
     form.name.trim() !== '' &&
     form.query.trim() !== '' &&
     (form.kind === 'webhook' ||
@@ -308,10 +336,15 @@ export function CreateScheduleDialog({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!complete || busy) return;
+    const checked = checkedSchedule(form, new Date());
+    if ('problem' in checked) {
+      setSubmitProblem(checked.problem === 'missing' ? 'tooSoon' : checked.problem);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(toNewSchedule(form));
+      await onSubmit(checked.schedule);
     } catch (failure) {
       setError(refusalText(t, SCHEDULE_REFUSALS, isHarnessError(failure) ? failure : toHarnessError(failure, true)));
     } finally {

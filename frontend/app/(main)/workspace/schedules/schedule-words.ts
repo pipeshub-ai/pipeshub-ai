@@ -40,8 +40,9 @@ export function cronShape(cron: string): CronShape | null {
     if (m === '*') return { kind: 'everyMinutes', every: 1 };
     const step = /^\*\/(\d{1,2})$/.exec(m);
     if (step) {
+      // A step counts within the hour (`*/35` fires at :00 and :35), so only a divisor of 60 is a steady interval.
       const every = int(step[1], 1, 59);
-      return every === null ? null : { kind: 'everyMinutes', every };
+      return every === null || 60 % every !== 0 ? null : { kind: 'everyMinutes', every };
     }
     const minute = int(m, 0, 59);
     return minute === null ? null : { kind: 'hourly', minute };
