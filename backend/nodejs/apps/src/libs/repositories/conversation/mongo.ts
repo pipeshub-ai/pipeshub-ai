@@ -52,6 +52,7 @@ import type {
   SessionDeletionDto,
   UserSessionDto,
 } from './types';
+import { MAX_ANSWER_LOOKUP } from './types';
 
 const logger = new Logger({ service: 'conversation-repository' });
 
@@ -1496,6 +1497,52 @@ export class MongoConversationRepository implements ConversationRepository {
 
   async countMessages(sessionId: string, orgId: string): Promise<number> {
     return ChatSessionMessage.countDocuments({ sessionId, orgId });
+  }
+
+  async findLatestQuestionBefore(
+    sessionId: string,
+    orgId: string,
+    at: Date,
+  ): Promise<string | null> {
+    const q = await ChatSessionMessage.findOne(
+      { sessionId, orgId, messageType: 'user_query', createdAt: { $lte: at } },
+      { _id: 1 },
+    )
+      .sort({ createdAt: -1, seq: -1 })
+      .lean();
+    return q ? String(q._id) : null;
+  }
+
+  async findAnswers(
+    sessionId: string,
+    orgId: string,
+    questionIds: string[],
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const ids = questionIds
+      .slice(0, MAX_ANSWER_LOOKUP)
+      .filter((id) => mongoose.isValidObjectId(id));
+    if (ids.length === 0) return out;
+    const questions = await ChatSessionMessage.find(
+      { _id: { $in: ids }, sessionId, orgId, messageType: 'user_query' },
+      { _id: 1, seq: 1 },
+    ).lean();
+    for (const q of questions) {
+      const next = await ChatSessionMessage.findOne(
+        {
+          sessionId,
+          orgId,
+          messageType: { $in: ['user_query', 'bot_response'] },
+          seq: { $gt: q.seq },
+        },
+        { _id: 1, messageType: 1 },
+      )
+        .sort({ seq: 1 })
+        .lean();
+      if (next?.messageType === 'bot_response')
+        out.set(String(q._id), String(next._id));
+    }
+    return out;
   }
 
   async listAttachmentsAndCitedRecords(
