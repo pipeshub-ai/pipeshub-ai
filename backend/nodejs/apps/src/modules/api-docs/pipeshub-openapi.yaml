@@ -56015,6 +56015,12 @@ paths:
         Only the conversation's initiator can unshare. A missing, deleted or
         agent conversation, or one the caller did not start (even one
         shared with them at `write` access), is `404`.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareConversationById
       security:
         - bearerAuth: []
@@ -56152,9 +56158,34 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Persistence layer failed to update the conversation document.
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the persistence layer
+            failed to update the conversation document. When the revoke was
+            refused, the users stay listed; their attachment access may already
+            be revoked.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
@@ -61784,8 +61815,15 @@ paths:
         Remove specific users from an agent conversation's recipient list and
         revoke their access to its artifacts and attachments. **Owner only.**
         When the last recipient is removed the conversation becomes private
-        again (`isShared: false`). Removing a user who is not a recipient is a
-        no-op.
+        again (`isShared: false`). Removing a user who is not a recipient
+        leaves the list unchanged, but their access is still revoked, so that
+        request can fail the same way as below.
+
+        The users' access to the conversation's attachments and artifacts is
+        revoked first; the list changes only after both revokes succeed. If
+        either is refused, the users stay listed and the answer is `503`,
+        `500` or `504`: try again. Their access to the attachments may already
+        be gone then (that revoke runs first), and the retry revokes the rest.
       operationId: unshareAgentConversation
       x-pipeshub-sdk: false
       security:
@@ -61845,6 +61883,37 @@ paths:
           description: |
             Conversation not found, deleted, belongs to a different agent, or
             the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The users' access to the attachments or artifacts could not be
+            revoked (the query service refused it), or the share list could not
+            be saved. When the revoke was refused, the users stay listed; their
+            attachment access may already be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The query service is unreachable or briefly unavailable, so the users'
+            access could not be revoked. The users stay listed (their attachment
+            access may already be revoked); retry after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying, when the query service sent it.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer the revoke in time. The users stay listed; their attachment access may already be revoked.
           content:
             application/json:
               schema:
