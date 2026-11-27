@@ -80,12 +80,12 @@ _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
 # A statement that writes the graph's documents or edges: the guard of the projection into kg (app.services.graph_db.postgres.kg) looks at these before they run. What the unit
 # wrote is not decided by this text but by the capture trigger, which marks the transaction (kg.wrote), so a form this misses is still projected.
-_NOTIFY = re.compile(r"\bpg_notify\s*\(|(?:^|;)\s*notify\b", re.I | re.M)
 # A unit that queued a NOTIFY takes the database-wide notification-queue lock at COMMIT, held by every other notifying unit until its commit is
 # durable. The unit's lock_timeout would then cancel the COMMIT itself (55P03) whenever another commit is slow: for its COMMIT it waits as long
 # as its statement_timeout instead. Never unbounded: the server turns statement_timeout off before it commits (finish_xact_command), so the
 # lock_timeout is the COMMIT's only bound.
 COMMIT_LOCK_WAIT = "/* pipeshub:kernel.commit_lock_wait */ SELECT set_config('lock_timeout', $1, true)"
+NOTIFY = "/* pipeshub:kernel.notify */ SELECT pg_notify($1, $2)"
 _GRAPH_DML = re.compile(r'\b(?:insert\s+into|update(?:\s+only)?|delete\s+from(?:\s+only)?|merge\s+into(?:\s+only)?)\s+"?graph"?\s*\.\s*"?(?:nodes|edges)"?\b', re.I)
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
@@ -156,7 +156,7 @@ class Tx:
         self.failed = False  # a statement failed and no savepoint rollback has undone it since
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
-        self.notified = False  # a statement of this unit queued a NOTIFY (COMMIT_LOCK_WAIT)
+        self.notified = False  # the unit queued a NOTIFY through notify() (COMMIT_LOCK_WAIT)
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
         self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
@@ -181,8 +181,6 @@ class Tx:
             if (hook := self._db.graph_write_hook) is not None and _GRAPH_DML.search(_SQL_NOISE.sub(" ", sql)):
                 hook(self, sql)  # may refuse (strict mode): before the statement runs
                 self.kg_dirty = True
-            if _NOTIFY.search(_COMMENTS.sub(" ", sql)):
-                self.notified = True
         catalog.record(sql, args)
         site = _site(sql)
         t0 = time.perf_counter()
@@ -306,6 +304,13 @@ class Tx:
 
     def _close(self) -> None:
         self._open = False
+
+
+async def notify(tx: Tx, channel: str, payload: str = "") -> None:
+    """Queue a NOTIFY on ``channel``, sent at the unit's COMMIT. The only way app code notifies (a source guard holds it to that): it marks the
+    unit, whose COMMIT then waits for the notification-queue lock up to its statement timeout (COMMIT_LOCK_WAIT)."""
+    tx.notified = True
+    await tx.execute(NOTIFY, channel, payload)
 
 
 def _site(sql: str) -> str:

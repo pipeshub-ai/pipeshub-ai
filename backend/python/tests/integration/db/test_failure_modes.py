@@ -27,6 +27,7 @@ from app.core.db import (
     SessionRoleLeak,
     UnsupportedIsolation,
     UowUsageError,
+    notify,
 )
 
 if TYPE_CHECKING:
@@ -733,7 +734,7 @@ async def test_a_unit_that_notifies_waits_at_commit_for_another_notifying_commit
 
         async def fn(tx) -> None:
             await tx.execute("INSERT INTO kx.log VALUES ('aaaaaaaaaaaaaaaaaaaaaaaa', 'notified')")
-            await tx.execute("/* t */ SELECT 1; NOTIFY pipeshub_test")
+            await notify(tx, "pipeshub_test")
         loop = asyncio.get_running_loop()
         loop.call_later(held_s, lambda: loop.create_task(admin.execute("SELECT pg_cancel_backend($1)", holder.get_server_pid())))
         t0 = time.monotonic()
