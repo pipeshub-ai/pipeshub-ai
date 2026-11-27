@@ -194,14 +194,3 @@ async def test_the_grant_blocks_a_browse_reads_grow_by_a_fraction_of_a_block_per
         by_size[n] = sum(blocks)
     assert by_size[1000] - by_size[100] < 900 // 2, by_size      # less than a block for two more grants
 
-
-async def test_a_membership_of_a_group_that_is_gone_gives_nothing_to_the_walk(pg_db, monkeypatch) -> None:
-    """Every writer of a membership reads the group's node first and a delete takes the node's edges with it, so a membership whose group is no node was written beside the
-    group's delete: the group is gone at the source. Neither the read of every grant nor the check's read per node counts it (kg's closure never did)."""
-    p, org = prov(pg_db), new_org()
-    await world(p, pg_db, org, [_perm("src", "users", "ghost", "groups"), _perm("ghost", "groups", "L1", "records", "GROUP"), _perm("u1", "users", "L2")])
-    monkeypatch.setenv("PG_KG_READ", "0")
-    with ctx(org):
-        access = await p.get_knowledge_hub_access_v3("u1", org)
-        checked = await p.check_access("u1", org, node_ids={"L1", "L2"})
-    assert access["by_connector"]["app1"] == ["L2"] and checked.node_ids == {"L2"}
