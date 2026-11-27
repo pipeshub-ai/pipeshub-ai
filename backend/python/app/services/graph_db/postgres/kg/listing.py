@@ -330,16 +330,23 @@ def children_held_sql(where: str, links: str | None) -> str:
             "SELECT n.n, c.* FROM (SELECT count(*) AS n FROM c) n LEFT JOIN c ON n.n < $3")
 
 
-def browse_undecided_sql(where: str, classes_param: str, app_param: str, links: str | None) -> str:
+def browse_undecided_sql(where: str, classes_param: str, app_param: str, links: str | None, known_param: str | None = None) -> str:
     """The children of the start that kg does not decide (as :func:`undecided_sql`, or of another connector, whose classes are not this one's) or that are placeholders (listed only on
     the way to something readable): ``$3`` of them at most."""
-    return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {_browse_undecided(classes_param, app_param)} LIMIT $3"
+    return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {_browse_undecided(classes_param, app_param, known_param)} LIMIT $3"
 
 
-def _browse_undecided(classes_param: str, app_param: str) -> str:
-    """A child (a row ``r`` with the columns of :data:`COLS`) the classes do not decide, of :func:`browse_undecided_sql`."""
+def _browse_undecided(classes_param: str, app_param: str, known_param: str | None = None) -> str:
+    """A child (a row ``r`` with the columns of :data:`COLS`) the classes do not decide, of :func:`browse_undecided_sql`. ``known_param``: the classes read when not all of the
+    connector's were (``class_sets`` with ``only``); a child of any other class is undecided too."""
+    unknown = f" OR NOT r.class_id = ANY({known_param}::bigint[])" if known_param else ""
     return (f"(r.placeholder OR NOT r.r13 IS FALSE OR NOT r.has_path OR r.class_id IS NULL OR r.fenced OR r.class_id = ANY({classes_param}::bigint[]) OR "
-            f"r.app_sk IS DISTINCT FROM {app_param}::bigint)")
+            f"r.app_sk IS DISTINCT FROM {app_param}::bigint{unknown})")
+
+
+def browse_classes_sql(where: str, links: str | None) -> str:
+    """The classes of the start's children (as :func:`browse_scopes` reads them), of ``$3`` children at most, as one array."""
+    return f"/* pipeshub:kg.browse_classes */ SELECT coalesce(array_agg(DISTINCT r.class_id) FILTER (WHERE r.class_id IS NOT NULL), '{{}}') AS ids FROM ({_children('r.class_id', where, links)}) r"
 
 
 def _browse_admitted(plain: str, own: str, granted: str, unvouched: str, app: str, a: str = "r") -> str:
@@ -359,13 +366,13 @@ def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: 
 
 
 def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, links: str | None, undecided: tuple[str, str, str],
-                    admitted: tuple[str, str, str, str, str, str]) -> str:
+                    admitted: tuple[str, str, str, str, str, str], known: str | None = None) -> str:
     """A wide node's first window, its undecided children and its count in one read of its children: the children (as :func:`browse_scopes` reads them, each by its own range or
     key) are read once into a materialized set, and the three are taken from it: ``undecided`` (:func:`browse_undecided_sql`: the unvouched classes, the connector, the limit)
     as an array of sks, ``admitted`` (:func:`browse_count_sql`: plain, own, granted, unvouched, the connector, the cap) as counts by type, and the window past ``branches`` in
     the sort order, ``$3`` rows, one row each (none when the window is empty: the arrays then come on one row of NULLs). When the undecided children reach the limit (the
     caller then takes the bounded paths: the window by the children index, the count of a sample) neither the count nor the window is read: the children are read only up to
-    the undecided ones the limit takes, as :func:`browse_undecided_sql` reads them."""
+    the undecided ones the limit takes, as :func:`browse_undecided_sql` reads them. ``known``: as :func:`_browse_undecided`."""
     unv, app, ulim = undecided
     plain, own, granted, unvouched, capp, cap = admitted
     past = f"({') OR ('.join(branches)})" if branches else "true"
@@ -373,7 +380,7 @@ def browse_once_sql(field_: str, sort_dir: str, direction: str, where: str, bran
             f"SELECT x.undecided, x.counts, w.* FROM (SELECT u.undecided, CASE WHEN cardinality(u.undecided) < {ulim} THEN "
             f"(SELECT coalesce(json_agg(json_build_array(t.kind, t.folder, t.n)), '[]') FROM (SELECT z.kind, z.folder, count(*) AS n FROM "
             f"(SELECT r.kind, r.folder FROM r WHERE {_browse_admitted(plain, own, granted, unvouched, capp)} LIMIT {cap}) z GROUP BY z.kind, z.folder) t) END AS counts FROM "
-            f"(SELECT (SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app)} LIMIT {ulim}) u) AS undecided) u) x "
+            f"(SELECT (SELECT coalesce(array_agg(u.sk), '{{}}') FROM (SELECT r.sk FROM r WHERE {_browse_undecided(unv, app, known)} LIMIT {ulim}) u) AS undecided) u) x "
             f"LEFT JOIN LATERAL (SELECT r.* FROM r WHERE cardinality(x.undecided) < {ulim} AND ({past}) ORDER BY {order(field_, sort_dir, direction)} LIMIT $3) w ON true")
 
 
