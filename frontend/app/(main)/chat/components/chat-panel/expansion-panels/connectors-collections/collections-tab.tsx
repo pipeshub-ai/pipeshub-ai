@@ -15,11 +15,12 @@ import { useDebouncedSearch } from '@/app/(main)/knowledge-base/hooks/use-deboun
 import {
   KnowledgeSearchResults,
   KnowledgeTreeRoot,
+  KnowledgeTreeRootSkeleton,
   LoadMoreLink,
   type KnowledgeSearchScope,
   type KnowledgeTreeNode,
 } from './knowledge-tree';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { PanelSearchInput } from '../panel-search-input';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 
 // ── Types ──
@@ -121,6 +122,8 @@ interface CollectionsTabProps {
   restrictToKbIds?: string[] | null;
   /** Narrows which hub roots are shown — defaults to 'all'. */
   filterMode?: CollectionsTabFilterMode;
+  /** The search box's placeholder; defaults to searching connectors and collections. */
+  searchPlaceholder?: string;
 }
 
 /**
@@ -133,9 +136,9 @@ export function CollectionsTab({
   onSelectionChange,
   restrictToKbIds = null,
   filterMode = 'all',
+  searchPlaceholder,
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchFocused, setSearchFocused] = useState(false);
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -337,43 +340,11 @@ export function CollectionsTab({
       style={{ flex: 1, minWidth: 0, width: '100%', overflow: 'hidden' }}
     >
       <Flex align="center" gap="1" style={{ width: '100%' }}>
-        <Flex
-          align="center"
-          gap="2"
-          style={{
-            flex: 1,
-            height: 'var(--space-6)',
-            border: `1px solid ${searchFocused ? 'var(--accent-11)' : 'var(--olive-3)'}`,
-            borderRadius: 'var(--radius-2)',
-            paddingLeft: 'var(--space-2)',
-            paddingRight: 'var(--space-2)',
-            backgroundColor: 'var(--slate-1)',
-          }}
-        >
-          <MaterialIcon
-            name="search"
-            size={ICON_SIZES.PRIMARY}
-            color="var(--slate-11)"
-          />
-          <input
-            type="text"
-            className="collections-search-input"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            placeholder={t('chat.searchCollections')}
-            style={{
-              flex: 1,
-              border: 'none',
-              outline: 'none',
-              backgroundColor: 'transparent',
-              color: 'var(--slate-12)',
-              fontSize: 'var(--font-size-2)',
-              fontFamily: 'inherit',
-            }}
-          />
-        </Flex>
+        <PanelSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder={searchPlaceholder ?? t('chat.searchCollections')}
+        />
       </Flex>
 
       {queryTooShort && (
@@ -407,11 +378,7 @@ export function CollectionsTab({
           overflowY: 'auto',
         }}
       >
-        {isLoading && (
-          <Flex align="center" justify="center" style={{ flex: 1, minHeight: 0 }}>
-            <LottieLoader variant="loader" size={48} />
-          </Flex>
-        )}
+        {isLoading && <KnowledgeTreeRootSkeleton withGroupLabel={filterMode !== 'collections'} />}
 
         {hasError && !isLoading && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>

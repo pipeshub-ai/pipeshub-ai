@@ -17,6 +17,7 @@ export type {
   ShareRole,
   ShareEntityType,
   ShareSelection,
+  ShareSelectionCheck,
   ShareSubmission,
   ShareTeam,
   ShareUser,

@@ -606,8 +606,7 @@ interface ChatState {
   universalAgentToolsLoading: boolean;
   universalAgentToolsError: string | null;
   /** Every tool fullName from my-mcp-servers (authenticated only) — kept separate from the
-   * toolset catalog because the two load independently (paginated vs. one-shot); combine via
-   * `getUniversalCombinedCatalog()` when computing "select all" semantics. */
+   * toolset catalog because the two load independently (paginated vs. one-shot). */
   universalAgentMcpCatalogFullNames: string[];
   /** MCP server groups for universal agent MCP tab (from GET /api/v1/mcp-servers/my-mcp-servers). */
   universalAgentMcpGroups: Array<{
@@ -2033,18 +2032,6 @@ export function getRequestReasoningEffort(
   }
   const picked = useChatStore.getState().settings.reasoningEffort[ctxKey] ?? null;
   return picked ?? (isModelReasoningCapable(ctxKey, model) ? getAgentDefaultReasoningEffort(ctxKey) : null);
-}
-
-/**
- * Union of the universal agent mode's toolset + MCP catalogs. The two load independently
- * (toolsets are paginated via my-toolsets, MCP servers load in one shot via my-mcp-servers)
- * so they're kept as separate store fields — this is the single source of truth for "every
- * tool fullName currently selectable", used by `toggleTool`/`setGroupToolsEnabled` in
- * `universal-agent-resources-panel.tsx` to diff the explicit selection against "everything".
- */
-export function getUniversalCombinedCatalog(): string[] {
-  const state = useChatStore.getState();
-  return [...state.universalAgentToolCatalogFullNames, ...state.universalAgentMcpCatalogFullNames];
 }
 
 // ── Store-write diff subscriber (debug only) ────────────────────

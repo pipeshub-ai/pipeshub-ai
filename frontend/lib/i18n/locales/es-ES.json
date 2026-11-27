@@ -937,6 +937,8 @@
     "connectorsCollectionsTitle": "Conectores y colecciones",
     "connectorsTooltip": "Conectores y colecciones",
     "connectorsDefaultScopeHint": "Por defecto se busca en todos los conectores y colecciones. Seleccione los que desee a continuación si quiere limitar el alcance.",
+    "actionsDefaultScopeHint": "Por defecto se pueden usar todas las acciones conectadas. Seleccione las que desee a continuación si quiere limitar el alcance.",
+    "mcpDefaultScopeHint": "Por defecto se pueden usar todos los servidores MCP conectados. Seleccione los que desee a continuación si quiere limitar el alcance.",
     "agentResourcesTooltip": "Conectores, colecciones y acciones",
     "agentResources": {
       "sheetTitle": "Conectores, colecciones y acciones",
@@ -1906,7 +1908,18 @@
       "unnamedFile_many": "{{count}} de los archivos adjuntos",
       "unnamedFile_other": "{{count}} de los archivos adjuntos"
     },
-    "archiveChatTitle": "¿Archivar este chat?"
+    "archiveChatTitle": "¿Archivar este chat?",
+    "quickFilters": {
+      "tab": "Filtros rápidos",
+      "title": "Filtros rápidos",
+      "description": "Guarda un conjunto de fuentes, acciones y herramientas MCP con un nombre, úsalo en cualquier chat y compártelo con personas y equipos."
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "Ver las herramientas elegidas de {{name}}",
+      "remove": "Quitar las herramientas elegidas de {{name}}",
+      "unknown": "Herramientas"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -7210,7 +7223,23 @@
     "alreadyRemoved": "Ya se había quitado",
     "alreadyRemovedDescription": "{{name}} ya no tenía acceso",
     "removeConfirmTitle": "¿Quitar el acceso?",
-    "removeConfirmDescription": "{{name}} perderá el acceso de inmediato. Puedes volver a compartir más tarde."
+    "removeConfirmDescription": "¿Seguro que quieres quitar el acceso de {{name}} a {{target}}? Puedes volver a compartir con esta persona más tarde.",
+    "removeConfirmTeamDescription": "¿Seguro que quieres quitar el acceso de {{name}} a {{target}}? Sus miembros solo conservan el acceso si lo compartiste con ellos directamente. Puedes volver a compartir con el equipo más tarde.",
+    "removeTargetNamed": "«{{entityName}}»",
+    "removeTarget": {
+      "collection": "esta colección",
+      "conversation": "este chat",
+      "search": "esta búsqueda",
+      "connector": "este conector",
+      "agent": "este agente",
+      "project": "este proyecto",
+      "artifact": "este artefacto",
+      "default": "este elemento"
+    },
+    "removeConfirmCurrentAccess": "Acceso actual: {{role}}",
+    "checking": "Comprobando el acceso…",
+    "checkOk": "Se puede compartir",
+    "checkFailed": "No se pudo comprobar el acceso. Inténtalo de nuevo."
   },
   "demoData": {
     "badge": {

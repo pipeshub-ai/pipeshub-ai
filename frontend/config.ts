@@ -64,6 +64,11 @@ export { ChatMessageExtras } from '@/app/(main)/chat/components/message-area/mes
 // More of the thumbs-down popover, adding fields to the rating (OSS: nothing)
 export { FeedbackDislikeExtras } from '@/app/(main)/chat/components/message-area/feedback-dislike-extras';
 export type { FeedbackDislikeExtrasProps } from '@/app/(main)/chat/components/message-area/feedback-dislike-extras';
+// An extra chat filter panel tab and footer content, and the composer's pill row (OSS: none; the pills as they are)
+export { useFilterPanelExtraTab, FilterPanelFooterExtras } from '@/app/(main)/chat/components/chat-panel/expansion-panels/filter-panel-extras';
+export type { FilterPanelExtraTab, FilterPanelExtrasProps } from '@/app/(main)/chat/components/chat-panel/expansion-panels/filter-panel-extras';
+export { SelectedFiltersRow } from '@/app/(main)/chat/components/selected-filters-row';
+export type { SelectedFiltersRowProps } from '@/app/(main)/chat/components/selected-filters-row';
 export { ConversationHeaderOverlay } from '@/app/(main)/chat/components/conversation-header-overlay';
 export { SearchResultsExtras } from '@/app/(main)/chat/components/search-results/search-results-extras';
 // Extra actions in the knowledge-base selection bar, and extras for uploading into a collection (OSS: none)

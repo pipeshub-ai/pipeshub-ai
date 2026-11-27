@@ -1007,6 +1007,8 @@
     "connectorsCollectionsTitle": "連接器與集合",
     "connectorsTooltip": "連接器與集合",
     "connectorsDefaultScopeHint": "預設會搜尋所有連接器與集合。若要縮小範圍，請在下方選取特定項目。",
+    "actionsDefaultScopeHint": "預設可以使用所有已連線的動作。若要縮小範圍，請在下方選取特定項目。",
+    "mcpDefaultScopeHint": "預設可以使用所有已連線的 MCP 伺服器。若要縮小範圍，請在下方選取特定項目。",
     "agentResourcesTooltip": "連接器、集合與動作",
     "agentResources": {
       "sheetTitle": "連接器、集合與動作",
@@ -1951,7 +1953,18 @@
       "namedFile": "附件 {{name}}",
       "unnamedFile_other": "其中 {{count}} 個附件"
     },
-    "archiveChatTitle": "封存此對話？"
+    "archiveChatTitle": "封存此對話？",
+    "quickFilters": {
+      "tab": "快速篩選",
+      "title": "快速篩選",
+      "description": "將一組來源、動作和 MCP 工具儲存為一個名稱，在任何對話中使用，並與他人和團隊共用。"
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "查看從 {{name}} 選擇的工具",
+      "remove": "移除從 {{name}} 選擇的工具",
+      "unknown": "工具"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -7069,7 +7082,23 @@
     "alreadyRemoved": "已移除",
     "alreadyRemovedDescription": "{{name}} 先前已失去存取權",
     "removeConfirmTitle": "移除存取權？",
-    "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。"
+    "removeConfirmDescription": "確定要移除 {{name}} 對{{target}}的存取權嗎？您之後可以再次與其分享。",
+    "removeConfirmTeamDescription": "確定要移除 {{name}} 對{{target}}的存取權嗎？只有您直接分享過的成員才會保留存取權。您之後可以再次與該團隊分享。",
+    "removeTargetNamed": "「{{entityName}}」",
+    "removeTarget": {
+      "collection": "此集合",
+      "conversation": "此聊天",
+      "search": "此搜尋",
+      "connector": "此連接器",
+      "agent": "此代理",
+      "project": "此專案",
+      "artifact": "此成品",
+      "default": "此項目"
+    },
+    "removeConfirmCurrentAccess": "目前權限：{{role}}",
+    "checking": "正在檢查存取權…",
+    "checkOk": "可以共用",
+    "checkFailed": "無法檢查存取權，請再試一次。"
   },
   "demoData": {
     "badge": {

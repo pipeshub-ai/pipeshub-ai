@@ -8,23 +8,24 @@ import React, {
   useState,
 } from 'react';
 import { Link } from '@/lib/navigation';
-import Image from 'next/image';
 import {
   Badge,
+  Box,
   Button,
   Callout,
   Checkbox,
   Flex,
   IconButton,
-  Spinner,
   Text,
-  TextField,
+  VisuallyHidden,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
-import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
+import { UniversalToolsetRowIcon } from './universal-toolset-row-icon';
+import { PanelSearchInput } from './panel-search-input';
+import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { MAX_TOOLSETS_LIST_LIMIT, ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
@@ -46,6 +47,7 @@ import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
 import { ApiActionConnectRows, apiActionsToConnect } from './api-action-connect-rows';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
+import { FilterPanelFooterExtras, useFilterPanelExtraTab } from '@/config';
 import {
   bareToolFullName,
   buildApiActionGroups,
@@ -56,7 +58,8 @@ import {
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
-const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcp'] as const;
+// 'extra' is the tab an edition may add (useFilterPanelExtraTab), shown first; hidden when there is none.
+const TAB_VALUES = ['extra', 'connectors', 'collections', 'actions', 'mcp'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 function UniversalAgentFilterTablist({
@@ -100,6 +103,42 @@ const OLIVE_ROW = {
   borderRadius: '3px',
 } as const;
 
+const SHIMMER: React.CSSProperties = {
+  flexShrink: 0,
+  backgroundColor: 'var(--olive-4)',
+  animation: 'shimmer-pulse 1.4s ease-in-out infinite',
+};
+const GROUP_SKELETON_WIDTHS = [150, 104, 182, 128];
+
+/**
+ * Placeholder rows while the Actions or MCP list loads: the same box and padding as a group row, with
+ * its checkbox, icon, name, count badge and expand button, so nothing moves when the real rows arrive.
+ */
+function ResourceGroupsSkeleton() {
+  return (
+    <Flex direction="column" gap="2" role="status" aria-busy="true">
+      {GROUP_SKELETON_WIDTHS.map((width, i) => {
+        const delay = { animationDelay: `${i * 80}ms` };
+        return (
+          <Flex key={i} align="center" justify="between" gap="2" style={{ ...OLIVE_ROW, padding: 'var(--space-2)' }}>
+            <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+              <Box style={{ ...SHIMMER, ...delay, width: 16, height: 16, borderRadius: 4 }} />
+              <Box style={{ ...SHIMMER, ...delay, width: 20, height: 20, borderRadius: 4 }} />
+              <Box style={{ ...SHIMMER, ...delay, width, maxWidth: '60%', height: 10, borderRadius: 4 }} />
+            </Flex>
+            <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+              <Box style={{ ...SHIMMER, ...delay, width: 56, height: 20, borderRadius: 'var(--radius-2)' }} />
+              <Box style={{ width: 24, height: 24, display: 'grid', placeItems: 'center' }}>
+                <Box style={{ ...SHIMMER, ...delay, width: 12, height: 12, borderRadius: 3 }} />
+              </Box>
+            </Flex>
+          </Flex>
+        );
+      })}
+    </Flex>
+  );
+}
+
 const CHECKBOX_ALIGN: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -121,42 +160,6 @@ function toolsetSubtitle(group: { fullNames: string[] }): string {
     .slice(0, fn.indexOf('.'))
     .replace(/_/g, ' ')
     .trim();
-}
-
-function setsEqualAsSets(a: string[], b: string[]): boolean {
-  if (a === b) return true;
-  const sa = new Set(a);
-  const sb = new Set(b);
-  if (sa.size !== sb.size) return false;
-  return Array.from(sa).every((x) => sb.has(x));
-}
-
-function UniversalToolsetRowIcon({
-  toolsetSlug,
-  label,
-  iconPath,
-}: {
-  toolsetSlug: string;
-  label: string;
-  iconPath?: string;
-}) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const path = iconPath?.trim();
-  const pathOk = Boolean(path && (path.startsWith('/') || path.startsWith('http')));
-  if (pathOk && !imgFailed) {
-    return (
-      <Image
-        src={path!}
-        alt=""
-        width={18}
-        height={18}
-        unoptimized
-        onError={() => setImgFailed(true)}
-        style={{ objectFit: 'contain', flexShrink: 0 }}
-      />
-    );
-  }
-  return <ConnectorIcon type={resolveConnectorType(toolsetSlug || label)} size={18} />;
 }
 
 /** Page size used for the paginated my-toolsets fetch in the Actions tab. */
@@ -220,6 +223,8 @@ onSessionEnd(() => {
 
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
+  /** Closes the panel (passed to the extra tab). */
+  onClose?: () => void;
   viewMode?: ExpansionViewMode;
 }
 
@@ -236,10 +241,13 @@ interface UniversalAgentResourcesPanelProps {
  */
 export function UniversalAgentResourcesPanel({
   onToggleView,
+  onClose,
   viewMode = 'inline',
 }: UniversalAgentResourcesPanelProps) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<TabValue>('connectors');
+  const extraTab = useFilterPanelExtraTab();
+  // Opens on the extra tab only when it asks to be first.
+  const [tab, setTab] = useState<TabValue>(extraTab?.openFirst ? 'extra' : 'connectors');
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
@@ -450,48 +458,30 @@ export function UniversalAgentResourcesPanel({
     void loadMcp();
   }, [mcpEnabled, mcpLoading, loadMcp]);
 
+  // Fresh on every visit to the Actions or MCP tab: one may have been connected or removed since the
+  // panel opened, which the cache above would otherwise hide for up to CACHE_TTL_MS.
+  const visitedTabRef = useRef(tab);
+  useEffect(() => {
+    if (visitedTabRef.current === tab) return;
+    visitedTabRef.current = tab;
+    if (tab === 'actions' && actionsEnabled) void loadPage(1, { quiet: true });
+    if (tab === 'mcp' && mcpEnabled) void loadMcp({ quiet: true });
+  }, [tab, actionsEnabled, mcpEnabled, loadPage, loadMcp]);
+
   // ── Tool selection helpers (same semantics as AgentScopedResourcesPanel) ──
 
+  // Like connectors and collections: nothing ticked (`null`) means every tool is used, and ticks show only the
+  // tools picked by hand, which narrow the agent to them. Unticking the last one goes back to every tool.
   const isToolOn = useCallback(
-    (fullName: string) => {
-      if (selectedTools === null) return true;
-      return selectedTools.includes(fullName);
-    },
+    (fullName: string) => selectedTools !== null && selectedTools.includes(fullName),
     [selectedTools]
   );
 
   const toggleTool = useCallback(
     (fullName: string) => {
-      const cat = getUniversalCombinedCatalog();
-      const cur = useChatStore.getState().universalAgentStreamTools;
-
-      if (cur === null) {
-        const next = cat.filter((x) => x !== fullName);
-        if (next.length === 0) {
-          setSelectedTools([]);
-        } else if (cat.length > 0 && setsEqualAsSets(next, cat)) {
-          setSelectedTools(null);
-        } else {
-          setSelectedTools(next);
-        }
-        return;
-      }
-
-      let next = [...cur];
-      if (next.includes(fullName)) {
-        next = next.filter((x) => x !== fullName);
-      } else {
-        next.push(fullName);
-      }
-      if (next.length === 0) {
-        setSelectedTools([]);
-        return;
-      }
-      if (cat.length > 0 && setsEqualAsSets(next, cat)) {
-        setSelectedTools(null);
-      } else {
-        setSelectedTools(next);
-      }
+      const cur = useChatStore.getState().universalAgentStreamTools ?? [];
+      const next = cur.includes(fullName) ? cur.filter((x) => x !== fullName) : [...cur, fullName];
+      setSelectedTools(next.length > 0 ? next : null);
     },
     [setSelectedTools]
   );
@@ -508,41 +498,12 @@ export function UniversalAgentResourcesPanel({
 
   const setGroupToolsEnabled = useCallback(
     (fullNames: string[], enabled: boolean) => {
-      const cat = getUniversalCombinedCatalog();
-      const explicit = useChatStore.getState().universalAgentStreamTools;
-
-      if (explicit === null) {
-        if (!enabled) {
-          const next = cat.filter((fn) => !fullNames.includes(fn));
-          if (next.length === 0) {
-            setSelectedTools([]);
-          } else if (cat.length > 0 && setsEqualAsSets(next, cat)) {
-            setSelectedTools(null);
-          } else {
-            setSelectedTools(next);
-          }
-        }
-        return;
+      const nextSet = new Set(useChatStore.getState().universalAgentStreamTools ?? []);
+      for (const fn of fullNames) {
+        if (enabled) nextSet.add(fn);
+        else nextSet.delete(fn);
       }
-
-      const nextSet = new Set(explicit);
-      if (enabled) {
-        for (const fn of fullNames) {
-          nextSet.add(fn);
-        }
-      } else {
-        for (const fn of fullNames) nextSet.delete(fn);
-      }
-      const arr = Array.from(nextSet);
-      if (arr.length === 0) {
-        setSelectedTools([]);
-        return;
-      }
-      if (cat.length > 0 && setsEqualAsSets(arr, cat)) {
-        setSelectedTools(null);
-      } else {
-        setSelectedTools(arr);
-      }
+      setSelectedTools(nextSet.size > 0 ? Array.from(nextSet) : null);
     },
     [setSelectedTools]
   );
@@ -555,12 +516,17 @@ export function UniversalAgentResourcesPanel({
   // When internalSearch is turned off, snap tab to 'actions' if currently on a disabled tab.
   const internalSearchEnabled = agentCapabilities.internalSearch;
   const disabledTabs = useMemo<TabValue[]>(
-    () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
+    () => (!internalSearchEnabled ? ['connectors', 'collections', 'extra'] : []),
     [internalSearchEnabled]
   );
+  const hasExtraTab = extraTab !== null;
   const hiddenTabs = useMemo<TabValue[]>(
-    () => [...(mcpEnabled ? [] : (['mcp'] as TabValue[])), ...(actionsEnabled ? [] : (['actions'] as TabValue[]))],
-    [mcpEnabled, actionsEnabled]
+    () => [
+      ...(mcpEnabled ? [] : (['mcp'] as TabValue[])),
+      ...(actionsEnabled ? [] : (['actions'] as TabValue[])),
+      ...(hasExtraTab ? [] : (['extra'] as TabValue[])),
+    ],
+    [mcpEnabled, actionsEnabled, hasExtraTab]
   );
 
   // If the active tab becomes disabled or hidden, switch to the first tab that's neither.
@@ -634,8 +600,10 @@ export function UniversalAgentResourcesPanel({
       while (isFetchingPageRef.current) await new Promise((resolve) => setTimeout(resolve, 100));
       const groups = await loadPage(1, { quiet: true });
       const connected = groups?.find((g) => g.instanceId === instanceId);
-      // Someone who picked tools by hand gets the new action's on; "all tools" already has them.
-      if (connected) setGroupToolsEnabled(connected.fullNames, true);
+      // Someone who picked tools by hand gets the new action's on; "all tools" (null) already has them.
+      if (connected && useChatStore.getState().universalAgentStreamTools !== null) {
+        setGroupToolsEnabled(connected.fullNames, true);
+      }
     },
     [loadPage, setGroupToolsEnabled]
   );
@@ -644,13 +612,16 @@ export function UniversalAgentResourcesPanel({
     async (instanceId: string) => {
       const groups = await loadMcp({ quiet: true });
       const connected = groups?.find((g) => g.instanceId === instanceId);
-      // Someone who picked tools by hand gets the new server's on; "all tools" already has them.
-      if (connected) setGroupToolsEnabled(connected.fullNames, true);
+      // Someone who picked tools by hand gets the new server's on; "all tools" (null) already has them.
+      if (connected && useChatStore.getState().universalAgentStreamTools !== null) {
+        setGroupToolsEnabled(connected.fullNames, true);
+      }
     },
     [loadMcp, setGroupToolsEnabled]
   );
 
   const tabPlaceholders = [
+    '', // 'extra': the tab has its own search
     t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
     t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
     t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
@@ -663,10 +634,11 @@ export function UniversalAgentResourcesPanel({
     () => ({
       connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
       collections: t('nav.collections', { defaultValue: 'Collections' }),
+      extra: extraTab?.label ?? '',
       actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
       mcp: t('chat.agentResources.mcpTab', { defaultValue: 'MCP' }),
     }),
-    [t]
+    [t, extraTab?.label]
   );
 
   const toggleGroupExpanded = (key: string) => {
@@ -748,12 +720,10 @@ export function UniversalAgentResourcesPanel({
   }) => {
     if (loading) {
       return (
-        <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-4)' }}>
-          <Spinner size="2" />
-          <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            {loadingText}
-          </Text>
-        </Flex>
+        <>
+          <ResourceGroupsSkeleton />
+          <VisuallyHidden>{loadingText}</VisuallyHidden>
+        </>
       );
     }
 
@@ -986,19 +956,18 @@ export function UniversalAgentResourcesPanel({
       {/* Search (Actions + MCP tabs only) */}
       {(tab === 'actions' || tab === 'mcp') && (
         <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
-          <TextField.Root
-            size="2"
-            placeholder={searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
-            </TextField.Slot>
-          </TextField.Root>
+          <PanelSearchInput value={search} onChange={setSearch} placeholder={searchPlaceholder} />
         </Flex>
       )}
+
+      {/* Like the Connectors note: with nothing ticked the agent may use every tool on the tab. */}
+      {(tab === 'actions' || tab === 'mcp') &&
+        selectedTools === null &&
+        (tab === 'actions' ? toolGroups : mcpGroups).length > 0 && (
+          <Text size="1" style={{ color: 'var(--slate-11)', padding: '0 var(--space-1)', flexShrink: 0 }}>
+            {tab === 'actions' ? t('chat.actionsDefaultScopeHint') : t('chat.mcpDefaultScopeHint')}
+          </Text>
+        )}
 
       {/* Tab content */}
       <Flex
@@ -1014,6 +983,15 @@ export function UniversalAgentResourcesPanel({
             selection={settings.filters}
             onSelectionChange={handleCollectionSelectionChange}
             filterMode={tab}
+            searchPlaceholder={searchPlaceholder}
+          />
+        )}
+
+        {tab === 'extra' && extraTab && (
+          <extraTab.Panel
+            selection={settings.filters}
+            onSelectionChange={handleCollectionSelectionChange}
+            onClose={onClose}
           />
         )}
 
@@ -1159,6 +1137,9 @@ export function UniversalAgentResourcesPanel({
             {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
           </Text>
         </Button>
+        {tab !== 'actions' && tab !== 'mcp' && (
+          <FilterPanelFooterExtras selection={settings.filters} onSelectionChange={handleCollectionSelectionChange} />
+        )}
         {(tab === 'actions' || tab === 'mcp') && (
           <Flex align="center" gap="2">
             <Text size="1" style={{ color: 'var(--gray-11)' }}>

@@ -88,6 +88,8 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
             padding: 0,
             cursor: 'pointer',
             flexShrink: 0,
+            // A short name leaves the pill wider than its content: keep the x at the right end.
+            marginLeft: 'auto',
           }}
         >
           <MaterialIcon name="close" size={14} color="var(--slate-11)" />
@@ -99,13 +101,18 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
 
 // ── Exported list components ──
 
-interface SelectedCollectionsProps {
+export interface SelectedCollectionsProps {
   /** Collections to render as pills */
   collections: SelectedItem[];
   /** Whether each pill shows a × remove button */
   removable?: boolean;
   /** Called when a pill's × is clicked */
   onRemove?: (id: string) => void;
+  /** Chips placed before / after the pills, in the same scrolling strip. */
+  leading?: React.ReactNode;
+  trailing?: React.ReactNode;
+  /** Wrap onto more lines instead of scrolling sideways (for a panel rather than the composer). */
+  wrap?: boolean;
 }
 
 /**
@@ -119,6 +126,9 @@ export function SelectedCollections({
   collections,
   removable = false,
   onRemove,
+  leading,
+  trailing,
+  wrap = false,
 }: SelectedCollectionsProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -131,7 +141,19 @@ export function SelectedCollections({
     });
   };
 
-  if (!collections || collections.length === 0) return null;
+  if ((!collections || collections.length === 0) && !leading && !trailing) return null;
+
+  if (wrap) {
+    return (
+      <Flex align="center" gap="2" wrap="wrap" style={{ width: '100%', minWidth: 0 }}>
+        {leading}
+        {collections.map((col) => (
+          <CollectionPill key={col.id} item={col} removable={removable} onRemove={onRemove} />
+        ))}
+        {trailing}
+      </Flex>
+    );
+  }
 
   return (
     <Flex align="center" style={{ width: '100%', minWidth: 0, flex: 1 }}>
@@ -159,6 +181,7 @@ export function SelectedCollections({
         className="no-scrollbar"
         style={{ overflowX: 'auto', minWidth: 0, flex: 1, width: '100%', padding: 2 }}
       >
+        {leading}
         {collections.map((col) => (
           <CollectionPill
             key={col.id}
@@ -167,6 +190,7 @@ export function SelectedCollections({
             onRemove={onRemove}
           />
         ))}
+        {trailing}
       </Flex>
 
       {canScrollRight && (

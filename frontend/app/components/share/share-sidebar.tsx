@@ -25,15 +25,28 @@ import {
   getShareRoleLabels,
   ShareFeedbackShownError,
   type ShareAdapter,
+  type ShareEntityType,
   type SharedMember,
   type ShareTeam,
   type ShareUser,
   type ShareSelection,
+  type ShareSelectionCheck,
   type ShareRole,
   type ShareSubmission,
 } from './types';
 import { LottieLoader } from '../ui/lottie-loader';
 import { toast } from '@/lib/store/toast-store';
+
+/** What the remove confirmation names when the adapter gives no item name. */
+const REMOVE_TARGET_KEYS: Partial<Record<ShareEntityType, string>> = {
+  collection: 'shareSidebar.removeTarget.collection',
+  conversation: 'shareSidebar.removeTarget.conversation',
+  search: 'shareSidebar.removeTarget.search',
+  connector: 'shareSidebar.removeTarget.connector',
+  agent: 'shareSidebar.removeTarget.agent',
+  project: 'shareSidebar.removeTarget.project',
+  artifact: 'shareSidebar.removeTarget.artifact',
+};
 
 interface ShareSidebarProps {
   open: boolean;
@@ -107,6 +120,35 @@ export function ShareSidebar({
   // Loading
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // The adapter's pre-share check of what is picked; the latest answer wins.
+  const [checks, setChecks] = useState<Record<string, ShareSelectionCheck>>({});
+  const [isChecking, setIsChecking] = useState(false);
+  const checkSelection = adapter.checkSelection;
+  useEffect(() => {
+    if (!checkSelection || selectedItems.length === 0) {
+      setChecks({});
+      setIsChecking(false);
+      return;
+    }
+    let current = true;
+    setIsChecking(true);
+    checkSelection(selectedItems)
+      .then((next) => current && setChecks(next))
+      .catch(() =>
+        current &&
+        setChecks(
+          Object.fromEntries(
+            selectedItems.map((s) => [s.id, { status: 'blocked' as const, message: t('shareSidebar.checkFailed') }])
+          )
+        )
+      )
+      .finally(() => current && setIsChecking(false));
+    return () => {
+      current = false;
+    };
+  }, [checkSelection, selectedItems, t]);
+  const blockedByCheck = isChecking || Object.values(checks).some((c) => c.status === 'blocked');
 
   // Reset state when sidebar closes
   useEffect(() => {
@@ -344,16 +386,13 @@ export function ShareSidebar({
     [adapter, existingMembers, onShareSuccess, t]
   );
 
+  // Removing access always asks first, showing who loses what.
   const handleRemoveMember = useCallback(
     (memberId: string, memberType: 'user' | 'team') => {
-      if (!adapter.confirmBeforeRemove) {
-        void removeMemberNow(memberId, memberType);
-        return;
-      }
       const member = existingMembers.find((m) => m.id === memberId && m.type === memberType);
       if (member && !member.isCurrentUser) setPendingRemoval(member);
     },
-    [adapter.confirmBeforeRemove, existingMembers, removeMemberNow]
+    [existingMembers]
   );
 
   // Team created callback
@@ -543,6 +582,29 @@ export function ShareSidebar({
                 }
                 onEmailSubmit={handleEmailSubmit}
               />
+              {checkSelection && selectedItems.length > 0 && (
+                <Flex direction="column" gap="1" style={{ marginTop: 8 }} aria-live="polite">
+                  {selectedItems.map((s) => {
+                    const check = checks[s.id];
+                    const color =
+                      check?.status === 'blocked'
+                        ? 'var(--red-11)'
+                        : check?.status === 'warning'
+                          ? 'var(--amber-11)'
+                          : 'var(--accent-11)';
+                    return (
+                      <Flex key={s.id} direction="column" style={{ minWidth: 0 }}>
+                        <Text size="1" weight="medium" truncate style={{ color: 'var(--slate-12)' }}>
+                          {s.name || s.email}
+                        </Text>
+                        <Text size="1" style={{ color: check ? color : 'var(--slate-11)' }}>
+                          {check ? (check.message ?? t('shareSidebar.checkOk')) : t('shareSidebar.checking')}
+                        </Text>
+                      </Flex>
+                    );
+                  })}
+                </Flex>
+              )}
               {adapter.notice && (
                 <Flex
                   align="start"
@@ -774,10 +836,10 @@ export function ShareSidebar({
                 variant="solid"
                 size="2"
                 onClick={handleShare}
-                disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid)}
+                disabled={selectedItems.length === 0 || selectedItems.some((s) => s.isInvalid) || blockedByCheck}
                 loading={isSubmitting}
                 loadingLabel={t('shareSidebar.sharing')}
-                style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) ? { backgroundColor: 'var(--emerald-10)' } : undefined}
+                style={selectedItems.length > 0 && !isSubmitting && !selectedItems.some((s) => s.isInvalid) && !blockedByCheck ? { backgroundColor: 'var(--emerald-10)' } : undefined}
               >
                 {t('action.share')}
               </LoadingButton>
@@ -785,11 +847,55 @@ export function ShareSidebar({
           </Flex>
         )}
         <AlertDialog.Root open={pendingRemoval !== null} onOpenChange={(next) => !next && setPendingRemoval(null)}>
-          <AlertDialog.Content style={{ maxWidth: '24rem' }}>
+          <AlertDialog.Content style={{ maxWidth: '26rem' }}>
             <AlertDialog.Title size="3">{t('shareSidebar.removeConfirmTitle')}</AlertDialog.Title>
             <AlertDialog.Description size="2">
-              {t('shareSidebar.removeConfirmDescription', { name: pendingRemoval?.name ?? t('shareSidebar.member') })}
+              {t(
+                pendingRemoval?.type === 'team'
+                  ? 'shareSidebar.removeConfirmTeamDescription'
+                  : 'shareSidebar.removeConfirmDescription',
+                {
+                  name: pendingRemoval?.name ?? t('shareSidebar.member'),
+                  target: adapter.entityName
+                    ? t('shareSidebar.removeTargetNamed', { entityName: adapter.entityName })
+                    : t(REMOVE_TARGET_KEYS[adapter.entityType] ?? 'shareSidebar.removeTarget.default'),
+                }
+              )}
             </AlertDialog.Description>
+            {pendingRemoval && (
+              <Flex
+                direction="column"
+                gap="2"
+                mt="3"
+                data-testid="remove-access-member"
+                style={{
+                  padding: 'var(--space-3)',
+                  border: '1px solid var(--olive-3)',
+                  borderRadius: 'var(--radius-3)',
+                  background: 'var(--olive-2)',
+                }}
+              >
+                <ShareableRow
+                  type={pendingRemoval.type === 'user' ? 'member' : 'team'}
+                  name={pendingRemoval.name}
+                  subtitle={
+                    pendingRemoval.type === 'team'
+                      ? pendingRemoval.memberCount != null
+                        ? t('shareSidebar.memberCount', { count: pendingRemoval.memberCount })
+                        : t('shareSidebar.team')
+                      : pendingRemoval.email
+                  }
+                  avatarUrl={pendingRemoval.avatarUrl}
+                />
+                {adapter.supportsRoles && (pendingRemoval.type === 'user' || adapter.teamsHaveRoles) && (
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                    {t('shareSidebar.removeConfirmCurrentAccess', {
+                      role: (adapter.roleOptions?.labels ?? roleLabels)[pendingRemoval.role]?.label ?? pendingRemoval.role,
+                    })}
+                  </Text>
+                )}
+              </Flex>
+            )}
             <Flex gap="2" justify="end" mt="4">
               <AlertDialog.Cancel>
                 <Button variant="soft" color="gray">

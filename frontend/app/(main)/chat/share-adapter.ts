@@ -244,10 +244,10 @@ export function createProjectShareAdapter(project: ProjectDetail): ShareAdapter 
     entityType: 'project',
     entityId: projectId,
     sidebarTitle: i18next.t('chat.projects.shareProject'),
+    entityName: project.name,
     supportsRoles: true,
     supportsTeams: true,
     teamsHaveRoles: true,
-    confirmBeforeRemove: true,
     roleOptions: { roles: ['WRITER', 'READER'], labels: projectShareRoleLabels() },
 
     async getSharedMembers(): Promise<SharedMember[]> {

@@ -7,7 +7,16 @@ import type { TFunction } from 'i18next';
 // ============================================================================
 
 /** Supported entity types for sharing */
-export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project' | 'artifact';
+export type ShareEntityType =
+  | 'collection'
+  | 'conversation'
+  | 'search'
+  | 'connector'
+  | 'agent'
+  | 'project'
+  | 'artifact'
+  // A share pane for another kind of item; it gets the generic wording ("this item").
+  | (string & {});
 
 /** Permission roles */
 export type ShareRole = 'OWNER' | 'WRITER' | 'READER';
@@ -78,6 +87,12 @@ export interface SharedAvatarMember {
   type?: 'user' | 'team';
 }
 
+/** What an adapter's pre-share check says about one person or team picked. */
+export interface ShareSelectionCheck {
+  status: 'ok' | 'blocked' | 'warning';
+  message?: string;
+}
+
 /** The adapter interface — each entity page implements this */
 /** Thrown by an adapter that has already shown why an action failed, so the sidebar adds no toast. */
 export class ShareFeedbackShownError extends Error {}
@@ -86,13 +101,13 @@ export interface ShareAdapter {
   entityType: ShareEntityType;
   entityId: string;
   sidebarTitle: string;
+  /** The item's name, for messages such as the remove confirmation (default: "this collection" and the like). */
+  entityName?: string;
 
   supportsRoles: boolean;
   supportsTeams: boolean;
   /** Teams carry a role like users do (default: teams have no role). */
   teamsHaveRoles?: boolean;
-  /** Ask before removing someone's access (default: remove straight away). */
-  confirmBeforeRemove?: boolean;
   /** Narrow the role picker to some roles and/or reword them (default: all three, house labels). */
   roleOptions?: {
     roles: ShareRole[];
@@ -103,6 +118,11 @@ export interface ShareAdapter {
   notice?: string;
 
   getSharedMembers: () => Promise<SharedMember[]>;
+  /**
+   * Checks the people and teams picked before sharing, keyed by selection id. A blocked pick keeps
+   * Share off; messages show under each pick. Without it, sharing goes ahead as picked.
+   */
+  checkSelection?: (selection: ShareSelection[]) => Promise<Record<string, ShareSelectionCheck>>;
   share: (submission: ShareSubmission) => Promise<void>;
   updateRole?: (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => Promise<void>;
   /** Resolve `{ removed: false }` when the member had already lost access, so the sidebar doesn't claim it removed them. */

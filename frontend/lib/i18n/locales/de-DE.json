@@ -920,6 +920,8 @@
     "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
     "connectorsTooltip": "Konnektoren und Sammlungen",
     "connectorsDefaultScopeHint": "Standardmäßig werden alle Konnektoren und Sammlungen durchsucht. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
+    "actionsDefaultScopeHint": "Standardmäßig können alle verbundenen Aktionen verwendet werden. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
+    "mcpDefaultScopeHint": "Standardmäßig können alle verbundenen MCP-Server verwendet werden. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",
     "agentResourcesTooltip": "Konnektoren, Sammlungen & Aktionen",
     "agentResources": {
       "sheetTitle": "Konnektoren, Sammlungen & Aktionen",
@@ -1872,7 +1874,18 @@
       "unnamedFile_one": "eine der angehängten Dateien",
       "unnamedFile_other": "{{count}} der angehängten Dateien"
     },
-    "archiveChatTitle": "Diesen Chat archivieren?"
+    "archiveChatTitle": "Diesen Chat archivieren?",
+    "quickFilters": {
+      "tab": "Schnellfilter",
+      "title": "Schnellfilter",
+      "description": "Speichern Sie Quellen, Aktionen und MCP-Tools unter einem Namen, nutzen Sie sie in jedem Chat und teilen Sie sie mit Personen und Teams."
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "Ausgewählte Tools von {{name}} anzeigen",
+      "remove": "Ausgewählte Tools von {{name}} entfernen",
+      "unknown": "Tools"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -7116,7 +7129,23 @@
     "alreadyRemoved": "Bereits entfernt",
     "alreadyRemovedDescription": "{{name}} hatte bereits keinen Zugriff mehr",
     "removeConfirmTitle": "Zugriff entfernen?",
-    "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen."
+    "removeConfirmDescription": "Möchten Sie den Zugriff von {{name}} auf {{target}} wirklich entfernen? Sie können später erneut mit dieser Person teilen.",
+    "removeConfirmTeamDescription": "Möchten Sie den Zugriff von {{name}} auf {{target}} wirklich entfernen? Mitglieder behalten den Zugriff nur, wenn Sie direkt mit ihnen geteilt haben. Sie können später erneut mit dem Team teilen.",
+    "removeTargetNamed": "„{{entityName}}“",
+    "removeTarget": {
+      "collection": "diese Sammlung",
+      "conversation": "diesen Chat",
+      "search": "diese Suche",
+      "connector": "diesen Connector",
+      "agent": "diesen Agenten",
+      "project": "dieses Projekt",
+      "artifact": "dieses Artefakt",
+      "default": "dieses Element"
+    },
+    "removeConfirmCurrentAccess": "Aktueller Zugriff: {{role}}",
+    "checking": "Zugriff wird geprüft…",
+    "checkOk": "Kann geteilt werden",
+    "checkFailed": "Zugriff konnte nicht geprüft werden. Bitte erneut versuchen."
   },
   "demoData": {
     "badge": {

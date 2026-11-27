@@ -158,6 +158,41 @@ describe('the chat’s Actions tab', () => {
     expect(toast.success).toHaveBeenCalledWith('Jira Cloud is connected');
   });
 
+  it('shows nothing ticked while every tool is used, and ticking narrows to what is ticked', async () => {
+    await openActionsTab();
+    const slackBox = await screen.findByRole('checkbox', { name: /Slack/ }).catch(() => null);
+    const box = slackBox ?? screen.getAllByRole('checkbox')[0]!;
+    expect(box.getAttribute('data-state')).toBe('unchecked');
+    expect(useChatStore.getState().universalAgentStreamTools).toBeNull();
+    fireEvent.click(box);
+    expect(useChatStore.getState().universalAgentStreamTools).toEqual(['sl:slack.send_message', 'sl:slack.search']);
+    fireEvent.click(box);
+    // Nothing ticked again: back to every tool.
+    expect(useChatStore.getState().universalAgentStreamTools).toBeNull();
+  });
+
+  it('loads the list again on every visit, quietly, keeping the rows on screen', async () => {
+    await openActionsTab();
+    expect(await screen.findByText('Slack')).toBeTruthy();
+    // Connected somewhere else while the panel was open.
+    backend.pages[0] = [...backend.pages[0]!, jiraConnected];
+    fireEvent.click(screen.getByRole('tab', { name: 'Connectors' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+    expect(document.querySelector('[role="status"][aria-busy="true"]')).toBeNull();
+    expect(await screen.findByText('Jira Cloud')).toBeTruthy();
+  });
+
+  it('keeps every tool on when an action is connected while nothing is ticked', async () => {
+    expect(useChatStore.getState().universalAgentStreamTools).toBeNull();
+    const row = await openActionsTab();
+
+    connectJira(row);
+
+    expect(await screen.findByText('Jira Cloud')).toBeTruthy();
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Jira Cloud is connected'));
+    expect(useChatStore.getState().universalAgentStreamTools).toBeNull();
+  });
+
   it('still lists the connected actions when the ones to connect cannot be loaded', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     api.getAllMyToolsets.mockRejectedValue(new Error('down'));
