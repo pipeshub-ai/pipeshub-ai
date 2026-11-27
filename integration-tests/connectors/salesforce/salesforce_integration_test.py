@@ -429,9 +429,12 @@ class TestSalesforceConnector:
         finally:
             # The later tests share this connector: a filter left narrowed hides every change they make,
             # and a connector left disabled (a failed re-enable above) syncs nothing for them.
-            pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": {}}})
-            if was_active and not pipeshub_client.get_connector(salesforce_connector).get("isActive"):
-                pipeshub_client.toggle_sync(salesforce_connector, enable=True)
+            try:
+                pipeshub_client.update_connector_filters_sync_safe(
+                    salesforce_connector, filters={"sync": {"values": {}}})
+            finally:
+                if was_active and not pipeshub_client.get_connector(salesforce_connector).get("isActive"):
+                    pipeshub_client.toggle_sync(salesforce_connector, enable=True)
         await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
         await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
                            salesforce_users, org_id, "the cleared filter")
