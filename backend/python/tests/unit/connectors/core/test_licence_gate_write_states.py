@@ -192,6 +192,23 @@ async def test_the_watcher_learns_of_a_limit_whose_refresh_raised_after_the_comm
 
 
 @pytest.mark.asyncio
+async def test_the_watcher_is_told_only_after_the_limit_write_returned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Told before the commit, the watcher could take the note, read the connector as not limited and settle."""
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    _real_write(proc, monkeypatch)
+    permission_sync_gate.take_limited()
+    noted_during_write: list[bool] = []
+
+    async def write(_fn: object, **_k: object) -> None:
+        noted_during_write.append("conn-1" in permission_sync_gate._limited_since_last_check)
+
+    proc.data_store_provider.execute_in_transaction = AsyncMock(side_effect=write)
+    await proc.limit_unlicensed("conn-1", _app())
+    assert noted_during_write == [False]
+    assert "conn-1" in permission_sync_gate.take_limited()
+
+
+@pytest.mark.asyncio
 async def test_the_end_of_a_run_tells_the_watcher_of_a_limit_its_first_skip_stored_before_raising() -> None:
     """The first skip's write committed and then raised, so the limit is stored: the end of the run writes nothing,
     but the watcher still learns the connector is limited."""

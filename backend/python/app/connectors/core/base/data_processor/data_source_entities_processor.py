@@ -1763,15 +1763,17 @@ class DataSourceEntitiesProcessor:
         so only the refreshes after the write run again: a crash may have left those undone, and writing again would
         bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``.
 
-        The licence watcher is told every time, before anything can raise: a write that raised may still have
-        committed, and a retry then finds the limit stored. Telling it about a connector that is not limited only
-        makes it look again."""
-        note_limited(connector_id)
-        limit = app.get("accessLimit")
-        if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
-            async with self._access_limit_refreshed(connector_id):
-                return
-        await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        The licence watcher is told every time, once the write has returned or raised: one that raised may still
+        have committed, and told before the commit it could read the connector as not limited and settle. Telling it
+        about a connector that is not limited only makes it look again."""
+        try:
+            limit = app.get("accessLimit")
+            if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
+                async with self._access_limit_refreshed(connector_id):
+                    return
+            await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        finally:
+            note_limited(connector_id)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
