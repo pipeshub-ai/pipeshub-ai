@@ -155,14 +155,14 @@ describe('General settings page', () => {
     });
 
     await waitFor(() => expect(useGeneralStore.getState().isLoading).toBe(false));
-    expect(form().dataCollection).toBe(true);
+    expect(form().optIn).toBe(true);
   });
 
   it('saving the name and the data-collection switch together keeps the new values and raises no load error', async () => {
     await renderPage();
     act(() => {
       useGeneralStore.getState().setField('displayName', 'Acme Labs');
-      useGeneralStore.getState().setField('dataCollection', true);
+      useGeneralStore.getState().setField('optIn', true);
     });
     org = { ...ORG, shortName: 'Acme Labs' };
     // The metrics reread after the toggle fails: it must not undo the switch or toast a load error.
@@ -173,9 +173,23 @@ describe('General settings page', () => {
 
     await waitFor(() => expect(calls('/api/v1/configurationManager/metricsCollection')).toBe(2));
     await waitFor(() => expect(calls('/api/v1/org')).toBe(2));
-    expect(form()).toMatchObject({ displayName: 'Acme Labs', dataCollection: true });
+    expect(form()).toMatchObject({ displayName: 'Acme Labs', optIn: true });
     expect(useGeneralStore.getState().isDirty()).toBe(false);
     expect(addToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'workspace.general.toasts.loadError' }));
+  });
+
+  it('an admin sees the Data Collection switch, and saving it on calls the toggle route', async () => {
+    await renderPage();
+    expect(screen.getByText('workspace.general.dataCollection')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('switch'));
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/v1/configurationManager/metricsCollection/toggle', {
+        enableMetricCollection: true,
+      }),
+    );
   });
 
   it('uploading a logo keeps unsaved edits and shows the stored logo', async () => {

@@ -349,9 +349,9 @@ describe('org, team and service-account audit lines (HTTP)', function () {
       expect(audits()).to.deep.equal([{ event: 'team.create', outcome: 'success', reason: 'no_team_id', actor: ada._id }]);
     });
 
-    it('T1b [guard] the team service fails → 500, no line', async () => {
+    it('T1b [guard] the team service fails → 502, no line', async () => {
       reply('POST', '/api/v1/entity/team', refused(500, 'Failed to create team'));
-      expect((await call('POST', '/api/v1/teams', ada, { name: TEAM_NAME, userIds: [max._id] })).status).to.equal(500);
+      expect((await call('POST', '/api/v1/teams', ada, { name: TEAM_NAME, userIds: [max._id] })).status).to.equal(502);
       expect(audits()).to.deep.equal([]);
     });
 

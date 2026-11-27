@@ -14,7 +14,7 @@ import {
   HarnessLocalMetrics,
   LocalMetrics,
 } from '../application/harness-local-metrics';
-import { metricsBackend } from '../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../libs/services/telemetry/telemetry-impl';
 import { prometheusWorkerFeatureMetrics } from '../adapters/telemetry/worker-feature-metrics';
 import { HarnessCapabilityService } from '../application/capability-service';
 import {

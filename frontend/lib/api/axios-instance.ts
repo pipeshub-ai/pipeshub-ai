@@ -1,9 +1,10 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { busyMessage, ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
+  sessionOver,
   isTokenExpired,
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
@@ -39,6 +40,39 @@ const sessionEnded = (config: { sessionCurrent?: () => boolean } | undefined): b
  * garbage collected.
  */
 const dropped = (): Promise<never> => new Promise<never>(() => {});
+
+/** The refresh got no answer: the request was not retried, and nothing says the session is over. */
+const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
+  type: ErrorType.SERVER_ERROR,
+  statusCode: 503,
+  message: busyMessage(),
+  originalError: error,
+});
+
+/** Safe methods (RFC 9110 9.2.1): sending one again cannot repeat a change. */
+const REPLAYABLE_METHODS = new Set(['get', 'head', 'options']);
+
+/**
+ * A 401 the renewed session cannot fix: the server refused this request (a handler or a
+ * service behind it said 401), not the session. Shown with the server's words, never read as a sign-out.
+ */
+const refusedWithSession = (error: AxiosError): ProcessedError => ({
+  ...processError(error),
+  type: ErrorType.AUTHORIZATION_ERROR,
+  message: extractApiErrorMessage(error.response?.data) ?? 'You do not have permission to perform this action.',
+});
+
+function rejectShown(
+  processedError: ProcessedError,
+  config: { suppressErrorToast?: boolean | ((error: ProcessedError) => boolean) } | undefined,
+): Promise<never> {
+  const suppress = config?.suppressErrorToast;
+  const suppressed = typeof suppress === 'function' ? suppress(processedError) : suppress;
+  if (!suppressed) {
+    showErrorToast(processedError);
+  }
+  return Promise.reject(processedError);
+}
 
 // Default to '' (same origin). A single sentinel avoids `"undefined"` leaking
 // into template-built URLs when `NEXT_PUBLIC_API_BASE_URL` is unset.
@@ -98,10 +132,12 @@ apiClient.interceptors.request.use(
     let accessToken = headerToken ?? storeToken;
 
     if (accessToken && isTokenExpired(accessToken)) {
-      // Not refreshed means this session is over (signed out now, or earlier), so the
-      // request is dropped: none of its handlers may write into the reset stores.
-      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
-      accessToken = useAuthStore.getState().accessToken;
+      // A session that is over (signed out now, or earlier) drops the request: none of its
+      // handlers may write into the reset stores.
+      const outcome = await refreshOrSignOut();
+      if (sessionOver(outcome)) return dropped();
+      // No answer: send with the token we have and let the server decide.
+      if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
     }
 
     if (accessToken) {
@@ -128,9 +164,6 @@ apiClient.interceptors.response.use(
     if (!isAxiosError(error)) {
       return Promise.reject(error);
     }
-    // Neither a toast nor a refresh for the last session: a stale 401 must not sign the next person out.
-    if (sessionEnded(error.config)) return dropped();
-
     if (error.response?.data instanceof Blob) {
       try {
         const text = await error.response.data.text();
@@ -140,24 +173,34 @@ apiClient.interceptors.response.use(
       }
     }
 
+    // Neither a toast nor a refresh for the last session: a stale 401 must not sign the next person out.
+    // Checked after the Blob decode, which can span a sign-out and the next sign-in.
+    if (sessionEnded(error.config)) return dropped();
+
     const originalRequest = error.config as InternalAxiosRequestConfig & {
       _retry?: boolean;
     };
 
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
-      const apiMessage = extractApiErrorMessage(error.response.data);
-      if (apiMessage === SESSION_EXPIRED_LOGOUT_MESSAGE) {
-        localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
-        sessionStorage.clear();
-        logoutAndRedirect();
-        return dropped();
-      }
+    // The server says the session is over: sign out, whether or not this request was already replayed.
+    if (error.response?.status === 401 && extractApiErrorMessage(error.response.data) === SESSION_EXPIRED_LOGOUT_MESSAGE) {
+      localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+      sessionStorage.clear();
+      logoutAndRedirect();
+      return dropped();
+    }
 
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
       // If a refresh is already running (timer or another 401), this just
       // awaits the existing promise; otherwise it kicks off a new one.
-      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
+      const outcome = await refreshOrSignOut();
+      if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
+      if (outcome !== 'refreshed') return dropped();
+      // A write is never sent twice: the server may have acted on it before it answered 401.
+      if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {
+        return rejectShown(refusedWithSession(error), originalRequest);
+      }
       const newToken = useAuthStore.getState().accessToken;
       if (newToken) {
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
@@ -165,16 +208,9 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     }
 
-    const processedError = processError(error);
-
-    const suppress = originalRequest.suppressErrorToast;
-    const suppressed =
-      typeof suppress === 'function' ? suppress(processedError) : suppress;
-    if (!suppressed) {
-      showErrorToast(processedError);
-    }
-
-    return Promise.reject(processedError);
+    // A 401 here came back with the token the refresh just issued, so it is not about the session.
+    const processed = error.response?.status === 401 ? refusedWithSession(error) : processError(error);
+    return rejectShown(processed, originalRequest);
   },
 );
 

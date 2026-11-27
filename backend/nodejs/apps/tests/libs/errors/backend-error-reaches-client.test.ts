@@ -6,6 +6,14 @@ import { handleBackendError } from '../../../src/libs/errors/backend-error'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { BadRequestError, InternalServerError } from '../../../src/libs/errors/http.errors'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
+import express from 'express'
+import http from 'node:http'
+import { once } from 'node:events'
+import type { AddressInfo } from 'node:net'
+import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
+import { registerUpstreams } from '../../../src/libs/http/upstream-call'
+import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
+import { ConnectorServiceCommand } from '../../../src/libs/commands/connector_service/connector.service.command'
 
 /**
  * Every message this code writes must survive the error middleware.
@@ -180,6 +188,7 @@ describe('what this module writes reaches the client', () => {
     'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
     // An embedding provider account with no credit: "briefly unavailable, try again" would be wrong advice.
     "Search can't run because the embedding model's provider account is out of credit. An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models.",
+    "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. Please try again in a minute.",
   ]) {
     it(`passes search's sentence for a vector store that did not answer: ${message}`, () => {
       // Search sends it as `message` in its own body, not as `detail`.
@@ -271,5 +280,82 @@ describe('what this module writes reaches the client', () => {
     expect(sendThroughMiddleware(new BadRequestError('no', { reasonCode: 7 })).error).to.not.have.property('reasonCode')
     const plumbing = new KafkaError('Error publishing to Kafka topic records', { reasonCode: 'kafka_down' })
     expect(sendThroughMiddleware(plumbing).error).to.not.have.property('reasonCode')
+  })
+})
+
+// API1-P3: a real service (or the proxy in front of it) answering a real gateway route, through the real middleware.
+describe('a failed service call reaches the client with the status the service sent', () => {
+  let answer: { status: number; type: string; body: string; headers?: Record<string, string> }
+  let upstream: http.Server
+  let gateway: http.Server
+  const listen = (server: http.Server) =>
+    new Promise<string>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`))
+    })
+
+  before(async () => {
+    upstream = http.createServer((_req, res) => {
+      res.writeHead(answer.status, { 'content-type': answer.type, ...answer.headers })
+      res.end(answer.body)
+    })
+    const service = await listen(upstream)
+    registerUpstreams({ connector: [service] })
+    const app = express()
+    app.use(requestContextMiddleware)
+    app.get('/t', (_req, res, next) => {
+      new ConnectorServiceCommand({ uri: `${service}/x`, method: HttpMethod.GET, retries: 1 }).execute().then(
+        (reply) => {
+          if (reply.statusCode !== 200) next(handleBackendError(reply, 'list connectors'))
+          else res.json(reply.data)
+        },
+        (error: unknown) => next(handleBackendError(error, 'list connectors')),
+      )
+    })
+    app.use(ErrorMiddleware.handleError())
+    gateway = app.listen(0, '127.0.0.1')
+    await once(gateway, 'listening')
+  })
+  beforeEach(() => {
+    // The middleware's own lines are not under test here.
+    sinon.stub(ErrorMiddleware as unknown as { logger: MiddlewareLogger }, 'logger').value({
+      error: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), debug: sinon.stub(),
+    })
+  })
+  afterEach(() => sinon.restore())
+  after(() => {
+    registerUpstreams({})
+    upstream.close()
+    gateway.close()
+  })
+
+  const get = async () => {
+    const res = await fetch(`http://127.0.0.1:${(gateway.address() as AddressInfo).port}/t`)
+    return { status: res.status, retryAfter: res.headers.get('retry-after'), text: await res.text() }
+  }
+
+  it("answers Starlette's text 500 with a 502 in our words and the request id", async () => {
+    answer = { status: 500, type: 'text/plain', body: 'Traceback: KeyError at 10.0.0.4' }
+    const { status, text } = await get()
+    const body = JSON.parse(text) as ErrorBody
+    expect(status).to.equal(502)
+    expect(body.error.code).to.equal('HTTP_BAD_GATEWAY')
+    expect(body.error.message).to.include('Something went wrong while PipesHub tried to list connectors')
+    expect(body.error.requestId).to.be.a('string')
+    expect(text).to.not.include('10.0.0.4')
+  })
+
+  it("answers a proxy's HTML 503 with a 503 and its Retry-After, never the page", async () => {
+    answer = { status: 503, type: 'text/html', body: '<html>upstream connect error</html>', headers: { 'retry-after': '5' } }
+    const { status, retryAfter, text } = await get()
+    expect(status).to.equal(503)
+    expect(retryAfter).to.equal('5')
+    expect(text).to.not.include('<html')
+  })
+
+  it("answers a 413 with the service's words", async () => {
+    answer = { status: 413, type: 'application/json', body: JSON.stringify({ detail: 'At most 500 files per call.' }) }
+    const { status, text } = await get()
+    expect(status).to.equal(413)
+    expect((JSON.parse(text) as ErrorBody).error).to.include({ code: 'HTTP_PAYLOAD_TOO_LARGE', message: 'At most 500 files per call.' })
   })
 })

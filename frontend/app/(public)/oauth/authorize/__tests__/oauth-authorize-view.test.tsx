@@ -144,6 +144,23 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
     expect(await screen.findByText('Registered by Mallory')).toBeTruthy();
   });
 
+  it('links an http(s) privacy policy and drops a javascript: one saved before it was refused', async () => {
+    const safe = consentResponse([]);
+    (safe.data.consentData.app as { privacyPolicyUrl?: string }).privacyPolicyUrl = 'https://x.example/privacy';
+    get.mockResolvedValue(safe);
+    const { unmount } = render(h(Theme, null, h(OAuthAuthorizeView, null)));
+    const link = await screen.findByRole('link', { name: en.oauthConsent.privacyPolicy });
+    expect(link.getAttribute('href')).toBe('https://x.example/privacy');
+    unmount();
+
+    const stored = consentResponse([]);
+    (stored.data.consentData.app as { privacyPolicyUrl?: string }).privacyPolicyUrl = 'javascript:alert(1)';
+    get.mockResolvedValue(stored);
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+    await screen.findByText(en.oauthConsent.legalNotice.split('{{')[0]!.trim(), { exact: false });
+    expect(screen.queryByRole('link', { name: en.oauthConsent.privacyPolicy })).toBeNull();
+  });
+
   it('names no registrant when the server sends none', async () => {
     get.mockResolvedValue(consentResponse([], true, undefined, 'claude.ai'));
 
@@ -333,5 +350,44 @@ describe('OAuthAuthorizeView scope choice', () => {
     await expand('Identity', 'Knowledge Base', 'Teams');
     ['offline_access', 'kb:read', 'kb:write', 'team:read'].forEach((name) => fireEvent.click(box(name)));
     expect(allow().disabled).toBe(true);
+  });
+});
+
+describe('OAuthAuthorizeView redirect safety', () => {
+  const assign = vi.fn();
+  const loc = { href: 'http://localhost/oauth/authorize', assign, search: '' };
+
+  beforeEach(() => {
+    get.mockReset();
+    post.mockReset();
+    assign.mockReset();
+    loc.href = 'http://localhost/oauth/authorize';
+    vi.stubGlobal('location', loc);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('does not navigate to a javascript: redirect from the authorize check', async () => {
+    get.mockResolvedValue({ data: { redirectUrl: 'javascript://localhost/%0Aalert(1)' } });
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    expect(await screen.findByText(en.oauthConsent.noRedirect)).toBeTruthy();
+    expect(loc.href).toBe('http://localhost/oauth/authorize');
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate to a javascript: redirect after Deny', async () => {
+    get.mockResolvedValue(consentResponse([]));
+    post.mockResolvedValue({ data: { redirectUrl: 'java\tscript://localhost/x' } });
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    fireEvent.click(await screen.findByRole('button', { name: en.oauthConsent.deny }));
+
+    expect(await screen.findByText(en.oauthConsent.noRedirect)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(assign).not.toHaveBeenCalled();
   });
 });

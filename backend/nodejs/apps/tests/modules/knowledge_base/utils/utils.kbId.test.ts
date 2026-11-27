@@ -5,6 +5,7 @@ import {
   PlaceholderResultWithMetadata,
   processUploadsInBackground,
 } from '../../../../src/modules/knowledge_base/utils/utils';
+import { createHmac } from 'node:crypto';
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command';
 
 describe('Knowledge Base Utils - kbId parameter', () => {
@@ -13,10 +14,25 @@ describe('Knowledge Base Utils - kbId parameter', () => {
   let publish: sinon.SinonStub;
 
   const PY_URL = 'http://localhost:8000';
+  const SECRET = 'test-scoped-secret';
+  const TEST_GRANT_SCOPE = { secret: SECRET, userId: 'user-1' };
+
+  // The grant the connector verifies: claims plus an HMAC under the domain-separated key.
+  const openGrant = (token: string, secret = SECRET) => {
+    const [body = '', sig] = token.split('.');
+    const key = createHmac('sha256', secret)
+      .update('pipeshub/kb-upload-grant/v1')
+      .digest();
+    const want = createHmac('sha256', key).update(body).digest('base64url');
+    return {
+      valid: want === sig,
+      claims: JSON.parse(Buffer.from(body, 'base64url').toString()),
+    };
+  };
 
   const makePlaceholder = (overrides: any = {}): PlaceholderResultWithMetadata => ({
     placeholderResult: {
-      documentId: overrides.documentId || 'doc-1',
+      documentId: overrides.documentId || `doc-${overrides.key || 'key-1'}`,
       documentName: overrides.documentName || 'test.pdf',
     },
     metadata: {
@@ -56,6 +72,138 @@ describe('Knowledge Base Utils - kbId parameter', () => {
     sinon.restore();
   });
 
+  describe('processUploadsInBackground upload grant', () => {
+    it('sends a signed grant naming exactly the documents this request created', async () => {
+      await processUploadsInBackground(
+        [
+          makePlaceholder({
+            documentId: 'doc-a',
+            key: 'k-a',
+            filePath: 'a.pdf',
+          }),
+          makePlaceholder({
+            documentId: 'doc-b',
+            key: 'k-b',
+            filePath: 'b.pdf',
+          }),
+        ],
+        'org-9',
+        'kb-9',
+        Date.now(),
+        PY_URL,
+        { authorization: 'Bearer token' },
+        mockLogger,
+        publish,
+        TEST_GRANT_SCOPE,
+      );
+      const body = getRequestBody();
+      const { valid, claims } = openGrant(body.grant);
+      expect(valid).to.equal(true);
+      expect(claims).to.include({
+        orgId: 'org-9',
+        userId: 'user-1',
+        kbId: 'kb-9',
+        folderId: '',
+      });
+      expect(claims.documents).to.deep.equal([
+        ['k-a', 'doc-a', 'application/pdf', '.pdf'],
+        ['k-b', 'doc-b', 'application/pdf', '.pdf'],
+      ]);
+      expect(
+        body.files
+          .map((f: any) => [
+            f.record._key,
+            f.record.externalRecordId,
+            f.record.mimeType,
+            f.fileRecord.extension,
+          ])
+          .sort(),
+      ).to.deep.equal(claims.documents);
+      expect(claims.exp - claims.iat).to.be.at.most(600);
+    });
+
+    it('binds the destination folder for a folder upload', async () => {
+      await processUploadsInBackground(
+        [makePlaceholder({ documentId: 'doc-a' })],
+        'org-9',
+        'kb-9',
+        Date.now(),
+        PY_URL,
+        { authorization: 'Bearer token' },
+        mockLogger,
+        publish,
+        { ...TEST_GRANT_SCOPE, folderId: 'folder-3' },
+      );
+      expect(openGrant(getRequestBody().grant).claims.folderId).to.equal(
+        'folder-3',
+      );
+    });
+
+    it('names only the files whose storage upload succeeded', async () => {
+      const failing = makePlaceholder({
+        documentId: 'doc-bad',
+        key: 'k-bad',
+        filePath: 'bad.pdf',
+      });
+      failing.placeholderResult.upload = () =>
+        Promise.reject(new Error('storage down'));
+      await processUploadsInBackground(
+        [
+          failing,
+          makePlaceholder({
+            documentId: 'doc-ok',
+            key: 'k-ok',
+            filePath: 'ok.pdf',
+          }),
+        ],
+        'org-9',
+        'kb-9',
+        Date.now(),
+        PY_URL,
+        { authorization: 'Bearer token' },
+        mockLogger,
+        publish,
+        TEST_GRANT_SCOPE,
+      );
+      expect(openGrant(getRequestBody().grant).claims.documents).to.deep.equal([
+        ['k-ok', 'doc-ok', 'application/pdf', '.pdf'],
+      ]);
+    });
+
+    it('is not signed with another secret', async () => {
+      await processUploadsInBackground(
+        [makePlaceholder()],
+        'org-9',
+        'kb-9',
+        Date.now(),
+        PY_URL,
+        { authorization: 'Bearer token' },
+        mockLogger,
+        publish,
+        TEST_GRANT_SCOPE,
+      );
+      expect(
+        openGrant(getRequestBody().grant, 'some-other-secret').valid,
+      ).to.equal(false);
+    });
+
+    it('sends nothing to the connector when no grant can be signed, and fails every file', async () => {
+      const counts = await processUploadsInBackground(
+        [makePlaceholder()],
+        'org-9',
+        'kb-9',
+        Date.now(),
+        PY_URL,
+        { authorization: 'Bearer token' },
+        mockLogger,
+        publish,
+        { secret: '', userId: 'user-1' },
+      );
+      expect(executeStub.called).to.equal(false);
+      expect(counts).to.deep.include({ succeeded: 0, failed: 1 });
+    });
+  });
+
   describe('processUploadsInBackground with kbId', () => {
     it('should pass kbId as connectorId in the event payload', async () => {
       const kbId = 'kb-app-uuid-123';
@@ -70,6 +218,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(executeStub.calledOnce).to.equal(true);
@@ -90,6 +239,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(executeStub.calledOnce).to.equal(true);
@@ -113,6 +263,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(executeStub.calledOnce).to.equal(true);
@@ -136,6 +287,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(executeStub.calledOnce).to.equal(true);
@@ -157,6 +309,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       const body = getRequestBody();
@@ -179,6 +332,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(JSON.parse(executeStub.firstCall.thisValue.body).files[0].record.connectorId).to.equal(kbId1);
@@ -194,6 +348,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       expect(JSON.parse(executeStub.firstCall.thisValue.body).files[0].record.connectorId).to.equal(kbId2);
@@ -211,6 +366,7 @@ describe('Knowledge Base Utils - kbId parameter', () => {
         { authorization: 'Bearer token' },
         mockLogger,
         publish,
+        TEST_GRANT_SCOPE,
       );
 
       const body = getRequestBody();

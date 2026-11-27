@@ -830,10 +830,11 @@ async def update_instance(
 
     # Stored tokens, env values and refresh tokens were given for the old target; sending
     # them to a new URL, token endpoint or program would hand them to someone else. Purged
-    # before the new target is saved, so no request can pair the two.
+    # before the new target is saved, so no request can pair the two; a purge that cannot be
+    # confirmed leaves the old target in place (503 for an outage, 500 otherwise).
     credentials_reset = _connection_target_changed(existing, record)
     if credentials_reset:
-        await _purge_instance_credentials(config_service, instance_id)
+        await await_or_503(_purge_instance_credentials(config_service, existing, user_context["user_id"]))
     else:
         credentials_reset = await _settle_shared_credential(config_service, existing, record)
 
@@ -880,14 +881,19 @@ def _connection_target_changed(existing: dict[str, Any], record: dict[str, Any])
     fields = _CONNECTION_TARGET_FIELDS
     if not record.get("isCustom") and existing.get("typeId") == record.get("typeId"):
         # Same catalog type: runtime connects to the template's target whatever the stored copy
-        # says, so a copy that trails a release moves no credential. A new auth mode does.
-        fields = ("authMode",)
+        # says, so a copy that trails a release moves no credential. A new auth mode does, and so
+        # does a new URL when the template lets the admin type it (Okta).
+        # The global registry, like `instance_config_from_dict`: both must agree on whether `url` is locked.
+        template = mcp_service.catalog_template(record.get("typeId"))
+        fields = ("authMode", "url") if template and template.url_editable is True else ("authMode",)
     # `or None` so an older record's missing key and a new empty list compare equal.
     return any((existing.get(field) or None) != (record.get(field) or None) for field in fields)
 
 
-async def _purge_instance_credentials(config_service: ConfigurationService, instance_id: str) -> None:
-    await mcp_lifecycle.purge_instance_credentials(config_service, instance_id)
+async def _purge_instance_credentials(
+    config_service: ConfigurationService, existing: dict[str, Any], user_id: str,
+) -> None:
+    await mcp_lifecycle.purge_instance_credentials(config_service, existing, user_id=user_id)
 
 
 async def _assert_instance_not_in_use(request: Request, instance: dict[str, Any]) -> None:

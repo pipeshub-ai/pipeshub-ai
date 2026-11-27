@@ -598,7 +598,7 @@ class TestRefusedThreadsAreRetried:
     async def test_threads_slack_keeps_refusing_do_not_grow_the_pending_set_past_its_cap(
         self, workspace, store, checkpoints, monkeypatch,
     ) -> None:
-        monkeypatch.setattr("app.connectors.sources.slack.individual.connector.MAX_PENDING_THREADS_PER_CHANNEL", 2)
+        monkeypatch.setattr("app.connectors.sources.slack.common.full_sync_keep.MAX_PENDING_THREADS_PER_CHANNEL", 2)
         parents = [ts_minutes_ago(3 * DAY_MINUTES - 10 * i) for i in range(3)]
         for parent in parents:
             workspace.post(GENERAL, parent, BOB, "question?")

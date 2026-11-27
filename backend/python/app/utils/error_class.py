@@ -21,7 +21,7 @@ import sys
 import textwrap
 import traceback
 import weakref
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 
 from app.services.base_client import ServiceAuthRefusedError
 from app.services.messaging.error_classifier import CONTENT_ERRORS, extract_status_code
@@ -257,6 +257,25 @@ def retry_later(exc: BaseException) -> bool:
         return walk(exc)
     except Exception:
         return False
+
+
+def first_to_raise(failures: list[Exception]) -> Exception:
+    """Of several failures, the one to raise: the first that is not an outage (a bug of ours stays one), else the first."""
+    return next((e for e in failures if not retry_later(e)), failures[0])
+
+
+async def attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]], what: str) -> None:
+    """Runs ``delete`` on every item, the rest too when one fails; then raises :func:`first_to_raise` of the failures."""
+    failures: list[Exception] = []
+    for item in items:
+        try:
+            await delete(item)
+        except Exception as e:
+            failures.append(e)
+    if failures:
+        first = first_to_raise(failures)
+        first.add_note(f"{len(failures)} of {len(items)} {what} failed")
+        raise first
 
 
 def provider_code(exc: BaseException) -> str | None:

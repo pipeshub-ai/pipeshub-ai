@@ -45,7 +45,7 @@ from tests.support.log_capture import assert_text_free
 from tests.support.record_access import InMemoryRecordAccess
 
 
-async def _read_fails(user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
+async def _read_fails(user_id: str, *, raise_on_error: bool = False, **_: object) -> dict[str, Any] | None:
     if raise_on_error:
         raise RuntimeError(f"connection refused reading {user_id}")
     return None

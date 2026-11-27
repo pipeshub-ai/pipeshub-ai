@@ -64,6 +64,7 @@ async def kb_world(pg_provider, pg_db) -> AsyncIterator[tuple[Any, str]]:
         await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", org), write=True)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_membership_read_never_gets_the_generic_plan(kb_world) -> None:
     p, org = kb_world
     asked = [f"r{i * 40}" for i in range(100)]
@@ -154,6 +155,7 @@ async def vrid_world(pg_provider, pg_db) -> AsyncIterator[tuple[Any, str]]:
         await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_batch_of_virtual_record_ids_is_read_by_index_probes_at_any_size(vrid_world, monkeypatch: pytest.MonkeyPatch) -> None:
     """Under row security the statement's `doc->>'virtualRecordId' = ANY(...)` cannot use the key's index (`->>` is not leakproof), so a batch over the
     vetted read's 1000 ids read the whole org. Every size is now read in pages of the vetted read, one index probe per id, with the same answer."""
@@ -195,6 +197,7 @@ async def test_a_batch_of_virtual_record_ids_is_read_by_index_probes_at_any_size
         assert got == plain == live | {"r22"}, (n, len(got), len(plain), len(live))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_walk_down_reads_each_child_by_its_key_on_every_edges_leaf_the_statistics_do_not_know_the_org_in(pg_db) -> None:
     """A hop of the walk down from a group with 2,000 children, half of them inheriting from it. On a leaf whose statistics put the org at a row (its rows
     written after the last analyse) the joins of the hop read the org's nodes and scanned the group's edges once per node, then the org's inherit edges once
