@@ -543,8 +543,36 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     expect(again.status).to.equal(200);
     expect(again.body).to.deep.include({ created: false });
     expect((again.body as { schedule: { id: string } }).schedule.id).to.equal(first.schedule.id);
-    expect(first.schedule.id).to.equal(chatScheduleId(ORG, ixOf(ARGS)));
+    expect(first.schedule.id).to.equal(chatScheduleId(ORG, RUN, ixOf(ARGS)));
     expect(await w.store.list(ORG, {}, 10)).to.have.length(1);
+  });
+
+  it('the loop\'s interaction ids repeat in every run, so the id is per run: two runs never share a schedule', () => {
+    // The durable loop's first approval is ix.approve.t1.0 in every run; an id of the org and the interaction alone
+    // answered every later run's t1.0 with the first run's schedule, someone else's included.
+    const loopFirst = 'ix.approve.t1.0';
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.not.equal(chatScheduleId(ORG, 'run-b', loopFirst));
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.equal(chatScheduleId(ORG, 'run-a', loopFirst));
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.not.equal(chatScheduleId('org-2', 'run-a', loopFirst));
+  });
+
+  it('a schedule at this decision\'s id that another run or person made is never answered with: 403, nothing leaked', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const id = chatScheduleId(ORG, RUN, ixOf(ARGS));
+    await w.store.create(
+      aSchedule({
+        id,
+        orgId: ORG,
+        actorId: BOB,
+        name: 'Bob\'s private reminder',
+        origin: { conversationId: 'ses-bob', runId: 'run-bob', interactionId: ixOf(ARGS) },
+      }),
+      { perOrg: 500, perActor: 50 },
+    );
+    const answer = await w.call(body());
+    expect(answer).to.deep.equal({ status: 403, code: 'HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN' });
+    expect(JSON.stringify(answer)).to.not.include('private');
   });
 
   it('two requests of one decision at once make one schedule', async () => {
