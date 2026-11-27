@@ -4238,17 +4238,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return written
             # The document API's upsert takes no AQL, so the copy is a second request: one stream transaction holds the written records
             # to the commit, so the copy reads them as written and no writer commits between the two (a batch of other records needs none).
-            txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
-            committed = False
-            try:
-                written = await self._upsert_record_nodes(arango_nodes, txn)
-                await self._sync_code_file_scope(code, txn)
-                await self.http_client.commit_transaction(txn)
-                committed = True
-                return written
-            finally:
-                if not committed:
-                    await asyncio.shield(self._abort_quietly(txn))
+            # A write conflict or a refusal by a narrow schema rolls the whole transaction back; it is run again, as a write outside one is.
+            attempt = 0
+            while True:
+                txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
+                committed = False
+                try:
+                    written = await self._upsert_record_nodes(arango_nodes, txn)
+                    await self._sync_code_file_scope(code, txn)
+                    await self.http_client.commit_transaction(txn)
+                    committed = True
+                    return written
+                except Exception as exc:
+                    attempt += 1
+                    if attempt >= _WRITE_CONFLICT_ATTEMPTS or not self.is_transient_error(exc):
+                        raise
+                finally:
+                    if not committed:
+                        await asyncio.shield(self._abort_quietly(txn))
+                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
 
         except Exception:
             raise

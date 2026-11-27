@@ -213,3 +213,27 @@ async def test_an_upsert_of_code_records_and_its_scope_copy_commit_together(aran
         monkeypatch.undo()
         assert (await arango.get_document(rid, "records"))["recordGroupId"] == old_group
         assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == old_group
+
+
+@pytest.mark.parametrize("refusal", ["conflict", "narrow schema"])
+async def test_an_upsert_of_code_records_whose_transaction_is_refused_is_run_again(arango, monkeypatch, refusal) -> None:
+    """A write conflict (errorNum 1200) or a narrow schema's refusal inside the owned transaction rolls it back whole; the upsert and the
+    copy are run again in a new one, as a write outside a transaction is."""
+    from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+    org, connector = _new_org()
+    with for_org(org, job="code-path-scope-test"):
+        world = await world_of.write_world(arango, org, connector, 2)
+        rid, new_group = world["records"][0], world["groups"][1][1]
+        doc = await arango.get_document(rid, "records")
+        real, calls = arango._sync_code_file_scope, {"n": 0}
+
+        async def refused_once(keys: list[str], transaction: str | None) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RecordSchemaNarrowError("refused") if refusal == "narrow schema" else RuntimeError("[1200] write-write conflict")
+            await real(keys, transaction)
+        monkeypatch.setattr(arango, "_sync_code_file_scope", refused_once)
+        await arango.batch_upsert_nodes([{**doc, "recordGroupId": new_group}], "records")
+        assert calls["n"] == 2
+        assert (await arango.get_document(rid, "records"))["recordGroupId"] == new_group
+        assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == new_group
