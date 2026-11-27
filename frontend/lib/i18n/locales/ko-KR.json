@@ -747,8 +747,9 @@
     "moreOptions": "추가 옵션",
     "docs": "문서",
     "enterprise": {
-      "label": "EE에서 제공",
-      "tooltip": "PipesHub Enterprise Edition의 기능입니다"
+      "label": "Enterprise에서 제공",
+      "tooltip": "PipesHub Enterprise Edition에 포함",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "문제가 발생했습니다",
@@ -2143,7 +2144,7 @@
       "title": "그룹",
       "subtitle": "그룹을 생성하고 관리하여 접근 및 권한을 제어합니다",
       "enterpriseTitle": "그룹 권한은 Enterprise Edition에서 사용할 수 있습니다",
-      "enterpriseMessage": "그룹 권한을 사용하려면 Enterprise Edition으로 업그레이드하세요.",
+      "enterpriseMessage": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다.",
       "createGroup": "그룹 생성",
       "searchPlaceholder": "검색...",
       "emptyTitle": "아직 생성된 그룹이 없습니다",
@@ -2227,18 +2228,168 @@
       }
     },
     "enterprise": {
-      "contact": "영업팀과 상담하기",
+      "contact": "문의하기",
       "scim": {
         "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요."
+        "message": "Okta 또는 Microsoft Entra ID에서 사용자 프로비저닝과 프로비저닝 해제를 자동화합니다.",
+        "benefits": {
+          "providers": "SCIM 2.0으로 Okta 및 Microsoft Entra ID와 연동",
+          "offboarding": "프로비저닝이 해제된 사용자는 자동으로 접근 권한을 잃습니다",
+          "noManualWork": "더 이상 사용자를 직접 초대하거나 제거하지 않아도 됩니다"
+        }
       },
       "auditLogs": {
         "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요."
+        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요.",
+        "benefits": {
+          "everyEvent": "모든 작업의 행위자, 시간, IP 주소, 대상, 결과",
+          "filters": "사용자, 작업, 결과별로 필터링",
+          "alerts": "알림을 설정하고 규정 준수 검토용으로 로그 내보내기"
+        }
       },
       "usage": {
-        "heading": "사용량, 크레딧 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요."
+        "heading": "사용량 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "AI 지출을 확인하고 제어하세요. 사용자, 에이전트, 커넥터, 모델별로 추적하고, 사용자마다 쓸 수 있는 금액을 정하고, 크레딧과 청구서를 관리합니다.",
+        "benefits": {
+          "breakdown": "사용자, 에이전트, 커넥터, 모델별 AI 지출",
+          "billing": "크레딧과 청구서를 한곳에서",
+          "alerts": "AI 지출이 한도를 넘으면 알림"
+        }
+      },
+      "benefitsTitle": "포함 항목",
+      "relatedTitle": "Enterprise의 다른 기능",
+      "tenants": {
+        "heading": "멀티 테넌시는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "팀, 지역, 고객마다 별도의 조직을 하나의 배포에서 제공하세요.",
+        "benefits": {
+          "separate": "테넌트마다 사용자, 그룹, 커넥터, 컬렉션, 에이전트가 따로 있습니다",
+          "inherit": "테넌트가 상속할 설정을 선택합니다. 예: AI 모델, 이메일, 로그인",
+          "manage": "모든 테넌트를 한곳에서 만들고 관리"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "그룹 전체에 한 번에 접근 권한 부여",
+          "teams": "팀 전체나 개별 사용자를 그룹에 추가",
+          "builtIn": "기본 제공되는 관리자 및 전체 그룹으로 시작"
+        }
+      },
+      "seeWhatsInEnterprise": "Enterprise 기능 보기",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그 등.",
+        "action": "포함된 기능 보기",
+        "dismiss": "Enterprise Edition 카드 숨기기"
+      },
+      "overview": {
+        "currentEdition": "현재 에디션: Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Community Edition의 모든 기능에 멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그, 비용 관리를 더합니다.",
+        "seePreview": "미리 보기",
+        "seePreviewLabel": "{{name}} 미리 보기",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "현재 에디션",
+            "summary": "무료 오픈 소스, 직접 호스팅",
+            "lead": "Community에 포함",
+            "items": {
+              "search": "연결된 앱 전체에서 검색과 채팅",
+              "agents": "AI 에이전트, 작업, MCP 서버",
+              "people": "사용자와 팀",
+              "signIn": "비밀번호, 이메일 일회용 코드, Google, Microsoft 로그인"
+            },
+            "current": "현재 사용 중인 에디션"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "규모가 큰 조직용. 가격은 문의해 주세요.",
+            "lead": "Community의 모든 기능에 더해:",
+            "seeAll": "모든 기능 보기"
+          }
+        },
+        "compare": {
+          "title": "에디션 비교",
+          "feature": "기능",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "가격 문의",
+          "included": "포함",
+          "notIncluded": "포함되지 않음",
+          "communityHas": {
+            "scim": "수동 사용자 관리",
+            "collaborativeChat": "읽기용 채팅 공유",
+            "groups": "팀",
+            "sso": "비밀번호, 이메일 일회용 코드, Google, Microsoft"
+          }
+        },
+        "faq": {
+          "title": "자주 묻는 질문",
+          "free": {
+            "question": "Community Edition은 계속 무료인가요?",
+            "answer": "네. 계속 오픈 소스이며 무료입니다."
+          },
+          "preview": {
+            "question": "기능을 먼저 미리 볼 수 있나요?",
+            "answer": "네. \"{{label}}\" 표시가 있는 기능은 해당 기능이 있을 페이지를 화면 미리 보기와 함께 엽니다."
+          },
+          "get": {
+            "question": "Enterprise Edition은 어떻게 받나요?",
+            "answer": "{{contact}}를 눌러 주세요. 조직에 필요한 것과 설정 방법을 함께 살펴봅니다."
+          }
+        },
+        "groups": {
+          "scale": "확장",
+          "governance": "접근 및 거버넌스",
+          "security": "보안 및 규정 준수",
+          "cost": "비용 및 인덱싱"
+        },
+        "items": {
+          "tenants": {
+            "name": "멀티 테넌시",
+            "description": "하나의 배포에서 팀, 지역, 고객마다 별도의 조직."
+          },
+          "scim": {
+            "name": "SCIM 프로비저닝",
+            "description": "Okta 또는 Microsoft Entra ID에서 사용자 프로비저닝과 해제를 자동화합니다."
+          },
+          "collaborativeChat": {
+            "name": "협업 채팅",
+            "description": "한 대화에서 함께 채팅하고, 팀 및 그룹과 공유합니다."
+          },
+          "groups": {
+            "name": "그룹 권한",
+            "description": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다."
+          },
+          "toolApprovals": {
+            "name": "도구 승인 정책",
+            "description": "에이전트 도구마다 조직 전체 규칙을 정합니다: 실행, 승인 요청, 차단."
+          },
+          "actOnBehalf": {
+            "name": "다른 사람을 대신해 작업",
+            "description": "서비스 계정이 특정 사용자로 작업합니다(위임된 액세스). 모든 시도가 기록됩니다."
+          },
+          "peoplesOwnApps": {
+            "name": "사용자 앱 거버넌스",
+            "description": "사용자가 연결한 OAuth 앱, 작업, MCP 서버를 검토하고 제거합니다."
+          },
+          "sso": {
+            "name": "SSO(싱글 사인온)",
+            "description": "Okta, OneLogin 또는 SAML 2.0·OpenID Connect(OIDC) 공급자로 로그인합니다."
+          },
+          "auditLogs": {
+            "name": "감사 로그",
+            "description": "모든 작업을 행위자, 시간, IP 주소, 결과별로 추적합니다. 필터, 알림, 내보내기."
+          },
+          "usage": {
+            "name": "사용량 및 결제",
+            "description": "AI 지출의 가시성과 제어: 사용자, 에이전트, 커넥터, 모델별로 추적하고 사용자마다 쓸 수 있는 금액을 정합니다."
+          },
+          "indexingPriority": {
+            "name": "인덱싱 우선순위",
+            "description": "먼저 인덱싱할 레코드, 컬렉션, 업로드를 고릅니다."
+          }
+        }
       }
     },
     "teams": {
@@ -2840,7 +2991,7 @@
       "sections": {
         "overview": "개요",
         "workspace": "워크스페이스",
-        "usageAndCredits": "사용량 및 크레딧",
+        "usageAndCredits": "사용량 및 결제",
         "security": "보안",
         "personal": "개인",
         "people": "구성원",
@@ -2874,13 +3025,14 @@
         "groups": "그룹",
         "scim": "SCIM",
         "auditLogs": "감사 로그",
-        "usage": "사용량 및 크레딧",
+        "usage": "사용량 및 결제",
         "teams": "팀",
         "webSearch": "웹 검색",
         "tenants": "테넌트",
         "superOrgs": "조직",
         "oauthApps": "커넥터 OAuth 앱",
         "serviceAccounts": "서비스 계정",
+        "enterprise": "Enterprise Edition",
         "aiAccounts": "AI 계정",
         "schedules": "스케줄",
         "memories": "메모리",
@@ -3151,6 +3303,11 @@
         "message": "취소하면 편집 내용이 저장되지 않습니다",
         "confirm": "취소",
         "cancel": "계속 편집"
+      },
+      "edition": {
+        "title": "에디션",
+        "name": "Community Edition",
+        "description": "오픈 소스이며 직접 호스팅합니다. Enterprise Edition은 멀티 테넌시, SSO, SCIM 프로비저닝, 감사 로그 등을 더합니다."
       }
     },
     "mcpAccess": {
@@ -5406,7 +5563,7 @@
     },
     "tenants": {
       "title": "테넌트",
-      "subtitle": "워크스페이스 내에서 테넌트 조직을 생성하고 관리합니다",
+      "subtitle": "이 배포에서 테넌트 조직을 만들고 관리합니다",
       "createTenant": "테넌트 생성",
       "searchPlaceholder": "테넌트 검색...",
       "emptyTitle": "아직 생성된 테넌트가 없습니다",

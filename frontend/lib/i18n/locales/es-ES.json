@@ -676,8 +676,9 @@
     "moreOptions": "Más opciones",
     "docs": "Documentación",
     "enterprise": {
-      "label": "Disponible en EE",
-      "tooltip": "Parte de PipesHub Enterprise Edition"
+      "label": "Disponible en Enterprise",
+      "tooltip": "Incluido en PipesHub Enterprise Edition",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Algo salió mal",
@@ -2121,8 +2122,8 @@
     "groups": {
       "title": "Grupos",
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
-      "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
-      "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
+      "enterpriseTitle": "Los permisos de grupo están disponibles en Enterprise Edition",
+      "enterpriseMessage": "Control de acceso basado en grupos: conceda acceso a todo un grupo a la vez.",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -2206,18 +2207,168 @@
       }
     },
     "enterprise": {
-      "contact": "Hablar con ventas",
+      "contact": "Hable con nosotros",
       "scim": {
-        "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
-        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente."
+        "heading": "El aprovisionamiento SCIM está disponible en Enterprise Edition",
+        "message": "Automatice el aprovisionamiento y desaprovisionamiento de usuarios desde Okta o Microsoft Entra ID.",
+        "benefits": {
+          "providers": "Funciona con Okta y Microsoft Entra ID mediante SCIM 2.0",
+          "offboarding": "Los usuarios desaprovisionados pierden el acceso automáticamente",
+          "noManualWork": "Se acabó invitar y quitar usuarios a mano"
+        }
       },
       "auditLogs": {
-        "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
-        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo."
+        "heading": "Los registros de auditoría están disponibles en Enterprise Edition",
+        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo.",
+        "benefits": {
+          "everyEvent": "Cada acción con su autor, hora, dirección IP, destino y resultado",
+          "filters": "Filtre por usuario, acción o resultado",
+          "alerts": "Configure alertas y exporte los registros para revisiones de cumplimiento"
+        }
       },
       "usage": {
-        "heading": "El uso, los créditos y la facturación están disponibles en la Enterprise Edition",
-        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo."
+        "heading": "Uso y facturación está disponible en Enterprise Edition",
+        "message": "Vea y controle el gasto en IA. Sígalo por usuario, agente, conector y modelo, fije cuánto puede gastar cada usuario y gestione créditos y facturas.",
+        "benefits": {
+          "breakdown": "Gasto en IA por usuario, agente, conector y modelo",
+          "billing": "Créditos y facturas en un solo lugar",
+          "alerts": "Alertas cuando el gasto en IA supera su límite"
+        }
+      },
+      "benefitsTitle": "Qué incluye",
+      "relatedTitle": "También en Enterprise",
+      "tenants": {
+        "heading": "La multitenencia está disponible en Enterprise Edition",
+        "message": "Dé a cada equipo, región o cliente su propia organización, todo en una sola instalación.",
+        "benefits": {
+          "separate": "Cada inquilino tiene sus propios usuarios, grupos, conectores, colecciones y agentes",
+          "inherit": "Elija qué configuración heredan los inquilinos, como modelos de IA, correo e inicio de sesión",
+          "manage": "Cree y gestione todos los inquilinos en un solo lugar"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Conceda acceso a todo un grupo a la vez",
+          "teams": "Añada equipos enteros o usuarios individuales a un grupo",
+          "builtIn": "Empiece con los grupos integrados Administradores y Todos"
+        }
+      },
+      "seeWhatsInEnterprise": "Ver qué incluye Enterprise",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Multitenencia, SSO, aprovisionamiento SCIM, registros de auditoría y más.",
+        "action": "Ver qué incluye",
+        "dismiss": "Ocultar la tarjeta de la Enterprise Edition"
+      },
+      "overview": {
+        "currentEdition": "Edición actual: Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Todo lo de Community Edition, más multitenencia, SSO, aprovisionamiento SCIM, registros de auditoría y control de costes.",
+        "seePreview": "Vista previa",
+        "seePreviewLabel": "Vista previa de {{name}}",
+        "plans": {
+          "community": {
+            "name": "Community Edition",
+            "yourPlan": "Edición actual",
+            "summary": "Gratis, de código abierto y autoalojada",
+            "lead": "Incluido en Community",
+            "items": {
+              "search": "Buscar y chatear en sus apps conectadas",
+              "agents": "Agentes de IA, acciones y servidores MCP",
+              "people": "Usuarios y equipos",
+              "signIn": "Inicio de sesión con contraseña, código de un solo uso por correo, Google y Microsoft"
+            },
+            "current": "Su edición actual"
+          },
+          "enterprise": {
+            "name": "Enterprise Edition",
+            "summary": "Para organizaciones grandes. Precio a consultar.",
+            "lead": "Todo lo de Community, y además:",
+            "seeAll": "Ver todas las funciones"
+          }
+        },
+        "compare": {
+          "title": "Comparar ediciones",
+          "feature": "Función",
+          "community": "Community",
+          "enterprise": "Enterprise",
+          "pricing": "Precio a consultar",
+          "included": "Incluido",
+          "notIncluded": "No incluido",
+          "communityHas": {
+            "scim": "Gestión manual de usuarios",
+            "collaborativeChat": "Compartir un chat para leer",
+            "groups": "Equipos",
+            "sso": "Contraseña, código de un solo uso por correo, Google y Microsoft"
+          }
+        },
+        "faq": {
+          "title": "Preguntas",
+          "free": {
+            "question": "¿Community Edition sigue siendo gratuita?",
+            "answer": "Sí. Sigue siendo de código abierto y gratuita."
+          },
+          "preview": {
+            "question": "¿Puedo ver una función antes?",
+            "answer": "Sí. Las funciones marcadas con «{{label}}» abren la página donde estarían, con una vista previa de la pantalla."
+          },
+          "get": {
+            "question": "¿Cómo consigo Enterprise Edition?",
+            "answer": "{{contact}}. Repasaremos lo que necesita su organización y cómo ponerla en marcha."
+          }
+        },
+        "groups": {
+          "scale": "Escala",
+          "governance": "Acceso y gobierno",
+          "security": "Seguridad y cumplimiento",
+          "cost": "Costes e indexación"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multitenencia",
+            "description": "Organizaciones separadas para cada equipo, región o cliente, en una sola instalación."
+          },
+          "scim": {
+            "name": "Aprovisionamiento SCIM",
+            "description": "Automatice el aprovisionamiento y desaprovisionamiento de usuarios desde Okta o Microsoft Entra ID."
+          },
+          "collaborativeChat": {
+            "name": "Chat colaborativo",
+            "description": "Chateen juntos en una misma conversación y compártanla con equipos y grupos."
+          },
+          "groups": {
+            "name": "Permisos de grupo",
+            "description": "Control de acceso basado en grupos: conceda acceso a todo un grupo a la vez."
+          },
+          "toolApprovals": {
+            "name": "Políticas de aprobación de herramientas",
+            "description": "Defina reglas para toda la organización para cada herramienta de agente: ejecutar, pedir aprobación o bloquear."
+          },
+          "actOnBehalf": {
+            "name": "Actuar en nombre de una persona",
+            "description": "Una cuenta de servicio actúa como un usuario concreto (acceso delegado). Cada intento queda registrado."
+          },
+          "peoplesOwnApps": {
+            "name": "Gobernanza de las apps de usuarios",
+            "description": "Revise y quite las apps OAuth, acciones y servidores MCP que conectan los usuarios."
+          },
+          "sso": {
+            "name": "Inicio de sesión único (SSO)",
+            "description": "Inicio de sesión con Okta, OneLogin o cualquier proveedor SAML 2.0 u OpenID Connect (OIDC)."
+          },
+          "auditLogs": {
+            "name": "Registros de auditoría",
+            "description": "Siga cada acción por autor, hora, dirección IP y resultado. Filtre, reciba alertas y exporte."
+          },
+          "usage": {
+            "name": "Uso y facturación",
+            "description": "Visibilidad y control del gasto en IA: sígalo por usuario, agente, conector y modelo, y fije cuánto puede gastar cada usuario."
+          },
+          "indexingPriority": {
+            "name": "Prioridad de indexación",
+            "description": "Elija qué registros, colecciones y subidas se indexan primero."
+          }
+        }
       }
     },
     "teams": {
@@ -2727,7 +2878,7 @@
       "sections": {
         "overview": "Resumen",
         "workspace": "Espacio de trabajo",
-        "usageAndCredits": "Uso y créditos",
+        "usageAndCredits": "Uso y facturación",
         "security": "Seguridad",
         "personal": "Personal",
         "people": "Personas",
@@ -2761,13 +2912,14 @@
         "groups": "Grupos",
         "scim": "SCIM",
         "auditLogs": "Registros de auditoría",
-        "usage": "Uso y créditos",
+        "usage": "Uso y facturación",
         "teams": "Equipos",
         "webSearch": "Búsqueda Web",
         "tenants": "Inquilinos",
         "superOrgs": "Organizaciones",
         "oauthApps": "Apps OAuth de conectores",
         "serviceAccounts": "Cuentas de servicio",
+        "enterprise": "Enterprise Edition",
         "aiAccounts": "Cuentas de IA",
         "schedules": "Programaciones",
         "memories": "Recuerdos",
@@ -3038,6 +3190,11 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
+      },
+      "edition": {
+        "title": "Edición",
+        "name": "Community Edition",
+        "description": "De código abierto y autoalojada. Enterprise Edition añade multitenencia, SSO, aprovisionamiento SCIM, registros de auditoría y más."
       }
     },
     "mcpAccess": {
@@ -5107,7 +5264,7 @@
     },
     "tenants": {
       "title": "Inquilinos",
-      "subtitle": "Crear y gestionar organizaciones inquilinas dentro del espacio de trabajo",
+      "subtitle": "Cree y gestione organizaciones inquilinas en esta instalación",
       "createTenant": "Crear inquilino",
       "searchPlaceholder": "Buscar inquilinos...",
       "emptyTitle": "Aún no hay inquilinos creados",

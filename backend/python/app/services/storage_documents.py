@@ -47,8 +47,8 @@ DEFAULT_UPLOAD_LIMIT_BYTES = 30 << 20
 class StorageUploadError(Exception):
     """The storage service did not store the document.
 
-    ``status`` is the service's HTTP status when it answered (413 is set by ``create`` for a 400 that is
-    an oversize file); ``limit_bytes`` is the upload limit read at that moment for a 413.
+    ``status`` is the service's HTTP status when it answered; ``limit_bytes`` is the upload limit read at that
+    moment for a 413 (a file over the platform limit).
     """
 
     def __init__(self, message: str, *, status: int | None = None, limit_bytes: int | None = None) -> None:
@@ -314,10 +314,13 @@ class StorageDocuments:
                             if doc_id:
                                 return doc_id
                             raise StorageUploadError("the storage service did not return a document id")
-                        if resp.status == 400:
-                            # The route answers 400 with free text for a file over the platform limit (multer's
-                            # LIMIT_FILE_SIZE, ``fp.service.ts:146-151,226-229``), never 413.
-                            await self._explain_400(size)
+                        if resp.status == 413:
+                            # A file over the platform limit (multer's LIMIT_FILE_SIZE): say which limit, read fresh.
+                            raise StorageUploadError(
+                                "the file is larger than the platform upload limit",
+                                status=413,
+                                limit_bytes=await self.upload_limit(use_cache=False),
+                            )
                         raise StorageUploadError(f"the storage service answered {resp.status}", status=resp.status)
         except StorageUploadError:
             raise
@@ -332,12 +335,6 @@ class StorageDocuments:
         except Exception as e:
             raise StorageUploadError(f"the upload limit could not be read: {type(e).__name__}") from e
         return parse_upload_limit(settings)
-
-    async def _explain_400(self, size: int) -> None:
-        """Raise the 413 a 400 means when the file is larger than the limit now (read fresh); else return."""
-        limit = await self.upload_limit(use_cache=False)
-        if size > limit:  # multer's check is ``>``: a file of exactly the limit is stored
-            raise StorageUploadError("the file is larger than the platform upload limit", status=413, limit_bytes=limit)
 
     async def exists(self, org_id: str, document_id: str) -> bool:
         """Whether the storage service still has the document (absent or soft-deleted is False).

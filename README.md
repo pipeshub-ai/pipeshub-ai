@@ -177,6 +177,21 @@ Prefer a fully managed PipesHub without running your own infrastructure? Sign up
 
 Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
+## Enterprise Edition
+
+PipesHub is open source and complete on its own. Enterprise Edition adds what larger organizations need:
+
+- **Multi-tenancy:** a separate organization for each team, region or customer, on one deployment. You choose which settings each tenant inherits.
+- **Single sign-on (SSO):** sign in through Okta, OneLogin or any SAML 2.0 or OpenID Connect (OIDC) provider.
+- **SCIM provisioning:** automate user provisioning and deprovisioning from Okta or Microsoft Entra ID over SCIM 2.0.
+- **Collaborative chat:** chat together in one conversation, and share it with teams and groups.
+- **Group permissions:** group-based access control, so you grant access to a whole group at once.
+- **Audit logs:** track every action by actor, time, IP address, target and outcome. Filter, alert and export.
+- **Usage & billing:** see and control AI spend. Track it by user, agent, connector and model, set how much each user can spend, and manage credits, invoices and spending alerts.
+- **Agent and app governance:** tool approval policies for agents, service accounts that act on behalf of a user with every attempt logged, and review of the apps and MCP servers users connect.
+
+Want to see it? [Talk with us](https://calendly.com/rishabh-pipeshub/30min?utm_source=github&utm_medium=readme&utm_campaign=enterprise-edition).
+
 ## Connectors
 
 <p align="center">
@@ -411,6 +426,10 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 2. Check Docker compose logs: `docker compose logs`
 3. Verify environment variables in env.template
 4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+
+### Is there an Enterprise Edition?
+
+Yes. It adds multi-tenancy, single sign-on (SSO), SCIM provisioning, collaborative chat, group permissions, audit logs, usage & billing, and agent and app governance. See [Enterprise Edition](#enterprise-edition).
 
 ### Where can I get help?
 

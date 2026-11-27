@@ -17,7 +17,8 @@ ONLINE_INDEXES = [
 
 
 def upgrade():
-    # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds it, empty)
+    # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds it, empty).
+    # On an install behind kg_0019 the columns come from that pending revision: the pre-build is skipped and this builds it here, on columns that are new and empty.
     for ix in ONLINE_INDEXES:
         ensure_partitioned_index(op.get_bind(), **ix, blocking=True)
 
