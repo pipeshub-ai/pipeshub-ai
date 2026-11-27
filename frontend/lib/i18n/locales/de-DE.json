@@ -986,6 +986,7 @@
     "treeExpand": "Inhalt von {{name}} anzeigen",
     "treeCollapse": "Inhalt von {{name}} ausblenden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
+    "noConnectorsAvailable": "Keine Connectors verfügbar",
     "answer": "Antwort",
     "sources": "Quellen",
     "citation": "Zitat",

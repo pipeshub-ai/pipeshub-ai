@@ -1003,6 +1003,7 @@
     "treeExpand": "Mostrar el contenido de {{name}}",
     "treeCollapse": "Ocultar el contenido de {{name}}",
     "noCollectionsAvailable": "No hay colecciones disponibles",
+    "noConnectorsAvailable": "No hay conectores disponibles",
     "answer": "Respuesta",
     "sources": "Fuentes",
     "citation": "Cita",

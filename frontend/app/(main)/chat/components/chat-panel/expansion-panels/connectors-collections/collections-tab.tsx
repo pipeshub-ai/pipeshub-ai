@@ -413,7 +413,7 @@ export function CollectionsTab({
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {searchQuery || collections.length > 0
                 ? t(filterMode === 'connectors' ? 'chat.noConnectorsFound' : 'message.noCollections')
-                : t('chat.noCollectionsAvailable')}
+                : t(filterMode === 'connectors' ? 'chat.noConnectorsAvailable' : 'chat.noCollectionsAvailable')}
             </Text>
           </Flex>
         )}

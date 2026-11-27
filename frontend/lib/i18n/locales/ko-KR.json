@@ -1073,6 +1073,7 @@
     "treeExpand": "{{name}}의 내용 표시",
     "treeCollapse": "{{name}}의 내용 숨기기",
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
+    "noConnectorsAvailable": "사용 가능한 커넥터가 없습니다",
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",

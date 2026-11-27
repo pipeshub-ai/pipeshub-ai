@@ -1130,6 +1130,7 @@
     "treeExpand": "Zobrazit obsah {{name}}",
     "treeCollapse": "Skrýt obsah {{name}}",
     "noCollectionsAvailable": "Nejsou k dispozici žádné kolekce",
+    "noConnectorsAvailable": "Nejsou k dispozici žádné konektory",
     "answer": "Odpověď",
     "sources": "Zdroje",
     "citation": "Citace",

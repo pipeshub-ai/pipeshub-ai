@@ -1073,6 +1073,7 @@
     "treeExpand": "显示 {{name}} 中的内容",
     "treeCollapse": "隐藏 {{name}} 中的内容",
     "noCollectionsAvailable": "没有可用的收藏集",
+    "noConnectorsAvailable": "没有可用的连接器",
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",

@@ -987,6 +987,7 @@
     "treeExpand": "{{name}} की सामग्री दिखाएँ",
     "treeCollapse": "{{name}} की सामग्री छिपाएँ",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",
+    "noConnectorsAvailable": "कोई कनेक्टर उपलब्ध नहीं है",
     "answer": "उत्तर",
     "sources": "स्रोत",
     "citation": "उद्धरण",

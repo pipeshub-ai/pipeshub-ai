@@ -1076,6 +1076,7 @@
     "treeExpand": "Show what is in {{name}}",
     "treeCollapse": "Hide what is in {{name}}",
     "noCollectionsAvailable": "No collections available",
+    "noConnectorsAvailable": "No connectors available",
     "answer": "Answer",
     "sources": "Sources",
     "citation": "Citation",
