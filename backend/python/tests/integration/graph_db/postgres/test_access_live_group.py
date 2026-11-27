@@ -3,6 +3,7 @@ the user's own groups do. Both reads of a viewer's grants follow it: the read of
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 
@@ -122,24 +123,34 @@ async def _world_x(p, org: str) -> None:
 
 
 async def _reap_while(p, writer_tid: str, *, in_transaction: bool = False) -> None:
-    """The reaper runs while the writer's transaction is open; the writer commits; the reaper's own transaction (if any) commits only after a reaper that returned."""
+    """The reaper runs while the writer's transaction is open; the writer commits; the reaper's own transaction (if any) commits only after a reaper
+    that returned. A reaper that lost to the writer runs again once it has committed; any other failure is raised."""
     async def once() -> None:
         rid = await p.begin_transaction([], []) if in_transaction else None
         try:
             await p.reap_stale_external_app_relations("app1", transaction=rid)
-        except Exception as e:
+        except BaseException:
             if rid:
                 await p.rollback_transaction(rid)
-            assert p.is_write_conflict(e), e
             raise
         if rid:
             await p.commit_transaction(rid)
     reap = asyncio.create_task(once())
-    await asyncio.sleep(1.0)
-    await p.commit_transaction(writer_tid)
+    try:
+        await asyncio.sleep(1.0)
+        await p.commit_transaction(writer_tid)
+    except BaseException:      # the writer failed: nothing is left running, and the reaper's transaction is rolled back
+        reap.cancel()
+        with contextlib.suppress(BaseException):
+            await reap
+        with contextlib.suppress(Exception):
+            await p.rollback_transaction(writer_tid)
+        raise
     try:
         await reap
-    except Exception:
+    except Exception as e:
+        if not p.is_write_conflict(e):
+            raise
         await once()
 
 

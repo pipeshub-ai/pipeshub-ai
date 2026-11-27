@@ -429,6 +429,7 @@ _RECORDS_ORG_KEY_INDEX = "records_org_key"
 _DEDUPE_MAX_PASSES = 10_000
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
+_DEADLOCK_RE = re.compile(r'"errorNum":\s*29\b|\[29\]')
 _T = TypeVar("_T")
 
 
@@ -452,6 +453,11 @@ def _is_write_conflict(exc: Exception) -> bool:
 def _is_lock_timeout(exc: Exception) -> bool:
     """ArangoDB errorNum 18: a transaction's collection locks were not granted within its lockTimeout."""
     return bool(_LOCK_TIMEOUT_RE.search(str(exc)))
+
+
+def _is_deadlock(exc: Exception) -> bool:
+    """ArangoDB errorNum 29: the server found a deadlock between transactions and aborted this one."""
+    return bool(_DEADLOCK_RE.search(str(exc)))
 
 
 EDGE_COLLECTIONS = [
@@ -2131,9 +2137,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """A write-write conflict (errorNum 1200) with another writer, such as
-        indexing updating the same record. A stream transaction rolls back
-        whole, so the block can be re-run."""
-        return isinstance(error, Exception) and (isinstance(error, RecordSchemaNarrowError) or _is_write_conflict(error))
+        indexing updating the same record, a lock not granted in time (18) or a
+        deadlock the server broke (29). Each aborts the operation with nothing of
+        it kept, and a stream transaction rolls back whole, so the block can be re-run."""
+        return isinstance(error, Exception) and (isinstance(error, RecordSchemaNarrowError) or _is_write_conflict(error) or _is_lock_timeout(error)
+                                                 or _is_deadlock(error))
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return self.is_transient_error(error)

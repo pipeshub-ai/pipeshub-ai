@@ -9658,3 +9658,39 @@ class TestMovesAgainstTheTransactionCache:
 
         survivors = {rid: row.external_record_id for rid, row in graph.rows.items()}
         assert survivors == {"X": "log.2", "Y": "log.1"}
+
+
+def _store(*, transient: bool, tx_store: object) -> MagicMock:
+    """A data store that reports its failures as transient (a lost race) or not, as the decorator and the boundary read them."""
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    store = MagicMock(spec=DataStoreProvider)
+    store.is_transient_error = MagicMock(return_value=transient)
+    store.transaction = MagicMock(return_value=_make_ctx(tx_store))
+    return store
+
+
+class TestReapExternalAppUsersBoundary:
+    """The reaper is cleanup: a conflict with concurrent writers that outlasts the retries is logged and nothing is reaped, so it never fails the sync
+    that called it. Any other failure still raises."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_outlasts_the_retries_reaps_nothing_and_does_not_raise(self, monkeypatch) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=RuntimeError("Query failed: [1200] write-write conflict"))
+        proc.data_store_provider = _store(transient=True, tx_store=tx_store)
+        assert await proc.reap_external_app_users("conn-1") == 0
+        assert tx_store.reap_stale_external_app_relations.await_count > 1      # retried first
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_still_raises(self, monkeypatch) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=RuntimeError("db down"))
+        proc.data_store_provider = _store(transient=False, tx_store=tx_store)
+        with pytest.raises(RuntimeError, match="db down"):
+            await proc.reap_external_app_users("conn-1")

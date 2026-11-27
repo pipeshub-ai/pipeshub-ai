@@ -6048,8 +6048,22 @@ class DataSourceEntitiesProcessor:
             self._log_failure(f"Transaction on_external_app_users failed: {str(e)}", e)
             raise e
 
-    @retry_on_deadlock()
     async def reap_external_app_users(self, connector_id: str) -> int:
+        """Drop external membership for collaborators whose shares no longer exist (:meth:`_reap_external_app_users`). A conflict with
+        concurrent writers that outlasts the retries is logged and nothing is reaped: the reaper is cleanup, and the next sync decides again,
+        so it never fails the sync that called it."""
+        try:
+            return await self._reap_external_app_users(connector_id)
+        except Exception as e:
+            provider = self.data_store_provider
+            if not (is_transient_conflict(e) or is_write_conflict(e)
+                    or (isinstance(provider, DataStoreProvider) and provider.is_transient_error(e) is True)):
+                raise
+            self.logger.warning("Reaping external app users of connector %s lost to concurrent writers; the next sync reaps them", connector_id)
+            return 0
+
+    @retry_on_deadlock()
+    async def _reap_external_app_users(self, connector_id: str) -> int:
         """
         Drop external membership for collaborators whose shares no longer exist.
 
