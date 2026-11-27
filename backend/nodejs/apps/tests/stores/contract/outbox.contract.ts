@@ -154,6 +154,37 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     });
   });
 
+  describe('the org of an event is its own top-level payload.orgId, never one nested deeper', () => {
+    const appendFor = (orgId: string, key: string, payload: Record<string, unknown>) =>
+      (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+        orgId,
+        ev({ key, orderingKey: `org:${orgId}`, value: JSON.stringify({ eventType: key, payload }) }),
+      );
+    // org B's event is about org A (an org named inside its payload, written before B's own orgId)
+    const seed = async () => {
+      const [a, b] = [fx.newId(), fx.newId()];
+      await appendFor(a, 'a-own', { orgId: a });
+      await appendFor(b, 'b-about-a', { subject: { orgId: a }, orgId: b });
+      return { a, b };
+    };
+
+    it('countForOrg and deleteAllForOrg of A leave B\'s event that names A inside its payload', async () => {
+      const { a, b } = await seed();
+      expect(await repo.countForOrg(a)).to.equal(1);
+      expect(await repo.deleteAllForOrg(a)).to.equal(1);
+      expect((await fx.allRows()).map((row) => row.key)).to.deep.equal(['b-about-a']);
+      expect(await repo.countForOrg(b)).to.equal(1);
+    });
+
+    it('eraseDeliveredForOrg of A leaves B\'s delivered event that names A inside its payload', async () => {
+      const { a } = await seed();
+      for (const row of await fx.allRows()) await fx.setRow(row._id, { status: 'published' });
+      expect(await repo.eraseDeliveredForOrg(a, 10)).to.equal(1);
+      expect(await repo.eraseDeliveredForOrg(a, 10)).to.equal(0);
+      expect((await fx.allRows()).map((row) => row.key)).to.deep.equal(['b-about-a']);
+    });
+  });
+
   describe('claimNext', () => {
     it('takes the oldest due event first and marks it publishing', async () => {
       const [a, b] = await appendAll([ev({ key: 'a', orderingKey: 'o1' }), ev({ key: 'b', orderingKey: 'o2' })]);

@@ -20,6 +20,7 @@ import {
   idText,
   writePlan,
 } from '../import';
+import { eventOrgOf } from './event-org';
 
 const EPOCH_2020 = 1577836800;
 
@@ -28,8 +29,6 @@ export function outboxIdOf(hex: string): string {
   const counter = parseInt(hex.slice(18, 24), 16) & 0x1fffff;
   return String(seconds * 2 ** 21 + counter);
 }
-
-const HEX24 = /^[0-9a-f]{24}$/;
 
 /** Two events that fold to one table id: the copy stops, because `ON CONFLICT DO NOTHING` would drop one of them unseen. */
 export class OutboxIdCollision extends Error {}
@@ -63,23 +62,7 @@ const sameEvent = (a: Row, b: Row): boolean => rowIsEvent(a, b) === true;
 
 const keyOf = (r: Row): string => `${String(r.org_id)}/${String(r.id)}`;
 
-function orgOf(d: NeutralDoc): string | null {
-  try {
-    const org = (
-      JSON.parse(String(d.value)) as { payload?: { orgId?: unknown } }
-    ).payload?.orgId;
-    const id = idText(org);
-    if (id) return id;
-  } catch {
-    // not JSON: fall through to the ordering key
-  }
-  const m = /^(?:user:|org:)([0-9a-fA-F]{24})/.exec(
-    typeof d.orderingKey === 'string' ? d.orderingKey : '',
-  );
-  return m && HEX24.test((m[1] as string).toLowerCase())
-    ? (m[1] as string).toLowerCase()
-    : null;
-}
+const orgOf = (d: NeutralDoc): string | null => eventOrgOf(d.value, d.orderingKey);
 
 export async function importOutboxDocs(
   k: KernelTx,

@@ -3,6 +3,7 @@ import { escapeRegExp } from '../../../utils/escape-regexp';
 import { sessionOf } from '../mongo';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
+import { eventOrgOf } from './event-org';
 import { OutboxEvent, type IOutboxEvent } from './schema/outbox.schema';
 import type {
   ClaimOptions,
@@ -13,18 +14,33 @@ import type {
 } from './types';
 
 /**
- * The org's events, named as the PostgreSQL copy names them (`orgOf` in pg-import.ts): the payload's `orgId`, else an
- * ordering key about the org or one of its people (`orderingKeyFor`).
+ * The ids of the org's events, as the PostgreSQL copy assigns them (`eventOrgOf`): the value is JSON text, so a text match
+ * only narrows the candidates and each is then checked on its own top-level org, never on an `orgId` nested in its payload.
  */
-const orgEvents = (orgId: string): QueryFilter<IOutboxEvent> => {
+async function* orgEventIds(
+  orgId: string,
+  where: QueryFilter<IOutboxEvent> = {},
+): AsyncGenerator<Types.ObjectId> {
   const id = escapeRegExp(orgId);
-  return {
-    $or: [
-      { value: { $regex: `"orgId":"${id}"` } },
-      { orderingKey: { $regex: `^(org|user):${id}(:|$)` } },
-    ],
-  };
-};
+  const org = orgId.toLowerCase();
+  const rows = OutboxEvent.find(
+    {
+      ...where,
+      $or: [
+        { value: { $regex: `"orgId":"${id}"` } },
+        { orderingKey: { $regex: `^(org|user):${id}(:|$)` } },
+      ],
+    },
+    { _id: 1, value: 1, orderingKey: 1 },
+  )
+    .lean<Array<{ _id: Types.ObjectId; value: string; orderingKey: string }>>()
+    .cursor();
+  for await (const row of rows) {
+    if (eventOrgOf(row.value, row.orderingKey) === org) yield row._id;
+  }
+}
+
+const DELETE_BATCH = 500;
 
 export class MongoOutboxRepository implements OutboxRepository {
   async append(event: NewOutboxEvent, tx?: Tx): Promise<void> {
@@ -114,30 +130,42 @@ export class MongoOutboxRepository implements OutboxRepository {
     ).exec();
   }
 
-  /** A row here names its org only in its value (every writer's payload carries `orgId`). */
   async eraseDeliveredForOrg(orgId: string, limit: number): Promise<number> {
     if (limit <= 0) return 0;
-    const filter = {
+    const delivered = {
       status: { $in: ['published', 'failed'] as OutboxStatus[] },
-      value: { $regex: `"orgId":"${escapeRegExp(orgId)}"` },
     };
-    const batch = await OutboxEvent.find(filter, { _id: 1 })
-      .limit(limit)
-      .lean<Array<{ _id: Types.ObjectId }>>();
+    const batch: Types.ObjectId[] = [];
+    for await (const id of orgEventIds(orgId, delivered)) {
+      batch.push(id);
+      if (batch.length >= limit) break;
+    }
     if (batch.length === 0) return 0;
     const deleted = await OutboxEvent.deleteMany({
-      ...filter,
-      _id: { $in: batch.map((row) => row._id) },
+      ...delivered,
+      _id: { $in: batch },
     });
     return deleted.deletedCount;
   }
 
   async deleteAllForOrg(orgId: string): Promise<number> {
-    return (await OutboxEvent.deleteMany(orgEvents(orgId))).deletedCount;
+    const ids: Types.ObjectId[] = [];
+    for await (const id of orgEventIds(orgId)) ids.push(id);
+    let deleted = 0;
+    for (let i = 0; i < ids.length; i += DELETE_BATCH) {
+      deleted += (
+        await OutboxEvent.deleteMany({
+          _id: { $in: ids.slice(i, i + DELETE_BATCH) },
+        })
+      ).deletedCount;
+    }
+    return deleted;
   }
 
-  countForOrg(orgId: string): Promise<number> {
-    return OutboxEvent.countDocuments(orgEvents(orgId)).exec();
+  async countForOrg(orgId: string): Promise<number> {
+    let n = 0;
+    for await (const _id of orgEventIds(orgId)) n += 1;
+    return n;
   }
 
   async statusCounts(): Promise<Record<OutboxStatus, number>> {
