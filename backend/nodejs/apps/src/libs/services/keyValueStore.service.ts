@@ -286,7 +286,16 @@ export class KeyValueStoreService implements IKVStoreConnection {
     if (!success && typeof expectedValue === 'string') {
       // The caller expects what `get` returned; the store may keep it in the older quoted form. One retry against the kept form
       // when it reads as the expected value: the store's compare is still the atomic check.
-      const kept = (await this.store.getKey(key)) as T | null;
+      let kept: T | null;
+      try {
+        kept = (await this.store.getKey(key)) as T | null;
+      } catch (error) {
+        // the store's own compare already answered false: a failure of the read after it keeps that answer
+        this.logger.warn('compare-and-set read failed', {
+          error: (error as Error).message,
+        });
+        return false;
+      }
       if (kept !== expectedValue && readable(kept) === expectedValue) {
         // the entry keeps the form it had: a ciphertext replacing a quoted one is written quoted, as its earlier readers expect
         const next =

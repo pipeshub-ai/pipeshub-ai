@@ -84,4 +84,10 @@ describe('KeyValueStoreService stored forms', () => {
     expect(kept.get('/lease')).to.equal(JSON.stringify(next)); // still the form its earlier readers read
     expect(await s.get('/lease')).to.equal(next);
   });
+  it('answers false when the read after a failed compare fails', async () => {
+    const s = service();
+    store.compareAndSet = sinon.stub().resolves(false);
+    store.getKey = sinon.stub().rejects(new Error('connection reset'));
+    expect(await s.compareAndSet('/q', C, 'new')).to.equal(false);
+  });
 });
