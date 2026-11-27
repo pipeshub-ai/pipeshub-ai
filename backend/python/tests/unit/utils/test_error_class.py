@@ -721,3 +721,41 @@ class TestRetryLater:
         group = ExceptionGroup("g", [member])
         member.__cause__ = group
         assert EC.retry_later(group) is False
+
+
+class TestAttemptEach:
+    @staticmethod
+    def _failing(errors: dict[str, Exception], tried: list[str]):  # noqa: ANN205
+        async def run(item: str) -> None:
+            tried.append(item)
+            if item in errors:
+                raise errors[item]
+        return run
+
+    async def test_every_item_is_tried_and_nothing_raises_when_all_succeed(self) -> None:
+        tried: list[str] = []
+        await EC.attempt_each(["a", "b"], self._failing({}, tried), "keys")
+        assert tried == ["a", "b"]
+
+    async def test_an_outage_on_the_first_item_does_not_stop_the_rest(self) -> None:
+        tried: list[str] = []
+        down = ConnectionError("down")
+        with pytest.raises(ConnectionError) as caught:
+            await EC.attempt_each(["a", "b", "c"], self._failing({"a": down}, tried), "keys")
+        assert tried == ["a", "b", "c"]
+        assert caught.value is down
+        assert caught.value.__notes__ == ["1 of 3 keys failed"]
+
+    async def test_the_first_of_several_outages_is_raised(self) -> None:
+        first, second = ConnectionError("first"), TimeoutError("second")
+        with pytest.raises(ConnectionError) as caught:
+            await EC.attempt_each(["a", "b"], self._failing({"a": first, "b": second}, []), "keys")
+        assert caught.value is first
+        assert caught.value.__notes__ == ["2 of 2 keys failed"]
+
+    async def test_a_bug_is_raised_over_an_outage_whichever_came_first(self) -> None:
+        bug = ValueError("bug")
+        for errors in ({"a": bug, "b": ConnectionError("down")}, {"a": ConnectionError("down"), "b": bug}):
+            with pytest.raises(ValueError) as caught:
+                await EC.attempt_each(["a", "b"], self._failing(errors, []), "keys")
+            assert caught.value is bug

@@ -76,7 +76,7 @@ class _Graph:
             if xid in external_ids and name in connector_names
         ]
 
-    async def get_user_by_user_id(self, user_id: str) -> dict:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict:
         return {"_key": f"key-{user_id}"}
 
     async def get_edge(self, **_: str) -> None:

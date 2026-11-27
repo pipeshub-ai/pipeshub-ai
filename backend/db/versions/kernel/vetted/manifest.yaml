@@ -35,3 +35,17 @@ functions:
       other_result: [[[]]]
       no_org_result: [[[]]]
       bad_args: [["not-an-org"], ["{org},{org}"], [null]]
+
+  # Called by the write fences only (assert_profile_epoch, assert_store_epoch), with the unit's org: true refuses the unit's writes
+  # (25006, as a closed fence). An extra migration location may replace the body (extends: true); the signature is frozen, and
+  # nobody else can execute it. This build holds no org's writes.
+  - name: kernel.org_writes_held
+    class: read
+    scope: helper
+    args:
+      - {name: p_org, type: text, length: [1, 64]}
+    returns: boolean
+    body: |
+      RETURN false;
+    test:
+      checks: [privileges, catalog]
