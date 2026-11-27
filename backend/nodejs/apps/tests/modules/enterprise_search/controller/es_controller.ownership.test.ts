@@ -171,12 +171,27 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
 
   // SS0: `write` is the collaborator role. Until SS2 it adds nothing a manager could use: the
   // owner alone shares, deletes, archives and sends turns (the turn guard answers with a code).
-  for (const c of chatCases.filter((x) => x.name !== 'getConversationById' && x.name !== 'updateFeedback')) {
+  // Asked through the routers, as every case here: the conversation guard decides, then the handler. Pin, unpin and a
+  // message fork are not in the shared route table, so they are named by path.
+  const ownersOnly: Array<{ name: string; method: string; url: (s: Setup) => string; body?: Record<string, unknown> }> = [
+    ...denialCases
+      .filter((x) => x.name !== 'getConversationById' && x.name !== 'updateFeedback')
+      .map((c) => ({
+        name: c.name,
+        method: route(c.id).method,
+        url: (s: Setup) => urlOf(route(c.id), { conversationId: s.chatId, messageId: s.botMessageId }),
+        body: c.body ?? route(c.id).body,
+      })),
+    { name: 'pinConversation', method: 'patch', url: (s) => `/${s.chatId}/pin` },
+    { name: 'unpinConversation', method: 'patch', url: (s) => `/${s.chatId}/unpin` },
+    { name: 'forkConversation', method: 'post', url: (s) => `/${s.chatId}/message/${s.botMessageId}/fork` },
+  ]
+  for (const c of ownersOnly) {
     it(`RO-6 ${c.name}: a collaborator (write share) gets 404 and nothing is written`, async () => {
       const s = setup()
       s.store.session(s.chatId)?.set({ sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] })
 
-      const out = await callJson(c.handler(), request(recipient, c.params(s), c.body))
+      const out = await invokeRoute(env.chat, { method: c.method as ConversationRoute['method'], url: c.url(s), body: c.body, user: asUser(recipient) })
 
       expect(out.error?.statusCode).to.equal(404)
       expect(s.store.writes).to.deep.equal([])
@@ -187,8 +202,11 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     const s = setup()
     // Real requests carry the user id as a string.
     const role = async (user: User): Promise<unknown> => {
-      const asString = { ...user, userId: String(user.userId) } as unknown as User
-      const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(asString, { conversationId: s.chatId }))
+      const out = await invokeRoute(env.chat, {
+        method: 'get',
+        url: urlOf(route('C5'), { conversationId: s.chatId }),
+        user: { ...asUser(user), userId: String(user.userId) },
+      })
       return (out.body as { conversation: { access: unknown } }).conversation.access
     }
     expect(await role(owner)).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
@@ -381,7 +399,8 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
 
   const streamCases = [
     { name: 'addMessageStream', id: 'C3', body: { query: 'And Q4?', chatMode: 'internal_search' } },
-    { name: 'regenerateAnswers', id: 'C11', body: { chatMode: 'quick' } },
+    // An assistant mode: the assistant's routes take only its own.
+    { name: 'regenerateAnswers', id: 'C11', body: { chatMode: 'internal_search' } },
   ]
 
   for (const c of streamCases) {
