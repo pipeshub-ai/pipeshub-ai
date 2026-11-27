@@ -76,3 +76,22 @@ async def test_a_custom_skill_on_a_pack_name_is_not_overwritten(tmp_path) -> Non
     doc = graph._col("agentSkills")["org-1_pack-a"]
     assert doc["createdBy"] == "user-a"
     assert "Custom body that must survive." in doc["content"]
+
+
+_PACK_WITH_RELATION = _PACK_A_V1.replace("    pack_version: 1.0.0\n", "    pack_version: 1.0.0\n    related: [pack-z]\n")
+
+
+async def test_a_builtin_left_without_its_edges_gets_them_at_the_next_sync(tmp_path) -> None:
+    from tests.unit.agents.adapter.test_skills_no_overwrite import _UndoFails
+
+    root = str(tmp_path / "packs")
+    _write_pack(root, "pack-a", _PACK_WITH_RELATION)
+    seeder = BuiltinSkillSeeder(root)
+    graph = _UndoFails(raises=True)  # the relation edges fail once, and so does the undo
+
+    assert await seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)) is False
+    assert "org-1_pack-a" in graph._col("agentSkills")
+    assert not graph._edges.get("agentSkillRelation")
+
+    assert await seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)) is True
+    assert [(e["to_id"], e["type"]) for e in graph._edges["agentSkillRelation"]] == [("org-1_pack-z", "related")]

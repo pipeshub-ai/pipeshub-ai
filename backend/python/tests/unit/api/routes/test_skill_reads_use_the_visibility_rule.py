@@ -63,7 +63,7 @@ STORE_LIST_READS = {"list_skills", "sharings", "labels"}
 STORE_PINNED_READS = {"content_files", "content_versions", "in_force"}
 STORE_WRITES = {
     # Decided by `_get_writable_doc`, the create's unscoped check or the bound delete.
-    "create_skill", "update_skill", "patch_skill", "deletion_binding", "delete_skill",
+    "create_skill", "finish_relations", "update_skill", "patch_skill", "deletion_binding", "delete_skill",
     "detach_from_agents", "write_resource", "remove_resource", "deprecate_skill",
     "set_skill_status", "rollback", "share", "rename",
 }

@@ -972,11 +972,17 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 undone = await self._graph.delete_node_if_match(self._key(name), _SKILLS, expected=self._bound_to(doc))
             if not undone:
                 logger.error(
-                    "Skill %r was stored without its edges and could not be removed; an admin delete frees the name",
+                    "Skill %r was stored without its edges and could not be removed; an admin delete frees the name"
+                    " (a builtin gets its edges at the next builtin seeding instead)",
                     name,
                 )
             raise
         return skill.metadata
+
+    async def finish_relations(self, metadata: SkillMetadata) -> None:
+        """Rewrites the relation edges of the stored skill `metadata` describes. The builtin seeder calls it for a
+        builtin it already holds: a create whose edge write failed and whose undo failed too left it without them."""
+        await self._sync_relation_edges(metadata.name, metadata, get_epoch_timestamp_in_ms())
 
     async def update_skill(
         self,
@@ -1038,9 +1044,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # rather than a follow-up `set_skill_status`.
         if status is not None:
             doc["status"] = status.value
-        await self._commit_skill_update(name, doc, expected_updated_at, read=existing_doc)
-        # Archived only once the commit landed: a write that lost it never superseded the state it read.
+        # Archived before the commit, so a commit that lands never loses the state it superseded; the row of a
+        # commit that does not land is the live version's, which no reader serves (`_version_docs`).
         await self._snapshot_revision(bound, now)
+        await self._commit_skill_update(name, doc, expected_updated_at, read=existing_doc)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
 
@@ -1092,10 +1099,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # value outlives the skill itself (same reasoning as an org's
         # audit log surviving deletion of the thing it describes). The last
         # content joins it, so runs pinned to it still resolve (P7.1).
+        await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())  # before the delete, as in `update_skill`
         # The node goes with every edge touching it, agent assignments included.
         if not await self._graph.delete_node_if_match(self._key(name), _SKILLS, self._bound_to(doc)):
             raise await self._missed(name, doc)
-        await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())  # after the delete landed, as in `update_skill`
         return True
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
@@ -1276,8 +1283,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc.update(_label_columns(current_doc, f"Restored version {version}"))
         if sessions:
             doc["sourceSessionIds"] = sessions
+        await self._snapshot_revision(bound, now)  # before the commit, as in `update_skill`
         await self._commit_skill_update(name, doc, None, read=current_doc)
-        await self._snapshot_revision(bound, now)  # after the commit, as in `update_skill`
         await self._sync_relation_edges(name, restored.metadata, now)
         return restored.metadata
 
@@ -1393,7 +1400,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         filters = {"orgId": self._org_id, "name": name, **({"version": version} if version is not None else {})}
         docs = await self._graph.get_nodes_by_filters(_VERSIONS, filters)
         if current is not None:
-            docs = [d for d in docs if self._belongs_to(d, current)]
+            # A row of the live version is not history: only a write whose commit did not land archives it.
+            live = current.get("version") or "1.0.0"
+            docs = [d for d in docs if self._belongs_to(d, current) and (d.get("version") or "1.0.0") != live]
         # Of several rows for one version, the latest state first: that is the one its successor superseded.
         return sorted(
             docs,
@@ -1406,9 +1415,11 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return docs[0] if docs else None
 
     async def _snapshot_revision(self, current_doc: dict, now: int) -> None:
-        """Archives `current_doc` into `agentSkillVersions` once the caller's
-        `update_skill`/`rollback`/`delete_skill` replaced it; never before, so a
-        write that loses its conditional commit archives nothing.
+        """Archives `current_doc` into `agentSkillVersions` just before the caller's
+        `update_skill`/`rollback`/`delete_skill` replaces it, so a replacement that lands
+        always has its prior state archived. A write that then loses its conditional
+        commit leaves a row of the version still live, which `_version_docs` does not
+        serve; once that version is superseded, its later state's row sorts ahead of it.
 
         The doc `id` is keyed on `(skill_key, generation, version, archived state)`, NOT
         `(skill_key, now)`; the generation keeps a re-created name's history apart
@@ -1489,6 +1500,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             }
             if required.get("generation") is not None:
                 edge["toGeneration"] = required["generation"]
+            else:
+                # Bound by time (`_requires_bound_to`): never older than the target, whatever the writer's clock says.
+                edge["createdAtTimestamp"] = max(now, int(required.get("createdAtTimestamp") or 0))
             edges.append(edge)
         if metadata.replaced_by:
             edges.append({

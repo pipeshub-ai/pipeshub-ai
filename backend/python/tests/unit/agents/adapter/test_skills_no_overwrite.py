@@ -899,9 +899,76 @@ class TestAWriteThatLosesItsCommitArchivesNothingOverTheWinner:
         with pytest.raises(SkillConflictError):
             await loser.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the loser"))
 
-        assert not graph._col("agentSkillVersions")  # nothing superseded the state the loser read
+        # The loser archived the state it read before its commit failed; that version is still live, so it is not served.
+        assert await loser.list_versions(_NAME) == []
+        assert await loser.content_versions(_NAME) == ["1.0.0"]
         assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
         await winner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the winner"))
         assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
         await winner.rollback(_NAME, "1.0.0")
         assert (await loser.content_files(_NAME))["notes.md"] == "Y"
+
+
+class _ArchiveFails(FakeGraphProvider):
+    """The next archive write to the version history raises."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.archive_failures = 0
+
+    async def batch_upsert_nodes(self, nodes: list[dict[str, Any]], collection: str, *args: object, **kwargs: object) -> bool:
+        if collection == "agentSkillVersions" and self.archive_failures:
+            self.archive_failures -= 1
+            raise RuntimeError("archive write failed")
+        return await super().batch_upsert_nodes(nodes, collection, *args, **kwargs)
+
+
+class TestAFailedArchiveCommitsNothing:
+    """The state a write supersedes is archived before the write: a failed archive leaves the skill as it was, and the
+    retry keeps the history."""
+
+    async def test_an_edit(self) -> None:
+        graph = _ArchiveFails()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await owner.create_skill(_NAME, _OTHER_MD)
+        graph.archive_failures = 1
+        with pytest.raises(RuntimeError, match="archive write failed"):
+            await owner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the edit"))
+        assert graph._col("agentSkills")[_KEY]["version"] == "1.0.0"
+        await owner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the edit"))
+        assert "entirely" in (await owner.content_files(_NAME, "1.0.0"))["SKILL.md"]
+
+    async def test_a_rollback(self) -> None:
+        graph = _ArchiveFails()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await owner.create_skill(_NAME, _OTHER_MD)
+        await owner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the edit"))
+        graph.archive_failures = 1
+        with pytest.raises(RuntimeError, match="archive write failed"):
+            await owner.rollback(_NAME, "1.0.0")
+        assert graph._col("agentSkills")[_KEY]["version"] == "1.0.1"
+        await owner.rollback(_NAME, "1.0.0")
+        assert "by the edit" in (await owner.content_files(_NAME, "1.0.1"))["SKILL.md"]
+
+    async def test_a_delete(self) -> None:
+        graph = _ArchiveFails()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await owner.create_skill(_NAME, _OTHER_MD)
+        graph.archive_failures = 1
+        with pytest.raises(RuntimeError, match="archive write failed"):
+            await owner.delete_skill(_NAME)
+        assert _KEY in graph._col("agentSkills")
+        assert await owner.delete_skill(_NAME)
+        assert "entirely" in (await owner.content_files(_NAME, "1.0.0"))["SKILL.md"]
+
+
+class TestARequiresEdgeToALegacySkillOutlivesAClockBehindIt:
+    async def test_the_writer_whose_clock_is_behind_the_target_still_counts_as_requiring_it(self) -> None:
+        graph = FakeGraphProvider()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await owner.create_skill("base-skill", _BASE_MD)
+        base = graph._col("agentSkills")["org-1_base-skill"]
+        base.pop("generation")  # stored before generations existed
+        base["createdAtTimestamp"] += 3_600_000  # its creator's clock ran an hour ahead of this writer's
+        await owner.create_skill(_NAME, _OWNER_MD)
+        assert (await owner.get_referential_usage("base-skill")).required_by_skills == [_NAME]
