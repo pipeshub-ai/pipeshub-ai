@@ -230,6 +230,17 @@ the auth middleware bound.
   raised `HTTPException` with nothing in its chain is classified by its status (500 `internal`, 503 `unavailable`, 504 `timeout`),
   one raised `from` a failure by that failure. A request whose exception was already logged (lower down, or behind another
   request that failed with the same object) still gets its own line, WARNING at most, without the stack.
+- **A raised 500 whose cause is an outage is answered 503.** When a route's catch-all raises `HTTPException(500, …)` from (or
+  while handling) a failure `error_class.retry_later` accepts (a store or service that could not answer: `unavailable` or
+  `timeout`), the hand-over answers 503 with `Retry-After: 5` (a header the route set wins) and the route's own `detail`. The
+  line keeps the route's exception and its hints: `status=503`, the cause's class, WARNING, and no `error_message` (the route's exception
+  is stamped `hide_text`). A bug stays a 500: the walk stops at our own error types, and a group counts only when every member
+  is an outage. `CommitOutcomeUnknown` stays a 500 too, anywhere in the chain or a group, since the write may have landed (logged
+  `unavailable`). So does a 500 the route raised with `retry_safe = False`, for a write it knows partly landed (a connector
+  create that left its connector behind); its line keeps the cause's class. A group of outages logs
+  `unavailable`. Any other status, a 500 with no cause
+  and a 500 raised `from None` are answered as raised. A handler registered before `install_request_logging` gets the 503,
+  with the route's 500 as its `__cause__`. Only a raised `HTTPException` is mapped: an exception nobody handled is still our 500.
 - The client-facing `detail` is not a field. It appears only inside a 5xx line's `error_message` (the exception's text), redacted.
 - The 503 that `app/utils/user_lookup.py` answers for a failed user, org, document or record read stamps its cause
   `hide_text`, so that line has no `error_message`: a driver's text can quote what was sent.

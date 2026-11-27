@@ -32,7 +32,8 @@ from app.connectors.core.registry.connector_registry import (
 
 # Registers Drive's OAuth fields (clientId, secret clientSecret) under its type name.
 from app.connectors.sources.google.drive.individual import connector as _drive  # noqa: F401
-from app.utils.error_class import classify_error
+from app.utils.error_class import classify_error, retry_later
+from tests.unit.api.test_catchall_outage_503 import _answer
 
 LOGGER = "app.test.create_rollback"
 LOG = logging.getLogger(LOGGER)
@@ -590,6 +591,61 @@ async def test_an_instance_the_graph_does_not_delete_stays_after_its_config_went
     assert (line.step, line.error_class, line.levelno) == ("instance", "unavailable", logging.WARNING)
     assert "graph down" not in caplog.text and "not found" not in caplog.text
 
+
+# ---- through the request layer: a create that left its connector stays a 500 in an outage (a retry would answer
+# "name already used"); one taken back is a 503, and its retry works
+
+async def _client_gets(answer: object) -> tuple[int, dict[str, str], object]:
+    async def raise_it() -> object:
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    return await _answer(raise_it())
+
+
+async def test_a_create_whose_rollback_stops_in_an_outage_stays_500_and_logs_the_outage(
+    kv: KV, config: ConfigurationService, graph: Graph, caplog: pytest.LogCaptureFixture,
+) -> None:
+    kv.fail_write = _first_connector_config_write()
+    graph.delete_answer = ConnectionError("graph down")
+    answer = _refused(await _create(config, graph), 500, FINISH_IT)
+    assert retry_later(answer.__cause__)  # an outage caused it
+
+    with caplog.at_level(logging.DEBUG, logger="app.api.middlewares.request_log"):
+        status, headers, body = await _client_gets(answer)
+
+    assert (status, body) == (500, {"detail": FINISH_IT})
+    assert "retry-after" not in headers
+    assert [c["name"] for c in graph.connectors()] == [NAME]
+    (line,) = [r for r in caplog.records if getattr(r, "event_name", None) == "http.request.end"]
+    assert (line.status, line.error_class, line.levelno) == (500, "unavailable", logging.WARNING)
+
+
+async def test_an_instance_the_graph_cannot_delete_in_an_outage_stays_500(config: ConfigurationService, graph: Graph) -> None:
+    graph.edge_writes_fail = True
+    graph.delete_answer = ConnectionError("graph down")
+    answer = _refused(await _create(config, graph, _body(LINK_ONLY)), 500, FINISH_IT)
+    assert retry_later(answer.__cause__)
+
+    status, headers, body = await _client_gets(answer)
+
+    assert (status, body) == (500, {"detail": FINISH_IT})
+    assert "retry-after" not in headers
+    assert [c["name"] for c in graph.connectors()] == [NAME]
+
+
+async def test_a_create_taken_back_in_an_outage_is_503_and_its_retry_works(
+    kv: KV, config: ConfigurationService, graph: Graph,
+) -> None:
+    kv.fail_write = _first_connector_config_write()
+    answer = _refused(await _create(config, graph, _body(LINK_ONLY)), 500, ROLLED_BACK)
+
+    status, headers, body = await _client_gets(answer)
+
+    assert (status, headers.get("retry-after"), body) == (503, "5", {"detail": ROLLED_BACK})
+    assert graph.connectors() == []
+    await _retry_succeeds(config, graph, _body(LINK_ONLY))
 
 
 # ---- controls

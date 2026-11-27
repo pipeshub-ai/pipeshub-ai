@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import ClientDisconnect
 
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.core.db.errors import CommitOutcomeUnknown
 from app.core.org_context import spawn_in_request
 from app.utils import error_class
 from app.utils.logger import create_logger
@@ -322,13 +323,27 @@ _ALREADY_LOGGED = _AlreadyLogged()  # one instance: addFilter is then idempotent
 
 def install_request_logging(app: FastAPI) -> None:
     """RequestLogMiddleware inside RequestContextMiddleware, the HTTPException hand-over and the uvicorn filter.
-    Call it where the service used to add RequestContextMiddleware."""
+    Call it where the service used to add RequestContextMiddleware. The hand-over answers a raised 500 whose cause is
+    retry-later (``error_class.retry_later``: a store or service that could not answer) as 503 + ``Retry-After``, with
+    the route's own detail; a bug stays a 500, and so does a commit whose outcome is unknown (it may have landed) and a
+    500 the route raised with ``retry_safe = False`` (a write it knows partly landed)."""
     app.add_middleware(RequestLogMiddleware)
     app.add_middleware(RequestContextMiddleware)
     previous = app.exception_handlers.get(StarletteHTTPException, http_exception_handler)
 
     async def hand_over(request: Request, exc: StarletteHTTPException) -> Response:
         request.scope[_FAILURE_KEY] = _failure_for(request.scope, exc)  # keeps the hints of a route's own mark
+        if (exc.status_code == 500 and getattr(exc, "retry_safe", True) and error_class.retry_later(exc)
+                and not error_class.chain_or_members_have(exc, CommitOutcomeUnknown)):
+            # The class answered: a group of outages reads internal to classify_error. A driver's text can quote what was sent.
+            cls = "timeout" if error_class.classify_error(exc) == "timeout" else "unavailable"
+            error_class.mark_error(exc, cls, hide_text=True)
+            own = dict(exc.headers or {})
+            if not any(name.lower() == "retry-after" for name in own):  # a route's own delay wins, whatever its case
+                own["Retry-After"] = "5"
+            answered = StarletteHTTPException(503, exc.detail, headers=own)
+            answered.__cause__ = exc  # a handler installed before this one (an edition's) still reads the chain
+            exc = answered
         response = previous(request, exc)
         return await response if inspect.isawaitable(response) else response
 

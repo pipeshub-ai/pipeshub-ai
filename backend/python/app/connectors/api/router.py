@@ -4910,6 +4910,16 @@ async def _full_save_oauth_app(
 _CREATED_BUT_NOT_SAVED = (
     "The connector was created, but its settings were not saved. Open it to finish setting it up, or delete it."
 )
+
+
+def _created_but_not_saved() -> HTTPException:
+    """The 500 of a create that left its connector behind. Not ``retry_safe``, so the request log's hand-over keeps it a 500
+    when an outage caused it: a 503 says to send the create again, which would answer "name already used"."""
+    error = HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=_CREATED_BUT_NOT_SAVED)
+    error.retry_safe = False  # type: ignore[attr-defined]
+    return error
+
+
 _APP_KEPT = "Its OAuth app was saved: pick that app when you try again."
 _APP_MAYBE_SAVED = "Its OAuth app may have been saved: check the app list before you try again."
 
@@ -4940,14 +4950,10 @@ class _SavedApp:
         return HTTPException(status_code=error.status_code, detail=f"{error.detail} {note}", headers=error.headers)
 
 
-def _create_failure_detail(
-    *, rolled_back: bool, settings_not_saved: bool, app_kept: bool, app_maybe_saved: bool,
-) -> str | None:
-    """What a create that failed after its instance write answers, or None to answer the failure's own error. Whatever
-    failed, a connector left behind is named (else the retry's "name already used" is the first sign), and so is an app
-    the create saved or may have saved (else the retry's "app name already exists" is)."""
-    if not rolled_back:
-        return _CREATED_BUT_NOT_SAVED
+def _create_failure_detail(*, settings_not_saved: bool, app_kept: bool, app_maybe_saved: bool) -> str | None:
+    """What a create that failed after its instance write, and took it back, answers, or None to answer the failure's own
+    error. An app the create saved or may have saved is named (else the retry's "app name already exists" is the first
+    sign of it). A create whose rollback stopped answers ``_created_but_not_saved`` instead."""
     if settings_not_saved:
         return "The connector's settings could not be saved, so it was not created. " + (_APP_KEPT if app_kept else "Try again.")
     if app_kept:
@@ -5323,9 +5329,7 @@ async def create_connector_instance(
             ) from e
         except ConnectorInstanceNotDeletedError as e:
             # The instance write failed part way and its node could not be removed (logged by the registry).
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=_CREATED_BUT_NOT_SAVED
-            ) from e
+            raise _created_but_not_saved() from e
 
         if not instance:
             raise HTTPException(
@@ -5404,9 +5408,9 @@ async def create_connector_instance(
                 logger.info(f"Stored initial config for instance {connector_id}")
                 await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
         except Exception as failure:
-            rolled_back = await undo.run(connector_registry, config_service, logger)
+            if not await undo.run(connector_registry, config_service, logger):
+                raise _created_but_not_saved() from failure
             detail = _create_failure_detail(
-                rolled_back=rolled_back,
                 settings_not_saved=bool(undo.config_path) and isinstance(failure, OAuthStoreUnavailableError),
                 app_kept=bool(undo.created_app_id),
                 app_maybe_saved=any(app_id != named_app_id for app_id in undo.attempted_app_ids),

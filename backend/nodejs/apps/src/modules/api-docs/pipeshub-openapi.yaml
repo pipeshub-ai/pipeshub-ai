@@ -26,6 +26,8 @@ info:
 
     **Uploads.** A `multipart/form-data` upload past one of its route's limits (a file too large, too many files, form fields or parts, or the whole request over its byte cap) is answered `413 HTTP_PAYLOAD_TOO_LARGE`, and one that cannot be read (cut short, without a boundary, or a file under a part name the route does not expect) `400 HTTP_BAD_REQUEST`. Both are refused while the body is read, before the route's handler runs. The agent-harness workspace upload (`POST .../workspace/files` on a conversation or agent conversation) keeps its own mapping: a file too large or too many files is `413` with code `WORKSPACE_TOO_LARGE`, and every other refused limit (form fields or parts) is `400 HTTP_BAD_REQUEST`.
 
+    **Store outages.** Any operation served by the Python services (connectors, search, chat, agents, records, teams) may answer `503` with a `Retry-After` header when a store or service it depends on could not answer, even where the operation lists no `503`. The body carries a "briefly unavailable, please try again" message, not the operation's own words (a service's `5xx` wording is shown only from the gateway's allowlist). A failure of ours is not answered `503`, and neither is a write the service knows partly took effect, such as a connector created without its settings: the service answers `500`, which the gateway relays as `502` with its generic sentence (see Relayed failures). Before sending such a write again, check whether it took effect. A `503` after a write can also follow a partial one: a connector create that saved its OAuth app before the outage rolls the connector back but keeps the app, so check the OAuth app list before you create again.
+
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
 
     **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
@@ -30158,9 +30160,9 @@ components:
   responses:
     StoreUnavailable:
       description: >-
-        The database could not answer just now (the graph store, or the config store on a read, lost its connection,
-        timed out or is restarting); nothing is wrong with the request, and nothing was changed. Retry after
-        `Retry-After` seconds.
+        A store or service PipesHub depends on could not answer just now (the graph store, the config store or the
+        event bus lost its connection, timed out or is restarting); nothing is wrong with the request. Retry after
+        `Retry-After` seconds. For a write, check whether it took effect before you send a create again.
         It is never sent for a connector, setting or app that really is missing, which keeps its own answer.
       headers:
         Retry-After:
@@ -59463,6 +59465,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /agents/create:
     post:
       tags:
@@ -59916,6 +59920,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Agents
@@ -59955,6 +59961,8 @@ paths:
         '403': { description: The caller cannot edit the agent, or the token lacks agent:write }
         '404': { description: No such agent, or the caller cannot read it }
         '409': { description: Another version was published at the same moment; try again }
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /agents/{agentKey}/versions/{version}:
     get:
       tags:
@@ -59984,6 +59992,8 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:read }
         '404': { description: No such agent or version, or the caller cannot read the agent }
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /agents/{agentKey}/versions/{version}/rollback:
     post:
       tags:
@@ -60028,6 +60038,8 @@ paths:
         '404': { description: No such agent or version, or the caller cannot read the agent }
         '409': { description: Another version was published at the same moment; try again }
         '500': { description: The draft could not be written; the live version is unchanged. Try again }
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /agents/{agentKey}/export:
     get:
       tags:
@@ -60064,6 +60076,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '422': { description: The agent's stored settings cannot be expressed in the document }
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /agents/import:
     post:
       tags:
@@ -62965,6 +62979,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/registry/{connectorType}/schema:
     get:
       tags:
@@ -63049,6 +63065,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/registry/{connectorType}/test-connection:
     post:
       tags:
@@ -63407,6 +63425,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Connector Instances
@@ -63623,6 +63643,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/inactive:
     get:
       tags:
@@ -63674,6 +63696,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/configured:
     get:
       tags:
@@ -63809,6 +63833,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/agents/active:
     get:
       tags:
@@ -63925,6 +63951,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}:
     get:
       tags:
@@ -84769,6 +84797,8 @@ paths:
         '500':
           description: Internal server error
 
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   # ── Durable built-in chat session lifecycle ──────────────────────
   /conversations/runs:
     post:

@@ -189,7 +189,7 @@ def test_a_failed_toolset_replace_is_logged_once(graph: InMemoryGraph, caplog) -
         {"name": "Slack", "instanceId": "inst-1", "tools": [{"name": "send"}]},
     ]})
 
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert _loud(caplog) == [EVENT], f"one failure, logged by {_loud(caplog)}"
     failure_line(_records(caplog), EVENT, "unavailable", logging.WARNING, SENTINEL)
     assert _end(caplog)[1].get("agent_id") == "private"
@@ -386,7 +386,7 @@ def test_an_mcp_write_failing_on_update_keeps_its_cause(graph: InMemoryGraph, ca
         {"instanceId": "i1", "name": "github", "tools": [{"name": "issues"}]},
     ]})
 
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert _loud(caplog) == [EVENT]
     fields = failure_line(_records(caplog), EVENT, "unavailable", logging.WARNING, SENTINEL)
     assert fields.get("cause_type") == "ConnectionError"
@@ -424,7 +424,7 @@ def test_a_rollback_that_fails_after_a_failed_save_is_its_own_line(graph: InMemo
 
     response = _client(graph).put(f"{BASE}/private", headers=as_user("alice"), json=_SLACK)
 
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert sorted(_loud(caplog)) == [ROUTE_FAILED, EVENT]
     fields = failure_line(_records(caplog), ROUTE_FAILED, "unavailable", logging.WARNING, SENTINEL)
     assert (fields.get("op"), fields.get("agent_id")) == ("rollback", "private")
@@ -436,7 +436,7 @@ def test_a_cleanup_that_fails_after_a_failed_save_is_its_own_line(graph: InMemor
 
     response = _client(graph).put(f"{BASE}/private", headers=as_user("alice"), json=_SLACK)
 
-    assert response.status_code == 500
+    assert response.status_code == 503
     cleanups = [r for r in _records(caplog) if r.getMessage() == ROUTE_FAILED]
     assert cleanups and set(_loud(caplog)) == {ROUTE_FAILED, EVENT}
     for record in cleanups:

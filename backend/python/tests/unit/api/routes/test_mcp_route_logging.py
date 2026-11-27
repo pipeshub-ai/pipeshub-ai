@@ -415,7 +415,7 @@ async def test_an_mcp_delete_during_a_graph_outage_is_one_warning_with_the_id(ca
     ):
         response = await _call(_app(FakeConfigService()), "DELETE", f"{BASE}/instances/inst-1")
 
-    assert (response.status_code, response.json()) == (500, {
+    assert (response.status_code, response.json()) == (503, {
         "detail": "Cannot delete the MCP server: unable to verify whether agents use it. Please try again."})
     record, fields = _end(capture)
     assert _loud(capture) == [record] and record.levelno == logging.WARNING
