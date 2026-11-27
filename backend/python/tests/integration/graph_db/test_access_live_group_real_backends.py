@@ -99,6 +99,7 @@ class _World:
         kind_of = {n["id"]: n["kind"] for n in self.nodes}
         for kind, collection in NODE_TARGETS.items():
             rows = [{**n["props"], "id": self.sid(n["id"]), **({"orgId": self.org} if "orgId" in n["props"] else {}),
+                     **({"userId": self.sid(n["props"]["userId"])} if n["props"].get("userId") else {}),
                      **({"connectorId": self.sid(n["props"]["connectorId"])} if n["props"].get("connectorId") else {})}
                     for n in self.nodes if n["kind"] == kind]
             if rows:
@@ -171,7 +172,7 @@ async def test_a_membership_whose_group_no_longer_exists_grants_nothing(world: _
     # No path at all reads as READER; the grants are WRITER.
     assert roles == {n: "WRITER" if n.endswith(LIVE) else "READER" for n, _ in nodes}
 
-    scope = await g.get_entity_access_context("u-uid", w.org)
+    scope = await g.get_entity_access_context(w.sid("u-uid"), w.org)
     assert {w.plain(i) for i in scope["record_group_ids"]} == {f"g-{h}" for h in LIVE}
 
 
@@ -218,7 +219,7 @@ async def test_a_team_that_no_longer_exists_opens_no_collection_app_or_agent_tem
     want = {"kb role": {live: "WRITER", gone: None}, "kbs listed": {f"k-{live}"}, "kbs shared": {f"k-{live}"}, "apps": {f"a-{live}"},
             "templates": {f"t-{live}"}, "template": {live: True, gone: False}}
     if hasattr(g, "_get_user_accessible_team_app_keys"):      # the connector listing's team Apps (ArangoDB's helper)
-        got["team apps"] = {a for a in (w.plain(k) for k in await g._get_user_accessible_team_app_keys("u-uid")) if a.startswith("a-")}
+        got["team apps"] = {a for a in (w.plain(k) for k in await g._get_user_accessible_team_app_keys(w.sid("u-uid"))) if a.startswith("a-")}
         want["team apps"] = {f"a-{live}"}
     assert got == want
 
