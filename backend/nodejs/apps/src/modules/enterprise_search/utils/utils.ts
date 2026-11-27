@@ -1126,7 +1126,13 @@ export const attachMessages = (
           viewerId,
         )),
     messages: (messages || []).map((message: any) => {
-      const { sessionId, orgId, seq, changeRev: _changeRev, ...rest } = message;
+      const {
+        sessionId,
+        orgId,
+        seq,
+        changeRev: _changeRev,
+        ...rest
+      } = message as Record<string, unknown>;
       const shaped =
         rest.parts === undefined
           ? rest

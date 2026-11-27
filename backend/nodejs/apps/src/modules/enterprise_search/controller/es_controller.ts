@@ -4204,7 +4204,8 @@ async function performFeedbackUpdate(params: {
   query: Record<string, any>;
   conversationId: string;
   messageId: string;
-  userId: string;
+  // `req.user.userId` as it came: not always a string, so the sink's copy is converted.
+  userId: unknown;
   body: FeedbackBody;
   userAgent: string | undefined;
   session?: ClientSession | null;
@@ -4340,7 +4341,7 @@ export const updateFeedbackWith =
         query,
         conversationId: conversationId!,
         messageId: messageId!,
-        userId: userId!,
+        userId,
         body: req.body as FeedbackBody,
         userAgent: req.headers['user-agent'],
         runs,
@@ -7464,7 +7465,7 @@ export const updateAgentFeedbackWith =
         query,
         conversationId: conversationId!,
         messageId: messageId!,
-        userId: userId!,
+        userId,
         body: req.body as FeedbackBody,
         userAgent: req.headers['user-agent'],
         runs,

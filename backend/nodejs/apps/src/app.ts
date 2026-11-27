@@ -745,7 +745,9 @@ export class Application {
     this.app.use(createResolvedTurnGuard(() => this.esAgentContainer));
 
     // CORS - ensure this matches your frontend domain
-    this.app.use(cors(corsOptions(process.env, conversationEdition.exposedHeaders)));
+    this.app.use(
+      cors(corsOptions(process.env, conversationEdition.exposedHeaders)),
+    );
 
     // One access line per request; before the body parsers so their 400/413 are logged too.
     this.app.use(accessLog());

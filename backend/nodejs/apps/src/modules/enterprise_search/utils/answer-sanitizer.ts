@@ -291,7 +291,8 @@ const HTML_BLOCK_ENDS: ReadonlyArray<[RegExp, RegExp]> = [
     /^<(?:script|pre|style|textarea)(?:[\s>]|$)/i,
     /<\/(?:script|pre|style|textarea)>/i,
   ],
-  [/^<!--/, /-->/],
+  // A browser also ends a comment at `--!>`.
+  [/^<!--/, /--!?>/],
   [/^<\?/, /\?>/],
   [/^<![A-Za-z]/, />/],
   [/^<!\[CDATA\[/, /\]\]>/],

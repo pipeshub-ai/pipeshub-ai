@@ -35,7 +35,10 @@ import {
   deliverToRecipients,
 } from './notification-delivery.port';
 import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
-import { messageFacts, notificationEventRefused } from './notification.delivery';
+import {
+  messageFacts,
+  notificationEventRefused,
+} from './notification.delivery';
 import {
   PlatformAlertHandler,
   isPlatformAudience,
@@ -137,7 +140,8 @@ export class NotificationConsumer {
     try {
       await this.platformAlertHandler.handle(value);
     } catch (error) {
-      if (isRetryableStoreError(error) || error instanceof DuplicateEnvelope) throw error;
+      if (isRetryableStoreError(error) || error instanceof DuplicateEnvelope)
+        throw error;
       // A refused event is the producer's fault (WARNING); anything else is ours.
       const level = error instanceof ValidationError ? 'warn' : 'error';
       this.logger[level]('Failed to process notification message', {

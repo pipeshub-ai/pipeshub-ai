@@ -110,7 +110,7 @@ export function getEmailContent(
 
     default: {
       const render = extraTemplates.get(emailTemplateType);
-      if (render) {
+      if (typeof render === 'function') {
         return render(templateData);
       }
       throw 'Unknown Template';
