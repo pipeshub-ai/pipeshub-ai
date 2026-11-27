@@ -4,6 +4,7 @@ import { ZodError } from 'zod'
 import {
   authorizeConsentSchema,
   createAppSchema,
+  dcrRequestSchema,
   authorizeQuerySchema,
   deviceAuthorizationSchema,
   deviceConsentSchema,
@@ -190,5 +191,31 @@ describe('knowledgeLimitSchema', () => {
     const params = { appId: '507f1f77bcf86cd799439011' }
     expect(updateAppSchema.parse({ params, body: { knowledgeLimit: null } }).body.knowledgeLimit).to.equal(null)
     expect(updateAppSchema.safeParse({ params, body: { knowledgeLimit: { apps: [] } } }).success).to.be.false
+  })
+})
+
+describe('app and DCR display URLs', () => {
+  const app = { name: 'n', allowedScopes: ['kb:read'], redirectUris: ['https://example.com/cb'] }
+  const params = { appId: '507f1f77bcf86cd799439011' }
+  const bad = ['javascript:alert(1)', 'JavaScript://x.example/%0aalert(1)', 'data:text/html,x', 'ftp://x.example/p']
+
+  it('refuses a non-http(s) homepage, policy or terms URL on create and update', () => {
+    for (const field of ['homepageUrl', 'privacyPolicyUrl', 'termsOfServiceUrl']) {
+      for (const url of bad) {
+        expect(createAppSchema.safeParse({ body: { ...app, [field]: url } }).success, `${field} ${url}`).to.be.false
+        expect(updateAppSchema.safeParse({ params, body: { [field]: url } }).success, `${field} ${url}`).to.be.false
+      }
+      expect(createAppSchema.safeParse({ body: { ...app, [field]: 'https://x.example/p' } }).success).to.be.true
+      expect(updateAppSchema.safeParse({ params, body: { [field]: 'http://x.example/p' } }).success).to.be.true
+    }
+  })
+
+  it('refuses a non-http(s) client, logo, terms or policy URI on DCR', () => {
+    for (const field of ['client_uri', 'logo_uri', 'tos_uri', 'policy_uri']) {
+      for (const url of bad) {
+        expect(dcrRequestSchema.safeParse({ body: { [field]: url } }).success, `${field} ${url}`).to.be.false
+      }
+      expect(dcrRequestSchema.safeParse({ body: { [field]: 'https://x.example/p' } }).success).to.be.true
+    }
   })
 })

@@ -110,6 +110,7 @@ from app.connectors.core.base.data_store import (
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.upload_grant import GrantedDocument
 from app.core.org_context import OrgContext, bind
 from app.models.entities import (
     AppRole,
@@ -1372,8 +1373,9 @@ async def test_a_folder_in_the_trash_takes_no_new_folder_and_no_upload(
     upload_refused = {"code": 409, "reason": _in_trash("New", "upload files to it")}
     checked = await kb.service.validate_folder_for_upload(kb.kb_id, kb.new, kb.owner, w.org_id)
     assert checked["valid"] is False and {k: checked[k] for k in upload_refused} == upload_refused, checked
-    files = [{"filePath": "q4.pdf", "record": {"recordName": "q4.pdf"}, "fileRecord": {"name": "q4.pdf"}}]
-    uploaded = await kb.service.upload_records_to_folder(kb.kb_id, kb.new, kb.owner, w.org_id, files)
+    files = [{"filePath": "q4.pdf", "record": {"_key": "q4", "recordName": "q4.pdf"}, "fileRecord": {"name": "q4.pdf"}}]
+    granted = {"q4": GrantedDocument("q4-doc", "application/pdf", "pdf")}
+    uploaded = await kb.service.upload_records_to_folder(kb.kb_id, kb.new, kb.owner, w.org_id, files, granted)
     assert uploaded["success"] is False and {k: uploaded[k] for k in upload_refused} == upload_refused, uploaded
 
     assert await _children(w, kb.new) == in_trash

@@ -10,6 +10,7 @@ import {
   guidCheck,
   integerCheck,
   urlCheck,
+  webUrlCheck,
 } from '../../../libs/utils/zod-formats';
 
 // OAuth Provider Validators
@@ -174,12 +175,12 @@ export const dcrRequestSchema = z.object({
     grant_types: z.array(z.string()).optional(),
     response_types: z.array(z.string()).optional(),
     client_name: z.string().min(1).max(100).optional(),
-    client_uri: z.string().check(urlCheck()).optional(),
-    logo_uri: z.string().check(urlCheck()).optional(),
+    client_uri: z.string().check(webUrlCheck()).optional(),
+    logo_uri: z.string().check(webUrlCheck()).optional(),
     scope: z.string().optional(),
     contacts: z.array(z.string()).optional(),
-    tos_uri: z.string().check(urlCheck()).optional(),
-    policy_uri: z.string().check(urlCheck()).optional(),
+    tos_uri: z.string().check(webUrlCheck()).optional(),
+    policy_uri: z.string().check(webUrlCheck()).optional(),
     software_id: z.string().optional(),
     software_version: z.string().optional(),
   }),
@@ -299,9 +300,9 @@ export const createAppSchema = z.object({
       // Checked for real in the service, which can look the account up.
       // Shape only here.
       tokenIdentityUserId: z.string().min(1).optional(),
-      homepageUrl: z.string().check(urlCheck()).optional(),
-      privacyPolicyUrl: z.string().check(urlCheck()).optional(),
-      termsOfServiceUrl: z.string().check(urlCheck()).optional(),
+      homepageUrl: z.string().check(webUrlCheck()).optional(),
+      privacyPolicyUrl: z.string().check(webUrlCheck()).optional(),
+      termsOfServiceUrl: z.string().check(webUrlCheck()).optional(),
       isConfidential: z.boolean().optional(),
       accessTokenLifetime: z
         .number()
@@ -355,9 +356,9 @@ export const updateAppSchema = z.object({
         )
         .optional(),
       allowedScopes: z.array(z.string()).min(1).optional(),
-      homepageUrl: z.string().check(urlCheck()).optional().nullable(),
-      privacyPolicyUrl: z.string().check(urlCheck()).optional().nullable(),
-      termsOfServiceUrl: z.string().check(urlCheck()).optional().nullable(),
+      homepageUrl: z.string().check(webUrlCheck()).optional().nullable(),
+      privacyPolicyUrl: z.string().check(webUrlCheck()).optional().nullable(),
+      termsOfServiceUrl: z.string().check(webUrlCheck()).optional().nullable(),
       accessTokenLifetime: z
         .number()
         .check(integerCheck())

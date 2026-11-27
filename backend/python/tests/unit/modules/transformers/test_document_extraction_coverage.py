@@ -174,6 +174,34 @@ class TestExtractMetadataExceptionPropagation:
         fake_llm.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_reply_that_is_not_json_takes_the_summary_fallback(self) -> None:
+        from app.modules.transformers.document_extraction import DocumentClassification
+
+        ext = _build_extractor()
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        try:
+            DocumentClassification.model_validate_json("Not valid json")
+        except Exception as bad_reply:  # the pydantic error the structured-output parser raises
+            error = bad_reply
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(ext, "graph_provider") as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            side_effect=error,
+        ), patch.object(ext, "_fallback_summary", new=AsyncMock(return_value="summary")) as fallback:
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
+
+            result = await ext.extract_metadata(
+                [_make_text_block("Some content")], "org-1", allow_remote_image_uri=True,
+            )
+
+        assert result == "summary"
+        fallback.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_an_outage_still_raises_unavailable_so_the_stage_pauses(self) -> None:
         ext = _build_extractor()
 

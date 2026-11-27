@@ -1692,19 +1692,19 @@ class TestUploadRecords:
     @pytest.mark.asyncio
     async def test_upload_to_kb(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "f.txt"}])
+        result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "f.txt"}], {"rec-1": "d1"})
         assert result["success"] is True
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id=None
+            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id=None, granted_documents={"rec-1": "d1"}
         )
 
     @pytest.mark.asyncio
     async def test_upload_to_folder(self, service):
         service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
-        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "f.txt"}])
+        result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "f.txt"}], {"rec-1": "d1"})
         assert result["success"] is True
         service._upload_records.assert_awaited_once_with(
-            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id="f1"
+            "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id="f1", granted_documents={"rec-1": "d1"}
         )
 
 
@@ -2244,7 +2244,7 @@ class TestValidationFailuresReachingThePerson:
             "reason": "psycopg2.OperationalError: could not connect to server",
         })
 
-        result = await service._upload_records("kb1", "user1", "org1", [], None)
+        result = await service._upload_records("kb1", "user1", "org1", [], None, {})
         assert result["code"] == 500
         assert result["reason"] == action_failed("upload these files")
         assert result["valid"] is False

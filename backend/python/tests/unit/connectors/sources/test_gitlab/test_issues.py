@@ -717,6 +717,27 @@ class TestConfidentialIssueRouting:
         assert result.new_permissions == []
         assert result.record.external_record_group_id == "42-confidential-work-items"
 
+    async def test_a_failed_author_lookup_leaves_the_issue_unwritten(self) -> None:
+        """A rewrite without the author's grant would drop it: the issue is retried instead."""
+        from app.connectors.sources.gitlab.projects import ProjectsSync
+
+        c = make_mock_connector()
+        c._project_reader_ids = {42: {7, 8}}
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        async def lookup(source_user_id: str, **_kwargs: object) -> MagicMock:
+            if source_user_id == "8":
+                raise RuntimeError("store unavailable")
+            return MagicMock(email=f"user{source_user_id}@example.com")
+
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=lookup)
+        c.projects = ProjectsSync(c)
+
+        result = await IssuesSync(c)._process_issue_incident_task_to_ticket(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8])
+        )
+        assert result is None
+
     async def test_a_reindex_outside_a_sync_reads_the_members(self) -> None:
         members = MagicMock(success=True, data=[
             MagicMock(id=7, access_level=30, state="active", membership_state="active"),

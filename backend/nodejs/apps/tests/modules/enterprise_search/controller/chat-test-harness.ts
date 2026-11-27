@@ -564,7 +564,7 @@ export interface RecordedCall {
 }
 
 type Reply =
-  | { kind: 'json'; status: number; body: unknown }
+  | { kind: 'json'; status: number; body: unknown; headers?: Record<string, string> }
   | { kind: 'reject'; error: Error }
   | { kind: 'fn'; build: (call: RecordedCall) => { status: number; body: unknown } }
 
@@ -607,7 +607,7 @@ export class FakeAIBackend {
       if (reply?.kind === 'reject') return Promise.reject(reply.error)
       if (reply?.kind === 'json') {
         return Promise.resolve(
-          new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } }),
+          new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json', ...reply.headers } }),
         )
       }
       if (!isStream) {
@@ -626,8 +626,8 @@ export class FakeAIBackend {
   }
 
   /** Answer any request whose URL matches `path` with this JSON status and body. */
-  reply(path: RegExp, status: number, body: unknown): void {
-    this.replies.push({ path, reply: { kind: 'json', status, body } })
+  reply(path: RegExp, status: number, body: unknown, headers: Record<string, string> = {}): void {
+    this.replies.push({ path, reply: { kind: 'json', status, body, headers } })
   }
 
   /** Answer matching requests by looking at each one (for example, by who is asking). */
