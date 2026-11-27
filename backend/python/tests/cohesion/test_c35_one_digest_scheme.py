@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tests.cohesion.support import PYTHON_ROOT, modules
+from tests.edition_overlay import extended
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -198,13 +199,19 @@ def _scan() -> list[str]:
     })
 
 
+@cache
+def _allowed() -> dict[str, str]:
+    """``ALLOWED`` with an edition overlay's entries (``tests/edition_overlay.py``, ``digest_scheme.json``)."""
+    return extended(ALLOWED, "digest_scheme", "allowed")
+
+
 def test_c35_no_new_digest_over_json_text() -> None:
-    unlisted = [hit for hit in _scan() if hit not in ALLOWED]
+    unlisted = [hit for hit in _scan() if hit not in _allowed()]
     assert unlisted == [], f"hash JSON with harness_core.contracts.canonical_json (canonical_digest): {unlisted}"
 
 
 def test_c35_every_allowed_entry_still_hashes_json() -> None:
-    stale = sorted(set(ALLOWED) - set(_scan()))
+    stale = sorted(set(_allowed()) - set(_scan()))
     assert stale == [], f"no longer a hand-rolled digest; remove from ALLOWED: {stale}"
 
 
