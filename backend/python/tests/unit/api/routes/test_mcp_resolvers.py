@@ -60,7 +60,7 @@ class TestGetMcpInstance:
         ) as mock_get:
             result = await get_mcp_instance("inst-1", config_service, "org-1")
         assert result == expected
-        mock_get.assert_awaited_once_with("inst-1", config_service, "org-1", None)
+        mock_get.assert_awaited_once_with("inst-1", config_service, "org-1", None, raise_on_error=False)
 
     async def test_returns_none_when_not_found(self) -> None:
         from app.api.routes.mcp_resolvers import get_mcp_instance

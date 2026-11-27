@@ -87,7 +87,7 @@ class Harness:
         async def caller_role(request: Request, _config: Any) -> SimpleNamespace:  # noqa: ANN401
             return SimpleNamespace(is_admin=request.state.user["userId"] in self.admins)
 
-        async def enabled(_config: Any) -> bool:  # noqa: ANN401
+        async def enabled(_config: Any, **_: Any) -> bool:  # noqa: ANN401
             return self.enabled
 
         monkeypatch.setattr(routes, "fetch_caller_role", caller_role)

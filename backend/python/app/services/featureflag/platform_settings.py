@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils import error_class
 from app.utils.env_flags import AGENT_HARNESS_WORKER_ENABLED, env_flag
 from app.utils.env_utils import high_accuracy_mode
 
@@ -67,6 +68,7 @@ async def read_platform_feature_flag(
     *,
     use_cache: bool = False,
     fail_closed: bool = False,
+    raise_on_error: bool = False,
 ) -> bool:
     """Return a platform feature flag's boolean value from encrypted settings.
 
@@ -82,10 +84,13 @@ async def read_platform_feature_flag(
     asks ``get_config`` to raise and returns ``False`` when the saved value
     cannot be read. Without it, a read failure also returns the flag's release default
     (``PLATFORM_FLAG_DEFAULTS``).
+
+    ``raise_on_error=True`` raises a store that could not answer (``error_class.retry_later``), for a route
+    gate that must not answer "off" during an outage; any other failure still answers the fallback above.
     """
     default = platform_flag_default(flag_name)
     try:
-        if fail_closed:
+        if fail_closed or raise_on_error:
             settings = await config_service.get_config(
                 PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache, raise_on_error=True,
             )
@@ -102,6 +107,8 @@ async def read_platform_feature_flag(
             return default
         return bool(normalized[str(flag_name).upper()])
     except Exception as e:
+        if raise_on_error and error_class.retry_later(e):
+            raise
         fallback = False if fail_closed else default
         logger.error(
             "Failed to read %s for feature flag %s; using %s: %s",
@@ -136,6 +143,7 @@ async def _platform_flag(
     flag: str,
     *,
     fail_closed: bool = False,
+    raise_on_error: bool = False,
 ) -> bool:
     """Shared resolution path for org-level platform feature flags.
 
@@ -154,7 +162,9 @@ async def _platform_flag(
     if pinned is not None:
         return pinned
     if config_service is not None:
-        return await read_platform_feature_flag(flag, config_service, fail_closed=fail_closed)
+        return await read_platform_feature_flag(
+            flag, config_service, fail_closed=fail_closed, raise_on_error=raise_on_error,
+        )
 
     try:
         from app.services.featureflag.featureflag import FeatureFlagService
@@ -168,11 +178,13 @@ async def _platform_flag(
         return fallback
 
 
-async def is_api_toolsets_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_api_toolsets_enabled(
+    config_service: Optional["ConfigurationService"] = None, *, raise_on_error: bool = False,
+) -> bool:
     """Org-level gate for API Toolsets: their routes, UI and agent tools. Source of truth is
     the ``ENABLE_API_TOOLSETS`` platform feature flag. Defaults to DISABLED: agents call
     org-internal APIs only once an admin opts in from Labs."""
-    return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS)
+    return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS, raise_on_error=raise_on_error)
 
 
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
@@ -184,14 +196,14 @@ async def is_actions_enabled(config_service: Optional["ConfigurationService"] = 
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS)
 
 
-async def is_mcp_enabled(config_service: "ConfigurationService | None" = None) -> bool:
+async def is_mcp_enabled(config_service: "ConfigurationService | None" = None, *, raise_on_error: bool = False) -> bool:
     """Deployment-level gate for MCP: agents may only load/use MCP servers when
     this is true. Source of truth is the ``ENABLE_MCP`` platform feature flag.
     Defaults to ENABLED when the flag was never saved; admins may opt out from
     Labs. A saved value that cannot be read is treated as DISABLED, so an outage
     never re-enables MCP for a workspace that turned it off.
     """
-    return await _platform_flag(config_service, CONFIG.ENABLE_MCP, fail_closed=True)
+    return await _platform_flag(config_service, CONFIG.ENABLE_MCP, fail_closed=True, raise_on_error=raise_on_error)
 
 
 async def is_skills_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:

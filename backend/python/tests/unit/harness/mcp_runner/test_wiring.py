@@ -210,7 +210,7 @@ async def test_mw9_the_admin_discover_tools_route_runs_the_server_in_the_callers
     async def org_instance(*_: object) -> dict[str, Any]:
         return instance
 
-    async def effective(*_: object) -> dict[str, Any]:
+    async def effective(*_: object, **__: object) -> dict[str, Any]:
         return credential_record()
 
     monkeypatch.setattr(mcp_servers, "_get_org_instance", org_instance)

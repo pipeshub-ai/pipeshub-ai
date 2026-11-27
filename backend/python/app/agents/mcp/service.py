@@ -247,16 +247,18 @@ async def load_personal_instances_for_admin(config_service: ConfigurationService
 
 async def get_instance(
     instance_id: str, config_service: ConfigurationService, org_id: str, user_id: Optional[str] = None,
+    *, raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """The instance `user_id` can see: an org instance, or their own personal one. None when
     it doesn't exist, belongs to another org, or is someone else's personal instance."""
-    data = await config_service.get_config(get_mcp_instance_path(instance_id), default=None, use_cache=False)
+    strict = {"raise_on_error": True} if raise_on_error else {}  # passed only when set, as get_config's callers do
+    data = await config_service.get_config(get_mcp_instance_path(instance_id), default=None, use_cache=False, **strict)
     if isinstance(data, dict) and belongs_to_org(data, org_id) and not is_personal(data):
         return data
     if not user_id:
         return None
     data = await config_service.get_config(
-        get_mcp_user_instance_path(org_id, user_id, instance_id), default=None, use_cache=False,
+        get_mcp_user_instance_path(org_id, user_id, instance_id), default=None, use_cache=False, **strict,
     )
     if isinstance(data, dict) and belongs_to_org(data, org_id) and is_personal(data) and _owned_by(data, user_id):
         return data
@@ -320,7 +322,7 @@ def credential_owner_id(instance: dict[str, Any], caller_id: str) -> str:
 
 
 async def _load_credential(
-    instance: dict[str, Any], owner_id: str, config_service: ConfigurationService,
+    instance: dict[str, Any], owner_id: str, config_service: ConfigurationService, *, raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """`owner_id`'s credential record for `instance`; with CONTROL_PLANE_CREDENTIALS on, through its binding
     (CPD-8), where a revoked binding is final: no record."""
@@ -329,37 +331,40 @@ async def _load_credential(
     if not credentials_switch_on():
         record = await config_service.get_config(
             get_mcp_credentials_path(instance.get("_id"), owner_id), default=None, use_cache=False,
+            **({"raise_on_error": True} if raise_on_error else {}),
         )
         return record if isinstance(record, dict) else None
     from app.harness.credentials.legacy_records import legacy_records
     from harness_core.credentials.errors import CredentialRevoked
 
     try:
-        return await legacy_records(config_service).load("mcp", org_of(instance) or "", instance.get("_id"), owner_id)
+        return await legacy_records(config_service).load(
+            "mcp", org_of(instance) or "", instance.get("_id"), owner_id, raise_on_error=raise_on_error,
+        )
     except CredentialRevoked:
         return None
 
 
 async def legacy_shared_credential(
-    instance: dict[str, Any], config_service: ConfigurationService,
+    instance: dict[str, Any], config_service: ConfigurationService, *, raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """A shared credential saved before it had its own slot, still at the creator's credential path; read only."""
     instance_id, creator = instance.get("_id"), instance.get("createdBy")
     if instance.get(SHARED_CREDENTIAL_SLOT_MARKER) or not instance_id or not creator:
         return None
     # The creator's current material: with CONTROL_PLANE_CREDENTIALS on, its binding, not a frozen old path.
-    legacy = await _load_credential(instance, creator, config_service)
+    legacy = await _load_credential(instance, creator, config_service, raise_on_error=raise_on_error)
     return legacy if isinstance(legacy, dict) else None
 
 
 async def adopt_legacy_shared_credential(
-    instance: dict[str, Any], config_service: ConfigurationService,
+    instance: dict[str, Any], config_service: ConfigurationService, *, raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Move a shared credential saved before it had its own slot (at the creator's credential
     path) into the shared slot, and return it. Moving rather than copying means an admin who
     later disconnects it can't have the old copy found again. A no-op for records saved since
     (they carry the slot marker), so it never adopts anyone's personal credential."""
-    legacy = await legacy_shared_credential(instance, config_service)
+    legacy = await legacy_shared_credential(instance, config_service, raise_on_error=raise_on_error)
     if legacy is None:
         return None
     instance_id, creator = instance.get("_id"), instance.get("createdBy")
@@ -380,6 +385,7 @@ async def resolve_effective_user_auth(
     config_service: ConfigurationService,
     *,
     adopt: bool = True,
+    raise_on_error: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Resolve which credential record actually backs `instance` for `user_id`.
 
@@ -394,13 +400,13 @@ async def resolve_effective_user_auth(
         return {}
 
     owner_id = credential_owner_id(instance, user_id)
-    record = await _load_credential(instance, owner_id, config_service)
+    record = await _load_credential(instance, owner_id, config_service, raise_on_error=raise_on_error)
     if isinstance(record, dict):
         return record
     if owner_id == SHARED_CREDENTIAL_OWNER:
         if not adopt:
-            return await legacy_shared_credential(instance, config_service)
-        return await adopt_legacy_shared_credential(instance, config_service)
+            return await legacy_shared_credential(instance, config_service, raise_on_error=raise_on_error)
+        return await adopt_legacy_shared_credential(instance, config_service, raise_on_error=raise_on_error)
     return None
 
 

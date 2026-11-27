@@ -139,7 +139,7 @@ def _api_app(shared: bool) -> Callable[[object, pytest.MonkeyPatch, pytest.Fixtu
         async def admin(*_: object) -> SimpleNamespace:
             return SimpleNamespace(is_admin=True)
 
-        async def enabled(*_: object) -> bool:
+        async def enabled(*_: object, **__: object) -> bool:
             return True
 
         async def found(*_: object) -> SimpleNamespace:

@@ -68154,6 +68154,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/{toolsetId}/status:
     get:
       tags:
@@ -68964,6 +68966,14 @@ paths:
         '503':
           description: |-
             Connector service is unreachable (connection refused or fetch failed).
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -69083,6 +69093,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/agents/{agentKey}/instances/{instanceId}/authenticate:
     post:
       tags:
@@ -69194,6 +69206,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/agents/{agentKey}/instances/{instanceId}/credentials:
     put:
       tags:
@@ -69295,6 +69309,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - Toolset Instances
@@ -69466,6 +69482,9 @@ paths:
             be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
             stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
             in a few seconds."
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -69571,6 +69590,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/instances:
     get:
       tags:
@@ -69665,6 +69686,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Toolset Instances
@@ -69830,6 +69853,14 @@ paths:
             configuration saved just before may remain and keeps its name, so retrying with the same inline OAuth
             credentials answers `409` until that configuration is linked (`oauthConfigId`) or deleted; any other
             create can be retried after the `Retry-After` seconds.
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -69914,6 +69945,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - Toolset Instances
@@ -70069,6 +70102,14 @@ paths:
             retry after the `Retry-After` seconds updates it in place. When it had none, that save created
             a new configuration that no instance links to: retry with its `oauthConfigId`, or delete it
             first, or a retry with the same `authConfig` creates another one.
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -70171,6 +70212,14 @@ paths:
             Administrators only: the store holding the instance list did not answer while it was read or
             re-read for the write, so the instance stays, with its users' sign-ins and its rules, and no other
             instance is changed. Safe to retry after the `Retry-After` seconds.
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -70277,6 +70326,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/instances/{instanceId}/credentials:
     put:
       tags:
@@ -70379,6 +70430,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - Toolset Instances
@@ -70534,6 +70587,9 @@ paths:
             be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
             stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
             in a few seconds."
+            Also sent, with `Retry-After`, when the config store could not answer a read the request depends on (the
+            instance list, the caller's personal instance, an OAuth app list or a sign-in); a toolset or app that really
+            is missing keeps its own answer.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -70635,6 +70691,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/instances/{instanceId}/status:
     get:
       tags:
@@ -70721,6 +70779,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/instances/{instanceId}/github/repositories:
     get:
       tags:
@@ -70770,6 +70830,8 @@ paths:
           description: The caller is not signed in to this instance
         '502':
           description: GitHub could not be reached or refused the sign-in
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   /toolsets/instances/{instanceId}/github/branches:
     get:
@@ -70812,6 +70874,8 @@ paths:
           description: The caller is not signed in to this instance
         '502':
           description: GitHub could not be reached or refused the sign-in
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   /toolsets/instances/{instanceId}/tool-rules:
     get:
@@ -70885,6 +70949,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - Toolset Instances
@@ -70967,6 +71033,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/oauth-configs/{toolsetType}:
     get:
       tags:
@@ -71040,6 +71108,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /toolsets/oauth-configs/{toolsetType}/{oauthConfigId}:
     put:
       tags:
@@ -71154,6 +71224,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - OAuth Configuration
@@ -71234,6 +71306,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- MCP Servers --------------------
   # Proxied to the connectors service (`backend/python/app/api/routes/mcp_servers.py`).
@@ -71337,6 +71411,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/catalog/{typeId}:
     get:
       tags:
@@ -71397,6 +71473,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/popular:
     get:
       tags:
@@ -71478,6 +71556,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/my-mcp-servers:
     get:
       tags:
@@ -71561,6 +71641,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/logos:
     get:
       tags:
@@ -71615,6 +71697,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances:
     get:
       tags:
@@ -71668,6 +71752,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - MCP Server Instances
@@ -71760,6 +71846,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}:
     get:
       tags:
@@ -71820,6 +71908,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - MCP Server Instances
@@ -71931,6 +72021,8 @@ paths:
             store (or, with `CONTROL_PLANE_CREDENTIALS` on, the credential service) kept one of them or could not
             answer: the instance was not changed, though some credentials may already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the MCP setting,
+            the instance or its credential.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -72011,6 +72103,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/logo:
     put:
       tags:
@@ -72114,6 +72208,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - MCP Server Instances
@@ -72173,6 +72269,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/tools:
     get:
       tags:
@@ -72272,6 +72370,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/my-tool-rules:
     get:
       tags:
@@ -72330,6 +72430,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - MCP Server Instances
@@ -72399,6 +72501,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/authenticate:
     post:
       tags:
@@ -72478,6 +72582,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/credentials:
     put:
       tags:
@@ -72555,6 +72661,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - MCP Server Credentials
@@ -72624,6 +72732,8 @@ paths:
             deleted: the config store kept it or could not answer, so it may still be stored and the caller stays
             connected. Retry after `Retry-After` seconds; a retry that finds nothing stored answers 200. The body's
             detail is "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the MCP setting,
+            the instance or its credential.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -72698,6 +72808,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -72767,6 +72879,8 @@ paths:
             it or could not answer, so it may still be stored and the caller stays connected. Retry after `Retry-After`
             seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the MCP setting,
+            the instance or its credential.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -72860,6 +72974,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/oauth/refresh:
     post:
       tags:
@@ -72940,6 +73056,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/instances/{instanceId}/oauth-config:
     get:
       tags:
@@ -73015,6 +73133,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - MCP Server OAuth
@@ -73119,6 +73239,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/oauth/discover:
     post:
       tags:
@@ -73206,6 +73328,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/oauth/callback:
     get:
       tags:
@@ -73269,6 +73393,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/agents/{agentKey}:
     get:
       tags:
@@ -73349,6 +73475,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/agents/{agentKey}/instances/{instanceId}/authenticate:
     post:
       tags:
@@ -73429,6 +73557,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /mcp-servers/agents/{agentKey}/instances/{instanceId}/credentials:
     put:
       tags:
@@ -73512,6 +73642,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - MCP Servers for Agents
@@ -73582,6 +73714,8 @@ paths:
             be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
             stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
             in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the MCP setting,
+            the instance or its credential.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -73663,6 +73797,8 @@ paths:
             it or could not answer, so it may still be stored and the agent stays connected. Retry after `Retry-After`
             seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
             database just now. Please try again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the MCP setting,
+            the instance or its credential.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -73748,6 +73884,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Local repositories --------------------
   /local-repos:
@@ -74126,6 +74264,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /api-toolsets/instances:
     get:
       tags:
@@ -74169,6 +74309,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - API Toolsets
@@ -74230,6 +74372,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /api-toolsets/instances/{instanceId}:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -74274,6 +74418,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - API Toolsets
@@ -74347,6 +74493,8 @@ paths:
             answer: the toolset and its OAuth app were not changed (some credentials may already be gone). Retry after
             `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's database just now. Please try
             again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the API Toolsets
+            setting.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -74415,6 +74563,8 @@ paths:
             not answer ("We couldn't reach PipesHub's database just now. Please try again in a few seconds.", with
             `Retry-After`). The record goes last, so the delete can be sent again; the toolset may already be gone when
             only the store's reply to its delete was lost.
+            Also sent, before anything is changed, when the config store could not answer the read of the API Toolsets
+            setting.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -74477,6 +74627,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /api-toolsets/instances/{instanceId}/credentials:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -74536,6 +74688,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - API Toolsets
@@ -74581,6 +74735,8 @@ paths:
             be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
             stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
             in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the API Toolsets
+            setting.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -74653,6 +74809,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - API Toolsets
@@ -74705,6 +74863,8 @@ paths:
             be stored and members stay connected through it. Retry after `Retry-After` seconds; a retry that finds
             nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try
             again in a few seconds."
+            Also sent, before anything is changed, when the config store could not answer the read of the API Toolsets
+            setting.
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).
@@ -74771,6 +74931,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /api-toolsets/instances/{instanceId}/test:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -74865,6 +75027,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
         '504':
           description: |
             The connectors service did not answer within 150 seconds (`HTTP_GATEWAY_TIMEOUT`).
@@ -74922,6 +75086,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /api-toolsets/oauth/callback:
     get:
       tags:
@@ -74968,6 +75134,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Skills --------------------
           content:
