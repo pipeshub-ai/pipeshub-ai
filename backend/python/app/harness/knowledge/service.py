@@ -109,7 +109,7 @@ class KnowledgePublications:
 
     async def _user_key(self, user_id: str, org_id: str) -> str | None:
         """The user's graph key when they are a user of this org."""
-        user = doc(await self._graph.get_user_by_user_id(user_id))
+        user = doc(await self._graph.get_user_by_user_id(user_id, org_id=org_id))
         if user is None or org_of(user) not in (org_id, None):
             return None
         return text(user, "id", "_key")
@@ -118,7 +118,7 @@ class KnowledgePublications:
         """The user as an audience is matched against; ``None`` when they are not a user of this org."""
         if not user_id:
             return None
-        user = doc(await self._graph.get_user_by_user_id(user_id))
+        user = doc(await self._graph.get_user_by_user_id(user_id, org_id=org_id))
         if user is None or org_of(user) not in (org_id, None):
             return None
         key = text(user, "id", "_key")

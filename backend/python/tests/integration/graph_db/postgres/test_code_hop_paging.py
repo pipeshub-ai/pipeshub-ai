@@ -269,6 +269,7 @@ async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], l
         return await pg_db.run(go)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_generic_plan_of_the_page_reads_an_index_range_of_about_a_page_in_every_case(pg_db) -> None:
     """The plan a prepared statement takes from its sixth run, forced: a hub, many anchors, a cursor in the middle, a direction with no edges, a first page."""
     org = new_org()

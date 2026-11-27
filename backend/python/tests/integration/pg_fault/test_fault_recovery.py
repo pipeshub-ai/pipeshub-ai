@@ -16,6 +16,7 @@ import time
 import asyncpg
 import pytest
 
+from app.services.pg_runtime import ListenHub, listen_dsn
 from tests.integration.pg_fault.conftest import pg_ctl, start_server
 from tests.integration.pg_fault.load import (
     ROLES,
@@ -107,8 +108,16 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
             assert await server_start(stack) != started, "the server did not restart: the fault was not injected"
         await asyncio.sleep(5)
 
+        dsn = listen_dsn()
+        assert dsn, "the stack names no LISTEN address"
+        hub = ListenHub.for_dsn(dsn)
+
+        def deaf() -> list[str]:
+            """Channels the process's LISTEN connection has not taken back: their notifications would not arrive."""
+            return sorted(ch for ch in hub._subs if not hub.healthy(channel=ch))
+
         async def recovered() -> bool:
-            return not any(c.stalled_since(before[c.name]) for c in comps)
+            return not deaf() and not any(c.stalled_since(before[c.name]) for c in comps)
         await until(recovered, 90)
         await asyncio.gather(*(c.stop_load() for c in comps))
         spent: dict[str, float] = {}
@@ -123,6 +132,8 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
         problems = {c.name: await timed(f"check {c.name}", c.check()) for c in comps}
         for c in comps:
             problems[c.name] += [f"no {kind} succeeded after the fault" for kind in c.stalled_since(before[c.name])]
+        if channels := deaf():
+            problems["listen"] = [f"LISTEN is not back on {channels}"]
         seen = {c.name: dict(c.errors) for c in comps if c.errors}
         print(f"{fault}: {took:.1f}s; errors the load saw: {seen}; seconds: {spent}")
         assert not any(problems.values()), "\n".join(f"{k}: {p}" for k, ps in problems.items() for p in ps)

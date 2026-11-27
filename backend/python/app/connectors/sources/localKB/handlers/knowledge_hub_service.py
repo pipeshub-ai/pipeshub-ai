@@ -38,7 +38,12 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
+from app.connectors.sources.localKB.handlers.kh_search import (
+    SearchPage,
+    at_least_shown,
+    search_page,
+)
+from app.core.org_context import for_org
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
     KnowledgeHubListingNotReady,
@@ -415,6 +420,7 @@ class KnowledgeHubService:
         # ahead is the one the caller just came from and always exists.
         has_next = part["hasMore"] if direction == "next" else True
         has_prev = (cursor is not None) if direction == "next" else part["hasMore"]
+        total, total_capped = at_least_shown(total, seen_before + len(rows), capped=total_capped)
 
         def issue(row: dict[str, Any], next_direction: str, items_seen: int) -> str:
             return encode(
@@ -660,7 +666,9 @@ class KnowledgeHubService:
         for candidate in await self.graph_provider.get_knowledge_hub_warm_samples():
             user_id, org_id = candidate["userId"], candidate["orgId"]
             # An App the user has switched off (demo data) leaves their gate: every browse under it would be refused.
-            if candidate["appId"] not in await self._excluded_apps(user_id, org_id):
+            with for_org(org_id, job="kh_plan_keeper"):
+                excluded = await self._excluded_apps(user_id, org_id)
+            if candidate["appId"] not in excluded:
                 sample = candidate
                 break
         if sample is None:
@@ -681,7 +689,9 @@ class KnowledgeHubService:
                 })
         for request in requests:
             try:
-                await self.get_nodes(user_id=user_id, org_id=org_id, **request)
+                # No request bound an org here: the keeper runs on its own, so each browse is bound to its sample's org.
+                with for_org(org_id, job="kh_plan_keeper"):
+                    await self.get_nodes(user_id=user_id, org_id=org_id, **request)
             except Exception as exc:
                 self.logger.warning("knowledge hub plan warm-up request failed: %s", exc)
         return len(requests)
