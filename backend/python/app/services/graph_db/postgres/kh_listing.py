@@ -199,6 +199,15 @@ def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidd
     return base, where
 
 
+async def indexed_fetch(tx: Tx, sql: str, *values: Any) -> list[Any]:  # noqa: ANN401
+    """``sql`` under ``kgl.PAGE_PROFILE``: a page's window, or a node's children read up to a bound. The page's other reads share its transaction (its snapshot), so the
+    settings come back once the read answered (a failed read aborts the transaction anyway)."""
+    was = await tx.fetchrow(kgl.PAGE_PROFILE)
+    got = list(await tx.fetch(sql, *values))
+    await tx.fetchval(kgl.PAGE_RESTORE, was["o"], was["q"], was["b"], was["j"])
+    return got
+
+
 def capped_counts(rows: list[Any]) -> tuple[dict[str, int], bool]:
     """The counts by type of a count statement's rows (``count_sql``, ``browse_count_sql``: read up to COUNT_CAP + 1), and whether they reached past the cap. A count past it keeps
     COUNT_CAP: the row past the cap is dropped from its largest type, so the counts add up to what the total reports."""
@@ -219,14 +228,8 @@ class KhListingMixin(PgBase):
         return await self._db.run(fn, jobs=current_or_system().kind == "system", custom_plan=True)
 
     async def _kq_page(self, sql: str, values: tuple[Any, ...], transaction: str | None) -> list[Any]:
-        """A window of a listing's or a browse's page (``kgl.page_sql``) under ``kgl.PAGE_PROFILE``. The page's other reads share its transaction (its snapshot), so the settings
-        come back once the window answered (a failed read aborts the transaction anyway)."""
-        async def read(tx: Any) -> list[Any]:  # noqa: ANN401
-            was = await tx.fetchrow(kgl.PAGE_PROFILE)
-            got = list(await tx.fetch(sql, *values))
-            await tx.fetchval(kgl.PAGE_RESTORE, was["o"], was["j"])
-            return got
-        return await self._kq(read, transaction)
+        """A read of :func:`indexed_fetch` in the page's transaction."""
+        return await self._kq(lambda tx: indexed_fetch(tx, sql, *values), transaction)
 
     async def get_knowledge_hub_connector_page_v3(
         self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None = None, limit: int = 50, *, flatten: bool = True,

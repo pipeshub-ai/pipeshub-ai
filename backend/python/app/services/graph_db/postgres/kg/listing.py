@@ -183,13 +183,17 @@ def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> 
     return "".join(f" AND {c}" for c in out)
 
 
-# A window of a page (``page_sql``) is read with sorts off, so the window's index of the order is the only plan that answers it in order: with analysed statistics a new
-# organisation's node or connector is estimated at a row or two, the window's LIMIT then saves nothing, and the planner read every row of it by the narrowest index and sorted
-# them all. A sort that remains (the window's own, under the admitted page's outer order) costs ``disable_cost`` on PostgreSQL 17, so JIT is off too, or it would compile it.
-# The statement returns both settings as they were, for ``PAGE_RESTORE`` (the page's other reads share its snapshot's transaction).
-PAGE_PROFILE = ("/* pipeshub:kg.page_profile */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS o, current_setting('jit') AS j) "
-                "SELECT o, j, set_config('enable_sort', 'off', true), set_config('jit', 'off', true) FROM s")
-PAGE_RESTORE = "/* pipeshub:kg.page_restore */ SELECT set_config('enable_sort', $1, true), set_config('jit', $2, true)"
+# A window of a page (``page_sql``), and a node's children read up to a bound in no order (held, sampled, undecided, counted), are read with sorts, sequential and bitmap
+# scans off, so the index of the order (or of the parent) is the only plan that answers them. With analysed statistics a new organisation's node or connector is estimated at
+# a row or two, or its folder at many rows of a table its rows were appended to: a window's LIMIT then saved nothing, and the planner read every row by the narrowest index
+# and sorted them all, or a bounded read scanned the table from its start until it had found enough of the node's rows. A sort that remains (the window's own, under the
+# admitted page's outer order) costs ``disable_cost`` on PostgreSQL 17, so JIT is off too, or it would compile it. The statement returns the settings as they were, for
+# ``PAGE_RESTORE`` (the page's other reads share its snapshot's transaction).
+PAGE_PROFILE = ("/* pipeshub:kg.page_profile */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS o, current_setting('enable_seqscan') AS q, "
+                "current_setting('enable_bitmapscan') AS b, current_setting('jit') AS j) SELECT o, q, b, j, set_config('enable_sort', 'off', true), "
+                "set_config('enable_seqscan', 'off', true), set_config('enable_bitmapscan', 'off', true), set_config('jit', 'off', true) FROM s")
+PAGE_RESTORE = ("/* pipeshub:kg.page_restore */ SELECT set_config('enable_sort', $1, true), set_config('enable_seqscan', $2, true), set_config('enable_bitmapscan', $3, true), "
+                "set_config('jit', $4, true)")
 
 
 def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[tuple[str, str]] | None = None) -> str:

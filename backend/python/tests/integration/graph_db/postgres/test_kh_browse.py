@@ -1490,7 +1490,7 @@ async def test_a_wide_nodes_page_reads_a_window_of_its_children_once_the_table_i
         page = await browse(p, org, "fold", ["fold", *kids], limit=10, sort_field=field, sort_dir=way, include_total=False)      # a page with no total: windows only
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert len(page["rows"]) == 10, page["rows"]
-        read = await _page_rows_read(org, ran)
+        read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.browse_children_held"))      # the held check (is it wide?) too
         assert read and all(n <= 150 for n in read), (width, read)
 
 
@@ -1554,8 +1554,40 @@ async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_ke
         assert read and all(n <= 20 for n in read), (field, way, read)
 
 
+# The reads of a wide node's children for its first page: its window, its undecided children and its count (and whether it is wide at all).
+FIRST_PAGE_READS = ("kg.browse_once", "kg.browse_undecided_probe", "kg.browse_undecided", "kg.browse_count", "kg.listing_page", "kg.browse_children_held", "kg.browse_classes")
+
+
+@pytest.mark.pg_table_lock      # analyses kg.records
+async def test_a_wide_nodes_first_page_reads_its_window_and_the_counts_cap_once_the_table_is_analysed(pg_db, monkeypatch) -> None:
+    """The page a folder opens on (no cursor, with its total), for a wide folder of 300 and of 3,000 children, every one readable, after kg.records is analysed: its children
+    are read about as far as its window (100 rows) and the count's cap (40 here), the same at either width, not every child of the folder."""
+    import app.core.db.uow as uow
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "COUNT_CAP", 40)
+    monkeypatch.setattr(kh_listing, "COUNT_CAP", 40)
+    real = uow.Tx._run
+    read: dict[int, int] = {}
+    for width in (300, 3000):
+        p, org = prov(pg_db), new_org()
+        kids = [f"c{i:04d}" for i in range(width)]
+        await seed_folder(p, pg_db, org, width, readable_kids=kids)
+        await _admin("ANALYZE kg.records")
+        ran: list[tuple[object, str, tuple]] = []
+
+        async def spy(self, op, sql, *args, internal=False, ran=ran) -> object:
+            ran.append((self, sql, args))
+            return await real(self, op, sql, *args, internal=internal)
+        monkeypatch.setattr(uow.Tx, "_run", spy)
+        page = await browse(p, org, "fold", ["fold", *kids], limit=10)
+        monkeypatch.setattr(uow.Tx, "_run", real)
+        assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        read[width] = sum(await _page_rows_read(org, ran, FIRST_PAGE_READS))
+    assert read[3000] <= 250 and read[3000] < read[300] + 50, read
+
+
 async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_were(pg_db) -> None:
-    """A page's windows are read with sorts and JIT off (``kgl.PAGE_PROFILE``): in the page's transaction (here a caller's) both are put back after the read, so what runs next plans as
+    """A page's windows are read with sorts, sequential and bitmap scans and JIT off (``kgl.PAGE_PROFILE``): in the page's transaction (here a caller's) all four are put back after the read, so what runs next plans as
     it would have."""
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 8, readable_kids=KIDS)
@@ -1564,8 +1596,9 @@ async def test_a_page_read_in_a_callers_transaction_leaves_its_settings_as_they_
         try:
             await p._q(lambda tx: tx.fetchval("SELECT set_config('jit', 'on', true)"), t)
             page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=KIDS, limit=3, transaction=t)
-            got = await p._q(lambda tx: tx.fetchrow("SELECT current_setting('enable_sort') AS s, current_setting('jit') AS j"), t)
+            got = await p._q(lambda tx: tx.fetchrow("SELECT current_setting('enable_sort') AS s, current_setting('enable_seqscan') AS q, "
+                                                    "current_setting('enable_bitmapscan') AS b, current_setting('jit') AS j"), t)
         finally:
             await p.rollback_transaction(t)
-    assert page["rows"] and (got["s"], got["j"]) == ("on", "on"), dict(got)
+    assert page["rows"] and tuple(got.values()) == ("on", "on", "on", "on"), dict(got)
 
