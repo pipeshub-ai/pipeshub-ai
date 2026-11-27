@@ -165,7 +165,8 @@ describe('inbound context readers', () => {
       const next: NextFunction = () => {
         inside = [restored.getStore(), getRootId()];
       };
-      requestContextMiddleware(req, {} as Response, next);
+      const res = { setHeader: () => res } as unknown as Response;
+      requestContextMiddleware(req, res, next);
       expect(inside[0]).to.equal('caller');
       expect(inside[1]).to.be.a('string');
       expect(seen[0]?.[1]).to.equal('http');

@@ -516,7 +516,7 @@ export default function GeneralPage() {
 
         <GeneralPageExtras />
 
-        {/* An edition's settings in the form (OSS: Data Collection); a build without them leaves no gap */}
+        {/* The settings an edition adds to the form (config.ts); a build without them leaves no gap */}
         {editionSettings.section && <Box style={{ marginBottom: 'var(--space-5)' }}>{editionSettings.section}</Box>}
 
         {/* ── An edition's cards, beside the org's deletion ── */}

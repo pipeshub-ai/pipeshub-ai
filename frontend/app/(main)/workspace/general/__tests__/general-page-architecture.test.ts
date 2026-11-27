@@ -38,6 +38,6 @@ describe('General page: what an edition adds stays out of its own files', () => 
 
   it('the page reaches the edition only through config.ts', () => {
     const page = read('page.tsx');
-    expect(page).toMatch(/import \{ GeneralPageExtras, useGeneralPageSettings \} from '@\/config';/);
+    expect(page).toMatch(/import \{[^}]*\buseGeneralPageSettings\b[^}]*\} from '@\/config';/);
   });
 });

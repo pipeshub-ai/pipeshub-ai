@@ -14,7 +14,6 @@ vi.mock('@/app/components/ui/user-avatar', () => ({
 
 import { ChatSidebarFooter } from '@/app/(main)/chat/sidebar/footer';
 import { OrgApi } from '../api';
-import { MetricsApi } from '../data-collection/api';
 import { updateOrgProfile } from '@/app/(main)/onboarding/api';
 import { clearSessionCache } from '@/lib/api/session-cache';
 

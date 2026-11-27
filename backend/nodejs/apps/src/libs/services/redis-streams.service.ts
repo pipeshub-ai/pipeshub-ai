@@ -73,7 +73,7 @@ function serializeValueWithTrace(value: unknown, topic: string): string {
  */
 function decodeEntry<T>(
   fields: string[],
-  delivery: { broker: 'redis'; topic: string; publishedAtMs?: number },
+  delivery: { broker: 'redis'; topic: string; publishedAtMs?: unknown },
 ): StreamMessage<T> | null {
   const fieldMap: Record<string, string> = {};
   for (let i = 0; i < fields.length; i += 2) {

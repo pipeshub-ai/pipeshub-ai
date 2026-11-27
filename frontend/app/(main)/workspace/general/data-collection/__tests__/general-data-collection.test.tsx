@@ -5,16 +5,23 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const addToast = vi.hoisted(() => vi.fn());
+const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn(), refresh: vi.fn() }));
 vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
-vi.mock('@/lib/store/toast-store', () => ({
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => router,
+}));
+vi.mock('@/lib/store/toast-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/store/toast-store')>()),
   useToastStore: (select: (s: { addToast: typeof addToast }) => unknown) => select({ addToast }),
 }));
 vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }),
 }));
 // The page as the default build wires it: the Data Collection switch in the settings slot.
-vi.mock('@/config', async () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
   GeneralPageExtras: () => null,
   useGeneralPageSettings: (await import('../use-general-data-collection')).useGeneralDataCollection,
 }));
