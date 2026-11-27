@@ -48,3 +48,19 @@ async def test_a_bound_service_account_agent_also_keeps_its_collections() -> Non
 async def test_an_ordinary_agent_keeps_its_knowledge() -> None:
     agent = agent_doc(knowledge=[TEAM, PERSONAL, COLLECTION])
     assert await _searched(agent) == ["team-c", "personal-c", "kb-c"]
+
+
+@pytest.mark.asyncio
+async def test_a_connector_limited_to_its_creator_is_not_searched_by_a_service_account_agent() -> None:
+    """Every caller runs the agent: a connector limited to its creator stays out of a harness turn as it does out of
+    chat_stream, even though the agent's pin lists it."""
+    limited = {"connectorId": "limited-c", "type": "JIRA", "name": "Limited Jira"}
+    org_wide = {"connectorId": "org-c", "type": "JIRA", "name": "Open-to-org Jira"}
+    instances = [
+        *INSTANCES,
+        {"_key": "limited-c", "scope": "team", "type": "JIRA", "accessLimit": "CREATOR"},
+        {"_key": "org-c", "scope": "team", "type": "JIRA", "accessLimit": "ORG"},
+    ]
+    with patch(f"{__name__}.INSTANCES", instances):
+        searched = await _searched(agent_doc(isServiceAccount=True, knowledge=[TEAM, limited, org_wide]))
+    assert searched == ["team-c", "org-c"]
