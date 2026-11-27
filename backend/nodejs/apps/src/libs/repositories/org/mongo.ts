@@ -143,7 +143,9 @@ export class MongoOrgRepository implements OrgRepository {
     // organisation, even one the server applies after the cleanup ran.
     const org = new Org({
       ...input.org,
-      ...(input.slug !== undefined && input.slug !== '' ? { slug: input.slug } : {}),
+      ...(input.slug !== undefined && input.slug !== ''
+        ? { slug: input.slug }
+        : {}),
       _id: input.ids.orgId,
       isDeleted: true,
       pendingCreate: true,
