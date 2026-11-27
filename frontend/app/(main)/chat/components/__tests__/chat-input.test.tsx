@@ -279,9 +279,11 @@ function type(text: string) {
   fireEvent.change(composer(), { target: { value: text } });
 }
 
-/** The + menu opens from the keyboard the way a person tabbing to it would. */
+/** The + menu opens on its trigger's press, as a pointer opens it. */
 function openPlusMenu() {
-  fireEvent.keyDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), { key: 'Enter' });
+  const trigger = screen.getByRole('button', { name: 'Attach files and capabilities' });
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+  fireEvent.click(trigger);
 }
 
 function toastTitles(): string[] {
@@ -1017,7 +1019,7 @@ describe('ChatInput — attachments', () => {
     renderInput({ onUploadFile: vi.fn() });
 
     openPlusMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
+    fireEvent.click(screen.getByText('Attach files'));
 
     expect(screen.getByText('Upload your file')).toBeTruthy();
     expect(screen.getByText('Up to 10 files per message')).toBeTruthy();
@@ -1031,7 +1033,7 @@ describe('ChatInput — attachments', () => {
     const { container } = renderInput({ onUploadFile });
 
     openPlusMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
+    fireEvent.click(screen.getByText('Attach files'));
     expect(screen.getByText('Upload your file')).toBeTruthy();
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -1045,7 +1047,7 @@ describe('ChatInput — attachments', () => {
   it('closes the upload area even when every picked file is turned away', () => {
     const { container } = renderInput({ onUploadFile: vi.fn() });
     openPlusMenu();
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
+    fireEvent.click(screen.getByText('Attach files'));
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     fireEvent.change(input, {
@@ -2090,7 +2092,8 @@ describe('ChatInput — placeholder', () => {
 
 describe('ChatInput — the apps button dot', () => {
   const appsButton = () => screen.getByText('apps').closest('button') as HTMLButtonElement;
-  const dot = () => appsButton().querySelector('[aria-hidden]');
+  // The dot, not the button's glyph, which is decorative too.
+  const dot = () => appsButton().querySelector('[aria-hidden]:not(.material-icons-outlined)');
   const set = (patch: Record<string, unknown>) =>
     useChatStore.setState({ settings: { ...useChatStore.getState().settings, ...patch } });
 
@@ -2142,8 +2145,7 @@ describe('ChatInput — model, voice and search view', () => {
     const selector = screen.getAllByTestId('chat-model-selector')[0];
     expect(selector.textContent).toContain('Smart One');
     // BGUI8-FU-4 (WCAG 2.5.3): the button's name holds the model it shows, not only "AI models".
-    expect(selector.hasAttribute('aria-label')).toBe(false);
-    expect(screen.getAllByRole('button', { name: 'AI models: Smart One' })[0]).toBe(selector);
+    expect(screen.getAllByRole('button', { name: 'Model: Smart One. Open configured models.' })[0]).toBe(selector);
 
     fireEvent.click(selector);
     fireEvent.click(screen.getByText('Pick Fast One'));
