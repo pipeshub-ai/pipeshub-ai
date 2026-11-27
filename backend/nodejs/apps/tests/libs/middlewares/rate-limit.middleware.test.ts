@@ -812,6 +812,35 @@ describe('Rate Limit Middleware', () => {
       now += 60_000
       expect((await store.increment('k')).totalHits).to.equal(1)
     })
+
+    it('a reset clears the shared window key and the in-process count; a cache that fails it is noted, not thrown', async () => {
+      const cache = new FakeCache()
+      useRateLimitCache(cache)
+      const now = 1_000_000_000_000
+      const store = new SharedRateLimitStore('reset', loggerStub as unknown as Logger, () => now)
+      store.init({ windowMs: 60_000 } as any)
+      await store.increment('k')
+      await store.increment('k')
+      expect([...cache.counts.values()]).to.deep.equal([2])
+      await store.resetKey('k')
+      expect(cache.counts.size).to.equal(0)
+      expect((await store.increment('k')).totalHits).to.equal(1)
+      cache.delete = async () => { throw new Error('redis down') }
+      await store.resetKey('k')
+      expect(loggerStub.warn.calledWith('Shared rate-limit store failed; counting in-process')).to.equal(true)
+    })
+
+    it('without a cache a hit given back and a reset reach the in-process count, and shutdown stops it', async () => {
+      const store = new SharedRateLimitStore('local', loggerStub as unknown as Logger)
+      store.init({ windowMs: 60_000 } as any)
+      await store.increment('k')
+      await store.increment('k')
+      await store.decrement('k')
+      expect((await store.increment('k')).totalHits).to.equal(2)
+      await store.resetKey('k')
+      expect((await store.increment('k')).totalHits).to.equal(1)
+      expect(() => store.shutdown()).to.not.throw()
+    })
   })
 
   // Needs a disposable Redis: RATE_LIMIT_REDIS_URL=redis://127.0.0.1:6390 (the ioredis fake is bypassed).
