@@ -66,3 +66,17 @@ def permission_edge_delete_exemptions_extra() -> dict[str, str]:
     ``NO_BUMP`` (``path::function`` under ``app/`` -> why it may delete edges there without bumping). Here there are
     none."""
     return {}
+
+
+def chat_loop_dirs_extra() -> tuple[str, ...]:
+    """Directories under ``app/`` holding this build's own agent modules and routes, where a chat run's tools also
+    come from: ``tests/unit/modules/agents/privacy/test_every_tool_has_a_class.py`` checks that none of them imports
+    a module whose tools no chat offers. Here there are none."""
+    return ()
+
+
+def model_call_dirs_extra() -> tuple[str, ...]:
+    """Directories under ``app/`` (with a trailing slash) holding this build's own model calls, which
+    ``tests/unit/modules/agents/privacy/test_model_call_inventory.py`` leaves out: the build classifies them in an
+    inventory of its own, with a test of its own. Here there are none."""
+    return ()
