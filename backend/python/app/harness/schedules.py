@@ -8,14 +8,19 @@ harness state API with the attempt's token.
 
 from __future__ import annotations
 
-import re
+import functools
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import ValidationError
+
+from app.harness.contracts.generated.pipeshub.api.schedule_create_arguments import (
+    ScheduleCreateArguments,
+)
 from app.harness.journal_node.client import error_code, error_message
-from harness_core.contracts import canonical_digest
+from harness_core.contracts import canonical_digest, validate_contract
 from harness_core.effects.flow import (
     AskDestination,
     destination_key,
@@ -53,20 +58,12 @@ if TYPE_CHECKING:
 SCHEDULE_CREATE_TOOL: Final = "schedule_create"
 SCHEDULE_TOOL_ID: Final = "pipeshub@schedules/create"
 CARD_LABEL: Final = "Set up a schedule"
-MAX_NAME_CHARS: Final = 120
-MAX_ASK_CHARS: Final = 10_000
-NOTIFY_CHANNELS: Final = ("in_app", "email", "slack")
 # Node's bounds on a one-off (D1); checked here before the card so a time that cannot be made is never asked about.
 MIN_LEAD: Final = timedelta(seconds=60)
 MAX_LEAD: Final = timedelta(days=366)
 MIN_CRON_GAP_MINUTES: Final = 5
 SCHEDULES_PAGE: Final = "Workspace → Schedules"
 _PATH: Final = "/schedules"
-_FIELDS: Final = frozenset({"name", "ask", "when", "notify"})
-_ONCE_FIELDS: Final = frozenset({"kind", "at", "timeZone"})
-_CRON_FIELDS: Final = frozenset({"kind", "cron", "timeZone"})
-# ISO 8601 with an explicit offset: a bare local time would be read in the worker's zone, not the person's.
-_INSTANT: Final = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:\d{2})$")
 ASK_RULE: Final = "tool"
 ASK_LAYER: Final = "deployment"
 
@@ -76,6 +73,46 @@ def _utc_now() -> datetime:
 
 
 # --- the arguments --------------------------------------------------------------------------------------------------
+
+
+def _inlined(node: object, defs: Mapping[str, Any]) -> Any:  # noqa: ANN401 - a JSON Schema fragment
+    """``node`` with its ``$ref``s replaced by their definitions, without pydantic's titles, and an optional field's
+    ``None`` branch dropped: the contract leaves an optional argument out, never null."""
+    if isinstance(node, list):
+        return [_inlined(item, defs) for item in node]
+    if not isinstance(node, dict):
+        return node
+    if "$ref" in node:
+        return _inlined(defs[str(node["$ref"]).rsplit("/", 1)[1]], defs)
+    branches = node.get("anyOf")
+    if node.get("default", ...) is None and isinstance(branches, list):
+        kept = [b for b in branches if b != {"type": "null"}]
+        if len(kept) == 1:
+            merged = {**kept[0], **{k: v for k, v in node.items() if k not in ("anyOf", "default")}}
+            return _inlined(merged, defs)
+    return {key: _inlined(value, defs) for key, value in node.items() if key not in ("title", "$defs")}
+
+
+@functools.cache
+def _contract_schema() -> dict[str, Any]:
+    """What the model is shown: ``schedule-create-arguments.schema.json`` as its generated model gives it."""
+    schema = ScheduleCreateArguments.model_json_schema(by_alias=True)
+    return cast("dict[str, Any]", _inlined(schema, schema.get("$defs", {})))
+
+
+def _contract_parameters() -> list[ToolParameter]:
+    """The contract's top-level properties, for code that reads ``parameters`` rather than the input schema."""
+    schema = _contract_schema()
+    required = set(schema.get("required", ()))
+    parameters: list[ToolParameter] = []
+    for name, prop in schema["properties"].items():
+        kind = ParameterType(prop.get("type", "object"))
+        parameters.append(ToolParameter(
+            name, kind, str(prop.get("description", "")), required=name in required,
+            items=prop.get("items"), properties=prop.get("properties"),
+        ))
+    return parameters
+
 
 
 def _zone(value: object) -> ZoneInfo | None:
@@ -88,7 +125,9 @@ def _zone(value: object) -> ZoneInfo | None:
 
 
 def _instant(value: object) -> datetime | None:
-    if not isinstance(value, str) or not _INSTANT.match(value):
+    """An instant the contract's pattern let through, or Node's ``nextFireAt``; ``None`` when it is not a calendar
+    date (``2026-02-30T…``)."""
+    if not isinstance(value, str):
         return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -248,45 +287,47 @@ def _cron_problem(cron: object) -> str | None:
     return None
 
 
+def _shape_problem(arguments: Mapping[str, Any]) -> str | None:
+    """The call against ``schedule-create-arguments.schema.json`` (its generated model), the strings as sent."""
+    try:
+        _ = validate_contract(ScheduleCreateArguments, dict(arguments))
+    except ValidationError as exc:
+        errors = exc.errors()
+        when = arguments.get("when")
+        branch = {"once": "When", "cron": "When1"}.get(when.get("kind") if isinstance(when, dict) else None)
+        # A ``when`` matches one branch of its union by ``kind``: the other branch's complaints are noise.
+        relevant = [e for e in errors if len(e["loc"]) < 2 or e["loc"][0] != "when" or e["loc"][1] == branch]
+        error = (relevant or errors)[0]
+        where = ".".join(str(part) for part in error["loc"] if not str(part).startswith("When"))
+        return f"`{where or 'arguments'}`: {error['msg']}."
+    notify = arguments.get("notify", ())
+    # The generated model reads an absent optional as None and has no uniqueItems; the schema says neither.
+    if notify is None:
+        return "`notify`: leave it out for the default; it is never null."
+    if len(set(notify)) != len(notify):
+        return "`notify`: name each channel once."
+    return None
+
+
 def schedule_problem(arguments: Mapping[str, Any], *, now: datetime | None = None) -> str | None:
-    """Why the call cannot make a schedule, worded for the model; ``None``: it may. With ``now``, a one-off's time is
-    held to Node's bounds as well."""
-    unknown = sorted(set(arguments) - _FIELDS)
-    if unknown:
-        return f"Unknown argument(s) {unknown}; give only name, ask, when and notify."
-    name, ask, when = arguments.get("name"), arguments.get("ask"), arguments.get("when")
-    if not isinstance(name, str) or not 0 < len(name.strip()) <= MAX_NAME_CHARS:
-        return f"`name` must be a short title of 1 to {MAX_NAME_CHARS} characters."
-    if not isinstance(ask, str) or not 0 < len(ask.strip()) <= MAX_ASK_CHARS:
-        return f"`ask` must say what each run is asked, in 1 to {MAX_ASK_CHARS} characters."
-    if not isinstance(when, dict):
-        return "`when` must be {kind: once, at, timeZone} or {kind: cron, cron, timeZone}."
-    when = cast("dict[str, Any]", when)
-    kind = when.get("kind")
-    if kind not in ("once", "cron"):
-        return "`when.kind` must be `once` (one time) or `cron` (repeating)."
-    if set(when) - (_ONCE_FIELDS if kind == "once" else _CRON_FIELDS):
-        fields = "kind, at and timeZone" if kind == "once" else "kind, cron and timeZone"
-        return f"`when` for `{kind}` takes only {fields}."
-    if _zone(when.get("timeZone")) is None:
+    """Why the call cannot make a schedule, worded for the model; ``None``: it may. The shape is the contract's; what
+    it cannot say is checked here as Node checks it: the zone, a cron's meaning, ``at`` as a calendar date and, with
+    ``now``, its lead time."""
+    problem = _shape_problem(arguments)
+    if problem is not None:
+        return f"{problem} The arguments are name, ask, when ({{kind: once, at, timeZone}} or {{kind: cron, cron, timeZone}}) and an optional notify."
+    when = cast("dict[str, Any]", arguments["when"])
+    if _zone(when["timeZone"]) is None:
         return "`when.timeZone` must be an IANA time zone such as America/Los_Angeles (the person's own)."
-    if kind == "cron":
-        problem = _cron_problem(when.get("cron"))
-        if problem is not None:
-            return problem
-    else:
-        at = _instant(when.get("at"))
-        if at is None:
-            return "`when.at` must be an ISO 8601 time with its offset, such as 2026-11-26T15:47:00-08:00."
-        if now is not None and at < now + MIN_LEAD:
-            return "`when.at` must be at least a minute from now; work it out again from the current time."
-        if now is not None and at > now + MAX_LEAD:
-            return "`when.at` must be within a year from now."
-    notify = arguments.get("notify")
-    if notify is not None and (
-        not isinstance(notify, list) or not notify or any(channel not in NOTIFY_CHANNELS for channel in notify)
-    ):
-        return f"`notify`, when given, lists channels from {list(NOTIFY_CHANNELS)}; leave it out for the default."
+    if when["kind"] == "cron":
+        return _cron_problem(when["cron"])
+    at = _instant(when["at"])
+    if at is None:
+        return "`when.at` is not a date on the calendar; work it out again from the current time."
+    if now is not None and at < now + MIN_LEAD:
+        return "`when.at` must be at least a minute from now; work it out again from the current time."
+    if now is not None and at > now + MAX_LEAD:
+        return "`when.at` must be within a year from now."
     return None
 
 
@@ -430,27 +471,12 @@ class ScheduleCreateTool(Tool):
     @property
     @override
     def parameters(self) -> list[ToolParameter]:
-        return [
-            ToolParameter("name", ParameterType.STRING, f"A short title for the schedule (at most {MAX_NAME_CHARS} characters)."),
-            ToolParameter(
-                "ask", ParameterType.STRING,
-                "What each run is asked, written to stand alone (each run starts a new chat that sees only this).",
-            ),
-            ToolParameter(
-                "when", ParameterType.OBJECT, "When it runs: once at a time, or repeating on a cron schedule.",
-                properties={
-                    "kind": {"type": "string", "enum": ["once", "cron"], "description": "once or cron"},
-                    "at": {"type": "string", "description": "once: ISO 8601 time with its offset, at least a minute ahead"},
-                    "cron": {"type": "string", "description": "cron: five-field cron, at most once every 5 minutes"},
-                    "timeZone": {"type": "string", "description": "The user's IANA time zone, e.g. America/Los_Angeles"},
-                },
-                required_properties=["kind", "timeZone"],
-            ),
-            ToolParameter(
-                "notify", ParameterType.ARRAY, "Optional: where the user is told of each run; leave out for the default.",
-                required=False, items={"type": "string", "enum": list(NOTIFY_CHANNELS)},
-            ),
-        ]
+        return _contract_parameters()
+
+    @property
+    @override
+    def raw_input_schema(self) -> dict[str, Any] | None:
+        return _contract_schema()
 
     @override
     def validate(self, kwargs: dict[str, Any]) -> None:

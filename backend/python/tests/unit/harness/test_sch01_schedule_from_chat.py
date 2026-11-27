@@ -8,7 +8,9 @@ approved call reaches Node with the interaction the person approved and the argu
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -212,12 +214,18 @@ async def test_sch01_no_route_or_a_fired_run_is_not_offered(monkeypatch: pytest.
         ({**ONCE, "when": {**ONCE["when"], "timeZone": "Pacific Time"}}, "`when.timeZone`"),
         ({**ONCE, "when": {**ONCE["when"], "at": "2026-11-26T23:42:30Z"}}, "at least a minute"),
         ({**ONCE, "when": {**ONCE["when"], "at": "2028-01-01T00:00:00Z"}}, "within a year"),
-        ({**ONCE, "when": {**ONCE["when"], "cron": "0 9 * * *"}}, "takes only"),
+        ({**ONCE, "when": {**ONCE["when"], "cron": "0 9 * * *"}}, "Extra inputs"),
         ({**CRON, "when": {**CRON["when"], "cron": "* * * * *"}}, "5 minutes"),
         ({**CRON, "when": {**CRON["when"], "cron": "*/2 * * * *"}}, "5 minutes"),
-        ({**CRON, "when": {**CRON["when"], "cron": "0 9 * *"}}, "five-field"),
-        ({**CRON, "notify": ["pager"]}, "`notify`"),
-        ({**ONCE, "repeat": True}, "Unknown argument"),
+        ({**CRON, "when": {**CRON["when"], "cron": "0 9 * *"}}, "at least 9"),
+        ({**CRON, "notify": ["pager"]}, "`notify"),
+        ({**ONCE, "repeat": True}, "`repeat`"),
+        # Review round 3: lengths count the string as sent, null and repeated channels are refused, at most 3 fractional
+        # digits.
+        ({**ONCE, "name": "x" + " " * 120}, "`name`"),
+        ({**ONCE, "notify": None}, "never null"),
+        ({**ONCE, "notify": ["in_app", "in_app"]}, "once"),
+        ({**ONCE, "when": {**ONCE["when"], "at": "2026-11-26T23:47:00.1234Z"}}, "`when.at`"),
     ],
 )
 def test_sch01_a_call_that_cannot_make_a_schedule_runs_unasked_and_is_refused(arguments: dict[str, Any], says: str) -> None:
@@ -531,3 +539,58 @@ async def test_sch01_a_code_task_engine_child_is_not_offered(monkeypatch: pytest
     registry = ToolRegistry()
     assert await schedule_tool(services, run, claim, registry) is None  # type: ignore[arg-type]
     assert not registry.has(SCHEDULE_CREATE_TOOL)
+
+
+VECTORS = json.loads(
+    (Path(__file__).resolve().parents[5] / "contracts/harness/vectors/schedule-create-arguments.json").read_text(
+        encoding="utf-8"
+    )
+)["vectors"]
+# Schema-valid vectors the worker still refuses before the card, by name, with the words of the code-only rule that
+# refuses each (calendar date, lead time, zone, cron meaning). The contract's vectors are all real zones, crons and
+# dates a few minutes after NOW, so none is: every vector the schema accepts reaches the card.
+CODE_ONLY_REFUSALS: dict[str, str] = {}
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=[v["name"] for v in VECTORS])
+def test_sch01_every_contract_vector_gets_the_contracts_verdict_before_the_card(vector: dict[str, Any]) -> None:
+    arguments = vector["arguments"]
+    sent = json.loads(json.dumps(arguments))
+    problem = schedule_problem(arguments)
+    expected = vector["valid"] and vector["name"] not in CODE_ONLY_REFUSALS
+    assert (problem is None) is expected, problem
+    if vector["name"] in CODE_ONLY_REFUSALS:
+        assert problem is not None and CODE_ONLY_REFUSALS[vector["name"]] in problem
+    # Checking never alters what the person approves.
+    assert arguments == sent
+    # Against the time the vectors were written for (NOW): a schema-valid one is asked about, any other never.
+    assert (schedule_problem(arguments, now=NOW) is None) is expected
+    assert _asks()(_call(arguments), EFFECT) == ("ask" if expected else "allow")
+
+
+@pytest.mark.parametrize(
+    ("when", "says"),
+    [
+        ({"kind": "once", "at": "2026-02-30T09:00:00Z", "timeZone": "UTC"}, "calendar"),
+        ({"kind": "once", "at": "2026-11-26T23:42:30Z", "timeZone": "UTC"}, "at least a minute"),
+        ({"kind": "once", "at": "2028-01-01T00:00:00Z", "timeZone": "UTC"}, "within a year"),
+        ({"kind": "once", "at": "2026-11-27T09:00:00Z", "timeZone": "Pacific Time"}, "IANA"),
+        ({"kind": "cron", "cron": "0 99 * * *", "timeZone": "UTC"}, "outside"),
+    ],
+)
+def test_sch01_a_schema_valid_call_is_refused_only_for_the_code_only_rules(when: dict[str, Any], says: str) -> None:
+    arguments = {"name": "Joke", "ask": "Tell me a joke.", "when": when}
+    problem = schedule_problem(arguments, now=NOW)
+    assert problem is not None and says in problem
+    assert _asks()(_call(arguments), EFFECT) == "allow"
+
+
+def test_sch01_the_model_sees_the_contracts_schema() -> None:
+    schema = ScheduleCreateTool(NodeSchedules(_Route())).to_schema().input_schema
+    assert schema["additionalProperties"] is False and schema["required"] == ["name", "ask", "when"]
+    assert schema["properties"]["name"] == {
+        "description": "The schedule's name; not only spaces.", "maxLength": 120, "minLength": 1, "pattern": "\\S",
+        "type": "string",
+    }
+    notify = schema["properties"]["notify"]
+    assert notify["type"] == "array" and "anyOf" not in notify and "$defs" not in schema
