@@ -87,7 +87,8 @@ async def test_auto_compaction_never_summarises_the_latest_request() -> None:
     texts = _texts(ctx.messages)
     # Main #4533 protects the current request, not the first message: the turns before it may be summarised.
     assert BATCH in texts
-    assert [t for t in texts if not t.startswith("[Auto-compacted")][-1] == BATCH
+    # A summary opens with its header (earlier turns, as information, not instructions); the request is not one.
+    assert [t for t in texts if not t.startswith("[Earlier conversation, summarised")][-1] == BATCH
 
 
 async def test_the_saved_transcript_keeps_one_context_compacted_part() -> None:

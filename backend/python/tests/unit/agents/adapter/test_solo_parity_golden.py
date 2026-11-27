@@ -44,18 +44,28 @@ def _pipeline(model: type) -> dict:
     return {"previous_conversations": ctx.previous_conversations, "messages": msgs}
 
 
+def _without_unset_compaction(obj: object) -> object:
+    """A message now leaves out a ``compacted_by`` that is not set when dumped; the goldens, captured before, hold it
+    as ``null``. Both mean the same message."""
+    if isinstance(obj, dict):
+        return {k: _without_unset_compaction(v) for k, v in obj.items() if not (k == "compacted_by" and v is None)}
+    if isinstance(obj, list):
+        return [_without_unset_compaction(v) for v in obj]
+    return obj
+
+
 def _normalize(obj: object) -> object:
-    return json.loads(json.dumps(obj, sort_keys=True, default=str))
+    return _without_unset_compaction(json.loads(json.dumps(obj, sort_keys=True, default=str)))
 
 
 def test_chatbot_solo_history_matches_golden() -> None:
     golden = json.loads((FIXTURES / "solo_history_golden.json").read_text())
-    assert _normalize(_pipeline(ChatQuery)) == golden
+    assert _normalize(_pipeline(ChatQuery)) == _normalize(golden)
 
 
 def test_agent_solo_history_matches_golden() -> None:
     golden = json.loads((FIXTURES / "solo_history_golden.json").read_text())
-    assert _normalize(_pipeline(AgentChatQuery)) == golden
+    assert _normalize(_pipeline(AgentChatQuery)) == _normalize(golden)
 
 
 def _blocks(**kw: object) -> dict[str, str]:
