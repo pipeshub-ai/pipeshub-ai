@@ -248,11 +248,12 @@ async def _delete(graph: Neo4jProvider) -> object:
 
 
 # Route name -> (route, the status a refused check answers).
+# A refusal reads as a missing record (404), so it never says whether the record exists.
 ACL_ROUTES: dict[str, tuple[Route, int]] = {
-    "internal_content": (_internal_content, 403),
+    "internal_content": (_internal_content, 404),
     "signed_url": (_signed_url_as_user, 404),
     "download_file": (_download_as_user, 404),
-    "stream_record": (_stream, 403),
+    "stream_record": (_stream, 404),
     "record_details": (_record_details, 404),
     "delete_record": (_delete, 404),
 }

@@ -135,7 +135,8 @@ async def test_pf6_the_content_route_serves_a_full_publication_s_record() -> Non
     assert answer == {"content": "the text"}
 
 
-@pytest.mark.parametrize(("decision", "status"), [("published_answer_only", 403), ("denied", 403)])
+# Answer-only says so (403 with its code); no access reads as a missing record (404), as everywhere a record is read.
+@pytest.mark.parametrize(("decision", "status"), [("published_answer_only", 403), ("denied", 404)])
 async def test_pf6_the_content_route_refuses_answer_only_typed_and_nothing_as_today(decision: str, status: int) -> None:
     fetched = AsyncMock(side_effect=AssertionError("nothing is read"))
     with patch.object(router, "KnowledgePublications", return_value=_publications(True, decision)), patch.object(
