@@ -58,9 +58,13 @@ refused `SCHEDULE_NOT_APPROVED` and nothing is made. The schedule is the run's p
 `ScheduleService.create` with every check a create from the Schedules page makes (the Labs flag, rollout, quotas,
 the 5-minute cron floor, budget, notify channels), with the person's authority re-read as a firing re-reads it. It
 runs the chat's agent, agent version, model, chat mode, tools and locale, and records its origin (conversation, run,
-interaction). Its id is derived from the org and the interaction, and Node journals on the run that this interaction
-made it (`x.pipeshub.schedule.created`), so one decision makes one schedule, once: a repeat answers the same schedule
-(`created: false`), and a repeat after the person deleted it is refused (`SCHEDULE_APPROVAL_USED`). A one-off
+interaction). One decision makes one schedule, once, and the schedule store alone guarantees it, since a journal
+write and a store write cannot be one: the schedule's id is derived from the org and the interaction, so the store's
+insert under it is the one atomic step, and deleting a chat-made schedule leaves in its place, in the same store write,
+a tombstone under that id (ids, its origin and when it went; no name, ask or trigger) that no read answers (lists, the
+firer, triggers, quotas, admins) and that erasing the person or the org removes. A repeat answers the live schedule
+(`created: false`); a repeat after the person deleted it meets the tombstone and is refused (`SCHEDULE_APPROVAL_USED`).
+Node also journals `x.pipeshub.schedule.created` on the run, an audit fact nothing depends on. A one-off
 approved after its time (the person read "in 2 minutes" three minutes later) is still made and fires on the next
 tick; its lateness still counts from the time asked for. The route is rate-limited per run.
 
