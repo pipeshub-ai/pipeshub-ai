@@ -25,8 +25,11 @@ def trigger_note(context: Mapping[str, JsonValue] | None) -> str:
     kind = str(context.get("kind") or "")
     slot = str(context.get("slotAt") or "")
     details = json.dumps(context, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    started = (
+        "its one-time schedule" if kind == "once" else f"its schedule's {_KINDS.get(kind, kind)} trigger"
+    )
     return (
-        f"This run was started by its schedule's {_KINDS.get(kind, kind)} trigger for the slot {slot}. "
+        f"This run was started by {started} for the slot {slot}. "
         f"Trigger details (ids and times only; read any record it names with your tools): {details}"
     )
 

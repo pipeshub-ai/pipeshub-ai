@@ -543,6 +543,57 @@ def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
             assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
 
 
+def test_the_owner_removes_rows_only_of_an_org_that_org_erase_allows_names_with_no_table_lock(db):
+    """Every org table carries org_erase for the owner role. Here kernel.org_erase_allows names no org, so the owner reaches no
+    org row; a body that names one org (as an extra migration location would plant) lets the owner delete that org's rows, with
+    the triggers writing that org's derived rows, under row security: no ACCESS EXCLUSIVE lock and nothing of another org."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    gone, kept = "a" * 24, "b" * 24
+    with connect(cluster, name) as c:
+        for org in (gone, kept):
+            c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT %s, 'records', 'r' || i, '{}' FROM generate_series(1, 50) i", (org,))
+        missing = c.execute("SELECT g.rel::text FROM kernel.rls_registry g WHERE g.class IN ('org', 'lineage') AND NOT EXISTS "
+                            "(SELECT 1 FROM pg_policy p WHERE p.polrelid = g.rel AND p.polname = 'org_erase')").fetchall()
+        assert missing == []
+
+    def owner_delete(org: str) -> tuple[int, list]:
+        with connect(cluster, name, MIGRATE) as m:
+            m.autocommit = False
+            n = m.execute("DELETE FROM graph.nodes WHERE org_id = %s", (org,)).rowcount
+            modes = m.execute("SELECT DISTINCT mode FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'relation'").fetchall()
+            m.commit()
+            return n, sorted(x for (x,) in modes)
+
+    def erase_body(body: str) -> None:      # what an extra migration location's run does: the owner replaces the body
+        with connect(cluster, name) as c:
+            c.execute("SET ROLE pipeshub_owner")
+            c.execute(f"CREATE OR REPLACE FUNCTION kernel.org_erase_allows(p_org text) RETURNS boolean LANGUAGE sql STABLE "
+                      f"SET search_path = pg_catalog, kernel, pg_temp AS $fn$ {body} $fn$")
+
+    assert owner_delete(gone)[0] == 0
+    erase_body(f"SELECT p_org = '{gone}'")
+    try:
+        assert owner_delete(kept)[0] == 0
+        n, modes = owner_delete(gone)
+        assert n == 50 and "AccessExclusiveLock" not in modes, modes
+        with connect(cluster, name) as c:
+            assert c.execute("SELECT count(*) FROM graph.nodes WHERE org_id = %s", (kept,)).fetchone()[0] == 50
+            assert c.execute("SELECT count(*) FROM kg.graph_changes WHERE org_id = %s", (gone,)).fetchone()[0] > 0     # the capture trigger ran
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):             # the owner writes nothing of another org
+                with connect(cluster, name, MIGRATE) as m:
+                    m.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, 'records', 'x', '{}')", (kept,))
+    finally:
+        erase_body("SELECT false")
+    with connect(cluster, name) as c, c.transaction(force_rollback=True):        # the check expects the policy on every org table
+        c.execute("DROP POLICY org_erase ON graph.edges")
+        assert ("142 org_erase policy is missing or differs", "graph.edges") in c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall()
+    with connect(cluster, name) as c, c.transaction(force_rollback=True):        # and only in its own shape: for the owner alone
+        c.execute("ALTER POLICY org_erase ON graph.edges TO pipeshub_owner, pipeshub_node")
+        found = c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall()
+        assert {("04 unexpected policy org_erase", "graph.edges"), ("142 org_erase policy is missing or differs", "graph.edges")} <= set(found)
+
+
 def test_a_hold_is_recorded_behind_the_fences_barriers_so_no_writer_in_flight_outlives_it(db):
     """The fences ask for the hold after they hold their install-wide barrier (7341 for the profile fence, 7340 for the document
     store's), shared to commit: whoever records a hold takes both exclusively first, so it cannot start while any writer is past its

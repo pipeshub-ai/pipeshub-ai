@@ -7645,6 +7645,13 @@
       "hidden": "Některé znaky by zde byly neviditelné nebo by změnily pořadí textu, proto se zobrazují jako kódy, například ⟨U+202E⟩. Zkontrolujte, že chcete odeslat právě toto.",
       "host": "{{ascii}} míchá abecedy a vypadá jako {{unicode}}. Zobrazuje se ve skutečné podobě, protože to nemusí být web, kterým se zdá být.",
       "markerTitle": "Znak, který by jinak byl neviditelný nebo by změnil pořadí textu"
+    },
+    "schedule": {
+      "name": "Název",
+      "when": "Kdy",
+      "ask": "Na co se každý běh zeptá",
+      "notify": "Upozornit přes",
+      "where": "Každý běh zahájí vlastní konverzaci. Kdykoli ho pozastavte nebo smažte v části Workspace > Plány."
     }
   },
   "codeTaskCard": {
@@ -8453,7 +8460,8 @@
     "status": {
       "active": "Aktivní",
       "paused": "Pozastaveno",
-      "disabled": "Vypnuto"
+      "disabled": "Vypnuto",
+      "ranOnce": "Proběhl jednou"
     },
     "trigger": {
       "cron": "Cron",
@@ -8476,7 +8484,8 @@
         "cron": "Naplánováno",
         "manual": "Spustit nyní",
         "event": "Vyvoláno událostí",
-        "cronCaughtUp": "Plánované (dohnané)"
+        "cronCaughtUp": "Plánované (dohnané)",
+        "once": "Jednorázově"
       },
       "openConversation": "Otevřít konverzaci",
       "admitted": "Spuštěno",
@@ -8529,7 +8538,13 @@
       "notifyUnknown": "Momentálně nedostupné.",
       "notifyCheckFailed": "Nepodařilo se ověřit, které kanály můžete použít, proto je nabízen jen PipesHub.",
       "webhookCantSign": "Volající nemůže podepisovat. Použít místo toho token v hlavičce",
-      "webhookCantSignHint": "Kdokoli, kdo token uvidí, ho může zavolat. Podepisování je bezpečnější."
+      "webhookCantSignHint": "Kdokoli, kdo token uvidí, ho může zavolat. Podepisování je bezpečnější.",
+      "kindOnce": "Jednou, v zadané datum a čas",
+      "onceAt": "Datum a čas",
+      "onceAtHint": "Ve vašem časovém pásmu ({{timeZone}}). Nejdříve za minutu, nejpozději za rok.",
+      "onceNotExisting": "Tento čas ve vašem časovém pásmu v ten den neexistuje: hodiny ho přeskočí. Vyberte jiný čas.",
+      "onceTooSoon": "Vyberte čas nejdříve za minutu.",
+      "onceTooFar": "Vyberte čas nejpozději za rok."
     },
     "webhook": {
       "title": "Váš webhook",
@@ -8555,7 +8570,10 @@
       "limit": "Dosáhli jste povoleného počtu plánů. Nejprve jeden smažte.",
       "budgetCeiling": "Rozpočet na jedno spuštění je příliš vysoký.",
       "unavailable": "Plánované běhy vyžadují trvalý chat s agentem, který je ve vaší organizaci vypnutý.",
-      "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu."
+      "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu.",
+      "ranOnce": "Tento plán už jednou proběhl. Znovu neproběhne; můžete ho smazat.",
+      "notApproved": "Tento plán nebyl schválen, proto nebyl vytvořen.",
+      "approvalUsed": "Toto schválení už vytvořilo plán, který byl smazán. Požádejte znovu a nastavte nový."
     },
     "reason": {
       "scheduledRunsDisabled": "plánované běhy byly pro organizaci vypnuty",
@@ -8591,6 +8609,21 @@
       "latest": "Vždy používat aktivní verzi",
       "latestHint": "Každé spuštění použije to, co bylo publikováno naposledy.",
       "save": "Uložit"
+    },
+    "ranOnce": "Proběhl jednou. Znovu už neproběhne.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "Každou minutu",
+      "everyMinutes": "Každých {{count}} minut",
+      "hourly": "Každou hodinu v :{{minute}}",
+      "daily": "Každý den v {{time}}",
+      "weekdays": "Každý pracovní den v {{time}}",
+      "weekly": "Každý {{day}} v {{time}}",
+      "monthly": "Každý měsíc {{day}}. dne v {{time}}",
+      "onceToday": "Jednou, dnes v {{time}}",
+      "onceTomorrow": "Jednou, zítra v {{time}}",
+      "onceOn": "Jednou, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -9445,7 +9478,11 @@
       "install_packages_one": "Nainstalovat balíčky",
       "install_packages_few": "Nainstalovat balíčky {{count}}krát",
       "install_packages_many": "Nainstalovat balíčky {{count}}krát",
-      "install_packages_other": "Nainstalovat balíčky {{count}}krát"
+      "install_packages_other": "Nainstalovat balíčky {{count}}krát",
+      "scheduleCreate_one": "Nastavit plán",
+      "scheduleCreate_few": "Nastavit {{count}} plány",
+      "scheduleCreate_many": "Nastavit {{count}} plánů",
+      "scheduleCreate_other": "Nastavit {{count}} plánů"
     },
     "engineWants": "{{engine}} chce:",
     "childWants": "Programovací úloha chce:",
@@ -9543,7 +9580,8 @@
     "waitingForOwner_many": "Čeká se, až vlastník konverzace rozhodne o {{count}} kroku",
     "waitingForOwner_other": "Čeká se, až vlastník konverzace rozhodne o {{count}} krocích",
     "denyAllLabel": "Zamítnout vše: {{title}}",
-    "titleSiteUpload": "Povolit v tomto běhu nahrávání na {{destination}}?"
+    "titleSiteUpload": "Povolit v tomto běhu nahrávání na {{destination}}?",
+    "titleSchedule": "Nastavit plán"
   },
   "engineSignIn": {
     "title": "Přihlášení do programovacích enginů",

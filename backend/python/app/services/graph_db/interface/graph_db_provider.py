@@ -5637,6 +5637,9 @@ class IGraphDBProvider(ABC):
         """
         Upsert a sync point.
 
+        Fields merge into the stored point. A field given as None is removed, so it reads back absent on
+        every store (not stored as null).
+
         Args:
             sync_point_key (str): Sync point key
             sync_point_data (Dict): Sync point data
@@ -5666,7 +5669,8 @@ class IGraphDBProvider(ABC):
     ) -> bool:
         """Update an existing sync point only if every ``expected`` field still holds its value.
 
-        A compare-and-set: ``None`` matches a missing or null field. Returns
+        A compare-and-set: ``None`` matches a missing or null field, and a None in
+        ``sync_point_data`` removes that field, as in ``upsert_sync_point``. Returns
         whether the update was applied; False when the sync point is missing
         or any expected field has changed since the caller read it.
         """

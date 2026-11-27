@@ -572,6 +572,9 @@
         "node": [
           "backend/nodejs/apps/src/modules/agent-harness/adapters/configuration/platform-rollout-settings.ts",
           "backend/nodejs/apps/src/modules/agent-harness/domain/labs-stages.ts"
+        ],
+        "python": [
+          "backend/python/app/services/featureflag/platform_settings.py"
         ]
       },
       "shipped": null,

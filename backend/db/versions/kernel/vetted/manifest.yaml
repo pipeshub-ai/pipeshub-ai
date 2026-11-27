@@ -49,3 +49,24 @@ functions:
       RETURN false;
     test:
       checks: [privileges, catalog]
+
+  # The per-org steps of the maintenance jobs (they write through the jobs login, not through a unit of work, so no write fence
+  # runs for them) call this first in their transaction: it takes the profile fence's barrier (7341) shared, to commit, as the
+  # Python write units do, so whoever records a hold waits for the job too, and refuses (25006) an org whose writes
+  # kernel.org_writes_held holds, so a held org gets no derived rows from a job either.
+  - name: kernel.assert_org_writable
+    class: jobs
+    scope: global
+    args:
+      - {name: p_org, type: text, length: [1, 64]}
+    returns: boolean
+    body: |
+      IF NOT pg_try_advisory_xact_lock_shared(7341, 1) THEN
+        RAISE EXCEPTION 'the organisation writes are being held' USING ERRCODE = '25006';
+      END IF;
+      IF kernel.org_writes_held(p_org) THEN
+        RAISE EXCEPTION 'the organisation writes are held' USING ERRCODE = '25006';
+      END IF;
+      RETURN true;
+    test:
+      checks: [privileges, catalog]
