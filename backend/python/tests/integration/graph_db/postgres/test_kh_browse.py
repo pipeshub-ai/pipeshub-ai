@@ -1590,8 +1590,15 @@ async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_ke
         with ctx(org):
             page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=10,
                                                                 start_id="small", start_type="folder", sort_field=field, sort_dir=way)
+            # a page past a cursor counts its total (kg.listing_count): the first page's windows reach the end of the scope, and count it themselves
+            at = page["rows"][1]
+            later = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=2,
+                                                                 start_id="small", start_type="folder", sort_field=field, sort_dir=way,
+                                                                 after={"nullRank": at["nullRank"], "sortKey": at["sortKey"], "id": at["id"]})
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert sorted(r["id"] for r in page["rows"]) == small, page["rows"]
+        assert [r["id"] for r in later["rows"]] == [r["id"] for r in page["rows"][2:4]] and later["total"] == 5, (later["rows"], later["total"])
+        assert any("pipeshub:kg.listing_count" in q[:60] for _, q, _ in ran), "the scoped total was not counted"
         assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.listing_page_admitted", "kg.listing_undecided", "kg.listing_count"))
         assert read and all(n <= 20 for n in read), (field, way, read)
