@@ -187,7 +187,7 @@ describe('Toolset, MCP server and API toolset proxies: a request is logged once,
       const status = await send(method, `/api/v1/toolsets${path}`, body)
 
       expect(backend.callsTo(method, backendPath).length, 'the request must reach the connector service').to.be.at.least(1)
-      expect(status).to.equal(500)
+      expect(status).to.equal(502)
       expect(visible().filter((r) => !REQUEST_LINES.has(r.message))).to.deep.equal([])
       expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
       expect(byMessage('http.request.error').map((r) => [level(r), r.error_class])).to.deep.equal([['warn', 'upstream_5xx']])
@@ -268,7 +268,7 @@ describe('Toolset, MCP server and API toolset proxies: a request is logged once,
     it(`MCP servers ${method} ${path}: a connector-service 500 is one WARN failure line, each line with the server`, async () => {
       backend.on(method, `/api/v1/mcp-servers${path}`, { status: 500, body: { detail: 'Internal Server Error' } })
 
-      expect(await send(method, `/api/v1/mcp-servers${path}`)).to.equal(500)
+      expect(await send(method, `/api/v1/mcp-servers${path}`)).to.equal(502)
 
       expect(visible().filter((r) => !REQUEST_LINES.has(r.message))).to.deep.equal([])
       expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])
@@ -288,7 +288,7 @@ describe('Toolset, MCP server and API toolset proxies: a request is logged once,
   it('API toolsets: a connector-service 500 is one WARN failure line, each line with toolset_id', async () => {
     backend.on('GET', `/api/v1/api-toolsets/instances/${TOOLSET}`, { status: 500, body: { detail: 'Internal Server Error' } })
 
-    expect(await send('GET', `/api/v1/api-toolsets/instances/${TOOLSET}`)).to.equal(500)
+    expect(await send('GET', `/api/v1/api-toolsets/instances/${TOOLSET}`)).to.equal(502)
 
     expect(visible().filter((r) => !REQUEST_LINES.has(r.message))).to.deep.equal([])
     expect(mine().filter((r) => level(r) === 'error')).to.deep.equal([])

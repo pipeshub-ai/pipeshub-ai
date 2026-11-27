@@ -629,6 +629,7 @@ async def prepare_turn_scope(
     agent_sources: Mapping[str, Iterable[str]] | None = None,
     project_sources: Mapping[str, Iterable[str]] | None = None,
     connection_sources: Mapping[str, Iterable[str]] | None = None,
+    require_vector_ready: bool = True,
 ) -> dict[str, Any]:
     """A chat turn's filters with the server-set keys in place.
 
@@ -657,6 +658,13 @@ async def prepare_turn_scope(
     # read a record by id, which no search filter narrows.
     bind(AGENT_BOUND_FILTER_KEYS, agent_sources)
     if not has_selection(turn):
+        named = frozenset(i for key in CONTAINER_SCOPE_FILTER_KEYS for i in _ids(turn, key))
+        if connection_sources is not None and names_below_apps(connection_sources) and named:
+            # Whole apps named under a limit of folders or files: record those the limit
+            # reaches, as a selection would, for the tools that work per app.
+            user_key = await resolve_user_key(graph_provider, user_id)
+            limit = await connection_bound_scope(graph_provider, user_key, org_id, turn) if user_key else None
+            turn[SELECTION_APPS_FILTER_KEY] = sorted(named & limit.connector_ids) if limit is not None else []
         return turn
     # The selection is the whole scope of the turn: where it leaves a tool
     # with no app to work on, that means nothing, never everything.
@@ -665,8 +673,20 @@ async def prepare_turn_scope(
     user_key = await resolve_user_key(graph_provider, user_id)
     scope = (await resolve_request_scopes(graph_provider, user_key, org_id, turn))[0] if user_key else None
     if scope is not None and not scope.is_empty:
-        await require_membership_ready(graph_provider, scope)
-        turn[SELECTION_APPS_FILTER_KEY] = sorted(scope.connector_ids - scope.app_ids)
+        if require_vector_ready:
+            await require_membership_ready(graph_provider, scope)
+        touched = scope.connector_ids - scope.app_ids
+        if connection_sources is not None:
+            # Only the apps the limit reaches: a folder the request names in
+            # another app must not send a scan there.
+            limit = await connection_bound_scope(graph_provider, user_key, org_id, turn)
+            reach = limit.connector_ids if limit is not None else frozenset()
+            touched &= reach
+            if names_below_apps(connection_sources):
+                # Tools that work per app scan only the recorded apps under such a
+                # limit, so whole apps the request names are recorded too, inside it.
+                touched |= reach & frozenset(i for key in CONTAINER_SCOPE_FILTER_KEYS for i in _ids(turn, key))
+        turn[SELECTION_APPS_FILTER_KEY] = sorted(touched)
     return turn
 
 

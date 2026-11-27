@@ -3421,7 +3421,7 @@ class _ClaimedRun:
         return replace(call, redaction=self.effects.redaction(call) or POLICY_REDACTION)
 
     def _ctx(self, inv: Invocation) -> ToolContext:
-        return self.invoker.context(inv.invocation_id, self._turn_text)
+        return self.invoker.context(inv.invocation_id, self._turn_text, inv.interaction_id, inv.args_digest)
 
     # ---- child runs (P6.1, K-L) ----
 

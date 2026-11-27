@@ -42,6 +42,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_queue_done": ((9,), "kg.restamp_queue"),
     "kg.w_stamps_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True]), "kg.records"),
     "kg.w_r13_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
+    "kg.w_stamps_r13_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True], [False]), "kg.records"),
     "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
@@ -64,6 +65,8 @@ CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that ar
     "kg.w_kb_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::text[]", "%s::text[]", "%s::bigint[]", "%s::bigint[]", "%s::bigint[]",
                             "%s::smallint[]", "%s::boolean[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
+    "kg.w_stamps_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
+                            "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
     "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
@@ -78,7 +81,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
-GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
+GUARDED = ("kg.w_stamps_set", "kg.w_stamps_r13_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
 EPOCH = 13
 
 
@@ -259,6 +262,11 @@ BAD = {
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
                         (None, [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True])],
+    "kg.w_stamps_r13_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True], [False]),
+                            ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True], [None]),
+                            ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True], [False, True]),
+                            ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True], [False]),
+                            (None, [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True], [False])],
     "kg.w_counts_add": [([5, 6], [1], [7], [3], [False], [None], [None], [2]), ([None], [1], [7], [3], [False], [None], [None], [2]), ([5], [3], [7], [3], [False], [None], [None], [2]),
                         ([5], [1], [7], [4], [False], [None], [None], [2]), ([5], [2], [None], [None], [None], ["x" * 65], [None], [2]), ([5], [2], [None], [None], [None], [None], ["bogus"], [2]),
                         ([5], [1], [7], [3], [False], [None], [None], [None]), (None, [1], [7], [3], [False], [None], [None], [2])],
@@ -701,6 +709,19 @@ def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(
         assert tuple(got) == (True, b"\x00\x01", True, 4)
         call(c, "kg.w_r13_set", ORG_B, ([11], [3], ["rec-1"], [3], [False]))                                                    # another org's call makes a row of its own
         assert c.execute("SELECT r13 FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is True
+        clean(c)
+
+
+def test_the_stamps_and_r13_are_written_in_one_upsert_to_the_row_of_the_session_org(pdb):
+    """kg_0028: one call sets the stamp columns and r13 of a record, leaving its other columns; another org's call makes a row of its own."""
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        assert call(c, "kg.w_stamps_r13_set", ORG_A, ([11], [3], ["rec-1"], [3], [b"\x00\x01"], [None], [True], [True], [False], [True], [4], [False], [True])) == [(1,)]
+        got = c.execute("SELECT r13, path, self_lit, legacy_reason, leaf, name FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got)[:5] == (True, b"\x00\x01", True, 4, False) and got[5] is not None
+        call(c, "kg.w_stamps_r13_set", ORG_B, ([11], [3], ["rec-1"], [3], [None], [None], [False], [False], [False], [False], [None], [True], [False]))
+        assert c.execute("SELECT r13, legacy_reason FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone() == (True, 4)
         clean(c)
 
 

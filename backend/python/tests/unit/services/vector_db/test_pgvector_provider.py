@@ -510,7 +510,11 @@ def searcher(svc, monkeypatch) -> tuple[PgVectorService, SimpleNamespace]:
     async def run(fn, **opts) -> object:
         return await fn(None)
 
-    svc._db = SimpleNamespace(run=run)
+    class _Db:                                                        # a KernelDB's surface: run, and the pool size the leg gate reads
+        cfg = SimpleNamespace(pool_max=10)
+
+    svc._db = _Db()
+    svc._db.run = run
     return svc, calls
 
 
@@ -698,6 +702,30 @@ async def test_every_legs_reason_is_noted_an_exact_dense_leg_does_not_hide_a_wor
     with degraded_notice.collect() as noted:
         assert await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))]) == [[]]
     assert sorted(noted) == ["quantization", "timeout"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("pool_max", "together"), [(2, 1), (4, 2), (1, 1)])
+async def test_searches_run_their_legs_only_while_the_pool_holds_a_connection_for_each(searcher, monkeypatch, pool_max, together) -> None:
+    """Each search runs two legs at once, a pooled connection each. With more searches than that in flight the legs waited for a
+    connection inside their own budgets and ran out of time; now the extra searches wait before their legs start."""
+    from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+    svc._db.cfg = SimpleNamespace(pool_max=pool_max)
+    running, peak = 0, 0
+
+    async def slow(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        return dense.Leg([(10, str(__import__("uuid").UUID(int=1)))], SimpleNamespace(tier=dense.Tier.E0, share_band="all"), None), SimpleNamespace(leaf_rows=3, n_hat=3)
+
+    monkeypatch.setattr(dense, "search", slow)
+    got = await asyncio.gather(*(svc.query_nearest_points("records", [request()]) for _ in range(6)))
+    assert peak == together and all(len(hits) == 1 for [hits] in got)
 
 
 @pytest.mark.asyncio

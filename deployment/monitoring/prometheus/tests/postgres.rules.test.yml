@@ -193,6 +193,25 @@ tests:
               summary: "Autovacuum is not keeping up with a table"
               description: "public.bloated has 500k dead rows, over 30% of the table, for an hour. Check for long transactions holding them back and the table's last_autovacuum."
 
+  - name: search deltas not folded
+    interval: 5m
+    input_series:
+      - series: 'pg_stat_user_tables_n_live_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="retrieval", relname="lexical_term_delta"}'
+        values: '2000x5 70000000x10'
+      - series: 'pg_stat_user_tables_n_live_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="public", relname="lexical_term_delta"}'
+        values: '70000000x15'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: PostgresSearchFoldBehind
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: PostgresSearchFoldBehind
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter, datname: pipeshub, schemaname: retrieval, relname: lexical_term_delta}
+            exp_annotations:
+              summary: "Search term-frequency deltas are not being folded"
+              description: "retrieval.lexical_term_delta holds 70M unfolded rows for 30 minutes, and every word search reads them. Check that the fold worker (db.maintain fold --watch) is running and that its log shows passes."
+
   - name: database growth
     interval: 5m
     input_series:

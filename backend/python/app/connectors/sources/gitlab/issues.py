@@ -287,7 +287,8 @@ class IssuesSync:
         """Principals who see a confidential issue regardless of their project role.
 
         Resolved through the same path as member permissions, so an author without a
-        resolvable identity is parked on a pseudo-group rather than dropped.
+        resolvable identity is parked on a pseudo-group rather than dropped. A lookup that
+        fails raises, so the issue is retried instead of rewritten without that grant.
         """
         c = self.c
         candidates: list[int] = []

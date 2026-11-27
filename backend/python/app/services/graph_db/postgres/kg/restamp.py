@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app.core.db import notify
 from app.core.org_context import OrgContext, bind, spawn_detached
 from app.services.graph_db.postgres.kg import locks, stamp
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
@@ -132,7 +133,7 @@ def _ctx(org: str) -> OrgContext:
 
 async def _notify(tx: Tx) -> None:
     """Wake the restamp worker at commit."""
-    await tx.execute("/* pipeshub:kg.restamp_notify */ SELECT pg_notify('pipeshub_kg_restamp', '')")
+    await notify(tx, "pipeshub_kg_restamp")
 
 
 async def enqueue_app(tx: Tx, org: str, app_sk: int, reason: str) -> int:
