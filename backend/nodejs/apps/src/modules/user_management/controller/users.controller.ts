@@ -1460,8 +1460,12 @@ export class UserController {
         updateFields.role === 'admin' && previousRole !== 'admin';
       // The route refuses a token that grants admin; taking admin away only shows here, once
       // the target's current role is known. Sending someone's current role stays open.
-      if (roleChanging && req.user.isOAuth === true) {
-        throw new ForbiddenError(SESSION_ONLY_MESSAGE);
+      if (req.user.isOAuth === true) {
+        if (roleChanging || demotingAdmin) {
+          throw new ForbiddenError(SESSION_ONLY_MESSAGE);
+        }
+        // Not written back, so it cannot undo a promotion made since the read.
+        delete updateFields.role;
       }
 
       if (demotingAdmin && (!id || !orgId)) {

@@ -37836,7 +37836,7 @@ paths:
             An OAuth access token without the `user:write` scope is also refused with `403`
             (`Insufficient scope. Required: user:write`), before the request is validated.
 
-            Also returned when the bearer token is an OAuth access token or a personal access token and the body sets `email` or sets `role` to `admin` (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). Other fields stay open to tokens.
+            Also returned when the bearer token is an OAuth access token or a personal access token and the body sets `email` or sets `role` to anything other than the user's current role, which includes taking `admin` away (`HTTP_FORBIDDEN`, "This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted"). Other fields stay open to tokens, and a `role` equal to the current one is accepted but not written.
           content:
             application/json:
               schema:
