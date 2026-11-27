@@ -32,6 +32,13 @@ export const EDITION_PLATFORM_FEATURE_FLAGS: readonly import('./modules/configur
 export const EDITION_WORKER_STAGES: readonly string[] = [];
 
 /**
+ * Sign-in history entries this edition writes besides the built-in ones: activity types and login modes that both
+ * document stores accept (`USER_ACTIVITY_TYPES`, `USER_LOGIN_MODES` in libs/utils/userActivities.utils.ts).
+ */
+export const EDITION_ACTIVITY_TYPES: readonly string[] = [];
+export const EDITION_LOGIN_MODES: readonly string[] = [];
+
+/**
  * Logging provider override, or `null` for the default text logging. Typed
  * `unknown` so this file stays import-free; `getProvider` in
  * `libs/services/structured-logging` checks the shape.

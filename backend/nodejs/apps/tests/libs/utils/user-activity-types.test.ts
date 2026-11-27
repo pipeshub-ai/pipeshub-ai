@@ -9,6 +9,7 @@ import {
 } from '../../../src/libs/utils/userActivities.utils';
 import { UserActivities } from '../../../src/modules/auth/schema/userActivities.schema';
 import { checkActivity } from '../../../src/libs/repositories/activity/pg';
+import { EDITION_ACTIVITY_TYPES, EDITION_LOGIN_MODES } from '../../../src/edition';
 
 // R46FIX-1: WP-73 added ACCOUNT DISABLED / ENABLED to the utils but not to the
 // document schema, so every deactivation answered 503 on Mongo. Each store must
@@ -36,9 +37,9 @@ function row(activityType: string, loginMode?: string) {
 }
 
 describe('R46FIX-1: user activity types are accepted by every store', () => {
-  it('lists every type the utils define', () => {
+  it('lists every type the utils define, and the ones the edition adds', () => {
     expect([...USER_ACTIVITY_TYPES].sort()).to.deep.equal(
-      Object.values(userActivitiesType).sort(),
+      [...new Set([...Object.values(userActivitiesType), ...EDITION_ACTIVITY_TYPES])].sort(),
     );
     expect(USER_ACTIVITY_TYPES).to.include.members(['ACCOUNT DISABLED', 'ACCOUNT ENABLED']);
   });
@@ -64,6 +65,24 @@ describe('R46FIX-1: user activity types are accepted by every store', () => {
   it('both stores still refuse a type nobody defined', () => {
     expect(new UserActivities(row('NOT A TYPE')).validateSync()).to.not.equal(undefined);
     expect(() => checkActivity(row('NOT A TYPE') as never)).to.throw(/unknown activity type/);
+  });
+
+  it('lists every built-in login mode, and the ones the edition adds', () => {
+    expect(USER_LOGIN_MODES).to.include.members(['OTP', 'PASSWORD', 'AUTH SERVICE', 'GOOGLE OAUTH', 'MICROSOFT OAUTH', 'SSO', 'AZUREAD OAUTH', 'OAUTH', 'GITHUB OAUTH']);
+    expect(USER_LOGIN_MODES).to.include.members([...EDITION_LOGIN_MODES]);
+    expect(new Set(USER_LOGIN_MODES).size).to.equal(USER_LOGIN_MODES.length);
+  });
+
+  for (const type of EDITION_ACTIVITY_TYPES) {
+    it(`both stores accept the edition's activity type ${type}`, () => {
+      expect(new UserActivities(row(type)).validateSync()).to.equal(undefined);
+      expect(() => checkActivity(row(type) as never)).not.to.throw();
+    });
+  }
+
+  it('both stores still refuse a login mode nobody defined', () => {
+    expect(new UserActivities(row('LOGIN', 'NOT A MODE')).validateSync()).to.not.equal(undefined);
+    expect(() => checkActivity(row('LOGIN', 'NOT A MODE') as never)).to.throw(/unknown login mode/);
   });
 
   it('a database constraint on activity_type, if a migration adds one, names every type', () => {
