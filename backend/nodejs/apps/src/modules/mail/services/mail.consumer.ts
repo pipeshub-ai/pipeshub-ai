@@ -104,28 +104,55 @@ const LINK_TEMPLATE = 'appuserInvite';
  * The live user the link is for. A store that is briefly away is asked again (three tries over about three seconds)
  * before the job fails, so a short outage does not lose an invite.
  */
-async function liveUserWithRetry(orgId: string, userId: string) {
+type LiveUser = Awaited<
+  ReturnType<ReturnType<typeof getUserRepository>['getLive']>
+>;
+
+async function liveUserWithRetry(
+  orgId: string,
+  userId: string,
+): Promise<LiveUser> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await getUserRepository().getLive(orgId, userId);
     } catch (error) {
-      if (attempt >= 3 || !isRetryableStoreError(error)) throw new LinkUserUnavailable();
+      if (attempt >= 3 || !storeBrieflyAway(error))
+        throw new LinkUserUnavailable();
       await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
     }
   }
 }
 
+/** MongoDB driver errors that mean the server could not be reached for a moment (the driver returns them as is). */
+const MONGO_TRANSIENT = new Set([
+  'MongoNetworkError',
+  'MongoNetworkTimeoutError',
+  'MongoServerSelectionError',
+  'MongoPoolClearedError',
+]);
+
+/** A store failure that passes by itself: the store's own retryable errors, or a MongoDB connection blip. */
+function storeBrieflyAway(error: unknown): boolean {
+  if (isRetryableStoreError(error)) return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && MONGO_TRANSIENT.has(name);
+}
+
 /** The user store could not be read for the link: the mail is not sent, and the reason given is fixed text. */
 class LinkUserUnavailable extends Error {
   constructor() {
-    super('the invited user could not be read to prepare the set-password link');
+    super(
+      'the invited user could not be read to prepare the set-password link',
+    );
   }
 }
 
 /** A job asked for a set-password link it may not have (another org, or other recipients): nothing is sent. */
 class PasswordLinkRefused extends Error {
   constructor() {
-    super('set-password link refused: the job names another org or other recipients');
+    super(
+      'set-password link refused: the job names another org or other recipients',
+    );
   }
 }
 
@@ -321,7 +348,11 @@ export class MailConsumer {
       mail = await this.withPasswordResetLink(payload);
     } catch (error) {
       if (error instanceof PasswordLinkRefused) {
-        this.end(job, 'failure', { reason: 'link_refused', errorClass: 'forbidden', error });
+        this.end(job, 'failure', {
+          reason: 'link_refused',
+          errorClass: 'forbidden',
+          error,
+        });
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -408,8 +439,9 @@ export class MailConsumer {
     await this.notifyFailure(payload, failure.error);
   }
 
-  private async withPasswordResetLink(payload: MailEventPayload): Promise<MailBody> {
-
+  private async withPasswordResetLink(
+    payload: MailEventPayload,
+  ): Promise<MailBody> {
     let target = payload.passwordResetLinkFor;
     if (!target) {
       return payload.mail;
@@ -421,13 +453,14 @@ export class MailConsumer {
     // Only the invite carries a link (the one mail our producers put one in): a job cannot wrap it in other text.
     if (
       bound === undefined ||
-      String(target.orgId) !== bound ||
+      target.orgId !== bound ||
       payload.mail.emailTemplateType !== LINK_TEMPLATE
     ) {
       throw new PasswordLinkRefused();
     }
-    const user = await liveUserWithRetry(bound, String(target.userId));
-    const stored = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
+    const user = await liveUserWithRetry(bound, target.userId);
+    const stored =
+      typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
     const to: unknown = payload.mail.sendEmailTo;
     const onlyTheUser =
       stored !== '' &&
@@ -439,7 +472,11 @@ export class MailConsumer {
     // No copy to anyone else, in whatever form a job gives it (a list, or a bare string the transport would also take).
     const otherRecipients = MAIL_RECIPIENT_LISTS.some((field) => {
       const value = (payload.mail as unknown as Record<string, unknown>)[field];
-      return !(value === undefined || value === null || (Array.isArray(value) && value.length === 0));
+      return !(
+        value === undefined ||
+        value === null ||
+        (Array.isArray(value) && value.length === 0)
+      );
     });
     if (!onlyTheUser || otherRecipients) {
       throw new PasswordLinkRefused();

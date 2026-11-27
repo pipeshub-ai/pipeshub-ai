@@ -3,6 +3,13 @@ import { parseSandboxCapacityAlert } from '../../../src/modules/notification/uti
 
 // A signature covers only an event's payload: the alert's type and email flag are read from there, so a writer to the
 // broker cannot turn a signed warning into a "back to normal" notice or stop its email by changing the top level.
+/** A copy of *obj* without *key*. */
+function without<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+  const copy: Partial<T> = { ...obj };
+  delete copy[key];
+  return copy as Omit<T, K>;
+}
+
 describe('sandbox load alert: type and email come from the payload when it carries them', () => {
   const payload = (over: Record<string, unknown> = {}) => ({
     v: 1,
@@ -29,7 +36,7 @@ describe('sandbox load alert: type and email come from the payload when it carri
   });
 
   it('an older producer (no type in the payload) is read from the top level, as before', () => {
-    const { type: _t, email: _e, ...older } = payload();
+    const older = without(without(payload(), 'type'), 'email');
     const result = parseSandboxCapacityAlert({ type: 'SANDBOX_CAPACITY_WARNING', email: false, payload: older }) as {
       ok: boolean;
       alert?: { type: string; email: boolean };

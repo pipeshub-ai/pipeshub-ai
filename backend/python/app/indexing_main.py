@@ -3204,7 +3204,7 @@ async def _send_hold_notice(producer: Any, document: dict[str, Any]) -> bool:  #
         return True
     key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
     with for_org(org, job="provider_hold_notice"):
-        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=notification_message(document), key=key))
+        return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=notification_message(document, org), key=key))
 
 
 async def _run_provider_hold_leader(

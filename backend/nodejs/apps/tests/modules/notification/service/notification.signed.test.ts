@@ -62,8 +62,8 @@ describe('notification/service/notification.signed', () => {
       subscribe: sinon.stub().resolves(),
       consume: sinon.stub().resolves(),
     };
-    sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').callsFake(async (_org: string, ids?: string[]) =>
-      (ids ?? []).map((u) => new mongoose.Types.ObjectId(u)),
+    sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').callsFake(async (_org: unknown, ids: unknown) =>
+      (Array.isArray(ids) ? ids : []).map(String),
     );
     setNotificationRepository({
       insertMany: sinon.stub().callsFake(async (docs: Array<Record<string, unknown>>) => {
@@ -106,25 +106,25 @@ describe('notification/service/notification.signed', () => {
     await publish(orgA, notification(orgA, userA));
 
     expect(wire).to.have.length(1);
-    expect((wire[0].ctx as { orgId?: string }).orgId).to.equal(orgA);
+    expect((wire[0]!.ctx as { orgId?: string }).orgId).to.equal(orgA);
     expect(wire[0]).to.not.have.property('title');
-    await deliver(wire[0]);
+    await deliver(wire[0]!);
 
     expect(stored).to.have.length(1);
-    expect(stored[0].org).to.equal(orgA);
-    expect(stored[0].doc).to.include({ orgId: orgA, title: 'Sync failed', assignedTo: userA });
-    expect(stored[0].doc.payload).to.deep.equal({ connectorId: 'c1' });
+    expect(stored[0]!.org).to.equal(orgA);
+    expect(stored[0]!.doc).to.include({ orgId: orgA, title: 'Sync failed', assignedTo: userA });
+    expect(stored[0]!.doc.payload).to.deep.equal({ connectorId: 'c1' });
   });
 
   it('ignores top-level fields added to a signed message: no other org, no other recipient, no other text', async () => {
     await publish(orgA, notification(orgA, userA));
-    const forged = { ...wire[0], orgId: orgB, type: 'X', title: 'Forged', recipientUserIds: [userB] };
+    const forged = { ...wire[0]!, orgId: orgB, type: 'X', title: 'Forged', recipientUserIds: [userB] };
 
     await deliver(forged);
 
     expect(stored).to.have.length(1);
-    expect(stored[0].org).to.equal(orgA);
-    expect(stored[0].doc).to.include({ orgId: orgA, title: 'Sync failed', assignedTo: userA });
+    expect(stored[0]!.org).to.equal(orgA);
+    expect(stored[0]!.doc).to.include({ orgId: orgA, title: 'Sync failed', assignedTo: userA });
     expect(stored.some((s) => s.org === orgB || s.doc.assignedTo === userB)).to.equal(false);
   });
 
@@ -164,7 +164,7 @@ describe('notification/service/notification.signed', () => {
     try {
       await deliver(legacySigned(orgA, userA));
       expect(stored).to.have.length(1);
-      expect(stored[0].org).to.equal(orgA);
+      expect(stored[0]!.org).to.equal(orgA);
     } finally {
       if (savedMode === undefined) delete process.env.ORG_CONTEXT_MODE;
       else process.env.ORG_CONTEXT_MODE = savedMode;
@@ -179,15 +179,74 @@ describe('notification/service/notification.signed', () => {
     await withHandler.consume(sinon.stub().resolves());
     await publish(orgA, notification(orgA, userA));
 
-    await deliver({ ...wire[0], audience: 'platformAdmins' });
+    await deliver({ ...wire[0]!, audience: 'platformAdmins' });
 
     expect(platform.handle.called).to.equal(false);
     expect(stored).to.have.length(1);
-    expect(stored[0].doc).to.include({ orgId: orgA, assignedTo: userA });
+    expect(stored[0]!.doc).to.include({ orgId: orgA, assignedTo: userA });
+  });
+
+  const withPlatform = async () => {
+    const platform = { handle: sinon.stub().resolves() };
+    const service = { sendToUser: sinon.stub() } as unknown as NotificationService;
+    const withHandler = new NotificationConsumer(broker, logger, service, platform as never);
+    broker.consume.resetHistory();
+    await withHandler.consume(sinon.stub().resolves());
+    return platform;
+  };
+
+  const inEnforce = async (run: () => Promise<void>) => {
+    const savedMode = process.env.ORG_CONTEXT_MODE;
+    process.env.ORG_CONTEXT_MODE = 'enforce';
+    try {
+      await run();
+    } finally {
+      if (savedMode === undefined) delete process.env.ORG_CONTEXT_MODE;
+      else process.env.ORG_CONTEXT_MODE = savedMode;
+    }
+  };
+
+  it('in enforce mode an older-shape signed message given a platform audience is refused, not alerted', async () => {
+    const platform = await withPlatform();
+    await inEnforce(async () => {
+      // The alert type and email flag would be read from the unsigned top level.
+      await deliver({
+        ...legacySigned(orgA, userA),
+        audience: 'platformAdmins',
+        type: 'SANDBOX_CAPACITY_CRITICAL',
+        email: true,
+      });
+    });
+
+    expect(platform.handle.called, 'no platform alert').to.equal(false);
+    expect(stored).to.have.length(0);
+  });
+
+  it('in enforce mode a signed alert that carries its type in its payload still reaches the platform handler', async () => {
+    const platform = await withPlatform();
+    const alert = forOrg(orgA, 'test', () =>
+      JSON.parse(
+        JSON.stringify(
+          signMessage('notification', {
+            orgId: orgA,
+            audience: 'platformAdmins',
+            payload: { orgId: orgA, type: 'SANDBOX_CAPACITY_CRITICAL', email: true, v: 1 },
+          }),
+        ),
+      ),
+    );
+    await inEnforce(() => deliver(alert));
+
+    expect(platform.handle.calledOnce).to.equal(true);
   });
 
   it('a payload whose details hold type and orgId is still read in the older shape', () => {
     const raw = { ...notification(orgA, userA), payload: { type: 'details', orgId: orgA } };
+    expect(notificationOf(raw).value).to.equal(raw);
+  });
+
+  it('an unsigned older-shape message whose details hold a notification object is read as itself', () => {
+    const raw = { ...notification(orgA, userA), payload: { notification: { title: 'detail' } } };
     expect(notificationOf(raw).value).to.equal(raw);
   });
 
@@ -205,6 +264,6 @@ describe('notification/service/notification.signed', () => {
     await deliver({ payload: { notification: notification(orgA, userA), orgId: orgA } });
 
     expect(stored).to.have.length(1);
-    expect(stored[0].doc).to.include({ orgId: orgA, assignedTo: userA });
+    expect(stored[0]!.doc).to.include({ orgId: orgA, assignedTo: userA });
   });
 });

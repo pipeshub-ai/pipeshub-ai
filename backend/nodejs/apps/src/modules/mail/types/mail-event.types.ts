@@ -35,8 +35,7 @@ export interface MailEventPayload {
 
 /** What the mail topic carries: the job itself (unsigned), or the job under `payload` (the shape a signed envelope needs). */
 export type MailEventMessage =
-  | MailEventPayload
-  | { eventId?: string; payload: MailEventPayload };
+  MailEventPayload | { eventId?: string; payload: MailEventPayload };
 
 /**
  * The job in a consumed mail message. The signed shape (the job under `payload`) wins whenever `payload` is an object:

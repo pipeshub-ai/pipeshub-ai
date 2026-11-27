@@ -26,8 +26,13 @@ export enum EventType {
  */
 export function notificationMessage(doc: object): Record<string, unknown> {
   if (!signEnabled()) return doc as Record<string, unknown>;
-  const orgId = (doc as { orgId?: unknown }).orgId;
-  return { payload: { notification: doc, orgId: orgId == null ? orgId : String(orgId) } };
+  const orgId = (doc as { orgId?: { toString(): string } | null }).orgId;
+  return {
+    payload: {
+      notification: doc,
+      orgId: orgId == null ? orgId : orgId.toString(),
+    },
+  };
 }
 
 @injectable()

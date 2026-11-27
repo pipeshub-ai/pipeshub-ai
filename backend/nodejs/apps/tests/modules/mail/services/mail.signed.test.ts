@@ -17,6 +17,13 @@ import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors'
 
 // A queued mail (an invite, an alert) must reach a consumer that enforces the signed envelope: with ENVELOPE_SIGN on it
 // was published in a shape that cannot be signed, and the consumer dropped it as a stripped message.
+/** A copy of *obj* without *key*. */
+function without<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+  const copy: Partial<T> = { ...obj };
+  delete copy[key];
+  return copy as Omit<T, K>;
+}
+
 describe('mail/services/mail.signed', () => {
   const org = '6b0800000000000000000001';
   const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() } as any;
@@ -51,11 +58,11 @@ describe('mail/services/mail.signed', () => {
   let getLive: (o: string, id: string) => Promise<unknown>;
   const consume = async (messages: Array<Record<string, unknown>>, notified: string[] = []) => {
     setUserRepository({ getLive: (o: string, id: string) => getLive(o, id) } as never);
-    const sent: Array<{ to: string; org?: string; cc?: unknown; replyTo?: unknown }> = [];
+    const sent: Array<{ to: string; org?: string; cc?: unknown; replyTo?: unknown; link?: unknown }> = [];
     const sender = {
       getSmtpConfig: sinon.stub().returns({ host: 'mailpit', port: 1025, fromEmail: 'no-reply@example.com' }),
       send: sinon.stub().callsFake(async (mail: any) => {
-        sent.push({ to: mail.sendEmailTo[0], org: getCurrentOrgId(), ...(mail.sendCcTo !== undefined ? { cc: mail.sendCcTo } : {}), ...(mail.replyTo !== undefined ? { replyTo: mail.replyTo } : {}) });
+        sent.push({ to: mail.sendEmailTo[0], org: getCurrentOrgId(), ...(mail.templateData?.link !== undefined ? { link: mail.templateData.link } : {}), ...(mail.sendCcTo !== undefined ? { cc: mail.sendCcTo } : {}), ...(mail.replyTo !== undefined ? { replyTo: mail.replyTo } : {}) });
         return { status: 'sent' };
       }),
     };
@@ -108,8 +115,8 @@ describe('mail/services/mail.signed', () => {
     );
 
     expect(wire).to.have.length(1);
-    expect((wire[0].ctx as { orgId?: string }).orgId, 'signed under the org').to.equal(org);
-    expect((wire[0].ctx as { eventId?: string }).eventId, 'keeps the job id').to.equal('mail-evt-1');
+    expect((wire[0]!.ctx as { orgId?: string }).orgId, 'signed under the org').to.equal(org);
+    expect((wire[0]!.ctx as { eventId?: string }).eventId, 'keeps the job id').to.equal('mail-evt-1');
     const { sent, refused } = await consume(wire);
     expect(refused).to.deep.equal([]);
     expect(sent).to.deep.equal([{ to: 'new.person@example.com', org }]);
@@ -199,7 +206,7 @@ describe('mail/services/mail.signed', () => {
     it('gets no set-password link copied to anyone by CC, with or without an org on the job (unsigned path)', async () => {
       process.env.ENVELOPE_SIGN = 'false';
       const cc = (withOrg: boolean) => {
-        const { orgId: _o, ...noOrg } = job();
+        const noOrg = without(job(), 'orgId');
         const base = withOrg ? job() : noOrg;
         return {
           ...base,
@@ -215,7 +222,7 @@ describe('mail/services/mail.signed', () => {
 
     it('gets no set-password link when no org is bound at all', async () => {
       process.env.ENVELOPE_SIGN = 'false';
-      const { orgId: _o, ...noOrg } = job();
+      const noOrg = without(job(), 'orgId');
       const unbound = {
         ...noOrg,
         mail: { ...noOrg.mail, sendEmailTo: [victimB.email] },
@@ -292,6 +299,27 @@ describe('mail/services/mail.signed', () => {
 
       expect(calls).to.equal(2);
       expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
+      expect(sent[0]!.link, 'the invite carries its set-password link').to.be.a('string').and.include('http://app.test');
+    });
+
+    it('a MongoDB connection blip is asked again too, and the invite still goes out', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      let calls = 0;
+      const real = getLive;
+      getLive = async (o, id) => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error('connection reset'), { name: 'MongoNetworkError' });
+        return real(o, id);
+      };
+      const invite = {
+        ...job(),
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'new.person@example.com' },
+      };
+
+      const { sent } = await consume([invite]);
+
+      expect(calls).to.equal(2);
+      expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
     });
 
     it('a store that stays away sends nothing, and the admins are told in fixed words (no store error text)', async () => {
@@ -334,6 +362,7 @@ describe('mail/services/mail.signed', () => {
       const { sent } = await consume([invite]);
 
       expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
+      expect(sent[0]!.link, 'the invite carries its set-password link').to.be.a('string').and.include('http://app.test');
     });
   });
 });

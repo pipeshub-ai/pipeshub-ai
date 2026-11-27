@@ -8,14 +8,14 @@ from app.connectors.services.kafka_service import KafkaService
 from app.core.envelope import sign_enabled
 
 
-def notification_message(document: dict[str, Any]) -> dict[str, Any]:
+def notification_message(document: dict[str, Any], org_id: str | None) -> dict[str, Any]:
     """What goes on the notification topic for *document*. Signed, a message covers only its ``payload``: with
     ENVELOPE_SIGN on the whole notification goes inside it, where the consumer reads it, so its org, recipients and
     text cannot be changed in transit. With signing off it is the document, as before. Publish it with the
-    document's org bound, so it can be signed."""
+    document's org (*org_id*) bound, so it can be signed."""
     if not sign_enabled():
         return document
-    return {"payload": {"notification": document, "orgId": document.get("orgId")}}
+    return {"payload": {"notification": document, "orgId": org_id}}
 
 
 class NotificationService:
@@ -58,7 +58,7 @@ class NotificationService:
                 "recipientRoles": [role.value for role in recipient_roles] if recipient_roles else [],
                 "isDeleted": False,
             }
-            return await self._kafka_service.publish_notification(notification_message(document)) is True
+            return await self._kafka_service.publish_notification(notification_message(document, org_id)) is True
         except Exception as exc:  # noqa: BLE001 — must not break connector sync
             self._logger.warning(
                 "Failed to publish connector notification: \n Title: %s \n type: %s",

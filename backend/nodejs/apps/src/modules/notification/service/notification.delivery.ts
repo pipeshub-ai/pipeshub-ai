@@ -63,14 +63,15 @@ export function deliverToOrg(
   // A signed message is for the org its signature names: an event naming any other org is refused before anything is
   // read or written (the org binding below would refuse it too, as a mismatch).
   const signedOrg = currentEnvelopeOrg();
-  if (signedOrg !== null && String(event.orgId) !== signedOrg) {
+  if (signedOrg !== null && event.orgId !== signedOrg) {
     notificationEventRefused.inc({ reason: 'org_not_signed' });
     return Promise.reject(
       new ValidationError('Notification event refused', [
         {
           field: 'orgId',
           code: 'org_not_signed',
-          message: 'the event names another org than the one its signature names',
+          message:
+            'the event names another org than the one its signature names',
         },
       ]),
     );
