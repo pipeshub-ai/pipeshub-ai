@@ -165,6 +165,18 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return int(result[0]["c"]) if result else 0
 
+    async def count_user_groups_with_email_ids(self, connector_id: str) -> int:
+        """Count ``Group`` nodes whose ``externalGroupId`` is an email address: the directory's
+        own groups, leaving out groups a connector makes itself (Drive's audience groups,
+        ``workspace-members`` and ``domain-members:<domain>``, whose ids have no ``@``)."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            "MATCH (g:Group {connectorId: $cid}) WHERE g.externalGroupId CONTAINS '@' RETURN count(g) AS c",
+            {"cid": connector_id},
+        )
+        return int(result[0]["c"]) if result else 0
+
     async def count_record_group_edges(self, connector_id: str) -> int:
         """Count Record -> RecordGroup BELONGS_TO edges."""
         if not self.client:

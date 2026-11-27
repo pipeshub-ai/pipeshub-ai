@@ -222,9 +222,9 @@ async def _capture_via_indexing_pipeline(coro_agen: Any) -> dict[str, Any]:
 def _docling_llm_patches() -> tuple[Any, Any, Any]:
     """Patch Docling table LLM helpers used by DoclingDocToBlocksConverter.
 
-    ``docling_doc_to_blocks`` imports these by name from ``app.utils.table_enrichment``
-    / ``app.utils.llm``, so the patch target must be the name bound in *this* module's
-    namespace, not the definition site.
+    ``docling_doc_to_blocks`` imports these by name from ``app.utils.table_enrichment``,
+    so the patch target must be the name bound in *this* module's namespace, not the
+    definition site.
     """
     return (
         patch(
@@ -238,9 +238,9 @@ def _docling_llm_patches() -> tuple[Any, Any, Any]:
         # Only reached when the doc has tables; today's docx/pptx fixtures don't, but
         # keep it stubbed so a real (mocked) config_service is never asked for an LLM.
         patch(
-            "app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+            "app.utils.converters.docling_doc_to_blocks.indexing_llm_or_none",
             new_callable=AsyncMock,
-            return_value=(MagicMock(), {}),
+            return_value=MagicMock(),
         ),
     )
 
