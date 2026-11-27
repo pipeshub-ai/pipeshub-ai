@@ -1393,7 +1393,10 @@ export class RunProjector {
     // Legacy's ask_user_question pause (main #3592) sends no answer delta: the card is the turn.
     const waitingInput =
       'status' in completion && completion.status === 'waiting_input';
-    if (!waitingInput) {
+    // Nor does a run that failed: its reason is never streamed as answer text, as legacy no longer streams it. The
+    // reason is the asker's, and the chat's other readers follow every streamed frame live; it goes whole in the final
+    // frame, and the error message saved from it is shown per reader.
+    if (!waitingInput && outcome !== 'error') {
       this.emit(out, 'j', {
         type: AGUI.STATE_DELTA,
         runId: this.context.runId,
