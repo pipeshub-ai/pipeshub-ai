@@ -53520,6 +53520,11 @@ paths:
                         type: string
                         enum: [private, project]
                         description: Who in the project sees the conversation. Absent when never set.
+                      durable:
+                        type: boolean
+                        description: |
+                          The conversation runs on the durable agent harness. A client reads
+                          which harness the chat is on from this, not from its latest answer.
                       forkedFrom:
                         $ref: '#/components/schemas/ConversationForkOrigin'
                       forks:
