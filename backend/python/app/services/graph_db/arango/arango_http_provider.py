@@ -11379,7 +11379,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None
     ) -> bool:
         """
-        Upsert sync point by syncPointKey field.
+        Upsert sync point by syncPointKey field. A field given as None is removed, as on Neo4j and PostgreSQL.
         """
         try:
             # First check if document exists
@@ -11395,7 +11395,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query = """
                 FOR doc IN @@collection
                     FILTER doc.syncPointKey == @key
-                    UPDATE doc WITH @data IN @@collection
+                    UPDATE doc WITH @data IN @@collection OPTIONS { keepNull: false }
                     RETURN NEW
                 """
                 bind_vars = {
@@ -11416,7 +11416,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars = {
                     "@collection": collection,
                     "doc": {
-                        **sync_point_data,
+                        **{k: v for k, v in sync_point_data.items() if v is not None},
                         "syncPointKey": sync_point_key,
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                     }
@@ -11466,7 +11466,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         FOR doc IN @@collection
             FILTER doc.syncPointKey == @key {"".join(f" AND {c}" for c in conditions)}
             LIMIT 1
-            UPDATE doc WITH @data IN @@collection
+            UPDATE doc WITH @data IN @@collection OPTIONS {{ keepNull: false }}
             RETURN 1
         """
         result = await self.http_client.execute_aql(query, bind_vars)
