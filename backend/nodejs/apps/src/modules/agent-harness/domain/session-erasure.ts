@@ -179,6 +179,12 @@ export const SESSION_DATA_STORES: readonly SessionDataStore[] = [
     kind: 'mongo',
     coverage: { step: 'conversation' },
   },
+  // The reader check's stored closures of the chat's answer versions, by chat; PostgreSQL keeps none.
+  {
+    store: 'chatAnswerClosures',
+    kind: 'mongo',
+    coverage: { step: 'conversation' },
+  },
   { store: 'citations', kind: 'mongo', coverage: { step: 'conversation' } },
   // Frozen pre-chatSessions copies, migrated under the same _id.
   { store: 'conversations', kind: 'mongo', coverage: { step: 'conversation' } },

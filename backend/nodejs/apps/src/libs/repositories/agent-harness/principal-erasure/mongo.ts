@@ -228,6 +228,7 @@ const ORG_FILTERS: Readonly<
 > = {
   chatSessions: objectIdOrg,
   chatSessionMessages: objectIdOrg,
+  chatAnswerClosures: objectIdOrg,
   conversations: objectIdOrg,
   agentconversations: objectIdOrg,
   notifications: objectIdOrg,

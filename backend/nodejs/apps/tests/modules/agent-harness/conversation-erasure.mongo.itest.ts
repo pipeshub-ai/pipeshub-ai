@@ -31,9 +31,35 @@ import { ChatSession } from '../../../src/modules/enterprise_search/schema/chat.
 import { ChatSessionMessage } from '../../../src/modules/enterprise_search/schema/chat.session.message.schema';
 import Citation from '../../../src/modules/enterprise_search/schema/citation.schema';
 import { attachMessages, buildConversationResponse } from '../../../src/modules/enterprise_search/utils/utils';
+import { ChatAnswerClosure } from '../../../src/modules/enterprise_search/schema/chat.answer.closure.schema';
+import { MongoConversationRepository } from '../../../src/libs/repositories/conversation/mongo';
+import type { AnswerClosureDoc } from '../../../src/libs/repositories/conversation/types';
 import { hex } from './support/erasure-backfill-contract';
 
 registerHarnessModels([Citation] as unknown as Array<Model<never>>);
+
+/** A stored closure of one answer version of the chat, with every field the store keeps. */
+const closureOf = (orgId: string, sessionId: string): AnswerClosureDoc => {
+  const [rowId, ver] = [hex(), hex()];
+  return {
+    _id: `${rowId}@${ver}`,
+    orgId,
+    sessionId,
+    rowId,
+    ver,
+    rev: 1,
+    self: {},
+    add: {},
+    chain: [],
+    folded: [],
+    size: 1,
+    spans: [sessionId],
+    pub: { self: false, below: false, rows: [], chats: [] },
+    shares: {},
+    digest: 'd',
+    at: new Date(),
+  };
+};
 
 const LEGACY = ['conversations', 'agentconversations'];
 
@@ -124,6 +150,33 @@ describe('Conversation erasure ports on a MongoDB replica set', function () {
       { recordId: shared, removed: true },
       { recordId: kept, removed: undefined },
     ]);
+  });
+
+  it("an erased conversation's stored answer closures go with it; another conversation's stay", async () => {
+    await empty();
+    await ChatAnswerClosure.deleteMany({});
+    const [org, erased, kept, owner] = [hex(), hex(), hex(), hex()];
+    await seedMongoConversations([
+      { orgId: org, sessionId: erased, deleted: true, ownerId: owner, messages: 1 },
+      { orgId: org, sessionId: kept, deleted: false, ownerId: owner, messages: 1 },
+    ]);
+    // Stored as the reader check stores them: through the conversation repository, beside the rows.
+    await new MongoConversationRepository().saveAnswerClosures(org, [
+      closureOf(org, erased),
+      closureOf(org, erased),
+      closureOf(org, kept),
+    ]);
+    const closuresOf = (sessionId: string): Promise<number> =>
+      ChatAnswerClosure.countDocuments({ orgId: new Types.ObjectId(org), sessionId: new Types.ObjectId(sessionId) });
+    expect(await closuresOf(erased)).to.equal(2);
+
+    const eraser = new HarnessConversationEraser(new FakeChatAttachments());
+    expect(await eraser.erase(org, erased)).to.deep.include({ sessions: 1, answerClosures: 2 });
+
+    expect(await closuresOf(erased)).to.equal(0);
+    expect(await closuresOf(kept)).to.equal(1);
+    // Run again, nothing is left to remove or count.
+    expect(await eraser.erase(org, erased)).to.not.have.property('answerClosures');
   });
 
   describeConversationRetentionContract<ClientSession>('HarnessConversationRetention', async () => {

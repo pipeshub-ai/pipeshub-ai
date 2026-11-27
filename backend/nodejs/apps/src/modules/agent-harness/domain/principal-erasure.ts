@@ -111,6 +111,7 @@ export const UNMODELLED_COLLECTIONS: readonly string[] = [
 export const ORG_STORE_COVERAGE: Readonly<Record<string, OrgStoreCoverage>> = {
   chatSessions: 'org_stores',
   chatSessionMessages: 'org_stores',
+  chatAnswerClosures: 'org_stores',
   citations: 'org_stores',
   conversations: 'org_stores',
   agentconversations: 'org_stores',

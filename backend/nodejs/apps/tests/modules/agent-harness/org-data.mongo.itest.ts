@@ -197,6 +197,24 @@ describe('org data of the org erasure on a MongoDB replica set', function () {
       expect(await count('outbox_events', { value: { $regex: '"ox1"' } })).to.equal(1);
       expect(await count('agentAdmissionQuotas', { _id: `["org","${lookalike}"]` })).to.equal(1);
     });
+
+    it("removes the org's stored answer closures, which name their org as an ObjectId, and leaves another org's", async () => {
+      const [org, other] = [oid(), oid()];
+      const [mine, theirs] = [new Types.ObjectId(org), new Types.ObjectId(other)];
+      const closure = (orgId: Types.ObjectId) => ({
+        _id: `${oid()}@${oid()}` as never,
+        orgId,
+        sessionId: new Types.ObjectId(),
+        digest: 'd',
+      });
+      await insert('chatAnswerClosures', [closure(mine), closure(mine), closure(theirs)]);
+
+      const counts = await new MongoOrgData().eraseStores(org);
+
+      expect(counts['chatAnswerClosures']).to.equal(2);
+      expect(await count('chatAnswerClosures', { orgId: mine })).to.equal(0);
+      expect(await count('chatAnswerClosures', { orgId: theirs })).to.equal(1);
+    });
   });
 
   describe('destroyDataKeys', () => {
