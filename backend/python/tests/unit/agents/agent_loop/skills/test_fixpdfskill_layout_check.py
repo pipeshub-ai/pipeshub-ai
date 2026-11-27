@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.support import edition_defaults
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
@@ -293,17 +295,19 @@ class TestPackVersions:
 
     def test_every_pack_version_keeps_the_content_it_was_released_with(self) -> None:
         recorded: dict[str, dict[str, str]] = json.loads(DIGESTS.read_text()) if DIGESTS.exists() else {}
+        extra = edition_defaults.builtin_pack_digests_extra()
+        known = {name: {**recorded.get(name, {}), **extra.get(name, {})} for name in recorded.keys() | extra.keys()}
         current = _digests()
         changed = [
             f"{name} {version}" for name, (version, digest) in current.items()
-            if recorded.get(name, {}).get(version, digest) != digest
+            if known.get(name, {}).get(version, digest) != digest
         ]
         assert changed == [], f"content changed without a new pack_version: {changed}"
         if os.environ.get("PXH_REGEN_PACK_DIGESTS") == "1":
             for name, (version, digest) in current.items():
                 recorded.setdefault(name, {})[version] = digest
             DIGESTS.write_text(json.dumps(recorded, indent=2, sort_keys=True) + "\n")
-        missing = [f"{name} {version}" for name, (version, _) in current.items() if version not in recorded.get(name, {})]
+        missing = [f"{name} {version}" for name, (version, _) in current.items() if version not in known.get(name, {})]
         assert missing == [], f"record the new pack versions with PXH_REGEN_PACK_DIGESTS=1: {missing}"
 
     def test_this_change_bumped_every_pack_it_touched(self) -> None:

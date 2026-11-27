@@ -20,6 +20,7 @@ from app.agents.run_definition import (
     RunDefinitionSkill,
     pin_skill_content,
 )
+from app.config.constants.arangodb import CollectionNames
 from harness_core.skills import SkillRef, skill_bundle_digest
 from tests.support.agent_versions import versions_beside
 from tests.support.bound_org import bind_test_org
@@ -101,6 +102,9 @@ async def test_a_name_that_cannot_be_a_folder_keeps_no_digest() -> None:
 class _AgentGraph(FakeGraphProvider):
     def __init__(self, agent: dict[str, Any]) -> None:
         super().__init__()
+        # The agent as stored, owned by "user-1", who wrote its skills (``_skill``): an assignment holds for its owner.
+        self._col(CollectionNames.AGENT_INSTANCES.value)[agent["_key"]] = {**agent, "orgId": ORG, "createdBy": "user-1"}
+        self._col(CollectionNames.USERS.value)["user-1"] = {"_key": "user-1", "userId": "uid-1", "orgId": ORG}
         self.get_agent = AsyncMock(return_value=agent)
         self.check_agent_permission = AsyncMock(return_value={"role": "READER"})
 

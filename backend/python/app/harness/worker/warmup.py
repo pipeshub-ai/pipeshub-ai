@@ -34,6 +34,8 @@ ASSEMBLY_MODULES: tuple[str, ...] = (
     "app.agents.agent_loop.skills.bundle_source",
     "app.agents.agent_loop.skills.pinned_manager",
     "app.agents.agent_loop.skills.labelled_manager",
+    # The run's skill offer (assembler, tool_sources): no module above imports it in every build.
+    "app.agents.agent_loop.skills.offer",
     "app.agent_loop_lib.agent.tool_loop",
     "app.agent_loop_lib.context.base",
     # Deep mode (K-L): its loop, delegation and the citation merge on a join.

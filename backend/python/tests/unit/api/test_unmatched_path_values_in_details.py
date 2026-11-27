@@ -111,7 +111,10 @@ def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> None:
 @pytest.mark.parametrize("route, args, methods, detail", [
     ("deprecate_skill", (EMAIL, SimpleNamespace(reason="r", replaced_by=None)),
      {"deprecate": {"return_value": False}}, "Skill not found."),
-    ("delete_skill", (EMAIL,), {"delete": {"return_value": False}}, "Skill not found."),
+    # A delete may read the skill first, to decide who may delete it.
+    ("delete_skill", (EMAIL,),
+     {"get_skill": {"side_effect": RegistryError(f"Skill {EMAIL!r} not found")}, "delete": {"return_value": False}},
+     "Skill not found."),
     ("get_version", (EMAIL, EMAIL), {"get_version": {"return_value": None}}, "Skill version not found."),
     ("write_resource", (EMAIL, SimpleNamespace(path="a.md", content="x")),
      {"write_resource": {"return_value": False}}, "Skill not found."),

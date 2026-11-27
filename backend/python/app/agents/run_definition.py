@@ -364,9 +364,20 @@ async def with_offered_skills(
     from app.agents.agent_loop.skills.offer import offered_skills
 
     assigned = frozenset(skill.name for skill in definition.skills)
-    offer = await offered_skills(graph, tenant_id, viewers, assigned)  # type: ignore[arg-type]
+    offer = await offered_skills(graph, tenant_id, viewers, assigned, definition.agent_key)  # type: ignore[arg-type]
+    offered = {m.name for m in offer}
+    # An assigned skill the offer refuses (disabled, deprecated, hidden, or not readable for this run) is not granted:
+    # an engine mounts every pinned skill as it is admitted. One that does not exist stays, unpinned, so the run
+    # reports it missing.
+    from app.agents.agent_loop.skills.bundle_source import GraphSkillSource
+
+    source = GraphSkillSource(graph)  # type: ignore[arg-type]
+    kept = tuple([
+        skill for skill in definition.skills
+        if skill.name in offered or not await source.versions(tenant_id, skill.name)
+    ])
     added = tuple(RunDefinitionSkill(name=m.name) for m in offer if m.name not in assigned)
-    return definition.model_copy(update={"skills": (*definition.skills, *added)})
+    return definition.model_copy(update={"skills": (*kept, *added)})
 
 
 async def pin_tool_descriptors(

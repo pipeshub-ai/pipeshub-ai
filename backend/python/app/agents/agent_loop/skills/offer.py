@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource, is_advertised
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -46,16 +45,17 @@ def offered(metadata: SkillMetadata, assigned: frozenset[str]) -> bool:
 
 async def offered_skills(
     graph: IGraphDBProvider, org_id: str, viewers: Iterable[str | None], assigned: Iterable[str] = (),
+    agent_key: str | None = None,
 ) -> tuple[SkillMetadata, ...]:
-    """The skills offered to a run of ``viewers`` (the person, by each id they are stamped under), by name.
+    """The skills offered to a run of ``viewers`` (the person, by each id they are stamped under) of the agent
+    ``agent_key``, by name.
 
     Builtins are seeded first when this process has not reconciled the org yet, so a fresh org's first run is
     offered them; the reconcile never raises."""
     from app.agents.agent_loop.skills.manager_factory import reconcile_builtin_skills
+    from app.edition_services import skill_offer_store
 
     await reconcile_builtin_skills(graph, org_id)
     names = frozenset(assigned)
-    store = GraphSkillStore(
-        graph, org_id, OFFER_READER_IDENTITY, visibility=SkillVisibility.of(viewers, shared=names),
-    )
+    store = await skill_offer_store(graph, org_id, tuple(viewers), names, agent_key)
     return tuple(sorted((m for m in await store.list_skills() if offered(m, names)), key=lambda m: m.name))

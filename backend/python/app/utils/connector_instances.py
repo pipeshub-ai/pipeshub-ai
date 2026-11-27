@@ -18,7 +18,7 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-__all__ = ["fetch_user_connector_instances"]
+__all__ = ["fetch_shared_connector_instances", "fetch_user_connector_instances"]
 
 
 async def fetch_user_connector_instances(
@@ -42,4 +42,24 @@ async def fetch_user_connector_instances(
         ) or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("connector instance lookup failed: %s", exc)
+        return []
+
+
+async def fetch_shared_connector_instances(
+    graph_provider: "IGraphDBProvider",
+    user_id: str,
+    org_id: str,
+    logger: logging.Logger,
+) -> list[dict[str, Any]]:
+    """Personal connector instances other users shared with this one, or `[]`.
+
+    Kept apart from `fetch_user_connector_instances`, whose list also feeds the
+    connector listing and the Slack checks; only the SQL allowlist adds these.
+    """
+    from app.edition_services import shared_connector_instances
+
+    try:
+        return await shared_connector_instances(graph_provider, user_id, org_id)
+    except Exception as exc:
+        logger.warning("shared connector instance lookup failed: %s", exc)
         return []

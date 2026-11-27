@@ -25,11 +25,11 @@ from app.agents.agent_loop.skills.manager_factory import (
     reset_builtin_reconcile_state,
 )
 from app.agents.agent_loop.skills_wiring import build_skill_manager
-from app.api.routes.agent import _create_skill_edges
 from app.config.constants.arangodb import CollectionNames
 from app.harness.assembly.tool_sources import SkillsSource
 from harness_core.tools.registry import ToolRegistry
 from tests.support.config_service import FakeConfigurationService
+from tests.support.edition_defaults import create_skill_edges
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
 ORG = "org-1"
@@ -38,11 +38,26 @@ ALICE = SimpleNamespace(user_id="user-alice", key="key-alice")
 BOB = SimpleNamespace(user_id="user-bob", key="key-bob")
 
 
+class _UsersGraph(FakeGraphProvider):
+    """The graph with its users: a run resolves the runner's user key from their ``userId``, as the routes do."""
+
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        return next(
+            (dict(u) for u in self._col(CollectionNames.USERS.value).values()
+             if u["userId"] == user_id and org_id in (None, u["orgId"])),
+            None,
+        )
+
+
 def _skill_md(name: str, description: str) -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n\nDo the {name} steps.\n"
 
 
 async def _seed(graph: FakeGraphProvider) -> None:
+    for who in (ALICE, BOB):
+        graph._col(CollectionNames.USERS.value)[who.key] = {"_key": who.key, "userId": who.user_id, "orgId": ORG}
     alice_rest = GraphSkillStore(graph, ORG, ALICE.key)  # type: ignore[arg-type]
     await alice_rest.create_skill("alice-report", _skill_md("alice-report", "Alice's quarterly report recipe"))
     await alice_rest.create_skill("alice-secret", _skill_md("alice-secret", "Alice's private negotiation notes"))
@@ -59,7 +74,10 @@ async def _seed_at_startup(graph: FakeGraphProvider) -> None:
     await reconcile_builtin_skills(graph, ORG)  # type: ignore[arg-type]
 
 
-def _context(graph: FakeGraphProvider, who: SimpleNamespace, agent_skills: list[str] | None) -> AgentContext:
+def _context(
+    graph: FakeGraphProvider, who: SimpleNamespace, agent_skills: list[str] | None, owner: SimpleNamespace | None = None,
+) -> AgentContext:
+    """``owner``: the person whose agent is run, who assigned it ``agent_skills``."""
     return AgentContext(
         org_id=ORG,
         user_id=who.user_id,
@@ -68,6 +86,7 @@ def _context(graph: FakeGraphProvider, who: SimpleNamespace, agent_skills: list[
         graph_provider=graph,
         config_service=FakeConfigurationService(),
         agent_skills=agent_skills,
+        agent_owner_key=owner.key if owner else None,
     )
 
 
@@ -83,7 +102,7 @@ async def _catalog_names(manager: Any) -> set[str]:  # noqa: ANN401 - SkillManag
 
 class TestTodaysLoop:
     async def test_sk1_an_unassigned_agent_never_sees_a_coworkers_custom_skill(self) -> None:
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed_at_startup(graph)
 
         manager = await build_skill_manager(_context(graph, BOB, None), TransportRegistry())
@@ -98,7 +117,7 @@ class TestTodaysLoop:
         assert "alice-report" not in found
 
     async def test_sk1_the_owner_sees_skills_stamped_under_either_of_their_ids(self) -> None:
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed(graph)
 
         manager = await build_skill_manager(_context(graph, ALICE, None), TransportRegistry())
@@ -108,10 +127,10 @@ class TestTodaysLoop:
         assert "bob-notes" not in await _catalog_names(manager)
 
     async def test_sk2_a_skill_assigned_to_the_agent_is_shared_with_whoever_runs_it(self) -> None:
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed(graph)
 
-        manager = await build_skill_manager(_context(graph, BOB, ["alice-report"]), TransportRegistry())
+        manager = await build_skill_manager(_context(graph, BOB, ["alice-report"], owner=ALICE), TransportRegistry())
 
         assert manager is not None
         assert await _catalog_names(manager) == {"alice-report"}
@@ -123,7 +142,7 @@ class TestTodaysLoop:
 class TestDurableLoop:
     async def test_sk3_a_run_pinning_no_skills_reads_the_same_scoped_catalog(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed(graph)
         source = SkillsSource()
         # The durable worker sets ``agent_skills`` from the pin: none pinned is ``None`` (tool_environment).
@@ -170,7 +189,7 @@ class TestTheRule:
         assert not SkillVisibility.of([None]).allows(_doc("anyone", "x"))
 
     async def test_sk4_a_store_reads_as_its_acting_user_unless_told_otherwise(self) -> None:
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed(graph)
 
         assert {m.name for m in await GraphSkillStore(graph, ORG, BOB.key).list_skills()} == {"bob-notes"}  # type: ignore[arg-type]
@@ -178,11 +197,11 @@ class TestTheRule:
 
 class TestAssignment:
     async def test_sk5_an_editor_can_assign_only_their_own_skills_or_builtins(self) -> None:
-        graph = FakeGraphProvider()
+        graph = _UsersGraph()
         await _seed(graph)
         logger = logging.getLogger(__name__)
 
-        linked = await _create_skill_edges(
+        linked = await create_skill_edges(
             "agent-1", ["bob-notes", "alice-report"], ORG, BOB.key, graph, logger  # type: ignore[arg-type]
         )
 

@@ -17,6 +17,7 @@ import inspect
 import re
 
 from app.services.graph_db.neo4j import neo4j_provider
+from tests.support import edition_defaults
 from tests.unit.schema.test_writer_payload_audit import _AUDITED_CYPHER_WRITERS
 
 # What a statement that keeps the stamps is built with: the state rewrites, the stamps themselves, or a refusal of the inputs.
@@ -84,6 +85,7 @@ UNTOUCHED = {
     "upsert_person_by_email": "Person nodes",
     "upsert_person_by_source_key": "Person nodes",
     "upsert_sync_point": "SyncPoint nodes",
+    **edition_defaults.neo4j_untouched_writers_extra(),
 }
 
 

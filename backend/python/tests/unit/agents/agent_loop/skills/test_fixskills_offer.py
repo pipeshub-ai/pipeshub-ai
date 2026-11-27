@@ -38,6 +38,7 @@ from app.agents.run_definition import (
     pin_skill_content,
     with_offered_skills,
 )
+from app.config.constants.arangodb import CollectionNames
 from app.harness.assembly.tool_sources import SkillsSource
 from app.harness.engines.durable import _pins  # pyright: ignore[reportPrivateUsage]
 from app.harness.skills.bundles import SkillBundleService
@@ -90,8 +91,25 @@ def _builtins() -> set[str]:
     return {pack.metadata.name for pack in seeder.packs if pack.metadata.invocation_model}
 
 
+class _UsersGraph(FakeGraphProvider):
+    """The graph with its users: a run resolves the runner's user key from their ``userId``, as the routes do."""
+
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        return next(
+            (dict(u) for u in self._col(CollectionNames.USERS.value).values()
+             if u["userId"] == user_id and org_id in (None, u["orgId"])),
+            None,
+        )
+
+
 async def _world() -> FakeGraphProvider:
-    graph = FakeGraphProvider()
+    graph = _UsersGraph()
+    for who in (ME, COLLEAGUE):
+        graph._col(CollectionNames.USERS.value)[who.key] = {"_key": who.key, "userId": who.user_id, "orgId": ORG}
+    # Agent "a" is the colleague's, who assigns it their own skills.
+    graph._col(CollectionNames.AGENT_INSTANCES.value)["a"] = {"_key": "a", "orgId": ORG, "createdBy": COLLEAGUE.key}
     _ = await GraphSkillStore(graph, ORG, ME.key).create_skill("my-notes", _md("my-notes", "My meeting notes"))  # type: ignore[arg-type]
     _ = await GraphSkillStore(graph, ORG, COLLEAGUE.key).create_skill("col-secret", _md("col-secret", "Not mine"))  # type: ignore[arg-type]
     return graph
@@ -167,6 +185,22 @@ class TestTheOffer:
 
         assert {s.name for s in definition.skills} == _builtins() | {"col-secret"}
         assert definition.skills[0].name == "col-secret", "the agent's own come first, as it lists them"
+
+    async def test_an_assigned_skill_that_is_disabled_is_not_granted_and_a_missing_one_stays_to_be_reported(
+        self,
+    ) -> None:
+        graph = await _world()
+        await _disable(graph, "col-secret")
+        agent = AgentRunDefinition(
+            agentKey="a", definitionVersion=1,
+            skills=(RunDefinitionSkill(name="col-secret"), RunDefinitionSkill(name="never-written")),
+        )
+
+        definition = await with_offered_skills(agent, graph, ORG, VIEWERS, enabled=True)
+
+        names = [s.name for s in definition.skills]
+        assert "col-secret" not in names, "an engine mounts every granted skill, so a disabled one is not granted"
+        assert names[0] == "never-written"
 
 
 class TestTheEngineMountsThePins:
