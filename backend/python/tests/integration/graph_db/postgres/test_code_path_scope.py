@@ -18,7 +18,8 @@ from .pg_support import new_org
 from .test_kg_derivation import ctx
 from .test_kg_read import _admin
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
+# The backfill reads and marks every organisation of the database: these run alone.
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(900), pytest.mark.pg_table_lock]
 LOG = logging.getLogger("code-path-scope")
 
 

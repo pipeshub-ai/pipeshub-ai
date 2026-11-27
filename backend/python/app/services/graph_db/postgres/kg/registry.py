@@ -71,6 +71,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
     "upsert_sync_point": (NO_PROJECTION, _SYNC),
+    "sync_code_file_scope": (NO_PROJECTION, _CODE),        # the code file of a record whose group or connector a write changed
     # the attempt-start write takes any record fields, as the update_node it replaces did
     "write_attempt_start": (PROJECTED, ""),
     # trash.py
