@@ -114,10 +114,13 @@ describe('createAGUIEventHandler', () => {
     handle(frame('TEXT_MESSAGE_CONTENT', { delta: first }));
     // The projector's live answer delta: rawLength is the text this message has shown so far.
     handle(delta(numbered, first.length));
-    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: numbered, citations });
+    // A citation shows once the sentence goes on past it, so its chip never changes; its sources come with the delta.
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'The Q3 launch moves to May ', citations });
 
     const tail = 'and the budget is unchanged.';
     handle(frame('TEXT_MESSAGE_CONTENT', { delta: tail }));
+    // The sentence goes on: the numbered citation is resolvable before the run ends.
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: tail, accumulated: numbered + tail, citations });
     handle(frame('TEXT_MESSAGE_END'));
     // Closing the turn keeps the numbered text and its sources.
     handle(delta(numbered + tail, (first + tail).length));
@@ -345,7 +348,7 @@ describe('createAGUIEventHandler', () => {
     handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent', childEngine: 'codex' }));
     handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent', childEngine: 'claude_code' }));
 
-    expect(spies.onStatus.mock.calls.map(([s]) => s.message)).toEqual(['Delegating to Codex...', 'Delegating to Claude Code...']);
+    expect(spies.onStatus.mock.calls.map(([s]) => s.message)).toEqual(['Delegating to Codex…', 'Delegating to Claude Code…']);
   });
 
   it('ignores STEP_STARTED for non sub-agent steps', () => {
@@ -419,7 +422,7 @@ describe('createAGUIEventHandler', () => {
     handle(frame('STEP_STARTED', { stepName: 'sub_agent:researcher' }));
 
     const messages = spies.onStatus.mock.calls.map(([update]: [{ message: string }]) => update.message);
-    expect(messages).toEqual(['Thinking…', 'Thinking…', 'Executing tool…', 'Using Jira Search…', 'Thinking…', 'Delegating to researcher…']);
+    expect(messages).toEqual(['Thinking…', 'Thinking…', 'Executing tool…', 'Using Jira search…', 'Thinking…', 'Delegating to researcher…']);
     expect(messages.some((m: string) => m.includes('...'))).toBe(false);
   });
 
