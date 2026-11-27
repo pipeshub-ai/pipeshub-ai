@@ -5,8 +5,10 @@ The batches of the connector, newest first, are one index seek each from the cur
 ``records_trash_batch``. Which of a batch's records are its roots (connector, organisation, a hierarchy parent record in the same batch, typed as a file for a single-file listing) is
 read from their kg rows and the kg rows of their parents (kg.model keeps the file a record is typed as, ``file_kind``), the walk's predicates on those columns; only a page's rows are
 read from the graph, shaped as the walk shapes them (``ROWS``), so an answer differs from the walk's only if kg's columns do. The walk answers (``hierarchy.answer``) when the
-connector is not served, and when a batch a read passes through is one kg cannot place as the walk does: a record of it in another connector, records of one batch deleted at
-different times (the walk sorts a batch by its roots' latest time, kg by its records'), or, for a single-file listing, one whose file kg cannot hold (``kb_odd``).
+connector is not served, and when a batch a page passes through is one kg cannot place as the walk does: a record of it in another connector or with no delete time, a batch
+whose latest delete time is not that of a root (the walk sorts a batch by its roots' latest time; a batch deleted at several times is read once, at its latest), or, for a
+single-file listing, one whose file kg cannot hold (``kb_odd``). The count reads each batch of the connector once (``records_trash_app_batch``) and asks only whether it has a
+root, so its cost is a few seeks a batch up to the cap, whatever the batches hold.
 """
 from __future__ import annotations
 
@@ -29,32 +31,61 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _TRASHED = "k.org_id = $1 AND k.app_sk = $2 AND k.coll = 3 AND k.deleted AND k.deleted_ms IS NOT NULL AND k.delete_batch IS NOT NULL"     # records_trash's predicate
+# The same rows with the connector as a range: ordered by (app_sk, delete_batch), only records_trash_app_batch has that order (with ``app_sk = $2`` the planner drops
+# app_sk from the order, and on fresh statistics read records_trash_batch, every connector's batches, in batch order).
+_TRASHED_BY_BATCH = _TRASHED.replace("k.app_sk = $2", "k.app_sk >= $2 AND k.app_sk <= $2")
 _NEXT = f"SELECT k.deleted_ms, k.delete_batch FROM kg.records k WHERE {_TRASHED} AND {{after}} ORDER BY k.deleted_ms DESC, k.delete_batch DESC LIMIT 1"
-# A record of the batch is a root as the walk decides (``TrashMixin.list_trashed_records``), read from its kg row: of the connector ($2) and organisation, with no hierarchy parent
-# record in the trash in the same batch (its primary parent and its hierarchy links), and (single-file listing, $3) typed as a file. Every read is a seek of a key.
-_ROOT = f"""m.app_sk = $2 AND NOT m.alien
-      AND NOT EXISTS (SELECT 1 FROM (SELECT m.parent_sk AS sk UNION ALL {_links_up("m.sk", LINK_HIERARCHY)}) q CROSS JOIN LATERAL {_sk("q.sk")} p
-        WHERE p.kind = 3 AND p.deleted AND p.delete_batch = m.delete_batch)
+# A hierarchy parent record of ``m`` in the trash in the same batch (its primary parent and its hierarchy links), each read by its key.
+_PARENT_IN_BATCH = f"""(SELECT p.sk, p.parent_sk, p.delete_batch, p.app_sk, p.alien, p.deleted_ms FROM (SELECT m.parent_sk AS sk UNION ALL {_links_up("m.sk", LINK_HIERARCHY)}) q CROSS JOIN LATERAL {_sk("q.sk")} p
+        WHERE p.kind = 3 AND p.deleted AND p.delete_batch = m.delete_batch LIMIT 1)"""
+# A record of the batch is a root as the walk decides (``TrashMixin.list_trashed_records``), read from its kg row: of the connector ($2) and organisation, deleted at a time,
+# with no hierarchy parent record in the trash in the same batch, and (single-file listing, $3) typed as a file. Every read is a seek of a key.
+_ROOT = f"""m.app_sk = $2 AND NOT m.alien AND m.deleted_ms IS NOT NULL AND NOT EXISTS {_PARENT_IN_BATCH}
       AND (NOT $3 OR m.file_kind = {FILE_FILE})"""
+# A batch's records, of every connector (the batch at ``x``).
+_BATCH_ROWS = """(SELECT * FROM kg.records m WHERE m.org_id = $1 AND m.coll = 3 AND m.deleted AND m.delete_batch IS NOT NULL AND m.delete_batch >= {x}
+          AND m.delete_batch <= {x} ORDER BY m.delete_batch {limit}OFFSET 0)"""
+# How far the count climbs a batch's hierarchy to its top; a deeper (or cyclic) batch is read whole.
+_UP_STEPS = 64
+
 # The connector's batches newest first after the cursor ($4, $5), one seek each, with each batch's roots (by id), how many of its records are the connector's, and ``odd``:
-# a record of it kg cannot place as the walk does (module docstring). A single-file listing keeps no batch of more than one record. A batch with no root is no item.
+# a record of it kg cannot place as the walk does (module docstring). A single-file listing skips a batch of more than one record by reading two. A batch with no root is no item. A batch
+# deleted at several times is met once per time: only the visit at its latest time is read (one seek of ``records_trash_app_batch`` finds a later one).
 # Each record's root test runs once (``rt``): as the FILTER of the ordered aggregate it ran twice per record.
 _BATCHES = f"""RECURSIVE b(ms, batch, n) AS (
     (SELECT x.deleted_ms, x.delete_batch, 1 FROM ({_NEXT.format(after="($4::bigint IS NULL OR (k.deleted_ms, k.delete_batch) < ($4::bigint, $5::text))")}) x)
     UNION ALL SELECT x.deleted_ms, x.delete_batch, b.n + 1 FROM b CROSS JOIN LATERAL ({_NEXT.format(after="(k.deleted_ms, k.delete_batch) < (b.ms, b.batch)")}) x),
-  s AS (SELECT b.ms, b.batch, b.n, a.odd, a.batch_size, CASE WHEN $3 AND a.cnt > 1 THEN '{{}}'::text[] ELSE coalesce(a.roots, '{{}}'::text[]) END AS roots
+  s AS (SELECT b.ms, b.batch, b.n, a.odd OR (NOT ($3 AND a.cnt > 1) AND coalesce(a.root_ms <> b.ms, false)) AS odd, a.batch_size,
+      CASE WHEN $3 AND a.cnt > 1 THEN '{{}}'::text[] ELSE coalesce(a.roots, '{{}}'::text[]) END AS roots
     FROM b CROSS JOIN LATERAL (
       SELECT count(*) AS cnt, count(*) FILTER (WHERE m.app_sk = $2) AS batch_size, array_agg(m.id ORDER BY m.id) FILTER (WHERE rt.root) AS roots,
-        coalesce(bool_or(m.app_sk IS DISTINCT FROM $2 OR m.deleted_ms IS DISTINCT FROM b.ms OR ($3 AND m.kb_odd)), false) AS odd
-      FROM (SELECT * FROM kg.records m WHERE m.org_id = $1 AND m.coll = 3 AND m.deleted AND m.delete_batch IS NOT NULL AND m.delete_batch >= b.batch
-          AND m.delete_batch <= b.batch ORDER BY m.delete_batch OFFSET 0) m
-        CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt) a)"""
+        max(m.deleted_ms) FILTER (WHERE rt.root) AS root_ms,
+        coalesce(bool_or(m.app_sk IS DISTINCT FROM $2 OR m.deleted_ms IS NULL OR ($3 AND m.kb_odd)), false) AS odd
+      FROM {_BATCH_ROWS.format(x="b.batch", limit="")} m
+        CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt) a
+    WHERE (SELECT k.deleted_ms FROM kg.records k WHERE {_TRASHED_BY_BATCH} AND (k.delete_batch, k.deleted_ms) > (b.batch, b.ms) AND k.delete_batch <= b.batch
+        ORDER BY k.app_sk, k.delete_batch, k.deleted_ms LIMIT 1) IS NULL
+      AND NOT ($3 AND (SELECT count(*) FROM {_BATCH_ROWS.format(x="b.batch", limit="LIMIT 2 ")} m) > 1))"""
 PAGE = f"""/* pipeshub:kg.trash_page */ WITH {_BATCHES}
 SELECT s.n, s.odd, s.batch, s.ms AS deleted_at, s.roots[1] AS first_id, cardinality(s.roots)::bigint AS root_count, s.batch_size,
     ARRAY(SELECT x.doc->>'recordName' FROM unnest(s.roots[2:1 + $7]) WITH ORDINALITY u(id, o) CROSS JOIN LATERAL {_node("'records'", "u.id")} x ORDER BY u.o) AS other_names
   FROM s WHERE cardinality(s.roots) > 0 OR s.odd LIMIT $6"""
-COUNT = f"""/* pipeshub:kg.trash_count */ WITH {_BATCHES}
-SELECT count(*) FILTER (WHERE cardinality(c.roots) > 0) AS total, coalesce(bool_or(c.odd), false) AS odd FROM (SELECT s.roots, s.odd FROM s WHERE cardinality(s.roots) > 0 OR s.odd LIMIT $6) c"""
+# The connector's batches, each once and in batch order (``records_trash_app_batch``), up to the cap ($4): one seek each, and whether a batch has a root. A batch's top, climbed
+# to from the record its seek met through parents in the batch, is a root in a batch the product wrote; only a batch whose top is none (of another connector or organisation, or a
+# hierarchy deeper than _UP_STEPS or cyclic) is read whole. A single-file listing reads at most two records of a batch. Times play no part: a count is of batches.
+_HAS_ROOT = f"""SELECT CASE WHEN $3 THEN coalesce(f.root, false)
+      WHEN (WITH RECURSIVE up(sk, parent_sk, delete_batch, app_sk, alien, deleted_ms, d) AS (
+          SELECT c.sk, c.parent_sk, c.batch, c.app_sk, c.alien, c.deleted_ms, 0
+          UNION ALL SELECT p.*, m.d + 1 FROM up m CROSS JOIN LATERAL {_PARENT_IN_BATCH} p WHERE m.d < {_UP_STEPS})
+        SELECT t.d < {_UP_STEPS} AND t.app_sk = $2 AND NOT t.alien AND t.deleted_ms IS NOT NULL FROM up t ORDER BY t.d DESC LIMIT 1) THEN true
+      ELSE EXISTS (SELECT 1 FROM {_BATCH_ROWS.format(x="c.batch", limit="")} m WHERE {_ROOT}) END AS root, coalesce(f.odd, false) AS odd
+    FROM (SELECT count(*) = 1 AND bool_or(rt.root) AS root, count(*) = 1 AND bool_or(m.kb_odd) AS odd FROM {_BATCH_ROWS.format(x="c.batch", limit="LIMIT 2 ")} m
+      CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt WHERE $3) f OFFSET 0"""
+_ROW = "k.delete_batch, k.sk, k.parent_sk, k.app_sk, k.alien, k.deleted_ms"
+COUNT = f"""/* pipeshub:kg.trash_count */ WITH RECURSIVE c(batch, sk, parent_sk, app_sk, alien, deleted_ms) AS (
+    (SELECT {_ROW} FROM kg.records k WHERE {_TRASHED_BY_BATCH} ORDER BY k.app_sk, k.delete_batch LIMIT 1)
+    UNION ALL SELECT x.* FROM c CROSS JOIN LATERAL (SELECT {_ROW} FROM kg.records k WHERE {_TRASHED_BY_BATCH} AND k.delete_batch > c.batch ORDER BY k.app_sk, k.delete_batch LIMIT 1) x)
+SELECT count(*) FILTER (WHERE h.root) AS total, coalesce(bool_or(h.odd), false) AS odd FROM (SELECT h.root, h.odd FROM c CROSS JOIN LATERAL ({_HAS_ROOT}) h WHERE h.root OR h.odd LIMIT $4) h"""
 
 # A page's rows, shaped as the walk shapes them (``TrashMixin`` in ``postgres/trash.py``, the statement after its ``page``), from the batches this module read
 # (``page`` from JSON, with each batch's other root names and size already read). A record's parent edges are a seek on to_id spelt in its order: with sorts off,
@@ -97,7 +128,7 @@ async def page(tx: Tx, org: str, connector_id: str, org_id: str, *, files_only: 
     ts, batch = after or (None, None)
     try:
         found = await tx.fetch(PAGE, org, app_sk, files_only, ts, batch, skip + limit, TRASH_LIST_OTHER_ROOT_NAMES)
-        counted = await tx.fetchrow(COUNT, org, app_sk, files_only, None, None, None if count_cap is None else count_cap + 1)
+        counted = await tx.fetchrow(COUNT, org, app_sk, files_only, None if count_cap is None else count_cap + 1)
         if counted["odd"] or any(r["odd"] for r in found):
             raise Fallback("odd")
         shown = [{"o": r["n"], **{c: r[c] for c in ("batch", "deleted_at", "first_id", "root_count", "batch_size", "other_names")}} for r in found[skip:]]
