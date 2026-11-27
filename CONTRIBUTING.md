@@ -291,6 +291,10 @@ Other editions are built on this repository. They plug in only through the files
 working default here. Keep that default working, and do not add edition-specific logic anywhere else. The
 signatures are a public API: change one only in a pull request that updates the default and its tests with it.
 
+One exception: the two paid features this repository ships itself, permission sync's readers and the licence check.
+Their code lives in named `ee/` directories here (listed under the edition guard below), and shared code may import
+from those directories and no other `ee/` directory.
+
 | Tier | File | What it holds | Default here |
 | --- | --- | --- | --- |
 | Python | `backend/python/app/edition.py` | Import-free constants | This build's values |
@@ -322,11 +326,12 @@ Docs cover this repository's code only, and only as reference: design, decisions
 tracking (status boards, work logs, evidence captures, work-package records, research and review notes) is kept
 outside this repository, as is an edition's own design notes; nothing adds marked rows here for a test to skip.
 
-Two paid features ship in this repository, each in its own named `ee/` directory, and a licence key turns them
-on: permission sync's readers (`backend/python/app/ee/permission_sync/`, tests in
+The two paid features this repository ships, each in its own named `ee/` directory, are turned on by a licence
+key: permission sync's readers (`backend/python/app/ee/permission_sync/`, tests in
 `backend/python/tests/unit/ee/permission_sync/`) and the licence check (`backend/nodejs/apps/src/ee/modules/license/`,
-tests in `backend/nodejs/apps/tests/ee/modules/license/`). The guard admits only these directories and imports of
-them (`OPEN_EE_ROOTS`); every other `ee/` path or import fails as before.
+tests in `backend/nodejs/apps/tests/ee/modules/license/`). The guard admits only these directories and imports that
+resolve into them (`OPEN_EE_ROOTS`). Every other `ee/` path fails as before, and so does every other import of an
+`ee/` directory, whether absolute or relative.
 
 `scripts/edition_guard.py` keeps the repository neutral (CI: `.github/workflows/edition-guard.yml`). It fails a
 change that adds a file under an `ee/` directory (other than those above) or an edition-only build file, adds an

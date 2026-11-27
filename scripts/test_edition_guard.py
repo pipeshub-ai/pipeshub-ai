@@ -145,6 +145,16 @@ class OpenEditionRoots(unittest.TestCase):
             ("backend/python/app/x.py", "module = importlib.import_module(" + '"app.ee.permission_sync")'),
             ("backend/python/app/x.py", "import app.ee.permission_sync.box, app.ee.permission_sync.zoom"),
             ("backend/nodejs/apps/src/modules/x/y.ts", "import { X } from '../../ee/modules/license/license-state';"),
+            # Relative imports inside an open root, and out of it to shared code, pass.
+            ("backend/python/app/ee/permission_sync/box.py", "from .box_access import read_grants"),
+            ("backend/python/app/ee/permission_sync/box.py", "from . import zoom"),
+            ("backend/python/app/ee/permission_sync/box.py", "from ...models.entities import Record"),
+            ("backend/python/app/ee/permission_sync/box.py", "from . import (box_access, zoom)"),
+            ("backend/python/app/connectors/x/y.py", "from .. import base as connector_base"),
+            ("backend/nodejs/apps/src/ee/modules/license/license-boot.ts", "import { x } from './license-state';"),
+            ("backend/nodejs/apps/src/ee/modules/license/license-boot.ts", "import { y } from '../../../libs/edition/z';"),
+            ("backend/nodejs/apps/tests/ee/modules/license/license-core.test.ts",
+             "import { checkLicense } from '../../../../src/ee/modules/license/license-codec';"),
             ("backend/nodejs/apps/src/config.ts",
              "export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';"),
         ):
@@ -169,6 +179,18 @@ class OpenEditionRoots(unittest.TestCase):
             ("frontend/config.ts", "import { X } from './ee/modules/license/x';"),
             ("backend/nodejs/apps/src/config.ts", "import { X } from './ee/modules/license/../billing/x';"),
             ("backend/nodejs/apps/src/config.ts", "import { X } from '@/ee/modules/license/x';"),
+            # A relative import from inside an open root that climbs to another ee directory.
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ..harness import edition"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from .. import harness"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import ee"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import models, ee as edition"),
+            ("backend/python/app/ee/permission_sync/bridge.py", "from ... import (  # names follow"),
+            ("backend/python/app/x.py", "from . import ee"),
+            ("backend/python/tests/unit/ee/permission_sync/test_x.py", "from ..other import helper"),
+            ("backend/nodejs/apps/src/ee/modules/license/bridge.ts", "export { x } from '../billing/secret';"),
+            ("backend/nodejs/apps/src/ee/modules/license/bridge.ts", "const m = require('../billing/m');"),
+            # A relative import into an ee directory from shared code, without naming ee in a way rule 2 reads.
+            ("backend/python/app/x.py", "from .ee.harness import edition"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(len(edition_guard.check([], diff(path, line)).errors), 1)

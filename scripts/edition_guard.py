@@ -8,7 +8,7 @@ points"); their own code lives in their own repositories. A change here therefor
    (``Dockerfile.ee``, a workflow named ``*-ee.yml``, a deployment file named ``*.ee.*``), except under one of the
    ``OPEN_EE_ROOTS`` this repository ships (see below);
 2. adds an import of an ``ee`` package or directory (Python ``app.ee``; TypeScript ``@/ee/``, ``./ee/``,
-   ``../ee/``), except of one of those roots;
+   ``../ee/``, or any relative import that resolves under an ``ee/`` directory), except of one of those roots;
 3. adds a file to a directory that accepts fixes only (``FROZEN``);
 4. adds a proprietary licence marker;
 5. names a private edition repository, in an added line or a commit message: both are public once pushed;
@@ -74,6 +74,42 @@ def _open_ee_path(path: str) -> bool:
 def _open_python_import(text: str) -> bool:
     targets = _PYTHON_EE_TARGET.findall(text)
     return bool(targets) and all(t == "app.ee.permission_sync" or t.startswith("app.ee.permission_sync.") for t in targets)
+
+
+# Relative imports, resolved against the importing file: one that lands under an ee/ directory outside the open roots
+# fails, wherever the importing file is (``from ..harness import x`` from inside an open root included).
+_PYTHON_RELATIVE = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\b")
+_SCRIPT_RELATIVE = re.compile(r"""(?:\bfrom\s+|^\s*import\s+|\b(?:require|import)\(\s*)["'](\.{1,2}/[^"']*)["']""")
+
+
+def _relative_targets(path: str, text: str) -> list[str]:
+    """The repository paths this line's relative imports resolve to. ``from .. import a, b`` resolves to the package
+    and to each name, since a name may be a module (``from ... import ee``). Names on later lines of a parenthesised
+    import are not on this line, so that form also counts as importing ``ee`` from the package."""
+    if path.endswith(PYTHON_SOURCES):
+        found = _PYTHON_RELATIVE.match(text)
+        if not found:
+            return []
+        base = posixpath.dirname(path)
+        for _ in range(len(found.group(1)) - 1):
+            base = posixpath.dirname(base)
+        if found.group(2):
+            return [posixpath.join(base, *found.group(2).split("."))]
+        rest = re.sub(r"\bas\s+\w+", "", text[found.end():].split("#")[0])
+        names = re.findall(r"\w+", rest)
+        continued = "(" in rest and ")" not in rest
+        return [base, *(posixpath.join(base, name) for name in names), *([posixpath.join(base, "ee")] if continued else [])]
+    if path.endswith(SCRIPT_SOURCES):
+        return [posixpath.normpath(posixpath.join(posixpath.dirname(path), spec)) for spec in _SCRIPT_RELATIVE.findall(text)]
+    return []
+
+
+def _closed_ee_target(target: str) -> bool:
+    """A resolved import target under an ee/ directory that no open root admits (as a directory or a module file)."""
+    stem = target.rstrip("/")
+    return bool(EDITION_PATHS[0].search(stem + "/")) and not (
+        _open_ee_path(stem + "/") or _open_ee_path(stem + ".py")
+    )
 
 
 def _open_script_import(path: str, text: str) -> bool:
@@ -197,9 +233,12 @@ def check(added_paths: Sequence[str], diff: str, messages: Sequence[str] = ()) -
             report.errors.append(f"{path}: a project-tracking document; the tracker is kept outside this repository")
     for line in added_lines(diff):
         where = f"{line.path}:{line.number}"
-        python_import = any(p.search(line.text) for p in PYTHON_IMPORTS) and not _open_python_import(line.text)
-        script_import = any(p.search(line.text) for p in SCRIPT_IMPORTS) and not _open_script_import(
-            line.path, line.text
+        closed_relative = any(_closed_ee_target(t) for t in _relative_targets(line.path, line.text))
+        python_import = closed_relative or (
+            any(p.search(line.text) for p in PYTHON_IMPORTS) and not _open_python_import(line.text)
+        )
+        script_import = closed_relative or (
+            any(p.search(line.text) for p in SCRIPT_IMPORTS) and not _open_script_import(line.path, line.text)
         )
         if line.path.endswith(PYTHON_SOURCES) and python_import:
             report.errors.append(f"{where}: imports an edition package; use an extension point instead")
