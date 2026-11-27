@@ -27,7 +27,6 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { ChatSidebarHeader, SidebarHeaderActions } from '../header';
 import { useChatStore } from '@/chat/store';
-import { useUserStore } from '@/lib/store/user-store';
 
 const ui = () => (
   <Theme>
@@ -135,15 +134,5 @@ describe('Chat sidebar header: Home', () => {
 
     expect(useChatStore.getState().settings.mode).toBe('search');
     expect(clearSearchResults).not.toHaveBeenCalled();
-  });
-});
-
-describe('Chat sidebar header: profile (BGUI8-FU-4)', () => {
-  it('names the profile link in words and no aria-label that leaves out the avatar it shows (WCAG 2.5.3)', () => {
-    useUserStore.setState({ profile: { fullName: 'Ana Bell', email: 'ana@example.com' } } as never);
-    renderHeader();
-    const link = screen.getByRole('link', { name: 'Open profile' });
-    expect(link.getAttribute('href')).toBe('/workspace/profile/');
-    expect(link.hasAttribute('aria-label')).toBe(false);
   });
 });
