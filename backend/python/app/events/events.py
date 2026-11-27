@@ -1774,14 +1774,15 @@ class EventProcessor:
                 self._require_persisted(
                     success, "Failed to persist md5Checksum for record", doc
                 )
-            elif not md5_checksum and existing_md5_checksum:
-                # Blank now: a checksum kept from the text the record had would let a new copy of that text attach to
-                # this record (or park behind it while it runs) and take its EMPTY outcome. Only PDFs read a
-                # source-provided checksum (the page limit), and PDF bytes always hash.
-                success = await self.update_record_fields(doc, {"md5Checksum": None})
-                self._require_persisted(success, "Failed to clear md5Checksum for record", doc)
 
             self.logger.debug("Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
+
+        if not md5_checksum and existing_md5_checksum:
+            # Blank, zero bytes or no content now: a checksum kept from the text the record had would let a new copy of
+            # that text attach to this record (or park behind it while it runs) and take its EMPTY outcome. Only PDFs
+            # read a source-provided checksum (the page limit), and only non-empty PDF bytes reach it.
+            success = await self.update_record_fields(doc, {"md5Checksum": None})
+            self._require_persisted(success, "Failed to clear md5Checksum for record", doc)
 
         if not md5_checksum:
             return DedupDecision(virtual_record_id=None, skip_indexing=False)

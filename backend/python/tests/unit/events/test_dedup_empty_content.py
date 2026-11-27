@@ -145,6 +145,30 @@ async def test_dedup_of_blank_content_clears_the_checksum_the_record_still_holds
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"", "", None], ids=["zero-bytes", "empty-text", "no-content"])
+async def test_dedup_of_no_content_clears_the_checksum_the_record_still_holds(content: Any) -> None:  # noqa: ANN401
+    graph = _dedup_graph()
+    ep = EventProcessor(logging.getLogger("test.dedup_empty"), MagicMock(), graph, MagicMock())
+
+    decision = await ep._check_duplicate_by_md5(content, _dedup_doc(md5Checksum="md5-of-the-text-it-had"))
+
+    graph.find_duplicate_records.assert_not_awaited()
+    assert [c.args[2] for c in graph.update_node.await_args_list] == [{"md5Checksum": None}]
+    assert decision.virtual_record_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"", "", None], ids=["zero-bytes", "empty-text", "no-content"])
+async def test_dedup_of_no_content_writes_nothing_without_a_checksum(content: Any) -> None:  # noqa: ANN401
+    graph = _dedup_graph()
+    ep = EventProcessor(logging.getLogger("test.dedup_empty"), MagicMock(), graph, MagicMock())
+
+    await ep._check_duplicate_by_md5(content, _dedup_doc())
+
+    graph.update_node.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_same_bytes_skip_writes_no_checksum_for_text_less_html() -> None:
     graph = MagicMock()
     graph.update_node_fields_if_match = AsyncMock(return_value=True)
@@ -339,3 +363,41 @@ async def test_a_page_whose_text_was_removed_is_not_a_twin_for_that_text() -> No
     assert vrid != records.rows["emptied"]["virtualRecordId"]
     assert records.rows["new-copy"]["indexingStatus"] != ProgressStatus.EMPTY.value
     assert first  # the text was indexed under a vrid of its own first
+
+
+@pytest.mark.asyncio
+async def test_a_page_emptied_to_zero_bytes_is_not_a_twin_for_its_old_text() -> None:
+    """Text, then zero bytes (the handler's EMPTY exit before any parse), then another page with the first text."""
+    records = Records()
+    records.add("emptied")
+    records.add("new-copy")
+    await _index(records, "emptied", _streamed(CONTENT_PAGE))
+    records.rows["emptied"].update(indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus=ProgressStatus.COMPLETED.value)
+    text_md5 = records.rows["emptied"]["md5Checksum"]
+
+    await _on_event(records, "emptied", b"", EventTypes.UPDATE_RECORD.value)
+    vrid = await _index(records, "new-copy", _streamed(CONTENT_PAGE))
+
+    assert records.rows["emptied"]["indexingStatus"] == ProgressStatus.EMPTY.value
+    assert records.rows["emptied"].get("md5Checksum") is None
+    assert records.rows["new-copy"]["md5Checksum"] == text_md5
+    assert vrid != records.rows["emptied"]["virtualRecordId"]
+    assert records.rows["new-copy"]["indexingStatus"] != ProgressStatus.EMPTY.value
+
+
+async def _on_event(records: Records, key: str, content: bytes, event_type: str) -> None:
+    """Run one event to its end, whatever path it takes."""
+    graph = records.graph()
+    processor = MagicMock()
+    processor.process_blocks = MagicMock(side_effect=AssertionError("zero bytes were parsed"))
+    ep = _make_event_processor(graph_provider=graph, processor=processor)
+    ep._spawn_abandoned_vrid_cleanup = MagicMock()
+    ep._drop_the_previous_vectors_of_an_emptied_record = AsyncMock()
+    row = records.rows[key]
+    event = {"eventType": event_type, "payload": {
+        "recordId": key, "orgId": ORG, "virtualRecordId": row.get("virtualRecordId"), "mimeType": BLOCKS_MIME,
+        "recordName": row["recordName"], "buffer": content, "version": 2, "connectorName": "NOTION",
+    }}
+    with patch("app.events.events.keep_old_copy.swap_allowed", AsyncMock(return_value=False)):
+        async for _ in ep.on_event(event):
+            pass
