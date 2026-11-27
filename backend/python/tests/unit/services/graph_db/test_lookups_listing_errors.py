@@ -31,9 +31,10 @@ async def test_a_listing_re_raises_when_access_cannot_be_checked(call) -> None:
 
 async def test_records_linking_to_weburls_reads_inside_the_given_transaction() -> None:
     m = _lookups()
+    m._q = AsyncMock(return_value=[{"id": "a", "capped": False}])      # its statements run under a profile, in one unit of the caller's transaction
     with patch("app.services.graph_db.postgres.lookups.current_org_id", return_value="o"):
         await m.get_records_linking_to_weburls(["u"], "o", ["GITHUB"], transaction="tx1")
-    assert m._lrows.await_args.kwargs["transaction"] == "tx1"
+    assert m._q.await_args.args[1] == "tx1"
 
 
 async def test_a_failed_people_upsert_is_raised_not_answered_false() -> None:
