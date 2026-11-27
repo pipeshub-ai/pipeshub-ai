@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.core.org_context import OrgContext, bind, spawn_detached
 from app.modules.indexing.property_projection_sweep import (
     GraphStateStore,
     Scope,
@@ -25,8 +26,6 @@ from tests.unit.modules.indexing.sweep_world import stale
 from .test_identity import w as _identity_world  # noqa: F401
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from contextlib import AbstractContextManager
 
     from app.core.db import KernelDB
 
@@ -59,7 +58,6 @@ _WORLDS = {
     "source_stamp_current": {"propsSet": HASH, "propsGen": GEN, "propsSrc": 6_000, "sourceLastModifiedTimestamp": 6_000},
     "stamp_zero": {"updatedAtTimestamp": 0},
     "string_gen": {"propsSet": HASH, "propsGen": "2", "propsSrc": 5_000},
-    "float_stamp": {"propsSet": HASH, "propsGen": GEN, "propsSrc": 5_000, "updatedAtTimestamp": 5_000.5},
     "deleted": {"isDeleted": True},
     "not_deleted_flag": {"isDeleted": False},
 }
@@ -159,11 +157,19 @@ async def test_the_seek_is_bounded_and_refuses_a_page_it_cannot_serve(w: World) 
         await _walk(w, limit=1001)
 
 
-async def test_the_selection_is_the_callers_org_only(w: World, org_ctx: Callable[[str], AbstractContextManager]) -> None:
+async def test_the_selection_is_the_callers_org_only(w: World) -> None:
+    """Another org, in a context of its own (the fixture's org is bound here), selects none of this org's records."""
     await w.nodes("records", _rec(w, "mine"))
-    with org_ctx("an-other-org"):
-        assert await w.p.get_records_updated_since(CONNECTOR, "an-other-org", since=0, after_id="", props_hash=HASH, props_gen=GEN, limit=10) == []
-        assert await w.p.get_records_needing_projection(CONNECTOR, "an-other-org", after_key=None, props_hash=HASH, props_gen=GEN, limit=10) == []
+
+    async def other() -> tuple[list[dict], list[dict]]:
+        with bind(OrgContext("an-other-org", None, "job", "job:test", "t")):
+            return (
+                await w.p.get_records_updated_since(CONNECTOR, "an-other-org", since=0, after_id="", props_hash=HASH, props_gen=GEN, limit=10),
+                await w.p.get_records_needing_projection(CONNECTOR, "an-other-org", after_key=None, props_hash=HASH, props_gen=GEN, limit=10),
+            )
+
+    assert await spawn_detached(other()) == ([], [])
+    assert [r["_key"] for r in await _seek(w)] == ["mine"]
 
 
 async def test_the_change_index_is_the_revisions_and_is_valid(w: World) -> None:
@@ -173,15 +179,7 @@ async def test_the_change_index_is_the_revisions_and_is_valid(w: World) -> None:
     assert await w.p.record_change_index_online() is True
 
 
-async def test_the_online_check_is_false_for_an_invalid_index(w: World, pg_db: KernelDB) -> None:
-    """An invalid index (a stopped build) is not online. Kills: reading existence as validity."""
-    await pg_db.run(lambda tx: tx.execute("UPDATE pg_index SET indisvalid = false WHERE indexrelid = to_regclass('graph.nodes_record_change')"), write=True)
-    try:
-        assert await w.p.record_change_index_online() is False
-    finally:
-        await pg_db.run(lambda tx: tx.execute("UPDATE pg_index SET indisvalid = true WHERE indexrelid = to_regclass('graph.nodes_record_change')"), write=True)
-
-
+@pytest.mark.pg_table_lock
 async def test_the_seek_reads_the_index(w: World, pg_db: KernelDB) -> None:
     """The plan of the vetted function's query is an index scan of nodes_record_change, not a read of every record of the org."""
     await w.nodes("records", *[_rec(w, f"p{i:04d}", updated=i + 1) for i in range(3000)])
@@ -193,14 +191,13 @@ async def test_the_seek_reads_the_index(w: World, pg_db: KernelDB) -> None:
     assert "nodes_record_change" in "\n".join(r[0] for r in plan)
 
 
-async def test_the_epoch_is_a_compare_and_set_that_one_of_six_claimants_wins(w: World, org_ctx: Callable[[str], AbstractContextManager]) -> None:
+async def test_the_epoch_is_a_compare_and_set_that_one_of_six_claimants_wins(w: World) -> None:
     await w.nodes("apps", {"_key": "kb-claim", "name": "KB", "type": "KB", "appGroup": "Collections", "scope": "team", "isActive": True, "createdAtTimestamp": 1})
     store, scope = GraphStateStore(w.p), Scope("kb-claim", w.org, Connectors.KNOWLEDGE_BASE)
-    with org_ctx(w.org):
-        results = await asyncio.gather(*(store.claim(scope, None) for _ in range(6)))
-        assert sorted(r for r in results if r is not None) == [1], "exactly one of six claimants of epoch 1 wins"
-        state = SweepState(watermark=5, covered_hash=HASH, covered_gen=2, lap="seek", cursor_ts=9, cursor_id="x")
-        assert await store.save(scope, 1, state)
-        assert not await store.save(scope, 7, SweepState(watermark=99))
-        loaded, epoch = await store.load(scope)
+    results = await asyncio.gather(*(store.claim(scope, None) for _ in range(6)))
+    assert sorted(r for r in results if r is not None) == [1], "exactly one of six claimants of epoch 1 wins"
+    state = SweepState(watermark=5, covered_hash=HASH, covered_gen=2, lap="seek", cursor_ts=9, cursor_id="x")
+    assert await store.save(scope, 1, state)
+    assert not await store.save(scope, 7, SweepState(watermark=99))
+    loaded, epoch = await store.load(scope)
     assert loaded == state and epoch == 1

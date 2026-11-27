@@ -64,7 +64,9 @@ _WORLDS = {
 async def test_both_selections_agree_with_the_reference(provider) -> None:
     """Kills: a statement that differs from the reference in what it calls stale (either engine, either selection)."""
     connector = f"c-{_suffix()}"
-    docs = {name: _doc(connector, f"{name}-{_suffix()}", **extra) for name, extra in _WORLDS.items()}
+    # ArangoDB's record schema refuses a generation that is not a number, so a corrupt one can only be stored on the stores that do not validate it
+    worlds = {n: e for n, e in _WORLDS.items() if not (n == "string_gen" and type(provider).__name__ == "ArangoHTTPProvider")}
+    docs = {name: _doc(connector, f"{name}-{_suffix()}", **extra) for name, extra in worlds.items()}
     assert await provider.batch_upsert_nodes(list(docs.values()), RECORDS)
     await _ready_index(provider)
     expected = {d["_key"] for d in docs.values() if not d.get("isDeleted") and stale(d, HASH, GEN)}

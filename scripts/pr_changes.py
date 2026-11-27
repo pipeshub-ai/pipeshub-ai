@@ -161,6 +161,8 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/modules/indexing/sweep_world.py",
+    f"{PYTHON}/tests/unit/modules/record_metadata/projection_world.py",
     f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/live_fakes.py",
     f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
     f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",

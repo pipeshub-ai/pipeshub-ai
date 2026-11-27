@@ -3631,7 +3631,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"❌ Error during property projection sweep shutdown: {str(e)}")
+            logger.error(f"Error during property projection sweep shutdown: {str(e)}")
 
     property_future = getattr(app.state, "property_sweep_future", None)
     if property_future:
@@ -3642,7 +3642,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, RuntimeError):
             pass
         except Exception as e:
-            logger.error(f"❌ Error during property projection sweep future shutdown: {str(e)}")
+            logger.error(f"Error during property projection sweep future shutdown: {str(e)}")
 
     completion_task = getattr(app.state, "named_entity_completion_task", None)
     if completion_task:

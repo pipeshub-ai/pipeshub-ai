@@ -602,6 +602,7 @@ class TestTheCountRuleOfEveryRevisionWriter:
             ("modules/indexing/record_diagnostics.py", "<module>"): (1, "a field list"),
             ("modules/indexing/record_diagnostics.py", "write_with_revision_rule"): (2, "the rule itself"),
             ("modules/pipeline/parse_now.py", "parse_now_event"): (1, "an event payload"),
+            ("modules/indexing/property_projection_sweep.py", "ArtifactPropertiesReader.__call__"): (1, "a read of the revision the record is on"),
             ("modules/record_metadata/projection.py", "project_properties"): (1, "a read"),
             ("schema/arango/documents.py", "<module>"): (1, "the schema"),
         }
