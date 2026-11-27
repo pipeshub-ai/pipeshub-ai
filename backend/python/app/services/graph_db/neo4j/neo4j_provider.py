@@ -709,18 +709,20 @@ _SCOPE_FIELDS = frozenset({"connectorId", "recordGroupId"})
 
 
 def _cypher_code_file_scope(v: str, label: str, written: Iterable[dict[str, Any]]) -> str:
-    """Copy record `v`'s connectorId and recordGroupId onto its code file where they differ, when the write sets either: the code tools look a
+    """Copy code record `v`'s connectorId and recordGroupId onto its code file where they differ, when the write sets either: the code tools look a
     path up by the code file's copy, so a stale one hides the file from its repo. Ends the statement's other variables: only `v` is kept."""
-    if label != "Record" or not any(_SCOPE_FIELDS & row.keys() for row in written):
+    # a row that names its record type and is no code file needs no copy (an upsert of other records runs no subquery)
+    if label != "Record" or not any(_SCOPE_FIELDS & row.keys() and row.get("recordType", "CODE_FILE") == "CODE_FILE" for row in written):
         return ""
+    # An id seek only for a code record (a null id matches nothing), and no subquery per row.
     return f"""WITH {v}
-            CALL ({v}) {{
-                MATCH (codeFile:Codefiles {{id: {v}.id}})
-                WHERE codeFile.orgId = {v}.orgId
-                  AND (coalesce(codeFile.connectorId, '') <> coalesce({v}.connectorId, '')
-                       OR coalesce(codeFile.recordGroupId, '') <> coalesce({v}.recordGroupId, ''))
-                SET codeFile.connectorId = {v}.connectorId, codeFile.recordGroupId = {v}.recordGroupId
-            }}"""
+            OPTIONAL MATCH (codeFile:Codefiles {{id: CASE WHEN {v}.recordType = 'CODE_FILE' THEN {v}.id END}})
+            WHERE codeFile.orgId = {v}.orgId
+              AND (coalesce(codeFile.connectorId, '') <> coalesce({v}.connectorId, '')
+                   OR coalesce(codeFile.recordGroupId, '') <> coalesce({v}.recordGroupId, ''))
+            FOREACH (_ IN CASE WHEN codeFile IS NULL THEN [] ELSE [1] END |
+                SET codeFile.connectorId = {v}.connectorId, codeFile.recordGroupId = {v}.recordGroupId)
+            WITH {v}"""
 
 
 def cypher_kh_stamp_all(batch_size: int) -> str:

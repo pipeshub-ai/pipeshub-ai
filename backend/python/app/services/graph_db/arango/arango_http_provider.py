@@ -440,6 +440,18 @@ def _scope_changed_keys(docs: list[dict]) -> list[str]:
     return [d["_key"] for d in docs if d.get("_key") and any(f in d for f in _CODE_FILE_SCOPE_FIELDS)]
 
 
+def _code_file_keys(docs: list[dict]) -> list[str]:
+    """The keys of the code records among ``docs`` whose write sets a field their code file copies."""
+    return _scope_changed_keys([d for d in docs if d.get("recordType") == "CODE_FILE"])
+
+
+# After an UPDATE of record ``n`` (NEW) in the same statement: its code file takes the record's scope where it differs. A subquery on the code
+# file's primary key, so a write of another record type reads nothing more.
+_AQL_CODE_FILE_SCOPE = """LET scope = (FOR c IN @@code_files FILTER n.recordType == "CODE_FILE" AND c._key == n._key AND c.orgId == n.orgId
+                    AND (c.connectorId != n.connectorId OR c.recordGroupId != n.recordGroupId)
+                    UPDATE c WITH { connectorId: n.connectorId, recordGroupId: n.recordGroupId } IN @@code_files RETURN 1)"""
+
+
 def _remove_opts(transaction: str | None) -> str:
     """AQL OPTIONS for a REMOVE. ``ignoreErrors`` swallows every per-document error,
     including a write-write conflict, so inside a transaction it would let the caller
@@ -4209,10 +4221,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     collection, arango_nodes, txn_id=transaction, overwrite=True
                 )
                 return result.get("errors", 0) == 0
-            if scoped := _scope_changed_keys(arango_nodes):
-                return await self._write_records_keeping_code_file_scope(
-                    scoped, lambda txn: self._upsert_record_nodes(arango_nodes, txn), transaction)
-            return await self._upsert_record_nodes(arango_nodes, transaction)
+            written = await self._upsert_record_nodes(arango_nodes, transaction)
+            if code := _code_file_keys(arango_nodes):
+                # shortcut: the document API's upsert takes no AQL, so the copy is a second statement (in the caller's transaction when
+                # there is one); fold it into one AQL UPSERT if code records come through this path in bulk.
+                await self._sync_code_file_scope(code, transaction)
+            return written
 
         except Exception:
             raise
@@ -4404,11 +4418,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bool: True if successful
         """
         try:
-            async def write(txn: str | None) -> bool:
-                return await self.http_client.update_document(collection, key, updates, txn_id=txn) is not None
             if collection == CollectionNames.RECORDS.value and _scope_changed_keys([{**updates, "_key": key}]):
-                return await self._write_records_keeping_code_file_scope([key], write, transaction)
-            return await write(transaction)
+                # one statement: the record, and its code file's copy of its scope
+                done = await self.http_client.execute_aql(f"""
+                    FOR d IN @@collection FILTER d._key == @key
+                        UPDATE d WITH @updates IN @@collection
+                        LET n = NEW
+                        {_AQL_CODE_FILE_SCOPE}
+                        RETURN 1
+                """, {"@collection": collection, "@code_files": CollectionNames.CODE_FILES.value, "key": key, "updates": updates}, txn_id=transaction)
+                return bool(done)
+            return await self.http_client.update_document(collection, key, updates, txn_id=transaction) is not None
         except Exception:
             raise
 
@@ -4538,10 +4558,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             bind_vars["@collection"] = collection
 
-            async def write(txn: str | None) -> list | None:
-                return await self.http_client.execute_aql(aql_query, bind_vars, txn_id=txn)
-            scoped = _scope_changed_keys(arango_nodes) if collection == CollectionNames.RECORDS.value else []
-            result = await (self._write_records_keeping_code_file_scope(scoped, write, transaction) if scoped else write(transaction))
+            if collection == CollectionNames.RECORDS.value and _scope_changed_keys(arango_nodes):
+                # the same statement takes each code record's scope to its code file
+                aql_query = f"""
+                FOR doc IN @nodes
+                    FILTER DOCUMENT(@@collection, doc._key) != null
+                    UPDATE doc IN @@collection
+                    LET n = NEW
+                    {_AQL_CODE_FILE_SCOPE}
+                    RETURN n
+                """
+                bind_vars["@code_files"] = CollectionNames.CODE_FILES.value
+            result = await self.http_client.execute_aql(aql_query, bind_vars, txn_id=transaction)
 
             # Check if all updates succeeded
             if result and isinstance(result, list):
@@ -11490,28 +11518,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return len(result or [])
 
-    async def _write_records_keeping_code_file_scope(
-        self, keys: list[str], write: Callable[[str | None], Awaitable[_T]], transaction: str | None,
-    ) -> _T:
-        """``write`` to ``records``, then copy the written records' connectorId and recordGroupId onto their code files, in one transaction: the
-        caller's, else a stream transaction of its own. The scoped path lookup reads the copy, so a stale one would hide a file its user can open."""
-        if transaction is not None:
-            result = await write(transaction)
-            await self._sync_code_file_scope(keys, transaction)
-            return result
-        txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
-        committed = False
-        try:
-            result = await write(txn)
-            await self._sync_code_file_scope(keys, txn)
-            await self.http_client.commit_transaction(txn)
-            committed = True
-            return result
-        finally:
-            if not committed:
-                await asyncio.shield(self._abort_quietly(txn))
-
-    async def _sync_code_file_scope(self, keys: list[str], transaction: str) -> None:
+    async def _sync_code_file_scope(self, keys: list[str], transaction: str | None) -> None:
         await self.http_client.execute_aql("""
         FOR k IN @keys
             FOR c IN @@files

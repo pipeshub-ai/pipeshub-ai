@@ -155,3 +155,28 @@ async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only
     with for_org(org, job="code-path-scope-test"):
         assert not await migration.scope_ready(arango, org)
         assert {repo: await world_of.records_at(arango, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
+
+
+async def test_a_write_of_other_records_does_no_code_file_work(arango, monkeypatch) -> None:
+    """A batch of other records is the writer's own request alone: no statement touches codeFiles and no transaction is opened."""
+    org, connector = _new_org()
+    from app.config.constants.arangodb import Connectors, OriginTypes
+    from app.models.entities import Record, RecordType
+    files = [Record(org_id=org, record_name=f"f{i}.txt", record_type=RecordType.FILE, external_record_id=f"ext-file-{uuid.uuid4().hex[:8]}", version=1,
+                    origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB, connector_id=connector, record_group_id="g1").to_arango_base_record()
+             for i in range(20)]
+    seen: list[str] = []
+    real_aql, real_begin = arango.http_client.execute_aql, arango.http_client.begin_transaction
+
+    async def aql(query, *a, **k) -> object:
+        seen.append(query)
+        return await real_aql(query, *a, **k)
+
+    async def begin(*a, **k):  # noqa: ANN202
+        seen.append("BEGIN")
+        return await real_begin(*a, **k)
+    monkeypatch.setattr(arango.http_client, "execute_aql", aql)
+    monkeypatch.setattr(arango.http_client, "begin_transaction", begin)
+    with for_org(org, job="code-path-scope-test"):
+        await arango.batch_upsert_nodes(files, "records")
+    assert not [q for q in seen if "code_files" in q or q == "BEGIN"], seen

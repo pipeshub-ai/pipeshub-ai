@@ -121,3 +121,39 @@ async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only
     await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'syncPoints'", org)          # the org-wide lookup, as the oracle
     with ctx(org):
         assert {repo: await world_of.records_at(pg_provider, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
+
+
+async def test_a_write_of_other_records_or_of_an_unmoved_code_record_does_no_code_file_work(pg_provider, monkeypatch) -> None:
+    """The scope sync costs nothing where nothing moved: a batch of other records runs the writer's own statement alone, and a code record
+    written with the group it had runs no copy."""
+    from app.core.db import uow
+    org, connector = new_org(), "conn-code"
+    with ctx(org):
+        world = await world_of.write_world(pg_provider, org, connector, 3)
+    ran: list[str] = []
+    real = uow.Tx._run
+
+    async def run(self, op, sql, *args, internal=False) -> object:
+        if "pipeshub:graph." in sql.split("*/", 1)[0]:     # the writer's statements, not the kg flush beside them
+            ran.append(sql.split("*/", 1)[0])
+        return await real(self, op, sql, *args, internal=internal)
+    monkeypatch.setattr(uow.Tx, "_run", run)
+    files = [{"_key": f"file-{i}", "orgId": org, "recordName": f"f{i}.txt", "recordType": "FILE", "connectorId": connector, "recordGroupId": world["groups"][0][1],
+              "externalRecordId": f"ext-file-{i}", "origin": "CONNECTOR", "connectorName": "GITHUB", "version": 1} for i in range(20)]
+    with ctx(org):
+        await pg_provider.batch_upsert_nodes(files, "records")
+        assert not [s for s in ran if "scope" in s or "scoped" in s], ran            # a record type the upsert knows: its own statement alone
+        ran.clear()
+        # a patch carries no record type: the update's one statement reads the rows' stored type, and runs no copy
+        await pg_provider.batch_update_nodes([{"id": f["_key"], "recordGroupId": world["groups"][1][1]} for f in files], "records")
+        assert len(ran) == 1 and "sync_code_file_scope" not in ran[0], ran
+        ran.clear()
+        # a patch that sets neither field (a status, a timestamp) runs exactly the writer's original statement, for code records too
+        await pg_provider.batch_update_nodes([{"id": r, "updatedAtTimestamp": 1} for r in world["records"]], "records")
+        await pg_provider.update_node(world["records"][0], "records", {"updatedAtTimestamp": 2})
+        assert ran == ["/* pipeshub:graph.batch_update_nodes ", "/* pipeshub:graph.update_node "], ran
+        ran.clear()
+        doc = await pg_provider.get_document(world["records"][0], "records")
+        await pg_provider.batch_upsert_nodes([doc], "records")                                     # a code record, its group unchanged
+        await pg_provider.batch_update_nodes([{"id": world["records"][0], "recordGroupId": doc["recordGroupId"]}], "records")
+    assert [s for s in ran if "sync_code_file_scope" in s] == [], ran

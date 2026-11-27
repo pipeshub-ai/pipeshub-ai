@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import for_org, system
+from app.core.org_context import system
+from app.core.org_jobs import for_each_org
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -38,13 +39,10 @@ async def run_code_path_scope_backfill(graph_provider: IGraphDBProvider, logger:
     with system("code_path_scope_backfill"):
         while updated := await graph_provider.backfill_code_path_scope(_BATCH):
             total += updated
-        orgs = await graph_provider.get_all_orgs(active=False, raise_on_error=True)
-    for org in orgs:
-        org_id = org.get("_key") or org.get("id")
-        if not org_id:
-            continue
-        with for_org(org_id, job="code_path_scope_backfill"):
-            if not await scope_ready(graph_provider, org_id):
-                await graph_provider.upsert_sync_point(marker_key(org_id), {"orgId": org_id, "done": True}, CollectionNames.SYNC_POINTS.value)
-    logger.info("Code path scope backfill: %d row(s) updated", total)
+
+    async def mark(org_id: str) -> None:
+        if not await scope_ready(graph_provider, org_id):
+            await graph_provider.upsert_sync_point(marker_key(org_id), {"orgId": org_id, "done": True}, CollectionNames.SYNC_POINTS.value)
+    failed = await for_each_org(graph_provider, "code_path_scope_backfill", mark, logger, raise_on_error=True)
+    logger.info("Code path scope backfill: %d row(s) updated, %d org(s) left unmarked", total, len(failed))
     return total

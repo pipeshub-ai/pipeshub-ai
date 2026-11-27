@@ -347,18 +347,22 @@ def _match(filters: dict | None, in_filters: dict | None, first: int, n: str = "
     return sql, args
 
 
-# A code file carries its record's connector and record group (the scoped path lookup reads them): a write that changes them on a record
-# changes them on its code file in the same transaction.
+# A code file carries its record's connector and record group (the scoped path lookup reads them): a write that changes them on a code
+# record changes them on its code file in the same transaction. The writer's statement reads the code records as they were (its ``o``, in
+# the statement's one snapshot) and returns those it changed: a write of other records, or one that leaves the two fields as they were, does
+# nothing more.
 SCOPE_FIELDS = ("connectorId", "recordGroupId")
+CODE_FILE = "CODE_FILE"
 _SYNC_CODE_FILE_SCOPE = """/* pipeshub:graph.sync_code_file_scope */ UPDATE graph.nodes c
     SET doc = c.doc || jsonb_build_object('connectorId', r.doc->'connectorId', 'recordGroupId', r.doc->'recordGroupId')
     FROM graph.nodes r WHERE c.org_id = $1 AND c.coll = 'codeFiles' AND c.id = ANY($2::text[]) AND r.org_id = $1 AND r.coll = 'records' AND r.id = c.id
       AND (c.doc->'connectorId' IS DISTINCT FROM r.doc->'connectorId' OR c.doc->'recordGroupId' IS DISTINCT FROM r.doc->'recordGroupId')"""
 
 
-async def _sync_code_file_scope(tx: Tx, org: str, record_ids: list[str]) -> None:
-    if record_ids:
-        await tx.execute(_SYNC_CODE_FILE_SCOPE, org, sorted(set(record_ids)))
+async def _sync_code_file_scope(tx: Tx, org: str, rows: list) -> None:
+    """Copy the scope of the code records a writer's statement says it changed onto their code files."""
+    if rows:
+        await tx.execute(_SYNC_CODE_FILE_SCOPE, org, sorted({r["id"] for r in rows}))
 
 
 def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] | None:
