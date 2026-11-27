@@ -262,8 +262,9 @@ describe('the answer slot inside AnswerSlotContext', () => {
 
     expect(store.state.slots[SIDE].pendingAskUserQuestion).toMatchObject({ status: 'submitted', answers: { q1: 'EU' } });
     expect(store.state.slots[ACTIVE].pendingAskUserQuestion).toBeNull();
+    // The card's send also carries its turn id and outcome callback (CARDFAIL); what matters here is its slot.
     expect(chat.streamMessageForSlot).toHaveBeenCalledWith(
-      SIDE, 'User selections: EU', { slotId: SIDE, query: 'User selections: EU' }, { resumeAskUserQuestion: true },
+      SIDE, 'User selections: EU', { slotId: SIDE, query: 'User selections: EU' }, expect.objectContaining({ resumeAskUserQuestion: true }),
     );
   });
 

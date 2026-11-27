@@ -22,7 +22,10 @@ vi.mock('@/lib/hooks/use-chat-speech-synthesis', () => ({
     return { isSupported: true, isSpeaking: false, speak: vi.fn(), stop: vi.fn() };
   },
 }));
-vi.mock('@/lib/store/command-store', () => ({ useCommandStore: { getState: () => ({ dispatch: vi.fn() }) } }));
+// The last answer's actions also take the /copy and /feedback commands.
+vi.mock('@/lib/store/command-store', () => ({
+  useCommandStore: { getState: () => ({ dispatch: vi.fn(), register: vi.fn(), unregister: vi.fn() }) },
+}));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: h.toastError } }));
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: {} }));
 vi.mock('../../../api', () => ({ ChatApi: {} }));

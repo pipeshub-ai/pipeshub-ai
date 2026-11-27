@@ -1172,7 +1172,8 @@ describe('buildActivitySummary', () => {
 });
 
 describe('CollapsibleActivitySection', () => {
-  function renderCollapsible(parts: MessagePart[], props: { isStreaming?: boolean; waiting?: string } = {}) {
+  // `waitingSummary`: what the header says while the run waits on the person ("Waiting for your answer").
+  function renderCollapsible(parts: MessagePart[], props: { isStreaming?: boolean; waitingSummary?: string } = {}) {
     return render(
       h(Theme, null, h(CollapsibleActivitySection, { parts, ...props }, h('div', { 'data-testid': 'child' }, 'child content'))),
     );
@@ -1203,7 +1204,7 @@ describe('CollapsibleActivitySection', () => {
 
   it('starts open when it mounts while the run waits on a question', () => {
     // The saved row taking over from the streamed one, or a reload, mounts the box while the card waits.
-    renderCollapsible([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }], { waiting: 'Waiting for your answer' });
+    renderCollapsible([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }], { waitingSummary: 'Waiting for your answer' });
     expect(isContentHidden()).toBe(false);
     expect(screen.getByText('Waiting for your answer')).toBeTruthy();
   });
@@ -1265,8 +1266,8 @@ describe('CollapsibleActivitySection', () => {
 
   it('stays open while the run waits on a question, and folds when the answered run ends', () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
-    const section = (isStreaming: boolean, waiting?: string) =>
-      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', { 'data-testid': 'child' }, 'child content')));
+    const section = (isStreaming: boolean, waitingSummary?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waitingSummary }, h('div', { 'data-testid': 'child' }, 'child content')));
     const { rerender, container } = renderCollapsible(parts, { isStreaming: true });
     const body = container.querySelector('.trail-body') as HTMLElement;
 
@@ -1284,8 +1285,8 @@ describe('CollapsibleActivitySection', () => {
 
   describe('when a run goes on in a row it had stopped in (an approval card answered)', () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
-    const section = (isStreaming: boolean, waiting?: string) =>
-      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', { 'data-testid': 'child' }, 'child content')));
+    const section = (isStreaming: boolean, waitingSummary?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waitingSummary }, h('div', { 'data-testid': 'child' }, 'child content')));
     const toggle = () => fireEvent.click(screen.getByRole('button'));
 
     it('opens again, the same section, and folds at its end', () => {
@@ -1376,8 +1377,8 @@ describe('CollapsibleActivitySection', () => {
 
   it("tells the scroll box around it when the run's end folds it, and only then", () => {
     const parts: MessagePart[] = [{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }];
-    const section = (isStreaming: boolean, waiting?: string) =>
-      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waiting }, h('div', null, 'child content')));
+    const section = (isStreaming: boolean, waitingSummary?: string) =>
+      h(Theme, null, h(CollapsibleActivitySection, { parts, isStreaming, waitingSummary }, h('div', null, 'child content')));
     const folds = vi.fn();
     document.addEventListener(TRAIL_FOLD_EVENT, folds);
     try {
