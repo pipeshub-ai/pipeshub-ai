@@ -873,7 +873,8 @@ class TestSaveQueryResultCsv:
 class TestRunIdStamping:
     @pytest.mark.asyncio
     async def test_upload_artifacts_to_blob_passes_run_id_to_the_record(self) -> None:
-        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        # The local executor's own folder, as run_code writes its files there.
+        sandbox_root = ensure_private_dir(root_of(LOCAL))
         os.makedirs(sandbox_root, exist_ok=True)
         path = os.path.join(sandbox_root, "t_runid.png")
         try:

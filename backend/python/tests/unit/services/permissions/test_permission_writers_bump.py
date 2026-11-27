@@ -175,6 +175,8 @@ NO_BUMP = {
     "connectors/core/base/data_store/graph_data_store.py::delete_inherit_permissions_relation_record": STORE,
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
     "agents/agent_loop/skills/graph_store.py::erase_session_learned_skills": AGENT,
+    # A skill candidate (a learned skill not yet saved), deleted with its edges: no viewer scope reads it.
+    "agents/agent_loop/skills/graph_store.py::remove_candidate": AGENT,
     "agents/agent_loop/skills/graph_store.py::erase_skill_author": AGENT,
     # The harness's versioned agents (update_agent writes through the draft).
     "harness/knowledge/directory.py::_erase": (

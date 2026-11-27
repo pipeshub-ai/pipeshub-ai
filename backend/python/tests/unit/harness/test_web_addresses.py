@@ -189,6 +189,7 @@ async def test_a_file_the_person_attached_gives_its_links(monkeypatch: pytest.Mo
     context = SimpleNamespace(
         tool_state={"attachments": [{"virtualRecordId": "vr-1"}]}, blob_store=object(), org_id="o", user_id="u",
         user_info={}, is_multimodal_llm=False, graph_provider=None, is_service_account=False,
+        conversation_id="c-1", acl_version=None,
     )
     _ = await resolve_attachments_for_goal(context, logging.getLogger("tests.web_addresses"), max_chars=10_000)  # type: ignore[arg-type]
     assert RunAddresses(context.tool_state).vouched(_fetch("https://attached.example.org/spec"), FETCH_EFFECT)
