@@ -618,6 +618,7 @@ class _TestAuth:
         self.users = users
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
+        user = None
         if scope["type"] == "http":
             name = dict(scope["headers"]).get(b"x-test-user")
             if name is not None:

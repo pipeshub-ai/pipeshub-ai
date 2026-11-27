@@ -225,6 +225,33 @@ class FakeGraphProvider:
                 return dict(edge)
         return None
 
+    def add_agent(self, agent_id: str, name: str, *, owner: str | None = None, org: str | None = None) -> None:
+        """An agent, with the grants the agent routes write: OWNER to `owner`, and to the org when shared with it."""
+        self._col("agentInstances")[agent_id] = {"id": agent_id, "name": name, "isDeleted": False}
+        if owner is not None:
+            self._edges.setdefault("permission", []).append({
+                "from_id": owner, "from_collection": "users", "to_id": agent_id,
+                "to_collection": "agentInstances", "type": "USER", "role": "OWNER",
+            })
+        if org is not None:
+            self._edges.setdefault("permission", []).append({
+                "from_id": org, "from_collection": "organizations", "to_id": agent_id,
+                "to_collection": "agentInstances", "type": "ORG", "role": "READER",
+            })
+
+    async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
+        """A USER grant to the user, else an ORG grant to the org; None for a deleted agent."""
+        agent = self._col("agentInstances").get(agent_id)
+        if agent is None or agent.get("isDeleted"):
+            return None
+        for kind, who, coll in (("USER", user_id, "users"), ("ORG", org_id, "organizations")):
+            for edge in self._edges.get("permission", []):
+                frm = edge.get("_from") or f"{edge.get('from_collection')}/{edge.get('from_id')}"
+                to = edge.get("_to") or f"{edge.get('to_collection')}/{edge.get('to_id')}"
+                if edge.get("type") == kind and frm == f"{coll}/{who}" and to == f"agentInstances/{agent_id}":
+                    return {"access_type": "INDIVIDUAL" if kind == "USER" else "ORG", "user_role": edge.get("role"), "can_view": True}
+        return None
+
     async def batch_delete_edges(
         self, edges: list[dict[str, Any]], collection: str, transaction: str | None = None,
     ) -> int:
@@ -910,7 +937,7 @@ class TestReferentialUsage:
         graph = FakeGraphProvider()
         store = _store(graph)
         await store.create_skill("deploy-service", _SKILL_MD)
-        graph._col("agentInstances")["agent-1"] = {"id": "agent-1", "name": "Support Bot"}
+        graph.add_agent("agent-1", "Support Bot", owner="user-1")
         graph._edges.setdefault("agentHasSkill", []).append({
             "from_id": "agent-1",
             "from_collection": "agentInstances",

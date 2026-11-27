@@ -22,7 +22,9 @@ import pytest
 
 from app.agents.agent_loop.skills import graph_store
 
-READS = frozenset({"get_document", "get_nodes_by_filters", "get_edge", "get_edges_to_node", "get_edges_from_node"})
+READS = frozenset({
+    "get_document", "get_nodes_by_filters", "get_edge", "get_edges_to_node", "get_edges_from_node", "check_agent_permission",
+})
 CREATES = frozenset({"create_node_if_absent"})
 # Method -> where its expectation is: (positional index, keyword).
 BOUND = {

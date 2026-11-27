@@ -66,9 +66,11 @@ class SkillReader(ABC):
         return result
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
-        """Agents assigned this skill and other skills that `requires` it.
-        Default is empty (filesystem / in-memory stores have no agent
-        graph). `GraphSkillStore` overrides."""
+        """Agents assigned this skill and other skills that `requires` it, as
+        this store's caller may see them: none for a skill the caller cannot
+        see, and only counts for agents and skills it cannot see. Default is
+        empty (filesystem / in-memory stores have no agent graph).
+        `GraphSkillStore` overrides."""
         return SkillReferentialUsage()
 
 

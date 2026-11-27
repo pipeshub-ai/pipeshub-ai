@@ -23453,19 +23453,32 @@ components:
           type: string
     SkillUsage:
       type: object
-      description: Referential-integrity snapshot used to gate `DELETE /skills/{name}`.
-      required: [usedByAgents, requiredBySkills]
+      description: |
+        Referential-integrity snapshot used to gate `DELETE /skills/{name}`, as the caller may
+        see it. Only agents the caller can open are named, and only skills the caller can see;
+        the others are counted in `otherAgentCount` and `otherSkillCount`, without ids or names.
+      required: [usedByAgents, requiredBySkills, otherAgentCount, otherSkillCount]
       properties:
         usedByAgents:
           type: array
           items:
             $ref: '#/components/schemas/SkillUsageReference'
-          description: Agents this skill is currently assigned to via Agent Builder.
+          description: Agents this skill is currently assigned to via Agent Builder that the caller can open.
         requiredBySkills:
           type: array
           items:
             type: string
-          description: Other skill names whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
+          description: Other skill names, among those the caller can see, whose frontmatter declares `requires` on this one — these can NEVER be force-deleted, only deprecated.
+        otherAgentCount:
+          type: integer
+          minimum: 0
+          description: Agents the skill is assigned to that the caller cannot open. `detach=true` unassigns these too.
+          example: 0
+        otherSkillCount:
+          type: integer
+          minimum: 0
+          description: Skills the caller cannot see that declare `requires` on this one. While it is not 0 the skill cannot be deleted, even with `detach=true`.
+          example: 0
     CustomSystemPrompt:
       type: object
       description: Custom system prompt configuration
@@ -26569,7 +26582,7 @@ components:
         detail:
           type: object
           additionalProperties: false
-          required: [message, usedByAgents, requiredBySkills]
+          required: [message, usedByAgents, requiredBySkills, otherAgentCount, otherSkillCount]
           properties:
             message:
               type: string
@@ -26578,12 +26591,20 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/SkillUsageReference'
-              description: Agents the skill is assigned to. `detach=true` unassigns them and deletes.
+              description: Agents the skill is assigned to that the caller can open. `detach=true` unassigns them and deletes.
             requiredBySkills:
               type: array
               items:
                 type: string
-              description: Skills that declare `requires` on this one. While this list is not empty the skill cannot be deleted, even with `detach=true`.
+              description: Skills the caller can see that declare `requires` on this one. While this list is not empty the skill cannot be deleted, even with `detach=true`.
+            otherAgentCount:
+              type: integer
+              minimum: 0
+              description: Agents the skill is assigned to that the caller cannot open, counted without ids or names. `detach=true` unassigns them too.
+            otherSkillCount:
+              type: integer
+              minimum: 0
+              description: Skills the caller cannot see that declare `requires` on this one. While it is not 0 the skill cannot be deleted, even with `detach=true`.
 
     # Custom System Prompt Schema
     AIModelProviderErrorEnvelope:
@@ -76266,7 +76287,10 @@ paths:
       tags:
         - Skills
       summary: Get a skill's usage
-      description: Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+      description: |
+        Referential-integrity snapshot (agents it's assigned to, skills that require it) — call before a safe delete to show the user what will be affected.
+
+        The skill is looked up as `GET /skills/{name}` looks it up: the caller's own custom skills and the organization's built-in ones. Another user's custom skill is answered exactly as a missing one (404, same body). Agents the caller cannot open and skills the caller cannot see are only counted (`otherAgentCount`, `otherSkillCount`).
       operationId: getSkillUsage
       security:
         - bearerAuth: []
@@ -76279,7 +76303,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Usage retrieved. A name that matches no skill yields two empty lists, not a 404. The lookup is by name across the org and is not creator-scoped, so a member also sees the usage of another user's custom skill.
+          description: Usage retrieved, as the caller may see it.
           content:
             application/json:
               schema:
@@ -76307,6 +76331,12 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
+        '404':
+          description: No skill with this name, or one the caller cannot see (the same answer for both)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.

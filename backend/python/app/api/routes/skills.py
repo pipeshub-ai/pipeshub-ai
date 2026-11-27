@@ -22,7 +22,9 @@ resource in this service — see `AGENT_READ`/`AGENT_WRITE` in `agent.py`).
 Safe-delete additionally checks REFERENTIAL integrity against
 `AGENT_HAS_SKILL` (agents using this skill) and `agentSkillRelation`
 `requires` edges (other skills depending on this one) — see
-`SkillManager.delete` / `collect_referential_usage`.
+`SkillManager.delete` / `GraphSkillStore.get_referential_usage`. Every
+read, usage included, decides visibility as `GET /{name}` does
+(`GraphSkillStore._sees`).
 """
 
 from __future__ import annotations
@@ -84,8 +86,6 @@ from app.agents.agent_loop.skills.graph_store import (
     SkillScope,
     SkillSharing,
     SkillVisibility,
-    collect_referential_usage,
-    edge_source_key,
 )
 from app.agents.agent_loop.skills.manager_factory import (
     build_management_skill_manager,
@@ -509,6 +509,8 @@ def _handle_in_use_error(e: SkillInUseError) -> HTTPException:
             "message": str(e),
             "usedByAgents": e.used_by_agents,
             "requiredBySkills": e.required_by_skills,
+            "otherAgentCount": e.other_agent_count,
+            "otherSkillCount": e.other_skill_count,
         },
     )
 
@@ -1181,24 +1183,22 @@ async def enable_skill(request: Request, name: str) -> JSONResponse:
 # Safe delete
 # ============================================================================
 
-def _edge_source_key(edge: dict[str, Any]) -> str:
-    return edge_source_key(edge)
-
-
-async def _check_usage(name: str, org_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
-    """Referential-integrity snapshot for `GET /{name}/usage` and the
-    historical unit tests that call this helper directly. The *delete*
-    guard lives on `SkillManager.delete` so every caller (REST, tools)
-    gets it."""
-    usage = await collect_referential_usage(graph_provider, org_id, name)
-    return {"usedByAgents": usage.used_by_agents, "requiredBySkills": usage.required_by_skills}
-
-
 @router.get("/{name}/usage", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_READ))])
 async def get_skill_usage(request: Request, name: str) -> JSONResponse:
-    _manager, ctx = await _build_manager(request)
-    usage = await _check_usage(name, current_org_id(), ctx["graph_provider"])
-    return JSONResponse(status_code=200, content=usage)
+    """What a safe delete would affect. A skill the caller cannot see is a 404, the same
+    answer and the same one read as `GET /{name}`. Agents the caller has no access to,
+    and skills it cannot see, are counted, never named (see
+    `GraphSkillStore.get_referential_usage`). The delete guard lives on
+    `SkillManager.delete` so every caller (REST, tools) gets it."""
+    manager, _ctx = await _build_manager(request)
+    await _load_skill_metadata(manager, name)
+    usage = await manager.get_referential_usage(name)
+    return JSONResponse(status_code=200, content={
+        "usedByAgents": usage.used_by_agents,
+        "requiredBySkills": usage.required_by_skills,
+        "otherAgentCount": usage.other_agent_count,
+        "otherSkillCount": usage.other_skill_count,
+    })
 
 
 @router.delete("/{name}", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])

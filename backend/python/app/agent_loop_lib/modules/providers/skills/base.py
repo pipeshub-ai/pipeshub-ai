@@ -437,18 +437,22 @@ class SkillInUseError(AgentLoopError):
         *,
         used_by_agents: list[dict[str, Any]],
         required_by_skills: list[str],
+        other_agent_count: int = 0,
+        other_skill_count: int = 0,
     ) -> None:
         self.name = name
         self.used_by_agents = used_by_agents
         self.required_by_skills = required_by_skills
-        if required_by_skills:
+        self.other_agent_count = other_agent_count
+        self.other_skill_count = other_skill_count
+        if required_by_skills or other_skill_count:
             message = (
                 f"Skill {name!r} is required by other skill(s) and cannot be deleted. "
                 "Deprecate it instead so dependents still resolve."
             )
         else:
             message = (
-                f"Skill {name!r} is assigned to {len(used_by_agents)} agent(s). "
+                f"Skill {name!r} is assigned to {len(used_by_agents) + other_agent_count} agent(s). "
                 "Retry with detach=true to unassign it from them first, or deprecate it instead."
             )
         super().__init__(message)
@@ -457,10 +461,24 @@ class SkillInUseError(AgentLoopError):
 class SkillReferentialUsage(BaseModel):
     """Who currently depends on a skill — agents assigned it, and other
     skills whose frontmatter `requires` it. Empty on stores without a
-    graph of those edges (filesystem)."""
+    graph of those edges (filesystem).
+
+    A store that knows who is asking names only the agents and skills that
+    caller may see; the rest are counted in `other_agent_count` and
+    `other_skill_count`, so a delete is still refused while they exist."""
 
     used_by_agents: list[dict[str, Any]] = Field(default_factory=list)
     required_by_skills: list[str] = Field(default_factory=list)
+    other_agent_count: int = 0
+    other_skill_count: int = 0
+
+    @property
+    def has_agents(self) -> bool:
+        return bool(self.used_by_agents) or self.other_agent_count > 0
+
+    @property
+    def has_dependent_skills(self) -> bool:
+        return bool(self.required_by_skills) or self.other_skill_count > 0
 
 
 class SkillVersionInfo(BaseModel):
