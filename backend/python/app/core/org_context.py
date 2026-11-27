@@ -301,6 +301,13 @@ def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], 
     return explicit_org_id
 
 
+def org_optional[F: Callable[..., object]](fn: F) -> F:
+    """Mark a method whose ``org_id`` only narrows what it reads: called without one it needs no ambient org, as before
+    it took one; given one, :func:`instrument_org_methods` checks it like any other."""
+    fn._org_optional = True  # type: ignore[attr-defined]
+    return fn
+
+
 def instrument_org_methods(cls: type) -> None:
     """Wrap the coroutine methods `cls` defines that take an `org_id` argument with :func:`ambient_org`."""
     for name, fn in list(vars(cls).items()):
@@ -312,10 +319,13 @@ def instrument_org_methods(cls: type) -> None:
         idx = params.index("org_id")
 
         def make(fn: Callable = fn, idx: int = idx, site: str = f"{cls.__name__}.{name}") -> Callable:
+            optional = getattr(fn, "_org_optional", False)
+
             @functools.wraps(fn)
             async def wrapper(*args: object, **kwargs: object) -> object:
                 explicit = kwargs["org_id"] if "org_id" in kwargs else (args[idx] if len(args) > idx else None)
-                ambient_org(explicit, site=site, caller=functools.partial(_caller, 3))
+                if explicit is not None or not optional:
+                    ambient_org(explicit, site=site, caller=functools.partial(_caller, 3))
                 return await fn(*args, **kwargs)
 
             wrapper._org_checked = True
