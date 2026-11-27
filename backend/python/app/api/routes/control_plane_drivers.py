@@ -112,7 +112,7 @@ async def user_teams(
     """
     org_id = service_token_org(claims)
     try:
-        user = await graph.get_user_by_user_id(userId, raise_on_error=True)
+        user = await graph.get_user_by_user_id(userId, raise_on_error=True, org_id=org_id)
         teams = [] if user is None else await graph.get_user_team_roles(user["_key"], org_id)
     except Exception as exc:
         _log.warning("control_plane.membership_read_failed", orgId=org_id, reasonCode="membership_unavailable",

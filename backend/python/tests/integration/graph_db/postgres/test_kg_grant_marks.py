@@ -10,9 +10,10 @@ from typing import Any
 
 import pytest
 
-from app.services.graph_db.postgres import kh_listing
+from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import grant_marks
+from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -254,9 +255,9 @@ async def test_a_browse_from_the_marked_grants_lists_what_one_from_every_grant_l
     given: list[list[str]] = []
     real = p._kh_root_tops
 
-    async def spy(org_, org_id, app_id, top, groups, access, transaction) -> list:
+    async def spy(org_, org_id, app_id, top, groups, access, transaction, **kw) -> list:
         given.append(await top.ids(groups))
-        return await real(org_, org_id, app_id, top, groups, access, transaction)
+        return await real(org_, org_id, app_id, top, groups, access, transaction, **kw)
     monkeypatch.setattr(p, "_kh_root_tops", spy)
     marked = {u: await _pages(p, org, u) for u in VIEWERS}
     at_root = given[0]
@@ -338,11 +339,47 @@ async def test_the_root_read_from_the_marks_and_the_rows_lists_what_the_walk_lis
     assert {u: await _roots(p, org, u) for u in VIEWERS} == marked
 
 
+async def test_a_root_too_wide_to_hold_lists_what_one_held_whole_lists(pg_provider, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A root with more chain-tops than a browse holds is read in windows, its first window, undecided rows and count in one read of its children (and, with no filter, without
+    counting them first): every viewer's root and sidebar, in every sort and page, list the same rows in the same order with the same arrows and counts as held whole."""
+    p, org = pg_provider, new_org()
+    await _root_world(p, pg_db, org)
+
+    async def pages(user: str) -> list:
+        out = []
+        with ctx(org):
+            acc = await p.get_knowledge_hub_access_v3(user, org)
+            kw = {"grantee_ids": acc["grantee_ids"], "gated_app_ids": acc["gated_app_ids"], "grants_by_connector": acc["by_connector"], "user_key": user}
+            for side in (False, True):
+                for field, order in (("name", "ASC"), ("name", "DESC"), ("updatedAt", "DESC")):
+                    after = None
+                    for _ in range(10):
+                        page = await p.get_knowledge_hub_connector_page_v3("app1", org, limit=2, flatten=False, start_id="app1", start_type="app", sort_field=field,
+                                                                           sort_dir=order, after=after, filters={"only_containers": True} if side else {}, **kw)
+                        out.append(([(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")))
+                        if not page["hasMore"]:
+                            break
+                        after = page.get("resume") or {k: page["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+        return out
+    held = {u: await pages(u) for u in VIEWERS}
+    assert any(len(rows) > 1 for rows, *_ in held["u1"])
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 2)
+    once: list[int] = []
+    real = kgl.browse_once_sql
+
+    def spy(*a, **k) -> str:
+        once.append(1)
+        return real(*a, **k)
+    monkeypatch.setattr(kgl, "browse_once_sql", spy)
+    assert {u: await pages(u) for u in VIEWERS} == held
+    assert once                                                                   # the wide root read its children once
+
+
 @pytest.mark.pg_table_lock           # clears kg's statistics, which every other test's plans read: runs alone
 async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:  # noqa: F811 (the fixture)
     """EXPLAIN gate, as the first drain's (test_kg_first_drain): on its world (5,000 files, each held alone by u2), kg's statistics cleared and then analysed, the root's read of the
     rows behind the grants whose node_parent is not set (``ROOT_CHAIN``, under reader.seeks as the browse runs it) reads kg.records and kg.links only by their key's index, bounded
-    by the org and the key, a folder's rows at most per probe; and the viewer's candidate grants (``CANDIDATES``, as kg.hierarchy profiles it) are one range of the chain-top
+    by the org and the key, a folder's rows at most per probe; the keys of the grants' nodes (``KEYS_OF``) are a seek each; and the viewer's candidate grants (``CANDIDATES``, as kg.hierarchy profiles it) are one range of the chain-top
     index per principal."""
     p, org = pg_provider, new_org()
     await _drain_world(p, org)
@@ -360,12 +397,16 @@ async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analys
             async with seeks(tx):
                 n = len(await tx.fetch(grant_marks.ROOT_CHAIN, org, sks, app))
                 chain = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.ROOT_CHAIN, org, sks, app)
+                keyed = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kgl.KEYS_OF, org, sks)
             await tx.fetchval(kg_read.PROFILE)
             cands = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.CANDIDATES, org, "u2", app)
-            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, cands))
+            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands))
         with ctx(org):
-            n, chain, cands = await pg_db.run(go, custom_plan=True)
+            n, chain, keyed, cands = await pg_db.run(go, custom_plan=True)
         assert n > 0, f"{state}: the read found nothing, so the gate judged no probe"
         assert not (bad := _not_seeks(chain)), f"{state} root chain: not a seek per key: {bad}"
+        # the keys of the grants' nodes (KEYS_OF): a seek of node_keys' unique sk index per key, one row each
+        nk = [(n.get("Index Name"), n.get("Index Cond", ""), n.get("Actual Rows", 0)) for n in plan_gate.scans(keyed, ("node_keys",))]
+        assert nk and all(i == "node_keys_org_id_sk_key" and "org_id = " in c and "sk >= " in c and r <= 1 for i, c, r in nk), f"{state} keys: {nk}"
         members = [b for node in plan_gate.scans(cands, ("scope_members",)) for b in plan_gate.bounds(node)]
         assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk >= " in c and "app_sk = " in c for i, c in members), f"{state} candidates: {members}"

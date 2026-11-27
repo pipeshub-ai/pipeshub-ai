@@ -67,11 +67,14 @@ export function isTokenExpired(
   return exp < nowSeconds + bufferSeconds;
 }
 
+/** What one refresh attempt found: a new token, a session the server refused, or no answer. */
+export type RefreshAnswer = 'refreshed' | 'refused' | 'unreachable';
+
 // ── Shared in-memory refresh lock ────────────────────────────────────────
 // `refreshPromise` is the single in-flight refresh; concurrent callers
 // (timer + axios interceptors) all await the same promise, so the network
 // call to /refresh/token is never duplicated within a tab.
-let refreshPromise: Promise<boolean> | null = null;
+let refreshPromise: Promise<RefreshAnswer> | null = null;
 
 /** True while a refresh network call is in flight. Used by the axios response interceptor. */
 export function isRefreshInProgress(): boolean {
@@ -82,13 +85,15 @@ export function isRefreshInProgress(): boolean {
  * Get a new access token from the session's refresh token (the web app's
  * HttpOnly cookie, the desktop's keychain; ADR-WEB-02).
  *
- * Returns `true` when the auth store has been updated with a fresh access
- * token, `false` on any failure (no session, network error, refused).
- * Callers are responsible for the failure path (typically `logoutAndRedirect`).
+ * Returns `'refreshed'` when the auth store holds a fresh access token;
+ * `'refused'` when the server refused the session (or it ended while the
+ * refresh was out); `'unreachable'` when the server gave no verdict (network
+ * failure, 5xx, 429, or a throw before it answered), so the session may still
+ * be good. Callers own the failure path (`refreshOrSignOut`).
  *
  * Concurrent calls collapse onto the same in-flight promise.
  */
-export async function refreshAccessToken(): Promise<boolean> {
+export async function refreshAccessToken(): Promise<RefreshAnswer> {
   if (refreshPromise) {
     return refreshPromise;
   }
@@ -100,16 +105,17 @@ export async function refreshAccessToken(): Promise<boolean> {
       const answer = await requestAccessToken();
       if (answer.outcome !== 'issued') {
         console.log('Token refresh failed:', answer.outcome);
-        return false;
+        return answer.outcome === 'unreachable' ? 'unreachable' : 'refused';
       }
       // Signed out while the refresh was out, here or in another tab this one has not heard
       // from yet: storing the token would sign the last user back in.
-      if (!current() || signedInMark() !== mark) return false;
+      if (!current() || signedInMark() !== mark) return 'refused';
       useAuthStore.getState().setAccessToken(answer.accessToken);
-      return true;
+      return 'refreshed';
     } catch (error) {
       console.error('Error refreshing token:', error);
-      return false;
+      // The server never answered (for example the cross-tab lock was aborted): no verdict.
+      return 'unreachable';
     }
   })();
 
@@ -126,16 +132,24 @@ onSessionEnd(() => {
   refreshPromise = null;
 });
 
-export type RefreshOutcome = 'refreshed' | 'signed-out' | 'session-ended';
+export type RefreshOutcome = 'refreshed' | 'unreachable' | 'signed-out' | 'session-ended';
+
+/** The refresh ended this session (or it had ended already): the request must be dropped. */
+export const sessionOver = (outcome: RefreshOutcome): boolean =>
+  outcome === 'signed-out' || outcome === 'session-ended';
 
 /**
- * Refreshes the access token. On failure it signs out, unless the session that
+ * Refreshes the access token. On a refusal it signs out, unless the session that
  * asked has already ended: then signing out again would sign out the next person.
+ * With no answer (`'unreachable'`) it keeps the session and leaves the retry to the caller.
  */
 export async function refreshOrSignOut(): Promise<RefreshOutcome> {
   const current = captureSession();
-  if (await refreshAccessToken()) return 'refreshed';
+  const answer = await refreshAccessToken();
+  if (answer === 'refreshed') return 'refreshed';
   if (!current()) return 'session-ended';
+  // No answer is no verdict: the session may still be good, so it is kept and the caller retries later.
+  if (answer === 'unreachable') return 'unreachable';
   logoutAndRedirect();
   return 'signed-out';
 }

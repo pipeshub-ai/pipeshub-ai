@@ -1,10 +1,12 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Badge, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { Badge, Flex, Link as RadixLink, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { Link } from '@/lib/navigation';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
+import { ENTERPRISE_OVERVIEW_ROUTE } from '@/lib/constants/enterprise';
 
 export interface EnterpriseBadgeProps {
   /** Overrides the default tooltip copy (`common.enterprise.tooltip`). */
@@ -36,13 +38,24 @@ export interface EnterpriseFeatureNoticeProps {
   title: string;
   /** One line on what it does. */
   description: string;
-  /** Optional next step under the description, such as a contact link. */
+  /** Next step under the description. Defaults to a link to the Enterprise Edition page; `null` shows none. */
   action?: ReactNode;
 }
 
 /** A section-sized stand-in for an Enterprise Edition feature: what it is, and where it is available. */
 export function EnterpriseFeatureNotice({ title, description, action }: EnterpriseFeatureNoticeProps) {
+  const { t } = useTranslation();
   const show = useEnterprisePrompt();
+  const nextStep =
+    action === undefined ? (
+      <RadixLink asChild size="1" weight="medium" style={{ alignSelf: 'flex-start' }}>
+        <Link href={`${ENTERPRISE_OVERVIEW_ROUTE}/`} className="touch-hit">
+          {t('workspace.enterprise.seeWhatsInEnterprise')}
+        </Link>
+      </RadixLink>
+    ) : (
+      action
+    );
 
   if (!show) return null;
 
@@ -81,7 +94,7 @@ export function EnterpriseFeatureNotice({ title, description, action }: Enterpri
         <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {description}
         </Text>
-        {action}
+        {nextStep}
       </Flex>
     </Flex>
   );

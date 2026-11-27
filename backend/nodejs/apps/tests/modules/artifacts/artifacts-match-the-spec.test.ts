@@ -78,8 +78,8 @@ describe('Artifact routes match the spec', () => {
     expect(operation?.operationId).to.equal('deleteArtifact')
     expect(operation?.security).to.deep.equal([{ bearerAuth: [] }, { oauth2: ['conversation:write'] }])
     expect(operation?.['x-pipeshub-sdk']).to.equal(undefined)
-    // 400 and 500 are the app-wide markup filter and body parsers, answered before this route runs.
-    expect(Object.keys(operation?.responses ?? {}).sort()).to.deep.equal(['204', '400', '401', '403', '404', '500', '503'])
+    // 400 and 500 are the app-wide markup filter and body parsers, answered before this route runs; 502 a connectors service failure.
+    expect(Object.keys(operation?.responses ?? {}).sort()).to.deep.equal(['204', '400', '401', '403', '404', '500', '502', '503'])
   })
 
   it('documents the caller role on gallery items', () => {

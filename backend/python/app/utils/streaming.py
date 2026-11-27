@@ -16,6 +16,7 @@ from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -40,6 +41,7 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.modules.retrieval import degraded_notice
 from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
+from app.services.llm_gateway.wire import forget_last_request
 from app.utils.aimodels import coerce_message_content_to_text
 
 # The sanitizer lives in app.utils.answer_links (imports only ``re``); its names stay importable from here.
@@ -1018,6 +1020,109 @@ def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
     return _Unbounded
 
 
+# langchain-aws forces the tool for every Bedrock model id with "claude" in it, and newer Claude models refuse that:
+# 'tool_choice: type "tool" and "any" are not supported for this model'.
+_FORCED_TOOL_REFUSED = re.compile(r'tool_choice\W+type\W+tool\W+and\W+any\W+are not supported', re.IGNORECASE)
+# Bedrock models (id and thinking setting) that refused, so later calls skip the request that cannot work.
+_models_refusing_forced_tool: set[tuple[str, str]] = set()
+
+
+def _refuses_forced_tool(error: BaseException) -> bool:
+    response = getattr(error, "response", None)
+    code = (response.get("Error") or {}).get("Code") if isinstance(response, dict) else None
+    return code == "ValidationException" and bool(_FORCED_TOOL_REFUSED.search(str(error)))
+
+
+def _forced_tool_key(llm: ChatBedrockConverse) -> tuple[str, str]:
+    # Whether a model accepts forced tool use can depend on thinking, which is set per configuration.
+    thinking = ((getattr(llm, "additional_model_request_fields", None) or {}).get("thinking") or {})
+    return str(getattr(llm, "model_id", "") or ""), str(thinking.get("type", "") if isinstance(thinking, dict) else "")
+
+
+def _unforced_structured_output(
+    llm: ChatBedrockConverse, schema: type[BaseModel], *, include_raw: bool = False,
+) -> Runnable[Any, Any]:
+    """The schema offered as a tool, not forced. A reply that calls it is parsed as forced output is; a reply that
+    does not comes back as the message itself, whose text the caller reads as JSON or asks again for. (langchain-aws's
+    own unforced path raises for some model ids instead, and drops an answer sent as text.)"""
+    from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+    from langchain_core.runnables import RunnableLambda
+
+    parser = PydanticToolsParser(tools=[schema], first_tool_only=True)
+
+    def parse(message: AIMessage) -> Any:  # noqa: ANN401
+        if not include_raw:
+            return parser.invoke(message) if message.tool_calls else message
+        if not message.tool_calls:
+            return {"raw": message, "parsed": None, "parsing_error": None}
+        try:
+            return {"raw": message, "parsed": parser.invoke(message), "parsing_error": None}
+        except Exception as e:
+            return {"raw": message, "parsed": None, "parsing_error": e}
+
+    return llm.bind_tools([schema]) | RunnableLambda(parse)
+
+
+class _UnforcedToolFallback(Runnable[Any, Any]):
+    """A Bedrock structured-output call that is sent again without forcing the tool when the model refuses forced
+    tool use."""
+
+    def __init__(self, llm: ChatBedrockConverse, schema: type[BaseModel], *, include_raw: bool) -> None:
+        self._llm = llm
+        self._schema = schema
+        self._include_raw = include_raw
+        self._key = _forced_tool_key(llm)
+        kwargs = {"include_raw": True} if include_raw else {}
+        self._forced = llm.with_structured_output(schema, **kwargs)
+        self._unforced: Runnable[Any, Any] | None = None
+
+    def _fallback(self) -> Runnable[Any, Any]:
+        if self._unforced is None:
+            self._unforced = _unforced_structured_output(self._llm, self._schema, include_raw=self._include_raw)
+        return self._unforced
+
+    def _refused(self, error: BaseException) -> bool:
+        if not _refuses_forced_tool(error):
+            return False
+        # The provider refused the request's shape, and it is sent again changed: not a failed send of this call.
+        forget_last_request()
+        if self._key not in _models_refusing_forced_tool:
+            _models_refusing_forced_tool.add(self._key)
+            logger.warning(
+                "Bedrock model %s refuses forced tool use; structured answers are asked for without forcing it",
+                self._key[0],
+            )
+        return True
+
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._key not in _models_refusing_forced_tool:
+            try:
+                return self._forced.invoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return self._fallback().invoke(input, config, **kwargs)
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:  # noqa: A002, ANN401
+        if self._key not in _models_refusing_forced_tool:
+            try:
+                return await self._forced.ainvoke(input, config, **kwargs)
+            except Exception as e:
+                if not self._refused(e):
+                    raise
+        return await self._fallback().ainvoke(input, config, **kwargs)
+
+
+def _bedrock_structured_output(llm: ChatBedrockConverse, schema: type[BaseModel], **kwargs: Any) -> Runnable[Any, Any]:  # noqa: ANN401
+    forced = {"tool", "any"} & set(getattr(llm, "supports_tool_choice_values", None) or ())
+    if not forced or not (isinstance(schema, type) and issubclass(schema, BaseModel)) or set(kwargs) - {"include_raw"}:
+        return llm.with_structured_output(schema, **kwargs)
+    include_raw = bool(kwargs.get("include_raw"))
+    if _forced_tool_key(llm) in _models_refusing_forced_tool:
+        return _unforced_structured_output(llm, schema, include_raw=include_raw)
+    return _UnforcedToolFallback(llm, schema, include_raw=include_raw)
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
     if getattr(llm, "native_structured_output", False) is True:
         # A harness run's model: its own transport chooses how the provider is asked.
@@ -1045,10 +1150,13 @@ def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, inc
             additional_kwargs["include_raw"] = True
 
         try:
-            model_with_structure = llm.with_structured_output(
-                schema,
-                **additional_kwargs
-            )
+            if isinstance(llm, ChatBedrockConverse):
+                model_with_structure = _bedrock_structured_output(llm, schema, **additional_kwargs)
+            else:
+                model_with_structure = llm.with_structured_output(
+                    schema,
+                    **additional_kwargs
+                )
             logger.debug("Using structured output")
             return model_with_structure
         except Exception as e:

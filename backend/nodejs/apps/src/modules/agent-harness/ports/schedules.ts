@@ -61,14 +61,17 @@ export interface ScheduleStore {
   /** Active cron schedules whose cursor is due, oldest cursor first. */
   dueCron(now: number, limit: number): Promise<AgentSchedule[]>;
   /**
-   * Fires one cron slot: inserts `firing` and moves the schedule's cursor
-   * from `expectedNextFireAt` to `nextFireAt`, together. Null (nothing
-   * written) when another scheduler already moved the cursor or claimed the slot.
+   * Fires one cron or one-time slot: inserts `firing` and moves the
+   * schedule's cursor from `expectedNextFireAt` to `nextFireAt`, together;
+   * `disable`, a reason, also disables the schedule in that write (a
+   * one-time schedule's only slot). Null (nothing written) when another
+   * scheduler already moved the cursor or claimed the slot.
    */
   claimCronSlot(
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
+    disable?: string,
   ): Promise<ScheduleFiring | null>;
   /** Claims a manual or event slot: the slot's existing firing when it was claimed before. */
   claimSlot(

@@ -1,0 +1,62 @@
+[
+  {
+    "description": "written by the worker",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 14,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-27T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "worker",
+      "type": "x.pipeshub.schedule.created",
+      "data": {
+        "interactionId": "ix.approve.k7653147571b6e391911ef030c4f92bd1b96d9004",
+        "scheduleId": "sch_0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  {
+    "description": "carries the schedule's ask",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 14,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-27T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "node",
+      "type": "x.pipeshub.schedule.created",
+      "data": {
+        "interactionId": "ix.approve.k7653147571b6e391911ef030c4f92bd1b96d9004",
+        "scheduleId": "sch_0123456789abcdef0123456789abcdef",
+        "ask": "Tell me a joke."
+      }
+    }
+  },
+  {
+    "description": "names no schedule",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 14,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-27T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "node",
+      "type": "x.pipeshub.schedule.created",
+      "data": {
+        "interactionId": "ix.approve.k7653147571b6e391911ef030c4f92bd1b96d9004"
+      }
+    }
+  }
+]

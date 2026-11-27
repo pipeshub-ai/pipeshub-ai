@@ -13,7 +13,10 @@ import {
 } from '../application/harness-log';
 import { SharedCitationService } from '../application/shared-citations';
 import { SharedArtifactService } from '../application/shared-artifacts';
-import { ConversationReader } from '../ports/conversation-reader';
+import {
+  ConversationReader,
+  RunConversationView,
+} from '../ports/conversation-reader';
 import { JournalStore } from '../ports/journal-store';
 import { JournalTail, JournalTailSubscription } from '../ports/journal-tail';
 import { LiveBus, LiveBusSubscription } from '../ports/live-bus';
@@ -40,7 +43,7 @@ import {
 import { ChildInteractions, StateFrame } from './child-interactions';
 import { planReplay, ReplayOptions } from './replay';
 import { RunProjector } from './run-projector';
-import { AUDIENCE_VIEWS } from './audiences';
+import { type AnswerAccess, AUDIENCE_VIEWS } from './audiences';
 import { conversationLink } from '../domain/run-end-notice';
 import {
   RunJournalFollowing,
@@ -93,6 +96,8 @@ export interface FrameSink {
 export interface StreamRequest {
   run: HarnessRun;
   audience: Audience;
+  /** Who is watching; absent: the run's actor, or on a shared view nobody, who reads no answer. */
+  viewerId?: string;
   title?: string;
   lastEventId?: string;
   requestId?: string;
@@ -115,6 +120,8 @@ export interface RunStreamServiceOptions {
   journals: JournalService;
   tail: JournalTail;
   conversations: ConversationReader;
+  /** What of a finished conversation its watcher may read; absent: a shared view reads none of it. */
+  conversationView?: RunConversationView;
   liveBus: LiveBus | null;
   logger?: HarnessLogger;
   heartbeatMs?: number;
@@ -133,6 +140,7 @@ export class RunStreamService {
   private readonly journals: JournalService;
   private readonly tail: JournalTail;
   private readonly conversations: ConversationReader;
+  private readonly conversationView: RunConversationView | null;
   private readonly liveBus: LiveBus | null;
   private readonly logger: HarnessLogger;
   private readonly heartbeatMs: number;
@@ -147,6 +155,7 @@ export class RunStreamService {
     this.journals = options.journals;
     this.tail = options.tail;
     this.conversations = options.conversations;
+    this.conversationView = options.conversationView ?? null;
     this.liveBus = options.liveBus;
     this.logger = options.logger ?? silentHarnessLogger;
     this.heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS;
@@ -175,6 +184,7 @@ export class RunStreamService {
     journals: JournalService;
     tail: JournalTail;
     conversations: ConversationReader;
+    conversationView: RunConversationView | null;
     liveBus: LiveBus | null;
     logger: HarnessLogger;
     heartbeatMs: number;
@@ -189,6 +199,7 @@ export class RunStreamService {
       journals: this.journals,
       tail: this.tail,
       conversations: this.conversations,
+      conversationView: this.conversationView,
       liveBus: this.liveBus,
       logger: this.logger,
       heartbeatMs: this.heartbeatMs,
@@ -235,7 +246,9 @@ class RunStream implements StreamHandle {
   private artifacts = ArtifactAccess.hideAll();
   /** Artifacts already decided for this subscription, so each is asked about once. */
   private readonly decidedArtifacts = new Set<string>();
-  /** The finished conversation a shared view read to decide its access. */
+  /** A shared view's access to the answer, decided with the finished conversation. */
+  private answer: AnswerAccess = 'undecided';
+  /** The finished conversation, as the watcher may read it. */
   private finished: { conversation: Record<string, unknown> | null } | null =
     null;
   private resolveDone!: () => void;
@@ -374,7 +387,6 @@ class RunStream implements StreamHandle {
     if (!ended) return;
     const conversation =
       await this.deps.conversations.finishedConversation(run);
-    this.finished = { conversation };
     this.citations = await this.deps.sharedCitations.decide(
       {
         authorization: this.request.authorization,
@@ -390,6 +402,84 @@ class RunStream implements StreamHandle {
         ...this.citedSources.values(),
         ...messageSources(conversation?.['messages']),
       ],
+    );
+    const view = await this.visible(conversation);
+    this.finished = { conversation: view };
+    const rows = (view?.['messages'] ?? []) as Array<Record<string, unknown>>;
+    const answer = rows.find(
+      (row) =>
+        row['runId'] === run.runId &&
+        (row['messageType'] === 'bot_response' ||
+          row['messageType'] === 'error'),
+    );
+    this.answer =
+      answer !== undefined && answer['answerHidden'] === undefined
+        ? 'shown'
+        : 'withheld';
+  }
+
+  /** `conversation` as whoever watches this stream may read it: another person's turns are re-checked for them. */
+  private async visible(
+    conversation: Record<string, unknown> | null,
+  ): Promise<Record<string, unknown> | null> {
+    if (conversation === null) return null;
+    const { run, audience, viewerId } = this.request;
+    const shared = audience === 'shared';
+    const userId = shared ? viewerId : run.actorId;
+    const view = this.deps.conversationView;
+    if (view === null || userId === undefined) {
+      return shared ? { _id: run.sessionId, messages: [] } : conversation;
+    }
+    const owner = conversation['initiator'];
+    const foreign = (
+      (conversation['messages'] ?? []) as Array<Record<string, unknown>>
+    ).filter((row) => String(row['senderId'] ?? owner) !== userId);
+    const decided = this.deps.sharedCitations.checksRecords();
+    const viewer = {
+      authorization: this.request.authorization,
+      orgId: run.orgId,
+      sessionId: run.sessionId,
+      runId: run.runId,
+      ...(this.request.requestId !== undefined
+        ? { requestId: this.request.requestId }
+        : {}),
+      surface: 'stream' as const,
+    };
+    let masked: unknown[] = foreign;
+    let checkFailed = false;
+    if (decided && foreign.length > 0) {
+      const access =
+        shared && this.citations !== null
+          ? this.citations
+          : await this.deps.sharedCitations.decide(
+              viewer,
+              messageSources(foreign),
+            );
+      masked = access.messages(foreign);
+      checkFailed = access.unavailable;
+    }
+    if (!shared && foreign.length > 0) {
+      // A shared view's frames pass its own artifact check; the actor's own do not.
+      const artifacts = await this.deps.sharedArtifacts.decide(
+        viewer,
+        messageArtifactIds(masked),
+      );
+      masked = artifacts.messages(masked);
+    }
+    const byRow = new Map(foreign.map((row, i) => [row, masked[i]]));
+    return view(
+      { userId, orgId: run.orgId },
+      {
+        ...conversation,
+        messages: (
+          (conversation['messages'] ?? []) as Array<Record<string, unknown>>
+        ).map((row) => byRow.get(row) ?? row),
+      },
+      {
+        ...(shared ? {} : { ownAnswer: run.runId }),
+        citationsDecided: decided,
+        checkFailed,
+      },
     );
   }
 
@@ -540,6 +630,7 @@ class RunStream implements StreamHandle {
           : {}),
         citations: () => this.citations ?? CitationAccess.denyRecords(),
         artifacts: () => this.artifacts,
+        answer: () => this.answer,
       },
       resumeAfter,
       {
@@ -881,8 +972,8 @@ class RunStream implements StreamHandle {
       return false;
     }
     const run = this.request.run;
-    const conversation = (await this.deps.conversations.finishedConversation(
-      run,
+    const conversation = (await this.visible(
+      await this.deps.conversations.finishedConversation(run),
     )) ?? {
       _id: run.sessionId,
       messages: [],
@@ -921,7 +1012,9 @@ class RunStream implements StreamHandle {
       const conversation =
         this.finished !== null
           ? this.finished.conversation
-          : await this.deps.conversations.finishedConversation(run);
+          : await this.visible(
+              await this.deps.conversations.finishedConversation(run),
+            );
       if (conversation === null) {
         this.deps.logger.error(
           'projection.conversation_missing',

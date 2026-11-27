@@ -131,7 +131,10 @@ import {
 import { GatewayTokenService } from './application/gateway-token-service';
 import { HarnessAuthority } from './application/harness-authority';
 import { HarnessLogger } from './application/harness-log';
-import { ConversationReader } from './ports/conversation-reader';
+import {
+  ConversationReader,
+  RunConversationView,
+} from './ports/conversation-reader';
 import type { SlackThreadPoster } from './application/thread-replies';
 import { RecordReadAccess } from './ports/record-access';
 import { SharedCitationService } from './application/shared-citations';
@@ -393,6 +396,8 @@ export interface AgentHarnessDependencies {
   inlineClaimer?: () => string;
   /** Reads a finished run's conversation for the stream's final frame. */
   conversationReader?: ConversationReader;
+  /** What of it the watcher may read. Absent: a shared stream carries no answer. */
+  conversationView?: RunConversationView;
   /** Posts a Slack turn's end into its thread when the bot's stream ended first (D-SLACK-ASK). Absent: never posted. */
   slackThreads?: SlackThreadPoster;
   /**

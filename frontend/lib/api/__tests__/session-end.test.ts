@@ -136,14 +136,39 @@ describe('an apiClient answer that arrives after the session ended', () => {
     expect(seen.resolved).toBe(true);
   });
 
-  it('neither refreshes nor signs out on a stale 401', async () => {
+  it.each([
+    ['401', {}],
+    ['401 saying the session is over', { error: { message: 'Session expired, please login again' } }],
+  ])('neither refreshes nor signs out on a stale %s', async (_label, data) => {
     const pending = deferredServer();
     watch(apiClient.get('/api/v1/users'));
     await flush();
 
     signOut();
     signIn();
-    pending[0].answer({ status: 401 });
+    pending[0].answer({ status: 401, data });
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('does not sign the next person out when a download says "session is over" while its body is read', async () => {
+    const pending = deferredServer();
+    watch(apiClient.get('/api/v1/file', { responseType: 'blob' }));
+    await flush();
+
+    let readBody!: () => void;
+    const json = JSON.stringify({ error: { message: 'Session expired, please login again' } });
+    const body = Object.defineProperty(new Blob([json]), 'text', {
+      value: () => new Promise<string>((resolve) => (readBody = () => resolve(json))),
+    });
+    pending[0].answer({ status: 401, data: body });
+    await flush();
+    signOut();
+    signIn();
+    readBody();
     await flush();
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -278,7 +303,7 @@ describe('a token refresh that overlaps a sign-out', () => {
     signOut();
     answer(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
 
-    expect(await refresh).toBe(false);
+    expect(await refresh).toBe('refused');
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(storage.has(SESSION_HINT_KEY)).toBe(false);
   });
@@ -363,7 +388,7 @@ describe('a token refresh that overlaps a sign-out', () => {
     storage.delete(SESSION_HINT_KEY);
     answer(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
 
-    expect(await refresh).toBe(false);
+    expect(await refresh).toBe('refused');
     expect(useAuthStore.getState().accessToken).toBe(before);
     expect(storage.has(SESSION_HINT_KEY)).toBe(false);
   });
@@ -376,8 +401,38 @@ describe('a token refresh that overlaps a sign-out', () => {
     signIn();
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
 
-    expect(await refreshAccessToken()).toBe(true);
+    expect(await refreshAccessToken()).toBe('refreshed');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Guard: the session check comes before the no-answer check, so the next person is never acted for.
+  it("answers 'session-ended' for a refresh that gets no answer after the sign-out, and signs nobody out", async () => {
+    const answer = deferredRefresh();
+    const refresh = refreshOrSignOut();
+
+    signOut();
+    signIn();
+    answer(jsonResponse(503, {}));
+
+    expect(await refresh).toBe('session-ended');
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  // Guard: a refresh that ends with the session over drops the request, even when it got no answer.
+  it('never sends the request whose refresh before sending gets no answer after a sign-out', async () => {
+    useAuthStore.setState({ accessToken: jwtExpiringIn(20) });
+    const pending = deferredServer();
+    const answer = deferredRefresh();
+    const seen = watch(apiClient.get('/api/v1/users'));
+    await flush();
+
+    signOut();
+    answer(jsonResponse(503, {}));
+    await flush();
+
+    expect(pending).toHaveLength(0);
+    expect(seen.settled).toBe(false);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
   });
 
   it('still signs out when the refresh fails within the session', async () => {

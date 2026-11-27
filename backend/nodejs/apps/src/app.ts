@@ -28,13 +28,16 @@ import {
   runWithRequestContext,
   newSystemRoot,
 } from './libs/context/request-context';
-import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import {
+  metricsMiddleware,
+  startOrgMetricsRefresh,
+  startTelemetry,
+} from './libs/services/telemetry/telemetry-runtime';
 import {
   configureEnvelopeFromSecret,
   configureInbox,
 } from './libs/context/envelope';
 import { PgInbox } from './libs/services/consumer-inbox';
-import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { TtlSweeper } from './libs/services/ttl-sweeper.service';
 import { docStore } from './libs/repositories/store-select';
@@ -45,12 +48,11 @@ import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guar
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
-import { startTelemetry } from './libs/services/telemetry/telemetry.service';
 import { createProcessMetricsServer } from './libs/services/telemetry/process-metrics';
 import {
+  telemetryOffMessage,
   isTelemetryEnabled,
-  TELEMETRY_COLLECTION_FLAG,
-} from './libs/services/telemetry/flag';
+} from './libs/services/telemetry/telemetry-impl';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {
@@ -111,6 +113,11 @@ import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/deskto
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
 import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
+import {
+  createInternalRouteGuard,
+  parseTrustedCidrs,
+  resolveInternalRouteMode,
+} from './libs/middlewares/internal-route-guard.middleware';
 import {
   createGlobalRateLimiter,
   createSlackEventsRateLimiter,
@@ -491,9 +498,7 @@ export class Application {
         );
         startOrgMetricsRefresh(this.logger);
       } else {
-        this.logger.info(
-          `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`,
-        );
+        this.logger.info(telemetryOffMessage);
       }
 
       // Domain events are written to the outbox by whoever makes the change;
@@ -692,6 +697,22 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
+
+    // Before the rate limiter (which skips /internal/ paths) and every router.
+    // Default `log`; `deny` (any case) refuses public requests; an unknown value warns at boot.
+    this.app.use(
+      createInternalRouteGuard(
+        this.logger,
+        resolveInternalRouteMode(
+          process.env.INTERNAL_ROUTES_PUBLIC_ACCESS,
+          this.logger,
+        ),
+        parseTrustedCidrs(
+          process.env.INTERNAL_ROUTES_TRUSTED_CIDRS,
+          this.logger,
+        ),
+      ),
+    );
 
     // Global rate limiter - applies to all routes
     this.app.use(

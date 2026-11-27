@@ -5,7 +5,7 @@ import type {
   NewAgentCall,
 } from '../repositories/agent-call-event';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
-import { clientTags } from '../services/telemetry/identity';
+import { clientTags } from '../services/telemetry/telemetry-impl';
 import { Logger } from '../services/logger.service';
 import {
   PAT_APP_CLIENT_ID_PREFIX,

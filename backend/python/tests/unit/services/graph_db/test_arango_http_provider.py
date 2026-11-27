@@ -22,6 +22,7 @@ Tests cover:
 - get_records_by_record_ids: success, empty, exception
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14821,9 +14822,7 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
-            # mcp_server_ids (no MCP servers attached)
-            [],
-            # deleted_mcp_server_edges (none)
+            # agent -> MCP server edges removed (none attached)
             [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
@@ -14846,8 +14845,7 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
-            [],    # no mcp_server_ids
-            [],    # no deleted_mcp_server_edges
+            [],    # no agent -> MCP server edges (none removed, no server re-checked)
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -14867,8 +14865,7 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
-            [],                       # no mcp_server_ids
-            [],                       # no deleted_mcp_server_edges
+            [],                       # no agent -> MCP server edges (none removed, no server re-checked)
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -14887,8 +14884,7 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -14898,6 +14894,120 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
         assert result["mcp_servers_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_server_is_rechecked_after_the_agents_own_links_are_gone(self, connected_provider) -> None:
+        """The agent's server links go first; every server they named is then re-checked, so a server another agent let go of
+        concurrently (its link already removed) goes with this delete, tools and all."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed
+            ["agentMcpServers/s1"],              # re-check: no agent is attached to s1 any more
+            ["agentTools/t1"],                   # s1's tool links, removed
+            [{"_key": "t1"}],                    # t1, held by no other server
+            [{"_key": "s1"}],                    # s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        queries = [c.args[0] for c in connected_provider.execute_query.await_args_list]
+        assert "REMOVE edge IN agentHasMcpServer" in queries[3] and "RETURN OLD._to" in queries[3]
+        assert connected_provider.execute_query.await_args_list[4].kwargs["bind_vars"] == {"server_ids": ["agentMcpServers/s1"]}
+        assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_runs_the_mcp_cleanup_again_in_a_fresh_transaction(self, connected_provider) -> None:
+        """The MCP cleanup runs in a stream transaction of its own that holds the agent-to-server links exclusively; a
+        write-write conflict with another writer aborts it, and it is run again from the start."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        conflict = ArangoQueryError("Query failed", 409, '{"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=["tx1", "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # tx1: the agent's server links, removed
+            ["agentMcpServers/s1"],              # tx1: s1 is orphaned
+            conflict,                            # tx1: another writer holds s1's tool links
+            ["agentMcpServers/s1"],              # tx2 (tx1 rolled back): the links, removed again
+            ["agentMcpServers/s1"],              # tx2: s1 is orphaned
+            ["agentTools/t1"],                   # tx2: s1's tool links
+            [{"_key": "t1"}],                    # tx2: t1, held by no other server
+            [{"_key": "s1"}],                    # tx2: s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 1, 1)
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+        begin = connected_provider.http_client.begin_transaction.await_args
+        assert begin.kwargs["exclusive"] == [CollectionNames.AGENT_HAS_MCP_SERVER.value]
+        assert [c.kwargs["transaction"] for c in connected_provider.execute_query.await_args_list[3:11]] == ["tx1"] * 3 + ["tx2"] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_lock_timeout_taking_the_mcp_transaction_is_run_again(self, connected_provider) -> None:
+        """Another delete holds the agent-to-server links: taking them times out, and the cleanup is tried again. Nothing is
+        aborted for the attempt that never got a transaction."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        timeout = ArangoQueryError("Begin transaction failed", 409, '{"code":409,"error":true,"errorMessage":"timeout waiting to lock","errorNum":18}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=[timeout, "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            [],                                  # tx2: the agent has no server links
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 1
+        assert connected_provider.http_client.begin_transaction.await_count == 2
+        connected_provider.http_client.abort_transaction.assert_not_awaited()
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_mcp_cleanup_aborts_its_transaction(self, connected_provider) -> None:
+        """A cancellation is not an Exception: the transaction holding the links exclusively is still aborted, and the
+        cancellation goes on to the caller."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            asyncio.CancelledError(),            # cancelled inside the cleanup
+        ])
+
+        with pytest.raises(asyncio.CancelledError):
+            await connected_provider.hard_delete_agent("a1")
+
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_cleanup_keeps_the_agents_links_for_a_retry(self, connected_provider) -> None:
+        """A cleanup that fails after the agent's links were removed is rolled back with them: a later delete finds them again."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed in tx1
+            RuntimeError("server gone"),         # the cleanup fails
+        ])
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 0     # the delete failed and said so; nothing of it was committed
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -14917,8 +15027,7 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -19203,25 +19312,25 @@ class TestArangoPersonMigrationAndReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_counts_only_the_people_it_stranded(self, connected_provider):
-        self._script(
+        calls = self._script(
             connected_provider,
-            [                                        # stale flagged edges
-                {"edge": "e1", "principal": "person/p1"},
-                {"edge": "e2", "principal": "person/p2"},
-                {"edge": "e3", "principal": "users/u9"},   # a user, never swept
+            [                                        # the stale flagged edges, removed by the statement that finds them
+                {"principal": "person/p1"},
+                {"principal": "person/p2"},
+                {"principal": "users/u9"},           # a user, never swept
             ],
-            [],                                      # delete the membership edges
             [1, 1],                                  # two people removed
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 2
+        # one decision: the grant is checked by the statement that removes the edge
+        assert "FILTER NOT" in calls[0][0] and "REMOVE uar IN userAppRelation" in calls[0][0]
 
     @pytest.mark.asyncio
     async def test_reaper_sweeps_people_but_never_users(self, connected_provider):
         """A User node stripped of external membership is still a platform account."""
         calls = self._script(
             connected_provider,
-            [{"edge": "e3", "principal": "users/u9"}],
-            [],
+            [{"principal": "users/u9"}],
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
         assert not any("REMOVE key IN person" in q for q, _ in calls)
@@ -19230,7 +19339,7 @@ class TestArangoPersonMigrationAndReaper:
     async def test_reaper_no_ops_when_nothing_is_stale(self, connected_provider):
         calls = self._script(connected_provider, [])
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
-        assert len(calls) == 1, "must not issue a delete when there is nothing to delete"
+        assert len(calls) == 1, "must not look for people when no edge was removed"
 
     @pytest.mark.asyncio
     async def test_reaper_swallows_failure(self, connected_provider):
@@ -19239,6 +19348,26 @@ class TestArangoPersonMigrationAndReaper:
             side_effect=RuntimeError("db down")
         )
         assert await connected_provider.reap_stale_external_app_relations("c1") == 0
+
+    @pytest.mark.asyncio
+    async def test_reaper_raises_a_conflict_so_its_caller_runs_it_again(self, connected_provider) -> None:
+        """A write-write conflict (1200) removed nothing and aborted the caller's stream transaction: reported as 0 (success) the caller would commit it."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=ArangoQueryError("Query failed", 409, '{"errorNum": 1200}'))
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_num", [1200, 18, 29], ids=["conflict", "lock_timeout", "deadlock"])
+    async def test_reaper_raises_every_lost_race_so_its_caller_runs_it_again(self, connected_provider, error_num) -> None:
+        """A lock not granted in time (18) or a deadlock the server broke (29) aborts the operation as a write-write conflict (1200) does: each is
+        a transient error the caller's retry runs again, never 0 reaped."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+        error = ArangoQueryError("Query failed", 409, f'{{"errorNum": {error_num}}}')
+        assert connected_provider.is_transient_error(error) and connected_provider.is_write_conflict(error)
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=error)
+        with pytest.raises(ArangoQueryError):
+            await connected_provider.reap_stale_external_app_relations("c1", transaction="t1")
 
     @pytest.mark.asyncio
     async def test_reaper_only_touches_flagged_edges(self, connected_provider):

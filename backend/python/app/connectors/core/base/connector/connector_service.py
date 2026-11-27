@@ -625,21 +625,26 @@ class BaseConnector(ABC):
     def get_connector_id(self) -> str:
         return self.connector_id
 
-    async def _load_creator_email(self) -> None:
+    async def _load_creator_email(self, *, raise_on_error: bool = False) -> None:
         """
         Load and cache the creator's email for personal scope connectors.
 
         This is useful for connectors that need to create permissions for the creator.
         Call this in init() if needed (typically for personal scope connectors).
+
+        ``raise_on_error`` raises a failed lookup instead of logging it, so a caller
+        can tell a creator it could not read from one who is gone.
         """
         if self.scope == ConnectorScope.PERSONAL.value and self.created_by:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_user_id(self.created_by)
+                    user = await tx_store.get_user_by_user_id(self.created_by, raise_on_error=raise_on_error)
                     if user and user.get("email"):
                         self.creator_email = user.get("email")
                         self.logger.debug(f"Cached creator email: {self.creator_email}")
             except Exception as e:
+                if raise_on_error:
+                    raise
                 self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
     def _connector_group_external_id(self) -> str:

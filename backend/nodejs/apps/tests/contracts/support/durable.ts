@@ -175,6 +175,8 @@ export const projectorContext = (journal: GoldenJournal, audience: ProjectorCont
   title: journal.query.slice(0, 100),
   goal: journal.query,
   audience,
+  // Every record behind a golden answer is the viewer's to read; stream-service.test withholds one.
+  answer: () => 'shown',
 })
 
 /** One step of what a live subscriber receives: a journal page, or one delta. */

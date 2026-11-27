@@ -8,6 +8,42 @@ import multer from 'multer';
 
 import { LargePayloadError } from '../errors/http.errors';
 
+/** multer's codes for an upload past one of its size or count limits; every other code is a malformed upload. */
+const UPLOAD_LIMIT_CODES: ReadonlySet<string> = new Set([
+  'LIMIT_FILE_SIZE',
+  'LIMIT_FILE_COUNT',
+  'LIMIT_PART_COUNT',
+  'LIMIT_FIELD_KEY',
+  'LIMIT_FIELD_VALUE',
+  'LIMIT_FIELD_COUNT',
+]);
+
+/** The upload went past a size or count limit (413), rather than being sent wrong (400). */
+export const isUploadLimit = (code: unknown): boolean =>
+  typeof code === 'string' && UPLOAD_LIMIT_CODES.has(code);
+
+// shortcut: busboy 1.6 gives its parse errors no code, so they are known by message; a pinned test fails if an upgrade renames one.
+export const BUSBOY_PARSE_ERRORS: ReadonlySet<string> = new Set([
+  'Unexpected end of form',
+  'Unexpected end of file',
+  'Malformed part header',
+  'Multipart: Boundary not found',
+  'Malformed urlencoded form',
+  'Malformed content type',
+  'Missing Content-Type',
+]);
+
+/** busboy could not read the multipart body. Its message can quote the Content-Type header, so it is never shown. */
+export function isMultipartParseError(error: Error): boolean {
+  // This runs inside the error middleware, and not every error has a message (an AxiosError built without one).
+  const { message } = error as { message?: unknown };
+  return (
+    typeof message === 'string' &&
+    (BUSBOY_PARSE_ERRORS.has(message) ||
+      message.startsWith('Unsupported content type'))
+  );
+}
+
 /**
  * Every multipart reader in the API is built here (SEC-C-08), so each one is metered the same way: the bytes of
  * a request are counted as they arrive, chunked or not, and the request is refused past its cap. The declared

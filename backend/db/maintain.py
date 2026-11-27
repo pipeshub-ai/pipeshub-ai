@@ -255,13 +255,18 @@ def main(argv: list[str]) -> int:
         if cmd == "recount" and len(argv) in (1, 2):
             if len(argv) == 2 and not placement.is_org_id(argv[1]):
                 raise RunnerError(EXIT_CONFIG, USAGE)
-            busy = 0
+            busy = failed = 0
             with psycopg.connect(_jobs_url(), autocommit=True) as jobs:
                 for org in argv[1:] or fold.orgs_to_recount(jobs):
-                    done = fold.recount_org(jobs, org)
+                    try:
+                        done = fold.recount_org(jobs, org)
+                    except psycopg.Error as exc:       # a held org (25006) or a database error: reported, the next run retries it
+                        failed += 1
+                        log(f"org {org}: failed: {_first_line(exc)}")
+                        continue
                     busy += done is None
                     log(f"org {org}: " + ("busy (a fold or recount holds it; run again)" if done is None else ", ".join(f"collection {c} space {s}: {n}" for c, s, n in done) or "no points"))
-            return EXIT_PARTIAL if busy else 0
+            return EXIT_PARTIAL if busy or failed else 0
         if cmd == "fold" and (len(argv) == 1 or (len(argv) in (2, 3) and argv[1] == "--watch")):
             if len(argv) == 1:
                 return _fold_log(*_fold_pass())

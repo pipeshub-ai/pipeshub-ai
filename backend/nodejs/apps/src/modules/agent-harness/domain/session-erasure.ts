@@ -339,7 +339,7 @@ export const SESSION_DATA_STORES: readonly SessionDataStore[] = [
     store: 'agentSchedules',
     kind: 'mongo',
     coverage: {
-      kept: "a user's schedules are principal data (PRINCIPAL_DATA_STORES): deleted with the user or the org (CLEANUP-G2), disabled with their template dropped when their agent is deleted (AGENT_DATA_STORES); no session data",
+      kept: "a user's schedules are principal data (PRINCIPAL_DATA_STORES): deleted with the user or the org (CLEANUP-G2), disabled with their template dropped when their agent is deleted (AGENT_DATA_STORES); a deleted chat-made schedule's tombstone (ids and its origin only) goes with the user or the org; no session data",
     },
   },
   {

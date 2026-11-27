@@ -16,6 +16,7 @@ from app.harness.credentials.binding_writer import (
     NodeBindingWriter,
 )
 from app.harness.journal_node.http import NodeServiceClient
+from app.utils import error_class
 
 BINDING = {"id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001", "orgId": "org-1", "status": "active", "revision": 2,
            "secret": {"path": "/services/controlPlane/credentials/org-1/ts-1/user/u1", "version": 1, "versionDigest": "sha256:" + "a" * 64}}
@@ -69,3 +70,32 @@ async def test_due_has_no_org_and_refreshed_conflicts_map_to_their_errors() -> N
         _ = await w.revert_import("org-1", "ts-1", "user:u1")
     with pytest.raises(BindingWriteFailed):
         _ = await w.refresh_failed("org-1", BINDING["id"], 2, "invalid_grant", permanent=True)
+
+
+async def test_revoke_installation_posts_the_installation_with_the_orgs_token_and_reads_every_row() -> None:
+    second = {**BINDING, "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0002", "status": "revoked", "revision": 3}
+    w, seen, minted = writer(httpx.Response(200, json={"bindings": [{**BINDING, "status": "revoked"}, second]}))
+    rows = await w.revoke_installation("org-1", "inst-1", user_id="admin-1")
+    assert [(r.id, r.status, r.org_id) for r in rows] == [(BINDING["id"], "revoked", "org-1"), (second["id"], "revoked", "org-1")]
+    assert seen[0].method == "POST" and seen[0].url.path == "/api/v1/control-plane/internal/bindings/revoke-installation"
+    assert json.loads(seen[0].content) == {"installation": "inst-1"} and minted == [("org-1", "admin-1")]
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type", "retry"),
+    [(503, "unavailable", True), (504, "timeout", True), (500, "upstream_5xx", False)],
+)
+async def test_a_node_5xx_carries_its_status(status: int, error_type: str, retry: bool) -> None:
+    w, _, _ = writer(httpx.Response(status, json={}))
+    with pytest.raises(BindingWriteFailed) as failed:
+        _ = await w.revoke_installation("org-1", "inst-1")
+    assert failed.value.status_code == status
+    assert (error_class.classify_error(failed.value), error_class.retry_later(failed.value)) == (error_type, retry)
+
+
+async def test_a_node_4xx_to_our_own_call_stays_an_internal_error() -> None:
+    w, _, _ = writer(httpx.Response(401, json={}))
+    with pytest.raises(BindingWriteFailed) as rejected:
+        _ = await w.revoke_installation("org-1", "inst-1")
+    assert rejected.value.status_code is None and error_class.classify_error(rejected.value) == "internal"
+    assert not error_class.retry_later(rejected.value)

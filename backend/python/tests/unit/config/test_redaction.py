@@ -27,6 +27,20 @@ def test_oauth_app_tokens_cannot_reveal() -> None:
     assert reveal_requested(_request("reveal=true", {"userId": "u1", "isOAuth": True})) is False
 
 
+@pytest.mark.parametrize(("value", "hidden"), [
+    (None, True), ("true", True), ("", True), ("False", True), ("0", True), ("false", False),
+])
+def test_secrets_are_hidden_unless_the_flag_is_exactly_false(monkeypatch, value, hidden) -> None:
+    """An install that never sets HIDE_SECRET_CONFIG fails closed."""
+    from app.config.redaction import hide_secrets_by_default
+
+    if value is None:
+        monkeypatch.delenv("HIDE_SECRET_CONFIG", raising=False)
+    else:
+        monkeypatch.setenv("HIDE_SECRET_CONFIG", value)
+    assert hide_secrets_by_default() is hidden
+
+
 # --- HIDE_SECRET_CONFIG on the OSS credential reads -------------------------
 
 # The routes module only loads cleanly once app.edition_config is imported first.
