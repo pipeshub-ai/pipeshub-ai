@@ -1175,6 +1175,28 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[1])
 
 
+async def sync_once_to_its_end(
+    pipeshub_client: PipeshubClient, connector_id: str, *, timeout: float | None = None
+) -> None:
+    """Start a sync and wait until the product records a run as finished after it.
+
+    The connector writes a record's permissions during the run that reads it, so once
+    ``lastSyncFinishedAtTimestamp`` moves past its value from before the restart and the
+    connector is IDLE again, no run that started earlier is still writing them. IDLE status
+    and stable record counts alone (``wait_for_sync_completion``) do not show that.
+    """
+    finished_before = int(pipeshub_client.get_connector(connector_id).get("lastSyncFinishedAtTimestamp") or 0)
+    _restart_sync(pipeshub_client, connector_id)
+    deadline = time.monotonic() + (_SYNC_TIMEOUT_SEC if timeout is None else timeout)
+    while True:
+        doc = pipeshub_client.get_connector(connector_id)
+        if int(doc.get("lastSyncFinishedAtTimestamp") or 0) > finished_before and doc.get("status") == "IDLE":
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"no sync of connector {connector_id} was recorded as finished in time")
+        await asyncio.sleep(5)
+
+
 async def sync_and_wait(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,

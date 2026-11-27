@@ -119,6 +119,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     record_present,
     rename_drive_item,
     sync_and_wait,
+    sync_once_to_its_end,
     sync_until,
     resolve_my_drive_root_id,
     share_drive_item_with_user,
@@ -1513,6 +1514,9 @@ class TestDriveWorkspaceEntitySync:
                 poll_interval=10,
                 description=f"owner ({owner_email}) PERMISSION on restricted folder and its child",
             )
+            # One more run, started now and recorded as finished: any permission an earlier run was
+            # still writing for this tree has landed before B's absence is checked.
+            await sync_once_to_its_end(pipeshub_client, connector_id)
 
             async def _restricted_and_child_lack_b() -> bool:
                 for external_id in (restricted_id, child_id):
