@@ -71,7 +71,9 @@ async def test_an_editions_cipher_is_given_each_values_key_both_ways(env, monkey
 def test_the_legacy_etcd3_store_refuses_a_cipher_other_than_the_platforms(env, monkeypatch) -> None:  # noqa: F811
     from unittest.mock import MagicMock
 
-    from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+    from app.config.providers.etcd.etcd3_encrypted_store import (
+        Etcd3EncryptedKeyValueStore,
+    )
 
     monkeypatch.setattr(edition_services, "kv_cipher", lambda platform: Tagging(platform))
     with patch("app.config.providers.etcd.etcd3_connection_manager.etcd3.client", return_value=MagicMock()), \
