@@ -21,6 +21,7 @@ from .mistral import MistralProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
+from .openllm import OpenLLMProvider
 from .openrouter import OpenRouterProvider
 from .together import TogetherProvider
 from .typesafe import TypeSafeProvider
@@ -33,6 +34,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     GeminiProvider,
     AnthropicProvider,
     OpenAICompatibleProvider,
+    OpenLLMProvider,
     OpenRouterProvider,
     AzureAIProvider,
     AzureOpenAIProvider,

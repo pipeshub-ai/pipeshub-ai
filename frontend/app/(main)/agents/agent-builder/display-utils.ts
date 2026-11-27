@@ -168,6 +168,8 @@ export function formattedProvider(provider: string): string {
       return 'OpenAI API Compatible';
     case 'openRouter':
       return 'OpenRouter';
+    case 'openLLM':
+      return 'OpenLLM';
     case 'lmStudio':
       return 'LM Studio';
     case 'litellmProxy':
