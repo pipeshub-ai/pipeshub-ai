@@ -1465,8 +1465,8 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
 
 
 async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]], sites: tuple[str, ...] = ("kg.listing_page", "kg.listing_page_admitted")) -> list[int]:
-    """The kg.records rows each read of ``sites`` (by default the page's windows, kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after the settings its
-    transaction set before it."""
+    """The kg.records rows each read of ``sites`` (by default the page's windows, kg.listing_page) examined, from EXPLAIN ANALYZE: each replayed after its unit's prologue
+    (:func:`_record_prologues`: the request's role, plan cache mode, JIT and work_mem) and the settings its transaction set before it."""
     import asyncpg
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     read: list[int] = []
@@ -1477,7 +1477,7 @@ async def _page_rows_read(org: str, statements: list[tuple[object, str, tuple]],
                 for t, sql, args in statements:
                     if t is not tx:
                         continue
-                    if "set_config(" in sql:
+                    if "set_config(" in sql:      # the prologue, a profile or its restore
                         await con.fetch(sql, *args)
                     elif (site := re.search(r"pipeshub:(\S+)", sql[:80])) and site.group(1) in sites:
                         plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args))
@@ -1509,9 +1509,11 @@ async def test_a_wide_nodes_page_reads_a_window_of_its_children_once_the_table_i
             ran.append((self, sql, args))
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
         page = await browse(p, org, "fold", ["fold", *kids], limit=10, sort_field=field, sort_dir=way, include_total=False)      # a page with no total: windows only
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert len(page["rows"]) == 10, page["rows"]
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.browse_children_held"))      # the held check (is it wide?) too
         assert read and all(n <= 150 for n in read), (width, read)
 
@@ -1534,11 +1536,13 @@ async def test_a_connectors_flat_listing_reads_a_window_per_page_once_the_table_
             ran.append((self, sql, args))
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
         with ctx(org):
             page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["fold", *kids], limit=10,
                                                                 sort_field=field, sort_dir=way, include_total=False)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert len(page["rows"]) == 10, page["rows"]
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read = await _page_rows_read(org, ran)
         assert read and all(n <= 150 for n in read), (width, read)
 
@@ -1582,11 +1586,13 @@ async def test_a_flat_listing_of_a_small_scope_in_a_large_connector_reads_its_ke
             ran.append((self, sql, args))
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
         with ctx(org):
             page = await p.get_knowledge_hub_connector_page_v3(app_id="app1", org_id=org, grantee_ids=["u1"], gated_app_ids=["app1"], granted_ids=["small", *small], limit=10,
                                                                 start_id="small", start_type="folder", sort_field=field, sort_dir=way)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert sorted(r["id"] for r in page["rows"]) == small, page["rows"]
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read = await _page_rows_read(org, ran, ("kg.listing_page", "kg.listing_page_admitted", "kg.listing_undecided", "kg.listing_count"))
         assert read and all(n <= 20 for n in read), (field, way, read)
 
@@ -1616,9 +1622,11 @@ async def test_a_wide_nodes_first_page_reads_its_window_and_the_counts_cap_once_
             ran.append((self, sql, args))
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
         page = await browse(p, org, "fold", ["fold", *kids], limit=10)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read[width] = sum(await _page_rows_read(org, ran, FIRST_PAGE_READS))
     assert read[3000] <= 250 and read[3000] < read[300] + 50, read
 
