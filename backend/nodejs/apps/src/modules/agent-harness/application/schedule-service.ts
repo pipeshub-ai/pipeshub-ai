@@ -565,10 +565,10 @@ export class ScheduleService {
       deadlineS,
       status: 'active',
       statusReason: null,
-      // An approved one-off whose time came while its card waited fires at the next tick.
+      // An approved one-off whose time came while its card waited is due at once; its lateness counts from `at`.
       nextFireAt:
         trigger.kind === 'once'
-          ? Math.max(Date.parse(trigger.at), now)
+          ? Date.parse(trigger.at)
           : firstSlot(trigger, now),
       webhookTokenHash: token === null ? null : hashTriggerToken(token),
       ...(secret !== null ? { webhookSigningKey: secret } : {}),
@@ -1148,7 +1148,7 @@ export class ScheduleService {
     if (ranOnce(schedule)) {
       return new HarnessScheduleRefusedError(
         'SCHEDULE_RAN_ONCE',
-        'This one-time schedule already ran. Create a new schedule to run it again',
+        'This one-time schedule already ran or its time passed. Delete it or make a new one',
       );
     }
     return new HarnessScheduleRefusedError(

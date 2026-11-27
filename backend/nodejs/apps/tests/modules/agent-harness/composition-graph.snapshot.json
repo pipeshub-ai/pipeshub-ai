@@ -9716,6 +9716,22 @@
     "class": "Object",
     "actors": "fake:schedules.actors",
     "logger": "fake:logger",
+    "marks": {
+     "class": "JournalScheduleMarks",
+     "journals": {
+      "class": "JournalService",
+      "cipher": "EnvelopeCipher",
+      "inlineMaxBytes": "number",
+      "payloads": "fake:payloads",
+      "recorders": []
+     },
+     "store": {
+      "class": "AuditedJournalStore",
+      "audit": "MongoAuditChainStore",
+      "inner": "SnapshotRecordingJournalStore"
+     },
+     "transaction": "function"
+    },
     "runs": {
      "class": "ExecutionService",
      "asksListeners": [
@@ -9902,6 +9918,7 @@
       "admission": "RunAdmissionScheduledRuns",
       "connectorEvents": "BrokerTriggerSource",
       "digests": "RunTimelineService",
+      "harnessOn": "function",
       "logger": "fake:logger",
       "newId": "function",
       "notifier": "InboxAwareScheduleNotifier",
@@ -16839,6 +16856,7 @@
      }
     }
    },
+   "harnessOn": "function",
    "logger": "fake:logger",
    "newId": "function",
    "notifier": {
@@ -16958,6 +16976,7 @@
       "writers": "MongoWorkspaceWriterStore"
      }
     },
+    "harnessOn": "function",
     "logger": "fake:logger",
     "newId": "function",
     "notifier": {

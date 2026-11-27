@@ -10,6 +10,7 @@ import {
   ChatScheduleService,
   chatScheduleId,
   SCHEDULE_CREATE_TOOL_ID,
+  SCHEDULE_CREATED_EVENT,
   type ScheduleToolArguments,
 } from '../../../src/modules/agent-harness/application/chat-schedules';
 import { ScheduleFirer } from '../../../src/modules/agent-harness/application/schedule-firer';
@@ -82,6 +83,12 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(field('2027-07-08T06:00:00Z')).to.equal('at');
       expect(field('2027-07-07T06:00:00Z')).to.equal(undefined);
       expect(field(AT, 'Mars/Olympus')).to.equal('timeZone');
+      const NEW_YEAR = Date.parse('2027-01-01T00:00:00Z');
+      expect(field('2027-02-30T09:00:00Z', 'UTC', NEW_YEAR)).to.equal('at');
+      expect(field('2027-04-31T09:00:00+05:30', 'UTC', NEW_YEAR)).to.equal('at');
+      expect(field('2027-03-01T24:00:00Z', 'UTC', NEW_YEAR)).to.equal('at');
+      expect(field('2028-02-29T09:00:00-08:00', 'UTC', Date.parse('2028-01-01T00:00:00Z'))).to.equal(undefined);
+      expect(field('2027-02-29T09:00:00Z', 'UTC', NEW_YEAR)).to.equal('at');
     });
 
     it('fires its slot when due and up to 24 h late; later the slot is skipped; the cursor always goes', () => {
@@ -177,6 +184,73 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       await firer().retryStale();
       expect(admission.admitted).to.equal(1);
       expect((await store.firings(ORG, schedule.id, 10))[0]?.status).to.equal('admitted');
+    });
+
+    it('a firing retaken more than a day after its slot is skipped as too late, and its person told', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS;
+      admission.refusals.push('unavailable');
+      await firer().fireDue();
+      clock.advance(MAX_ONCE_LATENESS_MS + MIN);
+      await firer().retryStale();
+      expect(admission.admitted).to.equal(0);
+      expect((await store.firings(ORG, schedule.id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([
+        ['skipped', ONCE_TOO_LATE],
+      ]);
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
+    });
+
+    it('too late while the org cannot run schedules: skipped and disabled, nobody told', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS + MAX_ONCE_LATENESS_MS + MIN;
+      const off = new FakeSetting();
+      off.on = false;
+      await new ScheduleFirer({ store, admission, actors, setting: off, notifier }).fireDue();
+      expect((await store.get(ORG, schedule.id))?.status).to.equal('disabled');
+      expect(notifier.refusals).to.deep.equal([]);
+      clock.value = T0;
+      const { schedule: other } = await once();
+      clock.value = AT_MS + 2 * MAX_ONCE_LATENESS_MS;
+      await new ScheduleFirer({
+        store,
+        admission,
+        actors,
+        setting: new FakeSetting(),
+        notifier,
+        harnessOn: async () => false,
+      }).fireDue();
+      expect((await store.get(ORG, other.id))?.status).to.equal('disabled');
+      expect(notifier.refusals).to.deep.equal([]);
+    });
+
+    it('run now takes its one slot: two at once, or with a tick, make one firing; the loser is told it ran', async () => {
+      const { schedule } = await once();
+      const both = await Promise.allSettled([
+        service.runNow(alice, schedule.id, 'k1'),
+        service.runNow(alice, schedule.id, 'k2'),
+      ]);
+      expect(both.filter((r) => r.status === 'fulfilled')).to.have.length(1);
+      const lost = both.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+      expect((lost.reason as HarnessScheduleRefusedError).code).to.equal('SCHEDULE_RAN_ONCE');
+      expect(admission.admitted).to.equal(1);
+      expect(await store.get(ORG, schedule.id)).to.deep.include({ status: 'disabled', statusReason: RAN_ONCE });
+      expect(await code(service.runNow(alice, schedule.id, 'k3'))).to.equal('SCHEDULE_RAN_ONCE');
+
+      clock.value = T0;
+      const { schedule: due } = await once();
+      clock.value = AT_MS;
+      await Promise.allSettled([firer().fireDue(), service.runNow(alice, due.id, 'k4')]);
+      expect(await store.firings(ORG, due.id, 10)).to.have.length(1);
+      expect(admission.admitted).to.equal(2);
+    });
+
+    it('run now of a paused one-time schedule runs it once and disables it', async () => {
+      const { schedule } = await once();
+      await service.pause(alice, schedule.id);
+      await service.runNow(alice, schedule.id, 'k1');
+      expect(admission.admitted).to.equal(1);
+      expect(await store.get(ORG, schedule.id)).to.deep.include({ status: 'disabled', statusReason: RAN_ONCE });
+      expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_RAN_ONCE');
     });
 
     it('more than a day late: skipped, disabled, and its person told', async () => {
@@ -311,9 +385,12 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
   interface World {
     controller: AgentHarnessChatScheduleController;
     events: JournalEvent[];
+    marked: Array<{ interactionId: string; scheduleId: string }>;
     setting: FakeSetting;
     actors: FakeActors;
     store: InMemoryScheduleStore;
+    clock: TestClock;
+    schedules: ScheduleService;
     call(body: Record<string, unknown>): Promise<{ status: number; body?: unknown; code?: string }>;
   }
 
@@ -365,6 +442,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       },
     } as unknown as HarnessRun;
     const events: JournalEvent[] = [];
+    const marked: Array<{ interactionId: string; scheduleId: string }> = [];
     const service = new ChatScheduleService({
       runs: {
         get: async (orgId, runId) => (orgId === ORG && runId === RUN ? run : null),
@@ -374,6 +452,13 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       schedules,
       store,
       actors,
+      // The run's journal: what Node notes is read back by the next request.
+      marks: {
+        record: async (_run, _attemptId, made) => {
+          marked.push(made);
+          events.push({ type: SCHEDULE_CREATED_EVENT, runId: RUN, data: { ...made } } as unknown as JournalEvent);
+        },
+      },
     });
     const controller = new AgentHarnessChatScheduleController(service, {
       authorizeAttempt: sinon.stub().resolves(),
@@ -400,7 +485,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
       }
       return { status: res.statusCode, body: res.payload };
     };
-    return { controller, events, setting, actors, store, call };
+    return { controller, events, marked, setting, actors, store, clock, schedules, call };
   }
 
   const body = (args: unknown = ARGS, interactionId = ixOf(ARGS)) => ({
@@ -503,16 +588,51 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     expect(await w.call(body(ARGS, 'ix.approve.call_2.0'))).to.deep.equal({ status: 403, code: NOT_APPROVED });
   });
 
-  it('approved after its time came (the card waited): still made, and due at once', async () => {
+  it('approved after its time came (the card waited): made, due at once, lateness counted from its own time', async () => {
     const late = { ...ARGS, when: { kind: 'once' as const, at: '2026-07-06T05:58:30Z', timeZone: 'UTC' } };
     const w = world();
     w.events.push(...approvedCall(late));
     const made = await w.call(body(late, ixOf(late)));
     expect(made.status).to.equal(201);
-    expect((made.body as { schedule: { nextFireAt: string } }).schedule.nextFireAt).to.equal(new Date(T0).toISOString());
+    expect((made.body as { schedule: { nextFireAt: string } }).schedule.nextFireAt).to.equal('2026-07-06T05:58:30.000Z');
     const stale = { ...ARGS, when: { kind: 'once' as const, at: '2026-07-05T05:00:00Z', timeZone: 'UTC' } };
     w.events.push(...approvedCall(stale));
     expect(await w.call(body(stale, ixOf(stale)))).to.deep.equal({ status: 400, code: 'HTTP_AGENT_HARNESS_SCHEDULE_INVALID' });
+  });
+
+  it('approved 23 h late and first ticked 2 h later: skipped as too late, its person told', async () => {
+    const late = { ...ARGS, when: { kind: 'once' as const, at: '2026-07-05T07:00:00Z', timeZone: 'UTC' } };
+    const w = world();
+    w.events.push(...approvedCall(late));
+    const id = ((await w.call(body(late, ixOf(late)))).body as { schedule: { id: string } }).schedule.id;
+    w.clock.advance(2 * 60 * MIN);
+    const admission = new FakeAdmission();
+    const notifier = new FakeNotifier();
+    await new ScheduleFirer({ store: w.store, admission, actors: w.actors, setting: w.setting, notifier }).fireDue();
+    expect(admission.admitted).to.equal(0);
+    expect((await w.store.firings(ORG, id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([['skipped', ONCE_TOO_LATE]]);
+    expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
+  });
+
+  it('one approval makes its schedule once: deleted, a repeat is refused and nothing is made', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const id = ((await w.call(body())).body as { schedule: { id: string } }).schedule.id;
+    expect(w.marked).to.deep.equal([{ interactionId: ixOf(ARGS), scheduleId: id }]);
+    await w.schedules.delete(alice, id);
+    expect(await w.call(body())).to.deep.equal({ status: 409, code: 'HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED' });
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(0);
+    expect(w.marked).to.have.length(1);
+  });
+
+  it('made but not noted (a crash between): a repeat answers it and notes it then', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    await w.call(body());
+    w.events.splice(w.events.findIndex((e) => e.type === SCHEDULE_CREATED_EVENT), 1);
+    w.marked.length = 0;
+    expect((await w.call(body())).status).to.equal(200);
+    expect(w.marked).to.have.length(1);
   });
 
   it('AP-06: an edited call is made with the edited arguments only', async () => {

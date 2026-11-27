@@ -1,5 +1,7 @@
 import { harnessEditionOf, mountEditionRoutes } from '../edition';
 import { Router } from 'express';
+import { createKeyedRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import { Logger } from '../../../libs/services/logger.service';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { ExecutionService } from '../application/execution-service';
@@ -85,6 +87,9 @@ import {
  * the global XSS middleware exempts this prefix (see xss-sanitization.middleware).
  */
 export const AGENT_HARNESS_INTERNAL_PREFIX = '/api/v1/agent-harness/internal';
+
+/** Schedule requests one run may make a minute (ADR-SCH-01 D3); the worker's own address and the run key the count. */
+export const CHAT_SCHEDULES_PER_RUN_PER_MINUTE = 30;
 
 /** What this Node names to its workers: its own features and those of an edition's bound services. */
 export function nodeCapabilitiesOf(
@@ -306,8 +311,24 @@ export function createAgentHarnessInternalRouter(container: Container): Router {
       authority,
       logger,
     );
-    // ADR-SCH-01 D3: a schedule the run's person approved in chat, made as them.
-    router.post('/runs/:runId/schedules', attempt, chatSchedules.create);
+    // ADR-SCH-01 D3: a schedule the run's person approved in chat, made as them. Each needs a person's approval, so
+    // a run asking more often than this is a broken or hostile worker.
+    router.post(
+      '/runs/:runId/schedules',
+      attempt,
+      createKeyedRateLimiter(
+        container.isBound('Logger')
+          ? container.get<Logger>('Logger')
+          : Logger.getInstance({ service: 'AgentHarnessInternal' }),
+        {
+          prefix: 'harness-chat-schedules',
+          maxRequestsPerMinute: CHAT_SCHEDULES_PER_RUN_PER_MINUTE,
+          message: 'Too many schedule requests for this run',
+          anonymousSubKey: (req) => String(req.params['runId']),
+        },
+      ),
+      chatSchedules.create,
+    );
   }
 
   if (container.isBound(AGENT_HARNESS_GATEWAY_TOKENS)) {

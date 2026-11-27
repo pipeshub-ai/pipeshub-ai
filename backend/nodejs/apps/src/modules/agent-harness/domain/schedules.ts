@@ -339,7 +339,29 @@ export function assertCron(cron: string, timeZone: string, now: number): void {
 
 // ISO 8601 with an explicit offset: an instant, never a wall time whose zone is guessed.
 const INSTANT =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+/** The instant `at` names, or NaN; a date that is not on the calendar is NaN, not the date `Date.parse` rolls it to. */
+function parseInstant(at: string): number {
+  const parts = INSTANT.exec(at);
+  if (parts === null) return Number.NaN;
+  const n = (group: number): number => Number(parts[group] ?? 0);
+  const [year, month, day] = [n(1), n(2), n(3)];
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendar.getUTCFullYear() !== year ||
+    calendar.getUTCMonth() !== month - 1 ||
+    calendar.getUTCDate() !== day ||
+    n(4) > 23 ||
+    n(5) > 59 ||
+    n(6) > 59 ||
+    n(7) > 14 ||
+    n(8) > 59
+  ) {
+    return Number.NaN;
+  }
+  return Date.parse(at);
+}
 
 /**
  * A one-time schedule's instant (ADR-SCH-01 D1), as epoch ms: an ISO 8601
@@ -355,7 +377,7 @@ export function assertOnce(
   approvedLate = false,
 ): number {
   assertTimeZone(timeZone);
-  const instant = INSTANT.test(at) ? Date.parse(at) : Number.NaN;
+  const instant = parseInstant(at);
   if (!Number.isFinite(instant)) {
     throw invalid(
       'at',

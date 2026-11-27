@@ -1,3 +1,4 @@
+import { orgHarnessOn } from '../config';
 import type { ControlPlaneTransaction } from '../../control-plane';
 import { BrokerTriggerSource } from '../adapters/messaging/broker-trigger-source';
 import { createRunStatusReader } from '../../../libs/repositories/agent-harness/run-status';
@@ -10,7 +11,11 @@ import { ScheduleFirer } from '../application/schedule-firer';
 import { InboxAwareScheduleNotifier } from '../application/inbox-notice-policy';
 import type { InboxPreferenceStore } from '../ports/inbox';
 import { ScheduleService } from '../application/schedule-service';
-import { ChatScheduleService } from '../application/chat-schedules';
+import {
+  ChatScheduleService,
+  JournalScheduleMarks,
+} from '../application/chat-schedules';
+import { inDurableTransaction } from '../../../libs/repositories/agent-harness/durable-transaction';
 import type { ExecutionStore } from '../ports/execution-store';
 import { RunAdmissionScheduledRuns } from '../application/scheduled-run-admission';
 import { RELEASE_TRIGGER_SETTINGS } from '../application/release-run-settings';
@@ -61,6 +66,7 @@ export const bindSchedules: HarnessBinder = ({
         setting: schedules.setting,
         runs: createRunStatusReader(),
         settings: triggers,
+        harnessOn: (orgId) => orgHarnessOn(orgId),
         ...(dependencies.recordAccess !== undefined
           ? { records: dependencies.recordAccess }
           : {}),
@@ -166,6 +172,11 @@ export const bindSchedules: HarnessBinder = ({
           ),
           store,
           actors: schedules.actors,
+          marks: new JournalScheduleMarks(
+            journal.store,
+            journal.service,
+            inDurableTransaction,
+          ),
           logger,
         });
       })

@@ -1,5 +1,6 @@
 import { forEnumeratedOrg } from '../../../libs/context/orgContext';
 import { randomUUID } from 'node:crypto';
+import { HarnessScheduleRefusedError } from '../domain/errors';
 import type { HarnessRun, RunStatus } from '../domain/execution';
 import {
   type AgentSchedule,
@@ -21,6 +22,7 @@ import {
   MAX_DUE_PER_TICK,
   MAX_WATCHED_PER_TICK,
   type NotifyChannel,
+  MAX_ONCE_LATENESS_MS,
   ONCE_TOO_LATE,
   onceSlotKey,
   RAN_ONCE,
@@ -98,6 +100,8 @@ export interface ScheduleFirerOptions {
   records?: RecordReadAccess;
   /** The org's allowed notice channels (TR-07). Absent: every channel the schedule names. */
   settings?: Pick<TriggerSettings, 'notifyChannels'>;
+  /** The org harness predicate (ADR-OPS-08: switch and Labs). Absent: on. */
+  harnessOn?: (orgId: string) => Promise<boolean>;
   logger?: HarnessLogger;
   newId?: () => string;
 }
@@ -145,6 +149,7 @@ export class ScheduleFirer {
   private readonly connectorEvents?: TriggerSourceSwitch;
   private readonly records?: RecordReadAccess;
   private readonly settings?: Pick<TriggerSettings, 'notifyChannels'>;
+  private readonly harnessOn?: (orgId: string) => Promise<boolean>;
   private readonly logger: HarnessLogger;
   private readonly newId: () => string;
   private timer: NodeJS.Timeout | null = null;
@@ -162,6 +167,7 @@ export class ScheduleFirer {
     this.connectorEvents = options.connectorEvents;
     this.records = options.records;
     this.settings = options.settings;
+    this.harnessOn = options.harnessOn;
     this.logger = options.logger ?? silentHarnessLogger;
     this.newId = options.newId ?? randomUUID;
   }
@@ -272,7 +278,7 @@ export class ScheduleFirer {
         }),
       );
       // Nothing will ever run of it: its person hears so, as of a refused firing.
-      if (once) await this.tellRefused(claimed, skipReason, now);
+      if (once) await this.tellTooLate(claimed, now);
       return false;
     }
     await this.fire(claimed, schedule);
@@ -285,6 +291,7 @@ export class ScheduleFirer {
    */
   async runNow(schedule: AgentSchedule, key: string): Promise<ScheduleFiring> {
     const now = await this.store.now();
+    if (schedule.trigger.kind === 'once') return this.runOnceNow(schedule, now);
     const { firing, created } = await this.store.claimSlot(
       this.newFiring(schedule, {
         kind: 'manual',
@@ -297,6 +304,63 @@ export class ScheduleFirer {
     );
     if (created) await this.fire(firing, schedule);
     return (await this.store.getFiring(firing.orgId, firing.id)) ?? firing;
+  }
+
+  /**
+   * A one-time schedule's run now takes its one slot, as a tick would: by the
+   * same compare-and-set of the cursor, so a tick and a run now racing make
+   * one firing; whoever loses is told it already ran.
+   */
+  private async runOnceNow(
+    schedule: AgentSchedule,
+    now: number,
+  ): Promise<ScheduleFiring> {
+    if (schedule.trigger.kind !== 'once') throw new Error('not one-time');
+    const firing = this.newFiring(schedule, {
+      kind: 'once',
+      slotKey: onceSlotKey(Date.parse(schedule.trigger.at)),
+      slotAt: now,
+      now,
+      missed: 0,
+      skipped: null,
+    });
+    let claimed: ScheduleFiring | null = null;
+    let known = schedule;
+    if (schedule.status === 'active' && schedule.nextFireAt !== null) {
+      claimed = await this.store.claimCronSlot(
+        firing,
+        schedule.nextFireAt,
+        null,
+        RAN_ONCE,
+      );
+    } else if (schedule.status === 'paused') {
+      // Paused, it has no cursor to move: its slot key is what keeps it to one firing, and it is disabled after.
+      const slot = await this.store.claimSlot(firing);
+      claimed = slot.created ? slot.firing : null;
+      const disabled =
+        claimed === null
+          ? null
+          : await this.store.setStatus(
+              schedule.orgId,
+              schedule.id,
+              {
+                from: ['paused'],
+                to: 'disabled',
+                reason: RAN_ONCE,
+                nextFireAt: null,
+              },
+              now,
+            );
+      if (disabled !== null) known = disabled;
+    }
+    if (claimed === null) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_RAN_ONCE',
+        'This one-time schedule already ran or its time passed. Delete it or make a new one',
+      );
+    }
+    await this.fire(claimed, known);
+    return (await this.store.getFiring(claimed.orgId, claimed.id)) ?? claimed;
   }
 
   /** A webhook or connector event: one firing per schedule and coalescing window. */
@@ -751,7 +815,14 @@ export class ScheduleFirer {
     if (schedule.status === 'paused' && firing.kind !== 'manual') {
       return 'schedule_paused';
     }
-    if (!(await this.enabled(schedule.orgId))) return 'scheduled_runs_disabled';
+    if (!(await this.orgOn(schedule.orgId))) return 'scheduled_runs_disabled';
+    // A retaken firing of a one-time slot is as late as its slot, whichever attempt this is.
+    if (
+      firing.kind === 'once' &&
+      (await this.store.now()) - firing.slotAt > MAX_ONCE_LATENESS_MS
+    ) {
+      return { skipped: ONCE_TOO_LATE };
+    }
     if (schedule.input === null) return 'template_missing';
     // A person's run now is theirs to start, and a one-time slot has no other run to overlap; the policy is for
     // what fires repeatedly by itself.
@@ -927,6 +998,19 @@ export class ScheduleFirer {
         reason,
       }),
     );
+    if (reason === ONCE_TOO_LATE) await this.tellTooLate(firing, now);
+  }
+
+  /**
+   * Nothing will ever run of a one-time schedule whose slot was too late: its
+   * person hears so, as of a refused firing, while the org would have run it.
+   */
+  private async tellTooLate(
+    firing: ScheduleFiring,
+    now: number,
+  ): Promise<void> {
+    if (!(await this.orgOn(firing.orgId))) return;
+    await this.tellRefused(firing, ONCE_TOO_LATE, now);
   }
 
   private async refuse(firing: ScheduleFiring, reason: string): Promise<void> {
@@ -1039,6 +1123,18 @@ export class ScheduleFirer {
         }),
       );
     }
+  }
+
+  /** The org state a firing runs in: the org's harness (switch and Labs) and its Labs scheduled runs. */
+  private async orgOn(orgId: string): Promise<boolean> {
+    try {
+      if (this.harnessOn !== undefined && !(await this.harnessOn(orgId))) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    return this.enabled(orgId);
   }
 
   private async enabled(orgId: string): Promise<boolean> {

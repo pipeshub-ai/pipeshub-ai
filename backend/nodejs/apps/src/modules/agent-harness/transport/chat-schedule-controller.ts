@@ -95,14 +95,19 @@ export class AgentHarnessChatScheduleController {
       const claims = attemptClaims(req);
       const { body } = createChatScheduleSchema.parse(req);
       await this.authority.authorizeAttempt(claims, body);
-      const made = await this.schedules.create(claims.orgId, claims.runId, {
-        interactionId: body.interactionId,
-        toolId: body.toolId,
-        arguments: body.arguments,
-        ...(body.callArgsDigest !== undefined
-          ? { callArgsDigest: body.callArgsDigest }
-          : {}),
-      });
+      const made = await this.schedules.create(
+        claims.orgId,
+        claims.runId,
+        claims.attemptId,
+        {
+          interactionId: body.interactionId,
+          toolId: body.toolId,
+          arguments: body.arguments,
+          ...(body.callArgsDigest !== undefined
+            ? { callArgsDigest: body.callArgsDigest }
+            : {}),
+        },
+      );
       res
         .status(made.created ? HTTP_STATUS.CREATED : HTTP_STATUS.OK)
         .json(made);

@@ -90102,7 +90102,9 @@ paths:
         run's person's, made with every check of `POST /agent-harness/schedules` (Labs
         `ENABLE_SCHEDULED_RUNS`, durable chat, limits, the 5-minute cron floor, notice channels)
         with the agent, model and chat mode the run used, and records its origin. One decision
-        makes one schedule: a repeat answers the same schedule with `created: false`.
+        makes one schedule, once: Node journals `x.pipeshub.schedule.created` for it, a repeat
+        answers the same schedule with `created: false` while it exists, and is refused once its
+        person deleted it.
       security:
         - harnessAttemptToken: []
       parameters:
@@ -90148,6 +90150,8 @@ paths:
                     notify:
                       type: array
                       minItems: 1
+                      maxItems: 3
+                      uniqueItems: true
                       items: { $ref: '#/components/schemas/AgentScheduleNotifyChannel' }
       responses:
         '201':
@@ -90164,7 +90168,8 @@ paths:
         '401': { description: "Missing, invalid, expired or superseded attempt token, or one for another run or attempt" }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED`: no approval of this call by the run's person in its journal, a denial, another call or other arguments; `HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: the person can no longer make schedules" }
         '404': { description: "Run not found in the token tenant; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_UNAVAILABLE`" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_LIMIT`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_UNAVAILABLE`; `HTTP_AGENT_HARNESS_SCHEDULE_APPROVAL_USED`: this approval already made its schedule (`x.pipeshub.schedule.created` in the run's journal) and its person deleted it, so nothing is made again" }
+        '429': { description: "More than 30 schedule requests for this run in a minute" }
   /agent-harness/internal/runs/{runId}/gateway-token:
     post:
       tags: [Agent Harness Internal]
@@ -91138,14 +91143,14 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:execute }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already had its run" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/resume:
     post:
       tags: [Agents]
       summary: Resume a schedule
       operationId: resumeAgentSchedule
-      description: Fires again from the next slot; slots of the paused period never fire. Its user. A disabled schedule (its user was deleted) cannot be resumed.
+      description: Fires again from the next slot; slots of the paused period never fire. Its user. A disabled schedule (its user was deleted) cannot be resumed, nor a one-time schedule that ran.
       security:
         - bearerAuth: []
         - oauth2: [agent:execute]
@@ -91157,10 +91162,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AgentSchedule' }
+        '400': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_INVALID` (field `trigger`): a one-time schedule paused past its time; create a new schedule" }
         '401': { description: Not authenticated }
         '403': { description: The token lacks agent:execute }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already had its run" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/agent-version:
     put:
@@ -91197,7 +91203,7 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN` for anyone but the schedule's user, or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already had its run" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
         '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/run:
     post:
@@ -91224,7 +91230,7 @@ paths:
         '401': { description: Not authenticated }
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN` for anyone but the schedule's user, or the token lacks agent:execute" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
-        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already had its run" }
+        '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`: a one-time schedule that already ran or whose time passed (its slot was skipped)" }
   /agent-harness/triggers/{scheduleId}/webhook:
     post:
       tags: [Agents]

@@ -127,6 +127,21 @@ export function describeScheduleStoreContract(
       expect((await f.store.firings(ORG, schedule.id, 10)).map((x) => x.kind)).to.deep.equal(['once']);
     });
 
+    it('SCH-01: a tick and two runs now racing for a one-time slot make one firing', async () => {
+      const at = T0 + 30 * 60_000;
+      const schedule = await f.store.create(
+        aSchedule({ trigger: { kind: 'once', at: new Date(at).toISOString(), timeZone: 'UTC' }, nextFireAt: at }),
+        LIMITS,
+      );
+      f.clock.value = at;
+      const admission = new FakeAdmission();
+      const firer = () => new ScheduleFirer({ store: f.store, admission, actors: new FakeActors(), setting: new FakeSetting() });
+      await Promise.allSettled([firer().fireDue(), firer().runNow(schedule, 'k1'), firer().runNow(schedule, 'k2')]);
+      expect(await f.store.firings(ORG, schedule.id, 10)).to.have.length(1);
+      expect(admission.admitted).to.equal(1);
+      expect(await f.store.get(ORG, schedule.id)).to.deep.include({ status: 'disabled', statusReason: 'ran_once' });
+    });
+
     it('SCH-01: a schedule keeps its chat origin; a second create under its id makes nothing', async () => {
       const origin = { conversationId: 'ses-1', runId: 'run-1', interactionId: 'ix.approve.k1' };
       const schedule = await f.store.create(aSchedule({ id: 'sch_chat_1', origin }), LIMITS);
