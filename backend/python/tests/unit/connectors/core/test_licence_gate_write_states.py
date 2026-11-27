@@ -39,6 +39,7 @@ from tests.unit.connectors.core.test_permission_sync_gate import (
     _config,
     _connector,
     _gate_processor,
+    _real_write,
     _runner_graph,
     _wire,
 )
@@ -166,6 +167,43 @@ async def test_the_end_of_a_run_leaves_a_limited_or_open_connector_alone(app: di
     proc._permissions_skipped = {"conn-1"}
     await proc.limit_after_skipped_writes("conn-1")
     proc.limit_unlicensed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_watcher_learns_of_a_limit_whose_refresh_raised_after_the_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The limit committed, then marking the stamps raised: the watcher is told anyway, and again by the retry that
+    finds the limit stored and runs the refreshes alone."""
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    _real_write(proc, monkeypatch)
+    graph = proc.data_store_provider.graph_provider
+    graph.kh_scope_mark_changed = AsyncMock(side_effect=ConnectionError("stamps down"))
+    permission_sync_gate.take_limited()
+
+    with pytest.raises(ConnectionError):
+        await proc.limit_unlicensed("conn-1", _app())
+    assert "conn-1" in permission_sync_gate.take_limited()
+
+    graph.kh_scope_mark_changed = AsyncMock()
+    await proc.limit_unlicensed("conn-1", _app(limit=AccessLimit.CREATOR.value))
+    assert "conn-1" in permission_sync_gate.take_limited()
+    assert proc.data_store_provider.execute_in_transaction.await_count == 1, "the stored limit is not written again"
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_a_run_tells_the_watcher_of_a_limit_its_first_skip_stored_before_raising() -> None:
+    """The first skip's write committed and then raised, so the limit is stored: the end of the run writes nothing,
+    but the watcher still learns the connector is limited."""
+    proc, _ = _gate_processor(UNLICENSED, _app(limit=AccessLimit.CREATOR.value))
+    proc.limit_unlicensed = AsyncMock()
+    proc._permissions_skipped = {"conn-1"}
+    permission_sync_gate.take_limited()
+
+    await proc.limit_after_skipped_writes("conn-1")
+
+    proc.limit_unlicensed.assert_not_awaited()
+    assert "conn-1" in permission_sync_gate.take_limited()
 
 
 @pytest.mark.asyncio

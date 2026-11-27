@@ -1761,13 +1761,17 @@ class DataSourceEntitiesProcessor:
         """Limit an unlicensed connector (its app document ``app``) to its creator, or keep the limit it has. Once
         ``accessLimit`` and ``permissionModel: APP_LEVEL`` are both stored, the generation bump committed with them,
         so only the refreshes after the write run again: a crash may have left those undone, and writing again would
-        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``."""
+        bump the generation, and re-stamp the whole connector, on every call. Raises like ``set_access_limit``.
+
+        The licence watcher is told every time, before anything can raise: a write that raised may still have
+        committed, and a retry then finds the limit stored. Telling it about a connector that is not limited only
+        makes it look again."""
+        note_limited(connector_id)
         limit = app.get("accessLimit")
         if limit and app.get("permissionModel") == PermissionModel.APP_LEVEL.value:
             async with self._access_limit_refreshed(connector_id):
                 return
         await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
-        note_limited(connector_id)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
@@ -1893,6 +1897,9 @@ class DataSourceEntitiesProcessor:
         )
         if _gated(app) and app.get("accessLimit") is None:
             await self.limit_unlicensed(connector_id, app)
+        elif _gated(app):
+            # The first skip's write may have committed and then raised: the watcher has to learn of it anyway.
+            note_limited(connector_id)
         self.__dict__.setdefault("_known_limited", set()).add(connector_id)
 
     async def keep_skipped_groups(self, connector_id: str) -> None:
