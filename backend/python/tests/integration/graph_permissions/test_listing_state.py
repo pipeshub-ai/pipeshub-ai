@@ -35,6 +35,7 @@ async def state_graph(neo4j_provider, neo4j_settings) -> dict:
     nodes, edges = _graph()
     await load_into_neo4j(neo4j_settings, nodes, edges)
     await neo4j_provider.stamp_kh_listing_state(batch_size=7)
+    await neo4j_provider.stamp_kh_children_order(batch_size=7)
     return {"nodes": nodes}
 
 
@@ -71,6 +72,7 @@ async def _labels(settings: dict, node_id: str) -> set[str]:
 
 async def test_the_stamp_leaves_nothing_stale(state_graph, neo4j_provider, neo4j_settings) -> None:
     assert await neo4j_provider.count_stale_kh_listing_state() == 0
+    assert await neo4j_provider.count_stale_kh_children_order() == 0
     assert await _labels(neo4j_settings, "v3-dec-deleted") >= {"KhDeleted"}
     assert await _labels(neo4j_settings, "v3-hidden") >= {"KhHidesChildren"}
     assert await _labels(neo4j_settings, "v3-dec-placeholder") >= {"KhPlaceholder"}
@@ -139,6 +141,8 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
 
     async def fresh(step: str) -> None:
         assert await p.count_stale_kh_listing_state() == 0, f"stale after {step}"
+        # The children order the wide browse reads (`KH_CHILDREN_ORDER_INDEX`): a child's edges carry its name and stub flag as they are now.
+        assert await p.count_stale_kh_children_order() == 0, f"children order stale after {step}"
 
     await p.batch_upsert_nodes([
         _node("ls-g1", groupName="Listing group", groupType="DRIVE"),
@@ -177,6 +181,19 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
     await p.batch_update_nodes([{"id": "ls-g2", "hideChildren": False}], G)
     await fresh("node updates")
     assert "KhFolder" not in await _labels(neo4j_settings, "ls-r2")
+    # The field writers that can carry a name or a stub flag, and an edge write that only creates what is missing.
+    assert await p.update_record_fields_for_ids(["ls-r1"], {"recordName": "Renamed"}) == 1
+    await fresh("update_record_fields_for_ids")
+    assert await p.update_nodes_fields_if_match(R, [("ls-r1", {"recordName": "Again"}, {"recordName": "Renamed"})]) == ["ls-r1"]
+    await fresh("update_nodes_fields_if_match")
+    await p.create_edges_if_absent([_edge("ls-g2", G, "ls-r3", R, **parent_child)], NR)
+    await fresh("create_edges_if_absent")
+    # A caller's document that carries the backend's own keys (read back raw, or forged) does not write them.
+    assert await p.update_edge(f"{G}/ls-g1", f"{R}/ls-r1", {"khOrd": "0forged", "khFrom": "elsewhere", "khChild": "x", "weight": 1}, NR)
+    await fresh("update_edge")
+    await p.update_node("ls-r1", R, {"khSortName": "forged", "khScope": "forged"})
+    await fresh("update_node with the listing's own keys")
+    assert (await _cypher(neo4j_settings, "MATCH (n {id: 'ls-r1'}) RETURN n.khScope AS s"))[0]["s"] != "forged"
 
     await p.delete_edge("ls-g2", G, "ls-r1", R, NR)
     await fresh("delete_edge")
@@ -220,6 +237,7 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
         MATCH (a {id: 'ls-r2'}), (b {id: 'ls-r1'})
         CREATE (a)-[:NODE_RELATION {relationshipType: 'RELATED'}]->(b)""")
     assert await p.count_stale_kh_listing_state() > 0
+    assert await p.count_stale_kh_children_order() > 0
     await p.split_link_edges()
     await fresh("split_link_edges")
     await _cypher(neo4j_settings, """
@@ -242,3 +260,50 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
 
     plain, labelled = await _pages(p)
     assert labelled == plain
+
+
+async def test_the_legacy_relation_migration_stamps_edges_an_earlier_run_moved(state_graph, neo4j_provider, neo4j_settings) -> None:
+    """An earlier run moved the legacy edges onto the hierarchy type and stopped before stamping them: the retry finds nothing left to
+    move, and must still stamp those edges, or the children order the wide browse reads lacks them."""
+    p = neo4j_provider
+    await _cypher(neo4j_settings, """
+        CREATE (a:Record {id: 'lm-p', orgId: $org, connectorId: $app, recordName: 'parent'})
+        CREATE (b:Record {id: 'lm-c', orgId: $org, connectorId: $app, recordName: 'child'})
+        CREATE (a)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(b)""", org=ORG, app=APP)
+    try:
+        assert await p.count_stale_kh_children_order() > 0
+        assert await p.migrate_legacy_relation_edge("recordRelations", "RECORD_RELATION") == {"migrated": 0, "already_current": True}
+        assert await p.count_stale_kh_children_order() == 0
+    finally:
+        await _cypher(neo4j_settings, "MATCH (n) WHERE n.id IN ['lm-p', 'lm-c'] DETACH DELETE n")
+
+
+async def test_no_document_read_back_carries_the_backend_keys(state_graph, neo4j_provider) -> None:
+    """A stamped hierarchy edge and a record with its listing state, read through every public reader that hands out their documents:
+    none carries what the backend keeps for itself (the sort name and scope, the children order stamps). A caller that writes a document
+    back would otherwise carry them with it."""
+    p = neo4j_provider
+    own = {"khSortName", "khScope", "khFrom", "khOrd", "khChild"}
+    await p.batch_upsert_nodes([_node("lr-p", recordName="Parent", recordType="FILE"),
+                                _node("lr-c", recordName="Child", recordType="FILE", indexingStatus="QUEUED")], R)
+    await p.batch_create_edges([_edge("lr-p", R, "lr-c", R, relationshipType="PARENT_CHILD")], NR)
+    assert await p.count_stale_kh_children_order() == 0      # the edge carries its stamps
+    try:
+        edges = {
+            "get_edge": [await p.get_edge("lr-p", R, "lr-c", R, NR)],
+            "get_edges_to_node": await p.get_edges_to_node(f"{R}/lr-c", NR),
+            "get_edges_from_node": await p.get_edges_from_node(f"{R}/lr-p", NR),
+            "get_edges_from_node_with_target_name": await p.get_edges_from_node_with_target_name(f"{R}/lr-p", NR),
+        }
+        for reader, docs in edges.items():
+            assert docs and all(d for d in docs), reader
+            assert [sorted(own & set(d)) for d in docs] == [[] for _ in docs], reader
+        nodes = {
+            "get_document": [await p.get_document("lr-c", R)],
+            "get_documents_by_status": [d for d in await p.get_documents_by_status(R, "QUEUED") if d.get("id") == "lr-c"],
+        }
+        for reader, docs in nodes.items():
+            assert docs and all(d for d in docs), reader
+            assert [sorted(own & set(d)) for d in docs] == [[] for _ in docs], reader
+    finally:
+        await p.delete_nodes_and_edges(["lr-p", "lr-c"], R)

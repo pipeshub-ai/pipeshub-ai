@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from app.core.db import ConnectionLost, DbError, DbTimeout, PoolTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout, LockTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.telemetry.modules import pgvector_search_metrics as telemetry
@@ -71,6 +71,7 @@ class Sizing:
     own_leaf: bool
     leaf_rows: int
     tombstones: int = 0          # the org's tombstones, counted up to tombstone_hash_max + 1
+    assumed: bool = False        # not counted: the count ran out of its budget, so n_hat is the cap it could not reach
 
     @property
     def share(self) -> float:
@@ -303,7 +304,7 @@ class Sizer:
 
     def __init__(self, db: KernelDB, t: Tuning) -> None:
         self._db, self._t = db, t
-        self._counts: dict[tuple, tuple[float, int, bool, int]] = {}
+        self._counts: dict[tuple, tuple[float, int, bool, int, bool]] = {}
         self._leaves: dict[tuple, tuple[float, bool, int]] = {}
         self._connectors: dict[tuple, tuple[float, frozenset[str] | None]] = {}
         self._inflight: dict[tuple, asyncio.Future] = {}
@@ -323,7 +324,7 @@ class Sizer:
                 if leaf is None or count is None:
                     raise
                 telemetry.TIMEOUT.inc("sizing", "stale")
-        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3])
+        return Sizing(count[1], count[2], leaf[1], leaf[2], count[3], count[4])
 
     async def _shared_measure(self, q: Query, lkey: tuple, ckey: tuple, now: float) -> tuple[tuple, tuple]:
         task = self._inflight.get(ckey)
@@ -348,15 +349,30 @@ class Sizer:
             tomb = await tx.fetchval(_TOMBSTONES, q.org, self._t.tombstone_hash_max + 1)
             return leaf, n, n >= cap, tomb
 
-        leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
         if len(self._counts) > 4096:
             self._counts.clear()
+        try:
+            leaf_row, n, capped, tomb = await self._db.run(read, custom_plan=True, timeout_ms=self._t.e0_timeout_ms * 3)
+        except (PoolTimeout, LockTimeout):
+            raise                       # busy, not big: nothing is learnt about the filter
+        except DbTimeout:
+            # The count could not reach its cap within its budget: too many candidates to count, so far too many for an exact scan,
+            # which reads each of them. Remembered as capped, so the index serves the filter and the next queries of the minute do not
+            # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known, and
+            # the count's deadline: an expired one would send the next query back to the count.
+            telemetry.TIMEOUT.inc("sizing", "assumed")
+            old = self._leaves.get(lkey)
+            leaf = self._leaves[lkey] = (now + self._t.estimate_ttl_s, *(old[1:] if old else (False, 0)))
+            known = leaf if leaf[2] > 0 else None
+            count = self._counts[ckey] = (now + self._t.estimate_ttl_s, count_cap(self._t, known and (known[1], known[2])), True,
+                                          self._t.tombstone_hash_max + 1, True)
+            return leaf, count
         leaf = self._leaves[lkey] = (now + self._t.leaf_ttl_s, bool(leaf_row and leaf_row[0].startswith("points_o_")),
                                      leaf_row[1] if leaf_row else 0)
-        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb)
+        count = self._counts[ckey] = (now + self._t.estimate_ttl_s, n, capped, tomb, False)
         return leaf, count
 
-    async def connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
+    async def connectors(self, org: str, collection_id: int, apps: list[str] | None = None) -> frozenset[str] | None:
         """The connectors of the org's collection, when a user who can read all of them may skip the membership arms; else None.
 
         That is safe only when there is at least one connector, there are not more than ``_MAX_CONNECTORS`` (found by hopping
@@ -365,13 +381,16 @@ class Sizer:
         of them: until its answer is in, and while an expired one is checked again, the answer is None and the arms are applied. On
         a timeout or any database error there is no elimination either. The answer is reused for a short time, so a connector
         created inside the window is not yet in it: the arms are then dropped for a user who may not read it, for at most
-        ``connector_ttl_s``."""
+        ``connector_ttl_s``.
+
+        ``apps``: the connectors of the user who asks. When they do not cover the org's connectors the arms cannot be dropped for them, so
+        the check stops after listing the connectors and does not look for unconnected points (a scan of the org's points)."""
         key = (org, collection_id)
         hit = self._connectors.get(key)
         if hit is not None and hit[0] >= time.monotonic():
             return hit[1]
         if key not in self._connectors_inflight:          # one check for the callers that miss together; it can scan every point of the org
-            task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id), name="pgvector-connectors")
+            task = self._connectors_inflight[key] = spawn_in_request(self._check_connectors(org, collection_id, apps), name="pgvector-connectors")
             task.add_done_callback(lambda t: (self._connectors_inflight.pop(key, None), t.cancelled() or t.exception()))
         return None
 
@@ -379,7 +398,7 @@ class Sizer:
         for task in list(self._connectors_inflight.values()):
             task.cancel()
 
-    async def _check_connectors(self, org: str, collection_id: int) -> frozenset[str] | None:
+    async def _check_connectors(self, org: str, collection_id: int, apps: list[str] | None = None) -> frozenset[str] | None:
         async def read(tx: Tx) -> frozenset[str] | None:
             # The budget is the statements' own (never above the unit's, which carries the org's limit): a wait for a pooled connection
             # says the database is busy, not that the org is too big to check.
@@ -387,6 +406,8 @@ class Sizer:
             found = [r["member_id"] for r in await tx.fetch(_CONNECTORS, org, collection_id, _MAX_CONNECTORS + 1)]
             if not found or len(found) > _MAX_CONNECTORS:
                 return None
+            if apps is not None and not set(found) <= set(apps):
+                return None                 # nothing to drop for this user: asked again after connector_ttl_s, by whoever comes then
             if await tx.fetchval(_UNCONNECTED, org, collection_id):
                 return None
             return frozenset(found)
@@ -428,6 +449,14 @@ async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool
     narrow = sz.n_hat <= t.n_e0 and not sz.capped
     try:
         rows = await db.run(lambda tx: _run(tx, q, plan, t), timeout_ms=plan.timeout_ms, custom_plan=True)
+        if sz.assumed and len(rows) < q.leg:
+            # An index answer short of the leg means few rows pass the filter: the count was slow for another reason (many admitted
+            # groups holding few points). The exact path by groups reads just those candidates.
+            leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True, band=band)
+            if leg.degraded == "overload":
+                leg = Leg(rows, plan, "overload")       # the exact read could not run: the index's rows stand, flagged
+            telemetry.observe_leg("degraded", q.leg, started)
+            return leg, sz
         telemetry.observe_leg(plan.tier.value, q.leg, started)
         return Leg(rows, plan, plan.flag), sz
     except Rejected:

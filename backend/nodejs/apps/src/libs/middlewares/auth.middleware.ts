@@ -33,7 +33,7 @@ import {
   AuthAttemptMethod,
   recordAuthAttempt,
   refusalOutcome,
-} from '../services/telemetry/modules/auth-metrics';
+} from '../services/telemetry/telemetry-impl';
 import { oauthPrincipalKind } from '../../modules/oauth_provider/utils/principal-kind';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';

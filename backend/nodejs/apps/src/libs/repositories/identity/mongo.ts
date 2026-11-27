@@ -19,7 +19,11 @@ export class MongoIdentityPort
   }
 
   async orgCount(liveOnly: boolean): Promise<number> {
-    return Org.countDocuments(liveOnly ? { isDeleted: { $ne: true } } : {});
+    return Org.countDocuments(
+      liveOnly
+        ? { isDeleted: { $ne: true } }
+        : { pendingCreate: { $ne: true } },
+    );
   }
 
   async recordPreOrgActivity(entry: PreOrgActivity): Promise<void> {

@@ -95,10 +95,7 @@ class TopGrants:
                  parents: dict[int, int] | None = None) -> None:
         self.granted, self.by_group, self._ids, self._keys = granted, by_group, dict(loose), keys
         self.parents = parents or {}      # node sk -> its one hierarchy parent, where kg's mark has it (``grant_marks`` node_parent)
-
-    @property
-    def groups(self) -> set[int]:
-        return {g for g in self.by_group or () if g is not None}
+        self.groups: frozenset[int] = frozenset(g for g in by_group or () if g is not None)      # the record groups of the grants (by_group is never changed)
 
     async def ids(self, groups: Collection[int] | None = None) -> list[str]:
         """Those of the record groups ``groups`` (sks) and of no known group; every one when ``groups`` is None. Not inside a read unit of the caller (it may read the ids)."""
@@ -418,7 +415,6 @@ class KhListingMixin(PgBase):
             if not levels[-1]:
                 break
         async def read_unplaced(tx: Tx) -> list[Any]:
-            await tx.fetchval(kgl.NO_JIT)
             return await tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1)
         unplaced = await self._kq(lambda tx: kg_read.in_savepoint(tx, read_unplaced), transaction)
         if len(seen) + len(unplaced) > SCOPE_MAX:

@@ -13,7 +13,8 @@ vi.mock('@/app/components/ui/user-avatar', () => ({
 }));
 
 import { ChatSidebarFooter } from '@/app/(main)/chat/sidebar/footer';
-import { MetricsApi, OrgApi } from '../api';
+import { OrgApi } from '../api';
+import { MetricsApi } from '../data-collection';
 import { updateOrgProfile } from '@/app/(main)/onboarding/api';
 import { clearSessionCache } from '@/lib/api/session-cache';
 
@@ -78,7 +79,7 @@ describe('org and logo cache (sidebar footer)', () => {
     (await renderFooter()).unmount();
     org = { ...org, shortName: 'Acme Labs' };
 
-    await OrgApi.updateOrg({ registeredName: 'Acme Inc', shortName: 'Acme Labs', contactEmail: '', permanentAddress: {}, dataCollectionConsent: false });
+    await OrgApi.updateOrg({ registeredName: 'Acme Inc', shortName: 'Acme Labs', contactEmail: '', permanentAddress: {} });
     await renderFooter();
 
     expect(screen.getByText('Acme Labs')).toBeTruthy();
@@ -91,7 +92,7 @@ describe('org and logo cache (sidebar footer)', () => {
     api.put.mockRejectedValueOnce(new Error('500'));
 
     await expect(
-      OrgApi.updateOrg({ registeredName: 'X', shortName: 'X', contactEmail: '', permanentAddress: {}, dataCollectionConsent: false }),
+      OrgApi.updateOrg({ registeredName: 'X', shortName: 'X', contactEmail: '', permanentAddress: {} }),
     ).rejects.toThrow('500');
     await renderFooter();
 

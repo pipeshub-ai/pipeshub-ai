@@ -132,7 +132,7 @@ async def test_sec5_10_mcp_secret_source_reads_only_what_the_tenant_may_see(
 
 
 class _NoUserGraph:
-    async def get_user_by_user_id(self, user_id: str) -> None:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> None:
         del user_id
 
 

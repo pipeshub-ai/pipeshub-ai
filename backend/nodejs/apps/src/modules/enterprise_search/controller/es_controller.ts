@@ -5280,7 +5280,11 @@ export const search =
       ) {
         const mapped = handleBackendError(
           {
-            response: { status: aiResponse.statusCode, data: aiResponse.data },
+            response: {
+              status: aiResponse.statusCode,
+              data: aiResponse.data,
+              headers: aiResponse.headers,
+            },
           },
           'Search',
         );
@@ -5294,7 +5298,11 @@ export const search =
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
           {
-            response: { status: aiResponse.statusCode, data: aiResponse.data },
+            response: {
+              status: aiResponse.statusCode,
+              data: aiResponse.data,
+              headers: aiResponse.headers,
+            },
           },
           'Search',
         );
@@ -5470,7 +5478,13 @@ export const retrieve =
       }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
-          { response: { status: aiResponse.statusCode, data } },
+          {
+            response: {
+              status: aiResponse.statusCode,
+              data,
+              headers: aiResponse.headers,
+            },
+          },
           'Retrieve',
         );
       }
