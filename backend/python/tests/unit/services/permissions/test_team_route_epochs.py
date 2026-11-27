@@ -19,7 +19,7 @@ from app.api.routes import entity as routes
 from app.config.constants.arangodb import CollectionNames
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Callable
 
 
 def _request(body: dict) -> MagicMock:
@@ -63,6 +63,14 @@ async def test_a_team_update_moves_the_epoch_of_everyone_added_removed_or_given_
     monkeypatch.setattr(routes, "get_services", AsyncMock(return_value={"graph_provider": graph, "logger": MagicMock()}))
     monkeypatch.setattr(routes, "_validate_owner_removal", AsyncMock())
     monkeypatch.setattr(routes, "_validate_and_filter_owner_updates", AsyncMock(return_value=([{"userId": "k-moved", "role": "WRITER"}], 1)))
+
+    class _OneTransaction:
+        """The team's writes run in one graph transaction: here, the write once, on a stand-in for it."""
+
+        async def execute_idempotent_in_transaction(self, write: Callable[[object], Awaitable[None]], **_: object) -> None:
+            await write(MagicMock(txn="txn-1"))
+
+    monkeypatch.setattr(routes, "GraphDataStore", MagicMock(return_value=_OneTransaction()))
 
     body = {"removeUserIds": ["gone"], "addUserRoles": [{"userId": "new", "role": "READER"}], "updateUserRoles": [{"userId": "moved", "role": "WRITER"}]}
     await _call(routes.update_team, _request(body), "team-1")

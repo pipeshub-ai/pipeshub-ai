@@ -12,6 +12,7 @@ from app import edition_config
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.api.routes import agent as routes
 from app.modules.agents.service.models import AgentPatch
+from tests.support.bound_org import bound_like_auth
 
 TOOL_EDIT = AgentPatch.model_validate({"toolsets": [{"name": "jira", "tools": [{"name": "create_issue"}]}]})
 
@@ -54,7 +55,9 @@ class TestTheRoleOfAToolEdit:
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"toolsets": [{"name": "jira", "tools": [{"name": "create_issue"}]}]}')
         services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": MagicMock()}
-        with patch.object(routes, "get_services", new=AsyncMock(return_value=services)), \
+        # The auth middleware binds the caller's org, which the route reads; called directly, the test binds it.
+        with bound_like_auth({"userId": "u1", "orgId": "o1"}), \
+             patch.object(routes, "get_services", new=AsyncMock(return_value=services)), \
              patch.object(routes, "_get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch.object(routes, "_get_user_document", new=AsyncMock(return_value={"_key": "k1"})), \
              patch.object(routes, "_agent_service", return_value=service):

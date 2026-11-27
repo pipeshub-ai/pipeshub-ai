@@ -473,7 +473,7 @@ class TestTheResultRowsHook:
         with patch.object(sandbox, "_schedule_csv_export") as export:
             await sandbox._keep_result_rows(payload, [{"id": "1"}], "sqlite_result")
 
-        export.assert_called_once_with([{"id": "1"}], "sqlite_result")
+        export.assert_called_once_with([{"id": "1"}], "sqlite_result", provenance=None)
         assert payload == {"row_count": 1}
 
     @pytest.mark.asyncio

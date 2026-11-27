@@ -105,7 +105,7 @@ class TestSqlTables:
         sources = {"conn-1": ["t1"]}
         resolver = _RecordResolver(
             virtual_record_id_to_result={}, graph_provider=graph, blob_store=MagicMock(), config_service=None,
-            org_id="org-1", user_id="u1", frontend_url=None, connection_sources=sources,
+            org_id="org-1", user_id="u1", frontend_url=None, gate=None, connection_sources=sources,
         )
         with patch("app.utils.fetch_full_record._apply_live_ticket_context_metadata", AsyncMock()):
             out = await resolver._enrich({"id": "t1", "record_type": "SQL_TABLE"})
