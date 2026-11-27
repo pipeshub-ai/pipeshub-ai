@@ -35,9 +35,11 @@ def _parsed() -> SimpleNamespace:
 class _Leases:
     """Records the lease traffic of one delivery."""
 
-    def __init__(self) -> None:
+    def __init__(self, order: list | None = None) -> None:
         self.acquired: list[tuple[str, str]] = []
         self.released: list[tuple[str, str]] = []
+        self.order = order
+        self.lost_pools: set[str] = set()   # pools whose lease the manager reports as no longer ours
 
     async def try_acquire(self, pool: str, holder: str, *_a: object) -> bool:
         self.acquired.append((pool, holder))
@@ -45,6 +47,11 @@ class _Leases:
 
     async def release(self, pool: str, holder: str) -> None:
         self.released.append((pool, holder))
+        if self.order is not None:
+            self.order.append("release")
+
+    async def renew_many(self, leases: list, _ttl: float) -> dict:
+        return {lease: lease[0] not in self.lost_pools for lease in leases}
 
 
 @pytest.fixture
@@ -59,10 +66,10 @@ def short_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(messaging_env.__class__, "record_processing_timeout_for", lambda *_a, **_k: BUDGET_S, raising=False)
 
 
-def _consumer(worker, handler) -> PgMessagingConsumer:
+def _consumer(worker, handler, order: list | None = None) -> PgMessagingConsumer:
     c = PgMessagingConsumer(LOG, CFG, indexing=True, worker=worker)
     c.message_handler = handler
-    c.concurrency_manager = _Leases()  # type: ignore[assignment]
+    c.concurrency_manager = _Leases(order)  # type: ignore[assignment]
     c.running = True
     return c
 
@@ -221,11 +228,22 @@ async def test_record_budget_reschedule_from_another_thread_is_posted_to_its_loo
         assert armed.expired() is False
 
 
-async def test_a_handler_that_outlasts_the_unwind_bound_leaves_the_cut_counted_and_says_so(worker, monkeypatch, caplog) -> None:
+async def test_the_leases_are_released_only_after_the_handler_has_unwound(worker) -> None:
+    """A counted timeout (no progress) and a cut (progress): the handler's cleanup writes the record, so the record lease outlives it."""
+    for beats, expected in ((0, TimeoutError), (3, ProgressRequeue)):
+        order: list = []
+        c = _consumer(worker, _embedding_handler(beats=beats, commits=[], order=order, unwind_s=0.6), order)
+        with pytest.raises(expected):
+            await c._drive_indexing(_parsed(), "message:1")
+        assert order.index("unwound") < order.index("release"), (beats, order)
+        assert order.count("release") == 2 and not c._leases
+
+
+async def test_a_handler_that_outlasts_the_unwind_bound_keeps_its_leases_and_says_so(worker, monkeypatch, caplog) -> None:
     from app.services.messaging.postgres import consumer as mod
     from app.utils import indexing_timing as timing
 
-    monkeypatch.setattr(mod, "_CUT_UNWIND_WAIT_S", 0.2)
+    monkeypatch.setattr(mod, "_UNWIND_WAIT_S", 0.2)
     noted: list[dict] = []
     monkeypatch.setattr(timing, "note", lambda **f: noted.append(f) or True)
     commits: list = []
@@ -234,6 +252,24 @@ async def test_a_handler_that_outlasts_the_unwind_bound_leaves_the_cut_counted_a
     with caplog.at_level("WARNING"), pytest.raises(TimeoutError):
         await c._drive_indexing(parsed, "message:1")
     assert commits == []   # not read while the handler may still change it: counted
-    assert {"cut_unwind_timeout_s": 0.2} in noted   # on the record's index.end line
+    assert {"unwind_timeout_s": 0.2} in noted   # on the record's index.end line
+    assert c.concurrency_manager.released == []   # type: ignore[attr-defined]  # not released while it may write: they expire
+    assert not c._leases                          # and are no longer renewed
     # The timeout is re-raised and index.end writes it: a second WARNING here would log one failure twice.
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "rec-9" in r.getMessage()]
+
+
+async def test_a_lease_lost_while_waiting_for_the_unwind_is_handed_back_as_held(worker) -> None:
+    """The renewal cancels the delivery inside the wait for the handler's cleanup: it takes the same hand-back as any lost lease."""
+    from app.services.messaging.postgres.consumer import RecordHeld
+
+    order: list = []
+    c = _consumer(worker, _embedding_handler(beats=3, commits=[], order=order, unwind_s=1.0), order)
+    run = asyncio.create_task(c._drive_indexing(_parsed(), "message:1"))
+    await asyncio.sleep(BUDGET_S + 0.3)       # the budget has ended; the handler is still cleaning up
+    assert not run.done() and "unwound" not in order
+    c.concurrency_manager.lost_pools.add(next(p for p, _h in c.concurrency_manager.acquired if p.startswith("record:")))  # type: ignore[attr-defined]
+    await c._renew_leases()                   # what the claim heartbeat does: cancels the task that holds the lease
+    with pytest.raises(RecordHeld):
+        await asyncio.wait_for(run, 5)
+    assert order.index("unwound") < order.index("release")   # even then the cleanup is waited for before the leases go

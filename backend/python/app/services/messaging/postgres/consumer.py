@@ -127,8 +127,10 @@ def _handback_limit() -> int:
     return int(os.getenv("PG_QUEUE_HANDBACK_LIMIT", "200"))
 
 
-#: Seconds a cut attempt's handler (on the worker loop) is given to unwind before its progress is read.
-_CUT_UNWIND_WAIT_S = 5.0
+#: Seconds a delivery that ended early (budget, cancel) waits for its handler, on the worker loop, to finish its cleanup, which still
+#: writes the record. The leases stay held and renewed meanwhile. Past it they are no longer renewed and not released: they expire
+#: with their lease time, so a stuck cleanup cannot pin a slot for ever and the next claim cannot write the record beside it.
+_UNWIND_WAIT_S = 300.0
 
 
 class _LeaseState:
@@ -977,18 +979,18 @@ class PgMessagingConsumer(IMessagingConsumer):
         org_token = push_org(ctx_of(parsed))
         # The record's lease first, tried once: a record held by a stage must not occupy a cluster slot while it waits.
         record_slot = slot = None
+        claim_loop = asyncio.get_running_loop()
+        # The record's progress is made on the worker loop, in the task that runs the handler (a context variable set on this
+        # loop would not reach it), and handed out through this cell before the first await. It is read here only after
+        # ``drain`` has ended (``drained``), so the cut is settled on this loop with a finished object.
+        progress_cell: list[RecordProgress] = []
+        drained = asyncio.Event()
+        armed_budget: list[record_budget.RecordBudget] = []
         try:
             record_slot = await self._take_record_lease(parsed, fallback_key)
             slot = await self._take_slot(parsed)
             if (timeline := timing.current_timeline()) is not None:
                 timeline.mark(timing.ADMITTED)  # the wait for the slot is wait_slot_ms, not held_ms
-            claim_loop = asyncio.get_running_loop()
-            # The record's progress is made on the worker loop, in the task that runs the handler (a context variable set on this
-            # loop would not reach it), and handed out through this cell before the first await. It is read here only after
-            # ``drain`` has ended (``drained``), so the cut is settled on this loop with a finished object.
-            progress_cell: list[RecordProgress] = []
-            drained = asyncio.Event()
-            armed_budget: list[record_budget.RecordBudget] = []
 
             async def drain() -> bool:
                 progress = new_progress()
@@ -1011,47 +1013,68 @@ class PgMessagingConsumer(IMessagingConsumer):
                             claim_loop.call_soon_threadsafe(drained.set)
                 return complete
 
+            unwind_until: list[float] = []  # the one deadline for every wait on the unwind, however many cancels interrupt it
+
+            async def wait_unwound() -> bool:
+                """The handler's cleanup (``aclose``) may still be writing the record when the attempt ends early; the record lease is
+                released only once it has finished. The leases stay in ``_leases``, so they are renewed while this waits."""
+                if drained.is_set() or not progress_cell:  # never started: nothing can write
+                    return True
+                loop = asyncio.get_running_loop()
+                if not unwind_until:
+                    unwind_until.append(loop.time() + _UNWIND_WAIT_S)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(drained.wait(), max(0.0, unwind_until[0] - loop.time()))
+                return drained.is_set()
+
             try:
-                # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
-                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout) as armed:
-                    armed_budget.append(armed)
-                    complete = await self._on_worker(drain)
-            except TimeoutError:
-                # The budget ended the attempt. After progress it resumes without a counted attempt, as on the other brokers.
-                if progress_cell and budget.expired():
-                    with contextlib.suppress(TimeoutError):  # a handler that does not unwind in time is left counted
-                        await asyncio.wait_for(drained.wait(), _CUT_UNWIND_WAIT_S)
-                    if not drained.is_set():
-                        # Its progress is not read while the handler may still change it: the cut stays a counted attempt.
+                try:
+                    # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
+                    async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout) as armed:
+                        armed_budget.append(armed)
+                        complete = await self._on_worker(drain)
+                except TimeoutError:
+                    unwound = await wait_unwound()  # a cancel here reaches the hand-back below
+                    if not unwound:
                         # Said once, on the record's index.end line, which also writes the timeout it re-raises.
-                        timing.note(cut_unwind_timeout_s=_CUT_UNWIND_WAIT_S)
-                    else:
+                        timing.note(unwind_timeout_s=_UNWIND_WAIT_S)
+                    elif progress_cell and budget.expired():
+                        # The budget ended the attempt. After progress it resumes without a counted attempt, as on the other brokers.
                         await requeue_after_productive_cut(
                             self,
                             progress_cell[0],
                             _LeaseState(lost=record_slot is not None and record_slot in self._lost_leases),
                             fallback_key,
                         )
-                raise
+                    # not unwound: its progress is not read while the handler may still change it, so the cut stays a counted attempt
+                    raise
             except asyncio.CancelledError:
-                if record_slot is not None and record_slot in self._lost_leases:
+                lost = record_slot is not None and record_slot in self._lost_leases
+                if lost:
                     # Our own cancel, sent because the record lease was not renewed: another delivery may own the record now.
                     self._lost_leases.discard(record_slot)
+                    self._leases.discard(record_slot)  # not renewed again, so it cannot cancel the hand-back
+                    self._lease_tasks.pop(record_slot, None)
                     task = asyncio.current_task()
                     if task is not None:
                         _ = task.uncancel()
-                    raise RecordHeld(f"{record_slot[0]} was lost while the delivery ran; it is redone") from None
+                await wait_unwound()  # the handler's cleanup may still write the record
+                if lost:
+                    raise RecordHeld(f"{record_slot[0]} was lost while the delivery ran; it is redone") from None  # type: ignore[index]
                 raise
             if not complete:
                 raise RuntimeError("handler ended without INDEXING_COMPLETE")
         finally:
             pop_org(org_token)
+            # A handler still cleaning up may write the record: its leases are not released, only left to expire.
+            unwound = drained.is_set() or not progress_cell
             for held in (record_slot, slot):
                 if held is not None:
                     self._leases.discard(held)
                     self._lease_tasks.pop(held, None)
-                    with contextlib.suppress(Exception):
-                        await self.concurrency_manager.release(*held)  # type: ignore[union-attr]
+                    if unwound:
+                        with contextlib.suppress(Exception):
+                            await self.concurrency_manager.release(*held)  # type: ignore[union-attr]
             if (timeline := timing.current_timeline()) is not None:
                 timeline.mark(timing.RELEASED)  # held_ms ends with the leases, not after the queue write that settles the row
 
