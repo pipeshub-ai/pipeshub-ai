@@ -132,20 +132,27 @@ describe('R46FIX-1: user activity types are accepted by every store', () => {
       check: typeof checkActivity;
       Model: typeof UserActivities;
     };
+    const STUB_TYPES = [EDITION_TYPE, 'LOGIN'];
+    const STUB_MODES = [EDITION_MODE, 'OTP'];
     let loaded: Loaded;
+    let builtIn: Loaded;
 
     before(() => {
-      loaded = loadWithEdition([EDITION_TYPE, 'LOGIN'], [EDITION_MODE, 'OTP']);
+      loaded = loadWithEdition(STUB_TYPES, STUB_MODES);
+      // the built-in values alone, whatever this build's own edition declares
+      builtIn = loadWithEdition([], []);
     });
 
     it('merges them into both lists once each', () => {
       const { USER_ACTIVITY_TYPES: types, USER_LOGIN_MODES: modes } = loaded.utils;
       expect(types).to.include(EDITION_TYPE);
       expect(modes).to.include(EDITION_MODE);
-      expect(types.filter((t) => t === 'LOGIN')).to.have.length(1);
-      expect(modes.filter((m) => m === 'OTP')).to.have.length(1);
-      expect([...types].sort()).to.deep.equal([...Object.values(userActivitiesType), EDITION_TYPE].sort());
-      expect(modes).to.have.length(USER_LOGIN_MODES.length - EDITION_LOGIN_MODES.length + 1);
+      // each list is exactly the built-in values plus the stub's, and no value appears twice
+      const expectedTypes = [...new Set([...builtIn.utils.USER_ACTIVITY_TYPES, ...STUB_TYPES])].sort();
+      const expectedModes = [...new Set([...builtIn.utils.USER_LOGIN_MODES, ...STUB_MODES])].sort();
+      expect([...types].sort()).to.deep.equal(expectedTypes);
+      expect([...modes].sort()).to.deep.equal(expectedModes);
+      expect([...builtIn.utils.USER_ACTIVITY_TYPES].sort()).to.deep.equal([...Object.values(userActivitiesType)].sort());
     });
 
     it('both stores accept the declared type and mode', () => {
