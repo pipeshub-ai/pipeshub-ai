@@ -11020,7 +11020,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return int(results[0].get("updated") or 0) if results else 0
 
-    async def backfill_code_path_scope(self, limit: int = 5000) -> int:
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
         """Set connectorId/recordGroupId on code files and repoKey on record groups written before them; see the interface."""
         code_file = collection_to_label(CollectionNames.CODE_FILES.value)
         record = collection_to_label(CollectionNames.RECORDS.value)
@@ -11028,7 +11028,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The lock makes the second IS NULL read a writer's value that committed while this waited, instead of overwriting it.
         files = await self.client.execute_query(
             f"""
-            MATCH (c:{code_file}) WHERE c.connectorId IS NULL
+            MATCH (c:{code_file}) WHERE c.connectorId IS NULL AND ($org IS NULL OR c.orgId = $org)
             MATCH (r:{record} {{id: c.id}}) WHERE r.orgId = c.orgId AND r.connectorId IS NOT NULL
             WITH c, r LIMIT $limit
             SET c.{_MATCH_LOCK} = true
@@ -11037,16 +11037,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             SET c.connectorId = r.connectorId, c.recordGroupId = r.recordGroupId
             RETURN count(c) AS updated
             """,
-            {"limit": limit},
+            {"limit": limit, "org": org_id},
         )
         done = int(files[0].get("updated") or 0) if files else 0
         if done >= limit:
             return done
         page = await self.client.execute_query(
             # A group with no orgId is never looked up by one, and could not be matched back below: a page of those would end the backfill early.
-            f"MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL "
+            f"MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL AND ($org IS NULL OR g.orgId = $org) "
             "RETURN g.id AS id, g.groupName AS name LIMIT $limit",
-            {"limit": limit - done},
+            {"limit": limit - done, "org": org_id},
         )
         if not page:
             return done
@@ -11066,7 +11066,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return done + (int(groups[0].get("updated") or 0) if groups else 0)
 
-    async def code_path_scope_pending(self) -> bool:
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
         """Whether a row the backfill fills remains; see the interface."""
         code_file = collection_to_label(CollectionNames.CODE_FILES.value)
         record = collection_to_label(CollectionNames.RECORDS.value)
@@ -11074,16 +11074,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self.client.execute_query(
             f"""
             CALL () {{
-                MATCH (c:{code_file}) WHERE c.connectorId IS NULL
+                MATCH (c:{code_file}) WHERE c.connectorId IS NULL AND ($org IS NULL OR c.orgId = $org)
                 MATCH (r:{record} {{id: c.id}}) WHERE r.orgId = c.orgId AND r.connectorId IS NOT NULL
                 RETURN 1 AS one LIMIT 1
                 UNION
-                MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL
+                MATCH (g:{group}) WHERE g.repoKey IS NULL AND g.groupName IS NOT NULL AND g.orgId IS NOT NULL AND ($org IS NULL OR g.orgId = $org)
                 RETURN 1 AS one LIMIT 1
             }}
             RETURN count(one) > 0 AS pending
             """,
-            {},
+            {"org": org_id},
         )
         return bool(rows and rows[0].get("pending"))
 

@@ -113,14 +113,13 @@ async def test_rows_written_before_the_scope_are_filled_and_a_backfill_cut_short
     real = g.backfill_code_path_scope
     calls = {"n": 0}
 
-    async def cut_short(limit: int = 5000) -> int:
+    async def cut_short(limit: int = 5000, *, org_id: str | None = None) -> int:
         calls["n"] += 1
         if calls["n"] > 1:
             raise RuntimeError("stopped mid-backfill")
-        return await real(limit=3)
+        return await real(limit=3, org_id=org_id)
     monkeypatch.setattr(g, "backfill_code_path_scope", cut_short)
-    with pytest.raises(RuntimeError):
-        await world_of.backfill(g, LOG)
+    await world_of.backfill(g, LOG)      # the org's failure is logged; it stays unmarked
     with ctx(org):
         assert not await migration.scope_ready(g, org)
         assert await world_of.answers(g, org, connector, world) == before      # half-filled rows: still the org-wide lookup
@@ -186,3 +185,13 @@ async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only
 async def test_a_batch_that_updates_nothing_while_rows_remain_does_not_end_the_backfill(store, monkeypatch) -> None:
     g, strip = store
     await world_of.early_zero_backfill(g, LOG, monkeypatch, lambda org: strip(g, org))
+
+
+async def test_an_external_org_is_filled_and_marked(store) -> None:
+    g, strip = store
+    await world_of.external_org_is_marked(g, LOG, lambda org: strip(g, org))
+
+
+async def test_an_org_with_leftovers_does_not_keep_another_org_unmarked(store, monkeypatch) -> None:
+    g, strip = store
+    await world_of.org_with_leftovers_does_not_block_another(g, LOG, monkeypatch, lambda org: strip(g, org))

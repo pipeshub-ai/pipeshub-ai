@@ -99,14 +99,13 @@ async def test_rows_written_before_the_scope_are_filled_and_a_backfill_cut_short
     real = arango.backfill_code_path_scope
     calls = {"n": 0}
 
-    async def cut_short(limit: int = 5000) -> int:
+    async def cut_short(limit: int = 5000, *, org_id: str | None = None) -> int:
         calls["n"] += 1
         if calls["n"] > 1:
             raise RuntimeError("stopped mid-backfill")
-        return await real(limit=3)
+        return await real(limit=3, org_id=org_id)
     monkeypatch.setattr(arango, "backfill_code_path_scope", cut_short)
-    with pytest.raises(RuntimeError):
-        await world_of.backfill(arango, LOG)
+    await world_of.backfill(arango, LOG)      # the org's failure is logged; it stays unmarked
     with for_org(org, job="code-path-scope-test"):
         assert not await migration.scope_ready(arango, org)
         assert await world_of.answers(arango, org, connector, world) == before      # half-filled rows: still the org-wide lookup
@@ -237,3 +236,11 @@ async def test_an_upsert_of_code_records_whose_transaction_is_refused_is_run_aga
         assert calls["n"] == 2
         assert (await arango.get_document(rid, "records"))["recordGroupId"] == new_group
         assert (await arango.get_document(rid, "codeFiles"))["recordGroupId"] == new_group
+
+
+async def test_an_external_org_is_filled_and_marked(arango) -> None:
+    await world_of.external_org_is_marked(arango, LOG, lambda org: _strip_scope(arango, org))
+
+
+async def test_an_org_with_leftovers_does_not_keep_another_org_unmarked(arango, monkeypatch) -> None:
+    await world_of.org_with_leftovers_does_not_block_another(arango, LOG, monkeypatch, lambda org: _strip_scope(arango, org))

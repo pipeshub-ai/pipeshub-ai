@@ -729,14 +729,24 @@ class CodeGraphMixin(PgBase):
         self._raise_failed(errors)
         return done
 
-    async def backfill_code_path_scope(self, limit: int = 5000) -> int:
+    async def _code_scope_orgs(self, org_id: str | None) -> list[str | None]:
+        """``org_id`` alone (under an org context it must be the bound org), else every org the sweep reaches."""
+        if org_id is None:
+            return await self._sweep_orgs()
+        if current_or_system().kind == "system":
+            return [org_id]
+        if current_org_id() != org_id:
+            raise ValueError("org_id is not the bound org")
+        return [None]
+
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
         current_or_system()
         done = 0
         errors: list[tuple[str, Exception]] = []
-        for org_id in await self._sweep_orgs():     # ``limit`` bounds the whole pass, as backfill_block_name_folded's
+        for sweep_org in await self._code_scope_orgs(org_id):     # ``limit`` bounds the whole pass, as backfill_block_name_folded's
             if done >= limit:
                 break
-            with self._sweep(org_id, errors):
+            with self._sweep(sweep_org, errors):
                 org = current_org_id()
                 done += int(await self._q(lambda tx, org=org, n=limit - done: tx.fetchval("""/* pipeshub:graph.backfill_code_file_scope */ WITH u AS (UPDATE graph.nodes c
                 SET doc = c.doc || jsonb_build_object('connectorId', r.doc->'connectorId', 'recordGroupId', r.doc->'recordGroupId')
@@ -758,12 +768,12 @@ class CodeGraphMixin(PgBase):
         self._raise_failed(errors)
         return done
 
-    async def code_path_scope_pending(self) -> bool:
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
         current_or_system()
         errors: list[tuple[str, Exception]] = []
         pending = False
-        for org_id in await self._sweep_orgs():
-            with self._sweep(org_id, errors):
+        for sweep_org in await self._code_scope_orgs(org_id):
+            with self._sweep(sweep_org, errors):
                 org = current_org_id()
                 pending = bool(await self._q(lambda tx, org=org: tx.fetchval("""/* pipeshub:graph.code_path_scope_pending */ SELECT
                     EXISTS (SELECT 1 FROM graph.nodes f JOIN graph.nodes x ON x.org_id = f.org_id AND x.coll = 'records' AND x.id = f.id

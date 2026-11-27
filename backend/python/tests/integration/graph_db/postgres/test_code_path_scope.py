@@ -71,14 +71,13 @@ async def test_rows_written_before_the_scope_are_filled_and_a_backfill_cut_short
     real = pg_provider.backfill_code_path_scope
     calls = {"n": 0}
 
-    async def cut_short(limit: int = 5000) -> int:
+    async def cut_short(limit: int = 5000, *, org_id: str | None = None) -> int:
         calls["n"] += 1
         if calls["n"] > 1:
             raise RuntimeError("stopped mid-backfill")
-        return await real(limit=3)
+        return await real(limit=3, org_id=org_id)
     monkeypatch.setattr(pg_provider, "backfill_code_path_scope", cut_short)
-    with pytest.raises(RuntimeError):
-        await world_of.backfill(pg_provider, LOG)
+    await world_of.backfill(pg_provider, LOG)      # the org's failure is logged; it stays unmarked
     with ctx(org):
         assert not await migration.scope_ready(pg_provider, org)
         assert await world_of.answers(pg_provider, org, connector, world) == before      # half-filled rows: still the org-wide lookup
@@ -211,3 +210,11 @@ async def test_a_batch_that_updates_nothing_while_rows_remain_does_not_end_the_b
 async def _strip(org: str) -> None:
     await _admin("UPDATE graph.nodes SET doc = doc - 'connectorId' - 'recordGroupId' WHERE org_id = $1 AND coll = 'codeFiles'", org)
     await _admin("UPDATE graph.nodes SET doc = doc - 'repoKey' WHERE org_id = $1 AND coll = 'recordGroups'", org)
+
+
+async def test_an_external_org_is_filled_and_marked(pg_provider) -> None:
+    await world_of.external_org_is_marked(pg_provider, LOG, _strip)
+
+
+async def test_an_org_with_leftovers_does_not_keep_another_org_unmarked(pg_provider, monkeypatch) -> None:
+    await world_of.org_with_leftovers_does_not_block_another(pg_provider, LOG, monkeypatch, _strip)

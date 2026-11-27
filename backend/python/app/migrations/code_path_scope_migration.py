@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import system
 from app.core.org_jobs import for_each_org
 
 if TYPE_CHECKING:
@@ -36,25 +35,28 @@ async def scope_ready(graph_provider: IGraphDBProvider, org_id: str) -> bool:
 
 
 async def run_code_path_scope_backfill(graph_provider: IGraphDBProvider, logger: Logger) -> int:
-    """Backfill every org, then mark each. Returns how many rows were updated."""
+    """Backfill each org, internal and external, and mark it once none of its rows is left. Returns how many rows were updated.
+
+    Each org is filled, checked and marked on its own: an org whose backfill fails or makes no progress stays unmarked (one WARNING), and the
+    others are still marked."""
     total = 0
-    # Started detached with no context: an org-scoped store reaches every organisation only under a system context.
-    with system("code_path_scope_backfill"):
+
+    async def fill(org_id: str) -> None:
+        nonlocal total
         idle = 0
         while True:
-            if updated := await graph_provider.backfill_code_path_scope(_BATCH):
+            if updated := await graph_provider.backfill_code_path_scope(_BATCH, org_id=org_id):
                 total, idle = total + updated, 0
                 continue
             # A batch can update nothing while rows remain (writers filled what it picked): done only when none is left.
-            if not await graph_provider.code_path_scope_pending():
+            if not await graph_provider.code_path_scope_pending(org_id=org_id):
                 break
             idle += 1
             if idle >= _IDLE_PASSES:
                 raise RuntimeError("code path scope backfill made no progress; it runs again at the next start")
-
-    async def mark(org_id: str) -> None:
         if not await scope_ready(graph_provider, org_id):
             await graph_provider.upsert_sync_point(marker_key(org_id), {"orgId": org_id, "done": True}, CollectionNames.SYNC_POINTS.value)
-    failed = await for_each_org(graph_provider, "code_path_scope_backfill", mark, logger, raise_on_error=True)
+    # A failed org list raises: the run is then not taken as done.
+    failed = await for_each_org(graph_provider, "code_path_scope_backfill", fill, logger, raise_on_error=True, external=True)
     logger.info("Code path scope backfill: %d row(s) updated, %d org(s) left unmarked", total, len(failed))
     return total

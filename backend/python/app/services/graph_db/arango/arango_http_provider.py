@@ -11570,38 +11570,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
         """, {"keys": sorted(set(keys)), "@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value}, txn_id=transaction)
 
-    async def code_path_scope_pending(self) -> bool:
+    async def code_path_scope_pending(self, *, org_id: str | None = None) -> bool:
         """Whether a row the backfill fills remains; see the interface."""
         rows = await self.http_client.execute_aql("""
-        RETURN LENGTH(FOR c IN @@files FILTER c.connectorId == null LET r = DOCUMENT(@@records, c._key)
+        RETURN LENGTH(FOR c IN @@files FILTER c.connectorId == null AND (@org == null OR c.orgId == @org) LET r = DOCUMENT(@@records, c._key)
                           FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null LIMIT 1 RETURN 1) > 0
-            OR LENGTH(FOR g IN @@groups FILTER g.repoKey == null AND g.groupName != null LIMIT 1 RETURN 1) > 0
-        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "@groups": CollectionNames.RECORD_GROUPS.value})
+            OR LENGTH(FOR g IN @@groups FILTER g.repoKey == null AND g.groupName != null AND (@org == null OR g.orgId == @org) LIMIT 1 RETURN 1) > 0
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "@groups": CollectionNames.RECORD_GROUPS.value,
+              "org": org_id})
         return bool(rows and rows[0])
 
-    async def backfill_code_path_scope(self, limit: int = 5000) -> int:
+    async def backfill_code_path_scope(self, limit: int = 5000, *, org_id: str | None = None) -> int:
         """Copy a code file's scope from its record, and set a record group's repoKey; see the interface."""
         # shortcut: each batch scans codeFiles from the start for rows still lacking connectorId, so a store of N files costs
         # about N*N/limit reads once; key the walk by _key if a store with millions of code files needs it.
         files = await self.http_client.execute_aql("""
         FOR c IN @@files
-            FILTER c.connectorId == null
+            FILTER c.connectorId == null AND (@org == null OR c.orgId == @org)
             LET r = DOCUMENT(@@records, c._key)
             FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null
             LIMIT @limit
             UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
             RETURN 1
-        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "limit": limit})
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "limit": limit, "org": org_id})
         done = len(files or [])
         if done >= limit:
             return done
         groups = CollectionNames.RECORD_GROUPS.value
         page = await self.http_client.execute_aql("""
         FOR g IN @@groups
-            FILTER g.repoKey == null AND g.groupName != null
+            FILTER g.repoKey == null AND g.groupName != null AND (@org == null OR g.orgId == @org)
             LIMIT @limit
             RETURN { key: g._key, name: g.groupName }
-        """, {"@groups": groups, "limit": limit - done})
+        """, {"@groups": groups, "limit": limit - done, "org": org_id})
         if not page:
             return done
         # AQL LOWER is not str.casefold, so the key is computed here; the name is read again in the update, so a rename

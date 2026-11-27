@@ -138,12 +138,58 @@ async def early_zero_backfill(g: IGraphDBProvider, logger: Any, monkeypatch: Any
     await strip(org)
     real, calls = g.backfill_code_path_scope, {"n": 0}
 
-    async def first_idle(limit: int = 5000) -> int:
+    async def first_idle(limit: int = 5000, *, org_id: str | None = None) -> int:
+        if org_id != org:
+            return await real(limit=limit, org_id=org_id)
         calls["n"] += 1
-        return 0 if calls["n"] == 1 else await real(limit=limit)
+        return 0 if calls["n"] == 1 else await real(limit=limit, org_id=org_id)
     monkeypatch.setattr(g, "backfill_code_path_scope", first_idle)
     await backfill(g, logger)
     with for_org(org, job="code-path-scope-test"):
         assert await migration.scope_ready(g, org)
         files = await g.get_nodes_by_field_in(CollectionNames.CODE_FILES.value, "_key", world["records"], raise_on_error=True)
     assert calls["n"] > 1 and all(f.get("connectorId") == connector for f in files), (calls, files)
+
+
+async def external_org_is_marked(g: IGraphDBProvider, logger: Any, strip: Any) -> None:  # noqa: ANN401
+    """An external org's rows are filled and the org is marked, as an internal org's are."""
+    import uuid as _uuid
+
+    from app.core.org_context import for_org
+    from app.migrations import code_path_scope_migration as migration
+    org, connector = _uuid.uuid4().hex[:24], f"conn-{_uuid.uuid4().hex[:6]}"
+    with for_org(org, job="code-path-scope-test"):
+        world = await write_world(g, org, connector, 2)
+        await g.batch_upsert_nodes([{"_key": org, "accountType": "enterprise", "isActive": True, "name": "path-scope", "isExternal": True}],
+                                   CollectionNames.ORGS.value)
+    await strip(org)
+    await backfill(g, logger)
+    with for_org(org, job="code-path-scope-test"):
+        assert await migration.scope_ready(g, org)
+        files = await g.get_nodes_by_field_in(CollectionNames.CODE_FILES.value, "_key", world["records"], raise_on_error=True)
+    assert all(f.get("connectorId") == connector for f in files), files
+
+
+async def org_with_leftovers_does_not_block_another(g: IGraphDBProvider, logger: Any, monkeypatch: Any, strip: Any) -> None:  # noqa: ANN401
+    """An org whose rows stay pending (the backfill cannot fill them) stays unmarked, and another org is still filled and marked."""
+    import uuid as _uuid
+
+    from app.core.org_context import for_org
+    from app.migrations import code_path_scope_migration as migration
+    (good, stuck), connector = (_uuid.uuid4().hex[:24] for _ in range(2)), f"conn-{_uuid.uuid4().hex[:6]}"
+    for org in (good, stuck):
+        with for_org(org, job="code-path-scope-test"):
+            await write_world(g, org, connector, 1)
+        await strip(org)
+    real = g.code_path_scope_pending
+
+    async def stuck_pending(*, org_id: str | None = None) -> bool:
+        # Asked for every org at once, the stuck org's rows are among the answer.
+        return True if org_id in (None, stuck) else await real(org_id=org_id)
+    monkeypatch.setattr(g, "code_path_scope_pending", stuck_pending)
+    monkeypatch.setattr(migration, "_IDLE_PASSES", 3)
+    await backfill(g, logger)
+    with for_org(good, job="code-path-scope-test"):
+        assert await migration.scope_ready(g, good)
+    with for_org(stuck, job="code-path-scope-test"):
+        assert not await migration.scope_ready(g, stuck)
