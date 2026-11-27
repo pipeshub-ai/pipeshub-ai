@@ -283,7 +283,10 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
-from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
+from app.services.graph_db.errors import (
+    UniqueConstraintViolation,
+    violates_unique_constraint,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,

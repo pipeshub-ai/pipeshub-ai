@@ -180,7 +180,6 @@ from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
     pass
-from dataclasses import replace
 
 from app.agents.agent_loop.tool_approvals import agent_credentials_admin_only
 from app.modules.agents.chat_extension import get_chat_extension

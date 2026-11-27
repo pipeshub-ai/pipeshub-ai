@@ -11,11 +11,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.agent_versions import versions_beside
+from tests.support.bound_org import bind_test_org
 from tests.support.edition import (
     org_wide_service_account_agents,  # noqa: F401 - fixture
 )
-from tests.support.agent_versions import versions_beside
-from tests.support.bound_org import bind_test_org
 from tests.support.record_access import InMemoryRecordAccess
 
 

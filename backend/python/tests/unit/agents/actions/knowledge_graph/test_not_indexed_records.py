@@ -39,7 +39,6 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.api import router as connector_router
 from app.models.entities import PullRequestRecord, RecordType
-from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.fetch_full_record import (
     NOT_INDEXED_YET,
     UNAVAILABLE,

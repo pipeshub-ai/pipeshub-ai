@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.bound_org import bind_test_org
 from tests.support.edition import (
     org_wide_service_account_agents,  # noqa: F401 - fixture
 )
-from tests.support.bound_org import bind_test_org
 
 
 @pytest.fixture(autouse=True)
