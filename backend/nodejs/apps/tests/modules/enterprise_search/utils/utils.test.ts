@@ -2124,12 +2124,15 @@ describe('Enterprise Search Utils', () => {
     })
 
     it('RO-5: only the owner matches; a share of any level never deletes (SS0)', async () => {
+      // Who may delete is the route guard's rule (`delete`: the owner alone by default), held for every share and
+      // stranger in conversation-access.parity.test.ts (A8). The helper deletes only the conversation that guard
+      // granted, in the caller's org, and never finds one by a share.
       const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
 
       await deleteAgentConversation(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
 
       const filter = findOneStub.firstCall.args[0] as Record<string, unknown>
-      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', userId: VALID_OID, isDeleted: false })
+      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', _id: VALID_OID, orgId: VALID_OID2, isDeleted: false })
       expect(JSON.stringify(filter)).to.not.include('sharedWith')
     })
 
