@@ -35725,7 +35725,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The account cannot sign in (a disabled or service account).
+          description: |
+            The account cannot sign in. Possible causes:
+            - A disabled or service account
+            - A first sign-in that would create the account (single sign-on provisioning) when the installation has had
+              more users than its licence covers for 14 days (`Your organization's licence has no free seats. Ask your
+              administrator to remove users or add seats.`); people who already have an account still sign in
           content:
             application/json:
               schema:
@@ -38674,7 +38679,8 @@ paths:
         Invalid email addresses are skipped (not rejected); valid ones follow the same
         new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
         notification is sent to the uploading admin summarizing the result
-        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+        (invited / re-invited / restored / already-members / invalid / failed-to-email, and how many were
+        not added because the licence has no seat left, with the reason).
 
         Exactly one file, under the form field `file`. The declared part type must be `text/csv`,
         `application/vnd.ms-excel`, the `.xlsx` type or `application/octet-stream`; it is parsed as a
