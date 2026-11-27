@@ -21,6 +21,7 @@ from app.core.org_context import (
     SystemContextNotAllowed,
     current_or_system,
     current_org_id,
+    org_optional,
     require_system,
 )
 from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
@@ -201,8 +202,12 @@ class IdentityMixin(PgBase):
                                   if u and u.get("userId") else None)
 
     # ---- users and orgs ------------------------------------------------------------------------------------------
+    @org_optional
     @_soft(None, flag=True)
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False,
+                                  org_id: str | None = None) -> dict | None:
+        if org_id == "" or not self._mine(org_id):      # an empty org matches no user, as on the other stores
+            return None
         org = current_org_id()
         if isinstance(user_id, str) and 0 < len(user_id) <= 200:      # the vetted read of graph_0004
             d = await self._one("/* pipeshub:graph.user_by_user_id */ SELECT node_id, doc FROM graph.user_by_user_id($1)", user_id)

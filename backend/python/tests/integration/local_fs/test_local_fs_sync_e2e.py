@@ -195,9 +195,12 @@ class LocalFsTransactionStore(MockTransactionStore):
         doc = self._s.get_node(CollectionNames.APPS.value, connector_id)
         return AppMetadata.from_db_document(doc) if doc is not None else None
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None
+    ) -> User | None:
         doc = self._s.get_node(CollectionNames.USERS.value, user_id)
-        if doc is None:
+        # Same contract as the real stores: with org_id, only a user of that organisation.
+        if doc is None or (org_id is not None and doc.get("orgId") != org_id):
             return None
         return User(
             id=doc["_key"],

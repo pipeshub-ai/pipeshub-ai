@@ -80,6 +80,7 @@ from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.core.org_context import (
     MissingOrgContext,
     for_org,
+    org_optional,
     require_system,
     spawn_detached,
     spawn_in_request,
@@ -6838,19 +6839,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="get_user_by_source_id")
             return None
 
+    @org_optional
     async def get_user_by_user_id(
         self,
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
-        """Get user by user ID. Memoized for the current chat turn (see
-        `app.utils.turn_memo`): a turn looked the same user up about twenty
-        times. Each caller gets its own copy, so one caller's edits stay its own."""
+        """Get user by user ID; with ``org_id``, only a user of that organisation.
+        Memoized for the current chat turn (see `app.utils.turn_memo`): a turn
+        looked the same user up about twenty times. Each caller gets its own
+        copy, so one caller's edits stay its own."""
+        if org_id == "":
+            return None  # an empty organisation matches no user
         from app.utils.turn_memo import memo
 
         try:
-            user = await memo(("user_by_user_id", user_id), lambda: self._get_user_by_user_id(user_id))
+            user = await memo(
+                ("user_by_user_id", user_id, org_id), lambda: self._get_user_by_user_id(user_id, org_id)
+            )
         except Exception as e:
             if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
@@ -6858,15 +6866,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return None
         return copy.deepcopy(user)
 
-    async def _get_user_by_user_id(self, user_id: str) -> dict | None:
-        query = """
-        MATCH (u:User {userId: $user_id})
-        RETURN u {.*} AS u
+    async def _get_user_by_user_id(self, user_id: str, org_id: str | None = None) -> dict | None:
+        scoped = org_id is not None
+        org_filter = "WHERE u.orgId = $org_id" if scoped else ""
+        query = f"""
+        MATCH (u:User {{userId: $user_id}})
+        {org_filter}
+        RETURN u {{.*}} AS u
         LIMIT 1
         """
         results = await self.client.execute_query(
             query,
-            parameters={"user_id": user_id},
+            parameters={"user_id": user_id, **({"org_id": org_id} if scoped else {})},
             plain=True,
         )
         if results:
@@ -29168,6 +29179,61 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"for agent {agent_id}"
                     )
 
+            # ── Step 7b: Agent->MCP server edges, then the orphaned MCP servers and their tool nodes ──
+            # As the ArangoDB provider deletes them: the agent's DETACH DELETE alone leaves them behind.
+            mcp_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            has_mcp_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+            mcp_servers_deleted = 0
+            # One statement, so the agent's server links and the cleanup they lead to commit together: a failed cleanup leaves
+            # the links for a retry to find again. The servers are write-locked (by id) before their links are read, then the
+            # candidate tools before their holders are read, so two deletes cleaning up servers that share a tool see each
+            # other's removals: of two orphaned servers of one agent, or of two agents' servers deleted at once, the last
+            # cleanup takes the tool. A tool is kept only by a server outside the orphaned set. A statement run on its own is
+            # sent again by the client when it loses to another delete (lost_to_a_delete).
+            result = await self.client.execute_query(
+                f"""
+                OPTIONAL MATCH (:{agent_label} {{id: $agent_id}})-[mr:{has_mcp_rel}]->(linked:{mcp_label})
+                WITH collect(DISTINCT linked.id) as sid_list, collect(mr) as rels
+                FOREACH (x IN rels | DELETE x)
+                WITH sid_list, size(rels) as agent_rels
+                CALL (sid_list) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN sid_list
+                    WITH server ORDER BY server.id
+                    SET server.{_MATCH_LOCK} = true
+                    REMOVE server.{_MATCH_LOCK}
+                    WITH server WHERE NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
+                    RETURN collect(server.id) as orphan_ids
+                }}
+                CALL (orphan_ids) {{
+                    MATCH (orphan:{mcp_label})-[:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE orphan.id IN orphan_ids
+                    WITH DISTINCT tool ORDER BY tool.id
+                    SET tool.{_MATCH_LOCK} = true
+                    REMOVE tool.{_MATCH_LOCK}
+                    WITH tool WHERE NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN orphan_ids }}
+                    WITH tool, COUNT {{ (tool)<-[:{mcp_tool_rel}]-() }} as links
+                    DETACH DELETE tool
+                    RETURN count(tool) as tool_count, sum(links) as tool_links
+                }}
+                CALL (orphan_ids) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN orphan_ids
+                    WITH server, COUNT {{ (server)-[:{mcp_tool_rel}]->() }} as links
+                    DETACH DELETE server
+                    RETURN count(server) as deleted_count, sum(links) as server_links
+                }}
+                RETURN agent_rels, deleted_count, tool_count, tool_links + server_links as rel_count
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += (result[0].get("agent_rels", 0) or 0) + (result[0].get("rel_count", 0) or 0)
+                mcp_servers_deleted = result[0].get("deleted_count", 0) or 0
+                tools_deleted += result[0].get("tool_count", 0) or 0
+
             # ── Step 8: DETACH DELETE the agent node ──
             # This removes the agent AND any remaining relationships (permissions,
             # plus any unexpected edges we didn't explicitly handle above).
@@ -29195,6 +29261,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -29206,6 +29273,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def hard_delete_all_agents(self, transaction: str | None = None) -> dict[str, int]:
@@ -29363,6 +29431,48 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     toolsets_deleted = result[0].get("toolset_count", 0) or 0
                     self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
 
+            # Step 9b: MCP servers attached to agents and their tool nodes, as the ArangoDB provider deletes them (the agents'
+            # DETACH DELETE below would leave them behind). One statement: the agents' server links and the cleanup they lead to
+            # commit together, so a failed cleanup leaves the links for a retry to find. A tool a server outside the set holds stays.
+            mcp_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            has_mcp_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+            mcp_servers_deleted = 0
+            result = await self.client.execute_query(
+                f"""
+                OPTIONAL MATCH (:{agent_label})-[:{has_mcp_rel}]->(linked:{mcp_label})
+                WITH collect(DISTINCT linked.id) as server_ids
+                CALL (server_ids) {{
+                    MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE server.id IN server_ids
+                      AND NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN server_ids }}
+                    WITH tool, count(r) as rels
+                    DETACH DELETE tool
+                    RETURN count(tool) as tool_count, sum(rels) as tool_links
+                }}
+                CALL () {{
+                    MATCH (:{agent_label})-[mr:{has_mcp_rel}]->(:{mcp_label})
+                    DELETE mr
+                    RETURN count(mr) as agent_rels
+                }}
+                CALL (server_ids) {{
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN server_ids
+                    WITH server, COUNT {{ (server)-[:{mcp_tool_rel}]->() }} as links
+                    DETACH DELETE server
+                    RETURN count(server) as server_count, sum(links) as server_links
+                }}
+                RETURN tool_count, server_count, tool_links + agent_rels + server_links as rel_count
+                """,
+                txn_id=transaction
+            )
+            if result:
+                tools_deleted += result[0].get("tool_count", 0) or 0
+                edges_deleted += result[0].get("rel_count", 0) or 0
+                mcp_servers_deleted = result[0].get("server_count", 0) or 0
+                if mcp_servers_deleted:
+                    self.logger.debug(f"Deleted {mcp_servers_deleted} MCP server nodes")
+
             # Step 10: Delete all permission relationships pointing to agents
             result = await self.client.execute_query(
                 f"""
@@ -29397,7 +29507,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
-                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} relationships"
+                f"{tools_deleted} tools, {knowledge_deleted} knowledge, {mcp_servers_deleted} MCP servers and {edges_deleted} relationships"
             )
 
             return {
@@ -29406,6 +29516,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -29417,6 +29528,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:

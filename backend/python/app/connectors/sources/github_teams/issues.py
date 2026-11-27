@@ -292,11 +292,13 @@ class IssuesSync:
                              repo.full_name, page)
         resumed_page = page if resume is not None else None
 
+        saved_place: dict[str, Any] = {}  # the place this run stored, cleared with the old one
+
         async def save_place() -> None:
             # Never behind the stored place: a failure while re-reading the page before it
             # would otherwise step the next sync back a page each time, towards page 1.
             if (place := max(page, stored_page)) > 1:
-                await self._write_checkpoint(group_id, {
+                saved_place.update({
                     GitHubLiterals.RESUME_PAGE.value: place,
                     GitHubLiterals.RESUME_CURSOR.value: cursor,
                     GitHubLiterals.RESUME_SINCE.value: since_ms,
@@ -304,9 +306,10 @@ class IssuesSync:
                     GitHubLiterals.RESUME_CREATED.value: created_before + len(created),
                     GitHubLiterals.RESUME_WINDOW.value: rolling,
                 })
+                await self._write_checkpoint(group_id, dict(saved_place))
 
         async def forget_place() -> None:
-            if cleared := resume_fields_to_clear(checkpoint):
+            if cleared := resume_fields_to_clear({**checkpoint, **saved_place}):
                 await self._write_checkpoint(group_id, cleared)
 
         while True:
@@ -374,6 +377,9 @@ class IssuesSync:
                 return False
             cursor = next_cursor
             page += 1
+            # Kept per page, so a sync stopped by anything (a restart while it waits out a
+            # rate limit) reads on from here rather than from page 1.
+            await save_place()
 
         if processed:
             self.logger.info(
@@ -400,8 +406,10 @@ class IssuesSync:
         if ok:
             # With the watermark. A failed check leaves the old watermark, so the next
             # sync reads on from the saved place and checks again, not from page 1.
-            new_checkpoint.update(resume_fields_to_clear(checkpoint))
-        if new_checkpoint != checkpoint:
+            new_checkpoint.update(resume_fields_to_clear({**checkpoint, **saved_place}))
+        # Also when nothing else moved: a store that keeps null fields (ArangoDB) already holds the
+        # cleared place in ``checkpoint``, so the equality alone would leave this run's place behind.
+        if new_checkpoint != checkpoint or (ok and saved_place):
             await self._write_checkpoint(group_id, new_checkpoint)
         return ok
 
@@ -594,11 +602,15 @@ class IssuesSync:
 
         Gated for free by ``issue_dependencies_summary`` on the listing payload:
         an issue that blocks nothing (the overwhelming majority) costs zero calls.
+        The gate is ``total_blocking``: "Total count of issues this issue is
+        blocking (open and closed)", while ``blocking`` counts open ones only
+        (https://docs.github.com/public/fpt/schema.docs.graphql,
+        IssueDependenciesSummary), so a link to a closed issue is still read.
         Each returned item embeds ``repository.id``, so cross-repo targets map
         to ``{repo_id}/issues/{n}`` with no extra lookup. Errors degrade to no
         links — never fail the ticket.
         """
-        if not isinstance(summary, dict) or not summary.get("blocking"):
+        if not isinstance(summary, dict) or not (summary.get("total_blocking") or summary.get("blocking")):
             return []
         try:
             res = await self.c.runtime.ds_call(

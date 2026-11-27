@@ -90,7 +90,7 @@ class RecordReadGate:
     async def _readable(self, user_id: str, record_ids: list[str]) -> set[str]:
         """The ids the user may access by main's one access check (#4255); a failed read raises, an unknown user
         reads nothing."""
-        user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True)
+        user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True, org_id=self._org_id)
         user_key = (user or {}).get("_key") or (user or {}).get("id")
         if not user_key:
             return set()
