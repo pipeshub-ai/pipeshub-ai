@@ -274,9 +274,11 @@ export function TagInput({
             id={control.id}
             aria-required={control['aria-required']}
             aria-invalid={errorMessage ? true : undefined}
+            // The field's help text, then this input's own error and note lines.
             aria-describedby={
-              [errorMessage ? errorId : null, warningLine ? warningId : null].filter(Boolean).join(' ') ||
-              undefined
+              [control['aria-describedby'], errorMessage ? errorId : null, warningLine ? warningId : null]
+                .filter(Boolean)
+                .join(' ') || undefined
             }
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
