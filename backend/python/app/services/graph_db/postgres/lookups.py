@@ -945,6 +945,11 @@ class LookupsMixin(PgBase):
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
+            # The flagged edges are locked first and decided by the next statement, which sees every grant committed by then: a writer of a grant touches
+            # its holder's edge after it (``ensure_app_membership``), so it either commits before the lock (its grant is seen) or waits for this unit and writes
+            # the edge again once it is gone.
+            await tx.execute("""/* pipeshub:graph.reap_lock_external_edges */ SELECT 1 FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation'
+                AND u.to_coll = 'apps' AND u.to_id = $2 AND u.doc->>'isExternalUser' = 'true' FOR UPDATE""", org, connector_id)
             gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (
                   SELECT u.from_coll, u.from_id FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.to_id = $2
                     AND u.doc->>'isExternalUser' = 'true'

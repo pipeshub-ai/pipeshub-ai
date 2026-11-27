@@ -14,6 +14,7 @@ ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -62,10 +63,10 @@ def _graph(kind: str) -> tuple[list, list]:
         app(APP, "Drive", connector=DRIVE, app_group="G"),
     ]
     edges = [user_app("u", APP), authenticated_as("u", "src", APP)]
-    # two external collaborators of the App, each kept there only by what its one membership grants (the reaper's question)
-    for h in ("own-live", "own-gone"):
+    # external collaborators of the App, each kept there only by what its one membership grants (the reaper's question), and one by a grant of its own
+    for h in ("own-live", "own-gone", "direct"):
         nodes.append(_node("User", f"ext-{h}", email=f"ext-{h}@example.com", fullName=f"Ext {h}"))
-        edges += [perm(f"ext-{h}", h, role="READER"),
+        edges += [perm(f"ext-{h}", h, role="READER") if h != "direct" else perm(f"ext-{h}", "r-own-live", role="READER"),
                   {"type": "USER_APP_RELATION", "from": f"ext-{h}", "to": APP, "props": {"syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}}]
     extra = {"Role": {"externalRoleId": "ext", "connectorName": DRIVE, "connectorId": APP, "createdAtTimestamp": TS}}
     for h in HOLDERS:
@@ -98,6 +99,7 @@ class _World:
         kind_of = {n["id"]: n["kind"] for n in self.nodes}
         for kind, collection in NODE_TARGETS.items():
             rows = [{**n["props"], "id": self.sid(n["id"]), **({"orgId": self.org} if "orgId" in n["props"] else {}),
+                     **({"userId": self.sid(n["props"]["userId"])} if n["props"].get("userId") else {}),
                      **({"connectorId": self.sid(n["props"]["connectorId"])} if n["props"].get("connectorId") else {})}
                     for n in self.nodes if n["kind"] == kind]
             if rows:
@@ -170,7 +172,7 @@ async def test_a_membership_whose_group_no_longer_exists_grants_nothing(world: _
     # No path at all reads as READER; the grants are WRITER.
     assert roles == {n: "WRITER" if n.endswith(LIVE) else "READER" for n, _ in nodes}
 
-    scope = await g.get_entity_access_context("u-uid", w.org)
+    scope = await g.get_entity_access_context(w.sid("u-uid"), w.org)
     assert {w.plain(i) for i in scope["record_group_ids"]} == {f"g-{h}" for h in LIVE}
 
 
@@ -217,7 +219,7 @@ async def test_a_team_that_no_longer_exists_opens_no_collection_app_or_agent_tem
     want = {"kb role": {live: "WRITER", gone: None}, "kbs listed": {f"k-{live}"}, "kbs shared": {f"k-{live}"}, "apps": {f"a-{live}"},
             "templates": {f"t-{live}"}, "template": {live: True, gone: False}}
     if hasattr(g, "_get_user_accessible_team_app_keys"):      # the connector listing's team Apps (ArangoDB's helper)
-        got["team apps"] = {a for a in (w.plain(k) for k in await g._get_user_accessible_team_app_keys("u-uid")) if a.startswith("a-")}
+        got["team apps"] = {a for a in (w.plain(k) for k in await g._get_user_accessible_team_app_keys(w.sid("u-uid"))) if a.startswith("a-")}
         want["team apps"] = {f"a-{live}"}
     assert got == want
 
@@ -231,4 +233,72 @@ async def test_the_collaborator_reaper_keeps_only_whom_an_existing_group_still_g
         rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
     else:
         rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
-    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live"}
+    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct"}
+
+
+async def test_the_reaper_keeps_a_collaborator_granted_while_it_runs(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ext-own-gone is held by nothing when the reaper starts. A direct grant to it commits just before the statement that removes the
+    reaper's edges runs: the removal decides on the grant as it is then, so the collaborator stays."""
+    w, g = world, world.graph
+    ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
+    if hasattr(g, "client"):
+        real, name = g.client.execute_query, "client"
+
+        async def grant() -> None:
+            await real("MATCH (u:User {id: $u}), (r:Record {id: $r}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER', createdAtTimestamp: $ts}]->(r)",
+                       parameters={"u": ext, "r": rec_id, "ts": TS})
+
+        def removes(query: str, *_a: Any, **_k: Any) -> bool:  # noqa: ANN401
+            return "isExternalUser" in query and "DELETE" in query
+    else:
+        real, name = g.http_client.execute_aql, "http_client"
+
+        async def grant() -> None:
+            await real("INSERT {_from: @u, _to: @r, type: 'USER', role: 'READER', createdAtTimestamp: @ts} IN permission",
+                       {"u": f"users/{ext}", "r": f"records/{rec_id}", "ts": TS})
+
+        def removes(query: str, *a: Any, **k: Any) -> bool:  # noqa: ANN401
+            bind = (a[0] if a else k.get("bind_vars")) or {}
+            return "REMOVE" in query and ("userAppRelation" in query or bind.get("@collection") == "userAppRelation")
+    fired: list[bool] = []
+
+    async def hooked(query: str, *a: Any, **k: Any) -> Any:  # noqa: ANN401
+        if not fired and removes(query, *a, **k):
+            fired.append(True)
+            await grant()
+        return await real(query, *a, **k)
+    monkeypatch.setattr(getattr(g, name), "execute_query" if name == "client" else "execute_aql", hooked)
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    monkeypatch.undo()
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
+    assert fired and {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def test_the_reaper_keeps_a_collaborator_whose_grant_commits_while_it_decides(world: _World) -> None:
+    """A writer grants ext-own-gone a record and ensures its membership in one transaction, still open while the reaper runs; the reaper's view cannot
+    see that grant. The writer's touch of the edge conflicts with the removal (ArangoDB) or holds it until the writer commits (Neo4j), so the
+    collaborator keeps the App once the grant is committed."""
+    w, g = world, world.graph
+    ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
+    tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
+    committed = False
+    try:
+        assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
+                                            "createdAtTimestamp": TS}], collection="permission", transaction=tid)
+        await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
+        reap = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        await asyncio.sleep(1.0)      # the reaper decides (or waits on the writer's lock) while the grant is uncommitted
+        await g.commit_transaction(tid)
+        committed = True
+        await reap
+    finally:
+        if not committed:
+            await g.rollback_transaction(tid)
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
+    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}

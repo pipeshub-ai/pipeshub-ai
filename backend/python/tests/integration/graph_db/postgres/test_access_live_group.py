@@ -2,6 +2,7 @@
 the user's own groups do. Both reads of a viewer's grants follow it: the read of every grant (``get_knowledge_hub_access_v3``) and the access check's read per node."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -40,19 +41,21 @@ async def test_a_membership_whose_group_no_longer_exists_grants_nothing(pg_db, m
 
 @pytest.mark.parametrize("member", ["groups", "roles", "teams"])
 async def test_the_collaborator_reaper_keeps_only_whom_an_existing_group_still_grants(pg_db, member) -> None:
-    """Two external collaborators of app1, each held there by one membership's grant: of g (a node) and of gone (none). The reaper keeps the first alone."""
+    """External collaborators of app1: x1 held by a grant of g (a node), x2 by one of gone (none), x3 by a grant of its own; x0 an ordinary member with
+    no grant. The reaper removes x2 alone."""
     p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
         await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for k in ("r1", "r2")], "records")
-        await p.batch_upsert_nodes([{"_key": u, "orgId": org, "email": f"{u}@example.com"} for u in ("x1", "x2")], "users")
+        await p.batch_upsert_nodes([{"_key": u, "orgId": org, "email": f"{u}@example.com"} for u in ("x0", "x1", "x2", "x3")], "users")
         await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], member)
-        await p.batch_create_edges([edge(x, "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1) for x in ("x1", "x2")], "userAppRelation")
-        await p.batch_create_edges([_perm("x1", "users", "g", member), _perm("x2", "users", "gone", member),
+        await p.batch_create_edges([*(edge(x, "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1) for x in ("x1", "x2", "x3")),
+                                    edge("x0", "users", "app1", "apps", isExternalUser=False, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        await p.batch_create_edges([_perm("x1", "users", "g", member), _perm("x2", "users", "gone", member), _perm("x3", "users", "r1", "records"),
                                     _perm("g", member, "r1", "records", "GROUP"), _perm("gone", member, "r2", "records", "GROUP")], "permission")
         await p.reap_stale_external_app_relations("app1")
         kept = await pg_db.run(lambda tx: tx.fetch("SELECT from_id FROM graph.edges WHERE org_id = $1 AND coll = 'userAppRelation' AND to_id = 'app1'", org))
-    assert sorted(r["from_id"] for r in kept) == ["x1"]
+    assert sorted(r["from_id"] for r in kept) == ["x0", "x1", "x3"]
 
 
 async def test_a_team_that_no_longer_exists_opens_no_collection_app_or_agent_template(pg_db) -> None:
@@ -84,3 +87,29 @@ async def test_a_team_that_no_longer_exists_opens_no_collection_app_or_agent_tem
         }
     assert got == {"kb role": {"t": "WRITER", "gone": None}, "kbs listed": {"k-t"}, "kbs shared": {"k-t"}, "apps": {"a-t"}, "team connectors": {"a-t"},
                    "templates": {"tp-t"}, "template": {"t": True, "gone": False}}
+
+
+async def test_the_reaper_keeps_a_collaborator_whose_grant_commits_while_it_decides(pg_db) -> None:
+    """A writer grants x2 a record and ensures its membership in one transaction, still open while the reaper runs. The writer holds x2's edge,
+    so the reaper waits for it and then sees the committed grant: x2 keeps the App."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "r1", "recordName": "r1", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com"}], "users")
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        tid = await p.begin_transaction([], [])
+        committed = False
+        try:
+            await p.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission", transaction=tid)
+            await p.ensure_app_membership("x2", "users", "app1", is_external=True, transaction=tid)
+            reap = asyncio.create_task(p.reap_stale_external_app_relations("app1"))
+            await asyncio.sleep(1.0)      # the reaper decides (or waits on the writer's lock) while the grant is uncommitted
+            await p.commit_transaction(tid)
+            committed = True
+            await reap
+        finally:
+            if not committed:
+                await p.rollback_transaction(tid)
+        kept = await pg_db.run(lambda tx: tx.fetch("SELECT from_id FROM graph.edges WHERE org_id = $1 AND coll = 'userAppRelation' AND to_id = 'app1'", org))
+    assert [r["from_id"] for r in kept] == ["x2"]
