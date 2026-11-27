@@ -81,7 +81,7 @@ File and folder names are kebab-case (`kb-data-table.tsx`), hooks are `use-*.ts`
 ## API and data fetching
 
 - Components do not call axios directly. Each page exposes calls from its `api.ts` using `apiClient` from `@/lib/api` (`lib/api/axios-instance.ts`).
-- `apiClient` adds the bearer token, refreshes on 401 and retries queued requests, converts failures to `ProcessedError` (`lib/api/api-error.ts`), and sends the user to `/login` when the server refuses the refresh (a 5xx, 429 or network failure keeps the session). Handle auth and network errors there; handle business errors in the component.
+- `apiClient` adds the bearer token, refreshes on 401 and retries queued requests, converts failures to `ProcessedError` (`lib/api/api-error.ts`), and sends the user to `/login` when the server refuses the refresh (a 5xx, 408, 429 or network failure is retried with backoff and keeps the session). Handle auth and network errors there; handle business errors in the component.
 - Unauthenticated calls use `publicAuthClient` (`lib/api/public-auth-client.ts`), as in `app/(public)/api.ts`.
 - Reads use SWR with the fetchers in `lib/api/fetcher.ts`. Mutations with loading state and toasts use `useMutation` / `withToast` from `@/lib/api`.
 - Chat responses stream over SSE with native `fetch` (`lib/api/streaming.ts`, `app/(main)/chat/streaming.ts`), because axios cannot stream. Notifications use socket.io (`lib/socket/notification-socket.ts`).

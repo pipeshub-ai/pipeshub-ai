@@ -15,6 +15,7 @@
  */
 import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { isRetryableRefreshStatus, parseRetryAfterMs, REFRESH_ATTEMPT_TIMEOUT_MS } from '@/lib/api/refresh-retry';
 
 export const SESSION_HINT_KEY = 'pipeshub_signed_in';
 /** Where builds before ADR-WEB-02 kept the tokens; read once to move them, then deleted. */
@@ -117,31 +118,49 @@ export type AccessTokenAnswer =
   | { outcome: 'issued'; accessToken: string; refreshToken?: string }
   /** The server said no (signed out, expired, no session): sign in again. */
   | { outcome: 'refused' }
-  /** No answer (offline, server down, rate limited): the session may still be good. */
-  | { outcome: 'unreachable' };
+  /**
+   * No answer, or one that is known to be temporary (offline, server down, a 408, rate limited, too slow): the session
+   * may still be good. `retryAfterMs` is the server's `Retry-After`, when it sent one.
+   */
+  | { outcome: 'unreachable'; retryAfterMs?: number };
 
 async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
-  let response: Response;
+  // One attempt may not hang the refresh: slower than the limit counts as no answer, body read included.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REFRESH_ATTEMPT_TIMEOUT_MS);
   try {
-    response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
-      method: 'POST',
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
-    });
-  } catch {
-    return { outcome: 'unreachable' };
+    let response: Response;
+    try {
+      response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
+        method: 'POST',
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
+        signal: controller.signal,
+      });
+    } catch {
+      return { outcome: 'unreachable' };
+    }
+    // A 5xx, a 408 or the global limiter's 429 (it answers before authentication, keyed per IP) is no verdict on the session.
+    if (isRetryableRefreshStatus(response.status)) {
+      const retryAfterMs = parseRetryAfterMs(response.headers?.get?.('Retry-After'));
+      return retryAfterMs === null ? { outcome: 'unreachable' } : { outcome: 'unreachable', retryAfterMs };
+    }
+    if (!response.ok) return { outcome: 'refused' };
+    let data: { accessToken?: unknown; refreshToken?: unknown } | null;
+    try {
+      data = (await response.json()) as { accessToken?: unknown; refreshToken?: unknown } | null;
+    } catch {
+      // The server said yes and its body did not arrive: a navigation cut the read off mid-restore, and the session it
+      // renewed is good. Read as refused, this removed the signed-in mark and the next page load signed the person out.
+      return { outcome: 'unreachable' };
+    }
+    return answerFrom(data);
+  } finally {
+    clearTimeout(timer);
   }
-  // The global limiter answers before authentication, keyed per IP: like a 5xx, it is no verdict on the session.
-  if (response.status >= 500 || response.status === 429) return { outcome: 'unreachable' };
-  if (!response.ok) return { outcome: 'refused' };
-  let data: { accessToken?: unknown; refreshToken?: unknown } | null;
-  try {
-    data = (await response.json()) as { accessToken?: unknown; refreshToken?: unknown } | null;
-  } catch {
-    // The server said yes and its body did not arrive: a navigation cut the read off mid-restore, and the session it
-    // renewed is good. Read as refused, this removed the signed-in mark and the next page load signed the person out.
-    return { outcome: 'unreachable' };
-  }
+}
+
+function answerFrom(data: { accessToken?: unknown; refreshToken?: unknown } | null): AccessTokenAnswer {
   if (typeof data?.accessToken !== 'string' || !data.accessToken) return { outcome: 'refused' };
   return typeof data.refreshToken === 'string' && data.refreshToken
     ? { outcome: 'issued', accessToken: data.accessToken, refreshToken: data.refreshToken }

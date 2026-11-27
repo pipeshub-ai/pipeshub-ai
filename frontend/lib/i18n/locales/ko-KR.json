@@ -6987,6 +6987,9 @@
     "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },
   "errorToast": {
+    "reconnecting": "다시 연결하는 중…",
+    "reconnectingDescription": "지금은 세션을 확인할 수 없습니다. 로그인 상태는 유지되며 계속 시도합니다.",
+    "sessionUnavailable": "지금은 세션을 확인할 수 없습니다. 다시 연결하는 중…",
     "accessDenied": "액세스 거부됨",
     "invalidRequest": "잘못된 요청",
     "notFound": "찾을 수 없음",

@@ -7122,6 +7122,9 @@
     "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."
   },
   "errorToast": {
+    "reconnecting": "Reconnecting…",
+    "reconnectingDescription": "We can’t check your session right now. You stay signed in; we’ll keep trying.",
+    "sessionUnavailable": "We can’t check your session right now. Reconnecting…",
     "accessDenied": "Access denied",
     "invalidRequest": "Invalid request",
     "notFound": "Not found",
