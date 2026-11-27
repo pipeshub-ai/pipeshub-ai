@@ -52,15 +52,15 @@ function GeneratingTitleLabel({ label }: { label: string }) {
 const DOT_COLOR: Record<'needsYou' | 'finished', string> = { needsYou: 'var(--amber-9)', finished: 'var(--accent-9)' };
 
 /**
- * A chat row's one mark (D10): amber for needs you, the spinner for working, the jade dot for finished and not seen.
- * Its words are always there for a screen reader; colour is never the only sign.
+ * A chat row's one mark (D10): amber for needs you, the pulsing dot for working, the jade dot for finished and not
+ * seen, as the rows draw them. Its words are always there for a screen reader; colour is never the only sign.
  */
 export function ChatDotMark({ dot, label }: { dot: SidebarDot['dot']; label: string }) {
   return (
     <span data-testid="chat-dot" data-dot={dot} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
       <span aria-hidden style={{ display: 'inline-flex', lineHeight: 0 }}>
         {dot === 'working' ? (
-          <Spinner size={12} color="var(--accent-11)" />
+          <span className="sidebar-activity-dot" data-live="" />
         ) : (
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: DOT_COLOR[dot] }} />
         )}

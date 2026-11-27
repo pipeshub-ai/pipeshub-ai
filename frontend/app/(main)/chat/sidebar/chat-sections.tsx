@@ -19,19 +19,33 @@ import { chatSlots } from '@/config';
 import { RAIL_SHARED_UNPINNED_ROWS, RAIL_UNPINNED_ROWS } from '../constants';
 import type { Conversation } from '@/chat/types';
 import { readRailMemory, writeRailMemory } from './rail-memory';
+import { sidebarDot, strongestDot } from '@/lib/harness-jobs/jobs-list';
+import { ChatDotMark, markWords } from './chat-section-element';
 
 /**
  * A section's chats for the rail: every pinned one, newest activity first, then its `limit` newest others,
  * and whether it needs "More" for the rest of those: past the cap here, or another page on the server. The store keeps
  * more, so the realtime watches still see every chat; only the rail shows fewer. `hasNextPage` is this section's own
- * pagination.
+ * pagination. `hidden`: the loaded chats past the cap, which More stands for.
  */
 function railRows(conversations: Conversation[], hasNextPage: boolean, limit: number) {
   const { pinned, rest } = splitPinned(conversations);
   return {
     rows: [...pinned, ...rest.slice(0, limit)],
+    hidden: rest.slice(limit),
     hasMore: rest.length > limit || (conversations.length > 0 && hasNextPage),
   };
+}
+
+/**
+ * The strongest mark of the chats a More hides, so a chat past the cap still says it needs the person: needs you over
+ * working over finished and not seen, from the list already loaded (no added request). The chat open now shows no
+ * finished mark, as its row would not.
+ */
+function hiddenMark(hidden: Conversation[], currentConversationId: string | null) {
+  return strongestDot(
+    hidden.map((c) => sidebarDot(c.harnessState, { streaming: false, unread: false, active: c.id === currentConversationId })),
+  );
 }
 
 /** Number of skeleton items shown while loading each section */
@@ -43,7 +57,8 @@ const YOUR_CHATS_SKELETON_COUNT = 3;
  * a way to start one (`useSharedChatsStart`): then it stays, with a + and a line while empty. Your chats files its
  * unpinned rows under the day of their last activity (Today, Yesterday, Last 7 days, Older), showing only the days that
  * have one, under its pins. Each lists all its pins and at most RAIL_SHARED_UNPINNED_ROWS (Shared chats) or
- * RAIL_UNPINNED_ROWS (Your chats) others, then "More", which opens the rest of that section.
+ * RAIL_UNPINNED_ROWS (Your chats) others, then "More", which opens the rest of that section and carries the strongest
+ * mark of the chats it hides.
  *
  * Wrapped in React.memo to prevent parent-cascade re-renders.
  */
@@ -113,6 +128,9 @@ export const ChatSections = React.memo(function ChatSections({
   // The pins come first, with no label of their own.
   const today = useLocalDay();
   const yourDays = useMemo(() => groupConversationsWithPinned(your.rows, today), [your.rows, today]);
+  // Each More carries the strongest mark of the chats it hides, in the row mark's words for a screen reader.
+  const sharedMoreMark = useMemo(() => hiddenMark(shared.hidden, currentConversationId), [shared.hidden, currentConversationId]);
+  const yourMoreMark = useMemo(() => hiddenMark(your.hidden, currentConversationId), [your.hidden, currentConversationId]);
 
   // Rows Shared chats shows, its More included.
   const sharedRowsShown = shared.rows.length + (shared.hasMore ? 1 : 0);
@@ -147,6 +165,7 @@ export const ChatSections = React.memo(function ChatSections({
           skeletonCount={reserveShared ? lastTime.sharedRows : sharedRowsShown}
           hasMore={shared.hasMore}
           onMore={() => onOpenMoreChats('shared')}
+          moreMark={sharedMoreMark ? <ChatDotMark dot={sharedMoreMark.dot} label={markWords(t, sharedMoreMark)} /> : null}
           emptyStateText={sharedStart?.emptyText ?? t('chat.noSharedChats')}
         />
       )}
@@ -165,6 +184,7 @@ export const ChatSections = React.memo(function ChatSections({
         skeletonCount={YOUR_CHATS_SKELETON_COUNT}
         hasMore={your.hasMore}
         onMore={() => onOpenMoreChats('your')}
+        moreMark={yourMoreMark ? <ChatDotMark dot={yourMoreMark.dot} label={markWords(t, yourMoreMark)} /> : null}
         pendingConversations={activePendingConversations}
         emptyStateText={t('chat.yourChatsEmpty')}
       />

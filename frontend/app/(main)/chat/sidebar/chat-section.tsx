@@ -34,6 +34,8 @@ interface ChatSectionBaseProps {
   hasMore?: boolean;
   /** Called when "More" button is clicked */
   onMore?: () => void;
+  /** Drawn at the end of the "More" row: the strongest mark of the chats it hides. */
+  moreMark?: React.ReactNode;
   /** Pending conversations to show as "Generating Title…" shimmers first (in the Today group when time-grouped) */
   pendingConversations?: PendingConversation[];
   /** Empty-state text; defaults to "No chats yet". `null`: no line at all. */
@@ -89,6 +91,7 @@ export function ChatSection({
   isScrollable = false,
   hasMore = false,
   onMore,
+  moreMark,
   pendingConversations = [],
   emptyStateText,
   agentId,
@@ -207,7 +210,7 @@ export function ChatSection({
 
           {/* "⋯ More" overflow button, with the rows: under a skeleton it would show, then move down when they come */}
           {hasMore && !showSkeleton && (
-            <MoreButton onClick={onMore} />
+            <MoreButton onClick={onMore} mark={moreMark} />
           )}
         </Flex>
       ) : null}
@@ -224,15 +227,16 @@ function withTodayGroup(groups: Array<[SidebarGroupKey, Conversation[]]>): Array
 
 /**
  * "⋯ More" button shown at the bottom of a section when there are
- * more chats than MAX_VISIBLE_CHATS.
+ * more chats than MAX_VISIBLE_CHATS, with the mark of the chats it hides at its end.
  */
-function MoreButton({ onClick }: { onClick?: () => void }) {
+function MoreButton({ onClick, mark }: { onClick?: () => void; mark?: React.ReactNode }) {
   const { t } = useTranslation();
   return (
     <SidebarItem
       icon={<MaterialIcon name="more_horiz" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
       label={t('common.more')}
       onClick={onClick}
+      rightSlot={mark ?? undefined}
     />
   );
 }
