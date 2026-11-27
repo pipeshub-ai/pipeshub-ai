@@ -1064,9 +1064,29 @@ async def test_a_wide_node_of_a_connector_with_more_classes_than_a_page_evaluate
     assert not set(walked) & set(KIDS), walked
 
 
+def _record_prologues(monkeypatch, ran: list[tuple[object, str, tuple]]) -> None:
+    """Record each unit's prologue (``KernelDB._prologue``: its role, plan cache mode, JIT and work_mem, run on the raw connection, not through ``Tx._run``) in ``ran``,
+    first among its transaction's statements, so a replay plans each read with the settings the request planned it with."""
+    import app.core.db.uow as uow
+    real = uow.KernelDB._prologue
+
+    class _Recorded:
+        def __init__(self, con, tx) -> None:
+            self._con, self._tx = con, tx
+
+        async def fetchrow(self, sql, *args) -> object:
+            ran.append((self._tx, sql, args))
+            return await self._con.fetchrow(sql, *args)
+
+    async def prologue(self, con, tx, *a, **kw) -> None:
+        await real(self, _Recorded(con, tx), tx, *a, **kw)
+    monkeypatch.setattr(uow.KernelDB, "_prologue", prologue)
+
+
 async def _children_rows_read(org: str, statements: list[tuple[object, str, tuple]]) -> dict[str, int]:
     """The kg.records rows each statement reads (scans and index scans of the table, from EXPLAIN ANALYZE: returned and removed by a filter), by its site. Each transaction
-    of the request is replayed in one of its own, every statement in order (its settings and savepoints too), so a read is planned as it was: under the profile it ran with."""
+    of the request is replayed in one of its own, every statement in order (its prologue, settings and savepoints too: :func:`_record_prologues`), so a read is planned as it
+    was: as the request's role, under the profile it ran with."""
     import asyncpg
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     read: dict[str, int] = {}
@@ -1117,9 +1137,11 @@ async def test_a_wide_nodes_page_and_total_read_about_the_page_and_the_count_wha
             ran.append((self, sql, args))      # the Tx itself: an id() of a finished one could be reused by the next
             return await real(self, op, sql, *args, internal=internal)
         monkeypatch.setattr(uow.Tx, "_run", spy)
+        _record_prologues(monkeypatch, ran)
         page = await browse(p, org, "fold", ["fold", *kids], limit=10)
         monkeypatch.setattr(uow.Tx, "_run", real)
         assert [r["id"] for r in page["rows"]] == kids[:10] and page["total"] == 40 and page.get("totalCapped"), (width, page["total"], page.get("totalCapped"))
+        assert all(any(x is t and q is uow.PROLOGUE_READ for x, q, _ in ran) for t in {id(t): t for t, _, _ in ran}.values()), "a unit replayed without its prologue"
         read[width] = await _children_rows_read(org, ran)
     small, large = (sum(v for k, v in read[w].items() if k in CHILD_READS) for w in (300, 3000))
     assert large < small + 50, read      # ten times the children, about the same reads
