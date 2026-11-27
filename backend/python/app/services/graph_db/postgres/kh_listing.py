@@ -16,6 +16,7 @@ The arrow of a group or a folder is on exactly when the browse of it (``kh_brows
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from app.services.graph_db.postgres.kg import hierarchy as kg_hierarchy
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH, COLL_CODE
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection
@@ -113,6 +115,7 @@ class KhGrants:
 
     def has(self, r: Any) -> bool:  # noqa: ANN401
         """Whether a kg row (with ``sk`` and ``id``) is one of the App's own grants."""
+        # shortcut: by id a row's own grant is matched by its id alone, as the walk matches it; upgrade when the grants read by id carry their collection
         return (r["sk"] if self.by_sk else r["id"]) in self.own
 
     def __bool__(self) -> bool:
@@ -500,10 +503,15 @@ class KhListingMixin(PgBase):
     async def _kh_grants(self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None,
                          grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None, *, by_class: bool) -> KhGrants:
         """The viewer's grants for a page of ``app_id``. A page that reads them itself (``user_key``, no grants given) in its own snapshot (``by_class``) reads them from kg when
-        kg holds every gated connector current (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
+        kg serves every gated connector (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
         if by_class and user_key and granted_ids is None and grants_by_connector is None and kg_read.enabled() and current_or_system().kind != "system":
             org = current_org_id()
-            got = await self._kq(lambda tx: self._kh_kg_grants(tx, org, app_id, user_key, gated_app_ids), transaction) if org_id == org else None
+            got = None
+            if org_id == org:
+                try:      # in a savepoint of the page's snapshot: a failed statement of it leaves the snapshot usable for the read by id
+                    got = await self._kq(lambda tx: kg_read.in_savepoint(tx, lambda t: self._kh_kg_grants(t, org, app_id, user_key, gated_app_ids)), transaction)
+                except Exception as e:      # kg's read is optional: a failed one is the read by id's, as the check's own kg read is the walk's
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING, op="_kh_grants", step="kg_grants")
             if got is not None:
                 return got
         every = await self._kh_v3_page_grants(app_id, org_id, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction)
@@ -512,41 +520,37 @@ class KhListingMixin(PgBase):
 
     async def _kh_kg_grants(self, tx: Tx, org: str, app_id: str, user_key: str, gated_app_ids: list[str]) -> KhGrants | None:
         """The viewer's grants as kg keys (:data:`VIEWER_GRANTS`), in the page's snapshot, and the gate the access check reads the rest by (``_check_gate``). None, for the read
-        by id, unless kg serves every connector the viewer is gated into (``kg.read.serves``: current, enforced, verified by this code, the principals' copy finished, not
-        distrusted by this process), as every reader that answers from kg asks."""
-        got = await self._kh_kg_gate(tx, org, user_key, gated_app_ids)
-        if got is None:
-            return None
-        gate, apps = got
+        by id, unless kg serves every connector the viewer is gated into (``drainer.serving_apps``, ``serves`` for each: current, enforced, verified by this code, the principals'
+        copy finished) and this process distrusts none of them once their grants are read."""
+        gate = await self._check_gate(tx, org, user_key)
         if "linked" not in gate:      # the user is no node of the graph: no grants, as the read by id says
             return KhGrants(access={**gate, "gated_app_ids": list(gated_app_ids)})
-        keys = {r["sk"]: r["id"] for r in await tx.fetch(APP_KEYS, org, apps)} if apps else {}
-        by = {keys[r["app_sk"]]: r["sks"] for r in await tx.fetch(VIEWER_GRANTS, org, user_key, sorted(keys), list(ORG_SHARE_PERMISSION_TYPES))} if keys else {}
-        access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in set(apps)}}
-        return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
-
-    async def _kh_kg_gate(self, tx: Tx, org: str, user_key: str, gated_app_ids: list[str]) -> tuple[dict[str, Any], list[str]] | None:
-        """The check's gate (``_check_gate``) and the connectors of ``gated_app_ids`` it gates in this snapshot, when kg can give the viewer's grants for them (as
-        :meth:`_kh_kg_grants` says); None when it cannot."""
-        gate = await self._check_gate(tx, org, user_key)
-        if "linked" not in gate:
-            return gate, []
         # the gate of this snapshot, within the caller's: a connector the caller was gated into and this snapshot is not has no grant, as the read by id buckets them
-        apps = [a for a in gated_app_ids if a in set(gate["gated_app_ids"])]
-        # the gate every reader answering from kg asks (``kg.read.serves``): a connector in shadow, verified by other code or not verified has keys kg does not vouch for
+        gated = set(gate["gated_app_ids"])
+        apps = [a for a in gated_app_ids if a in gated]
         if apps and set(apps) - await drainer.serving_apps(tx, org, apps):
             return None
+        keys = {r["sk"]: r["id"] for r in await tx.fetch(APP_KEYS, org, apps)} if apps else {}
+        by = {keys[r["app_sk"]]: r["sks"] for r in await tx.fetch(VIEWER_GRANTS, org, user_key, sorted(keys), list(ORG_SHARE_PERMISSION_TYPES))} if keys else {}
+        # after the grants are read: a connector distrusted while they were read is the read by id's
         for a in apps if net.DISTRUSTED else ():
             if await net.distrusted(tx, org, a):
                 return None
-        return gate, apps
+        wanted = set(apps)
+        access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in wanted}}
+        return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
 
     async def kh_pages_read_grants(self, user_key: str, org_id: str, gated_app_ids: list[str]) -> bool:
-        """Whether each page of a global listing reads the viewer's grants from kg now (:meth:`_kh_kg_gate`); otherwise the listing reads them by node id once, for every page."""
+        """Whether each page of a global listing can read the viewer's grants from kg now (the page's own read, :meth:`_kh_kg_grants`, answers); otherwise the listing reads them by
+        node id once, for every page."""
         org = current_org_id()
         if org_id != org or not user_key or not kg_read.enabled() or current_or_system().kind == "system":
             return False
-        return await self._q(lambda tx: self._kh_kg_gate(tx, org, user_key, gated_app_ids), None, isolation="repeatable_read") is not None
+        try:
+            return await self._q(lambda tx: self._kh_kg_grants(tx, org, "", user_key, gated_app_ids), None, isolation="repeatable_read") is not None
+        except Exception as e:      # kg's read is optional, as on the page (``_kh_grants``): a failed one is the read by id's
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING, op="kh_pages_read_grants", step="kg_grants")
+            return False
 
     async def name_knowledge_hub_parents(self, rows: list[dict[str, Any]], org_id: str, access: dict[str, Any], *, transaction: str | None = None,
                                          user_key: str | None = None) -> None:
