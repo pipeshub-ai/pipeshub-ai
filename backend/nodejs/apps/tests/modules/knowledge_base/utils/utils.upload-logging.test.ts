@@ -236,7 +236,7 @@ describe('knowledge base upload logging', () => {
     const batch = (results: PlaceholderResultWithMetadata[]) =>
       run(async () => {
         const startedAt = Date.now()
-        const { failure, ...counts } = await processUploadsInBackground(results, 'org-1', 'kb-1', startedAt, PY, {}, logger, sinon.stub())
+        const { failure, ...counts } = await processUploadsInBackground(results, 'org-1', 'kb-1', startedAt, PY, {}, logger, sinon.stub(), { secret: 'test-scoped-secret', userId: 'user-1' })
         logUploadBatchEnd(logger, { files: results.length, ...counts }, startedAt, failure)
         return counts
       })

@@ -16,6 +16,7 @@ import {
   AIServiceResponse,
 } from '../constants/constants';
 import { configPaths } from '../paths/paths';
+import { handleBackendError } from '../../../libs/errors/backend-error';
 import {
   AiConfigEventProducer,
   EmbeddingModelConfiguredEvent,
@@ -327,6 +328,10 @@ export function previewIdentityForwarding(
       };
       const response = (await new AIServiceCommand(options).execute()) as
         AIServiceResponse | undefined;
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if ((response?.statusCode ?? 0) >= 400 && response?.data === undefined) {
+        throw handleBackendError(response, 'preview identity forwarding');
+      }
       res
         .status(response?.statusCode ?? 502)
         .json(response?.data ?? { status: 'error' });

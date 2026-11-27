@@ -259,9 +259,13 @@ def retry_later(exc: BaseException) -> bool:
         return False
 
 
+def first_to_raise(failures: list[Exception]) -> Exception:
+    """Of several failures, the one to raise: the first that is not an outage (a bug of ours stays one), else the first."""
+    return next((e for e in failures if not retry_later(e)), failures[0])
+
+
 async def attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]], what: str) -> None:
-    """Runs ``delete`` on every item, the rest too when one fails; then raises the first failure that is not an outage
-    (a bug of ours stays one), else the first."""
+    """Runs ``delete`` on every item, the rest too when one fails; then raises :func:`first_to_raise` of the failures."""
     failures: list[Exception] = []
     for item in items:
         try:
@@ -269,7 +273,7 @@ async def attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]
         except Exception as e:
             failures.append(e)
     if failures:
-        first = next((e for e in failures if not retry_later(e)), failures[0])
+        first = first_to_raise(failures)
         first.add_note(f"{len(failures)} of {len(items)} {what} failed")
         raise first
 

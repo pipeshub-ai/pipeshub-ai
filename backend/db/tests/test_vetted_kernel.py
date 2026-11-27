@@ -7,7 +7,7 @@ import pytest
 import yaml
 from psycopg import errors as pg
 
-from db import surface
+from db import bootstrap_roles, surface
 from db.lib import vetted
 
 from .conftest import run_migrate
@@ -24,12 +24,13 @@ INSERT INTO org_hierarchy.org_links VALUES ('{ORG_A}', '{ORG_P}'), ('{ORG_A}', '
 LINKS_BODY = "RETURN ARRAY(SELECT l.parent_org_id FROM org_hierarchy.org_links l WHERE l.org_id = p_org);"
 
 
-def extension_dir(tmp_path: Path, body: str, sql: str = "") -> dict:
+def extension_dir(tmp_path: Path, body: str, sql: str = "", extra: list | None = None, runs: tuple = ("org_parent_ids",),
+                  after: str = "kernel_0010") -> dict:
     d = tmp_path / "ext"
     (d / "vetted").mkdir(parents=True)
     (d / "vetted" / "manifest.yaml").write_text(yaml.safe_dump({"functions": [
         {"name": "kernel.org_parent_ids", "class": "read", "scope": "helper", "extends": True, "returns": "text[]",
-         "args": [{"name": "p_org", "type": "text", "pattern": "^[0-9a-f]{24}$"}], "body": body}]}))
+         "args": [{"name": "p_org", "type": "text", "pattern": "^[0-9a-f]{24}$"}], "body": body}, *(extra or [])]}))
     for name, generated in vetted.render_all(vetted.load(d / "vetted" / "manifest.yaml")).items():
         (d / "vetted" / name).write_text(generated)
     (d / "0001_parents.sql").write_text(sql or "SELECT 1;")
@@ -39,13 +40,13 @@ def extension_dir(tmp_path: Path, body: str, sql: str = "") -> dict:
         revision = "ext_0001"
         down_revision = None
         branch_labels = ("ext",)
-        depends_on = "kernel_0010"
+        depends_on = "AFTER"
         def upgrade():
             run_sql(__file__)
-            run_vetted(__file__, "org_parent_ids")
+            run_vetted(__file__, *RUNS)
         def downgrade():
             pass
-    '''))
+    ''').replace("RUNS", repr(tuple(runs))).replace("AFTER", after))
     ed = tmp_path / "edition.py"
     ed.write_text(f"EXTRA_MIGRATION_LOCATIONS = {[str(d)]!r}\n")
     return {"PIPESHUB_EDITION_FILE": str(ed)}
@@ -138,6 +139,106 @@ def test_an_extension_that_cannot_reach_the_parent_table_cannot_widen_what_it_re
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
         got = c.execute("SELECT kernel.org_lineage(%s)", (ORG_A,)).fetchone()[0]
     assert got[0] == ORG_A and len(got) == 17 and got[1:] == sorted(got[1:]) and all(len(x) == 24 and "," not in x for x in got)
+
+
+# ---- an extension schema with its own vetted owner (the writers of the parent lookup's data) ---------------------------------
+
+WRITERS_SQL = """
+CREATE SCHEMA org_hierarchy;
+SELECT kernel.declare_extension_schema('org_hierarchy');
+CREATE TABLE org_hierarchy.org_links (org_id text PRIMARY KEY, parent_org_id text NOT NULL);
+SELECT kernel.apply_rls('org_hierarchy.org_links', 'global', p_vetted => true, p_vetted_write => true);
+SELECT kernel.grant_vetted_owner_select('org_hierarchy.org_links');
+CREATE TABLE org_hierarchy.offers (parent_id text NOT NULL, child_id text NOT NULL, PRIMARY KEY (child_id, parent_id));
+SELECT kernel.apply_rls('org_hierarchy.offers', 'global', p_vetted => true, p_vetted_write => true);
+SELECT kernel.grant_job_gate('org_hierarchy');
+GRANT USAGE ON SCHEMA org_hierarchy TO pipeshub_node, pipeshub_jobs;
+"""
+_ORG = {"name": "p", "type": "text", "pattern": "^[0-9a-f]{24}$"}
+WRITERS = [
+    {"name": "org_hierarchy.offer_child", "class": "write", "scope": "org", "writer": "pipeshub_node", "returns": "boolean", "no_org": "false",
+     "args": [{**_ORG, "name": "p_child"}], "reads": ["org_hierarchy.offers"], "test": {"checks": ["privileges", "catalog"]},
+     "body": "INSERT INTO org_hierarchy.offers (parent_id, child_id) SELECT v_org, p_child WHERE p_child <> v_org\n"
+             "  AND NOT EXISTS (SELECT 1 FROM org_hierarchy.offers o WHERE o.parent_id = v_org AND o.child_id = p_child);\nRETURN true;"},
+    {"name": "org_hierarchy.accept_parent", "class": "write", "scope": "org", "writer": "pipeshub_node", "returns": "boolean", "no_org": "false",
+     "args": [{**_ORG, "name": "p_parent"}], "reads": ["org_hierarchy.org_links", "org_hierarchy.offers"], "test": {"checks": ["privileges", "catalog"]},
+     "body": "IF EXISTS (SELECT 1 FROM org_hierarchy.org_links l WHERE l.org_id = v_org) THEN RETURN false; END IF;\n"
+             "INSERT INTO org_hierarchy.org_links (org_id, parent_org_id) SELECT v_org, o.parent_id FROM org_hierarchy.offers o\n"
+             "  WHERE o.child_id = v_org AND o.parent_id = p_parent;\nRETURN FOUND;"},
+    {"name": "org_hierarchy.import_links", "class": "jobs", "scope": "global", "requires_job": ["parents_import"], "returns": "void",
+     "args": [{"name": "p_org_ids", "type": "text[]", "max_items": 100, "item_not_null": True, "item_length": [24, 24]},
+              {"name": "p_parent_ids", "type": "text[]", "max_items": 100, "item_not_null": True, "item_length": [24, 24]}],
+     "reads": ["org_hierarchy.org_links"], "writes": ["org_hierarchy.org_links"], "test": {"checks": ["privileges", "catalog"]},
+     "body": "INSERT INTO org_hierarchy.org_links (org_id, parent_org_id) SELECT k.o, k.p FROM unnest(p_org_ids, p_parent_ids) AS k(o, p)\n"
+             "  WHERE NOT EXISTS (SELECT 1 FROM org_hierarchy.org_links l WHERE l.org_id = k.o);\nRETURN;"},
+]
+
+
+def test_an_extension_schema_gets_its_own_vetted_owner_whose_functions_write_only_it(db, tmp_path, monkeypatch):
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    env = extension_dir(tmp_path, LINKS_BODY, WRITERS_SQL, extra=WRITERS, runs=("org_parent_ids", "offer_child", "accept_parent", "import_links"),
+                        after="kernel_0023")
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", env["PIPESHUB_EDITION_FILE"])
+    with cluster.admin(name) as c:                                 # the one path: the bootstrap creates the owner the manifest needs
+        assert bootstrap_roles.bootstrap(c, []) == ["pipeshub_vetted_org_hierarchy"]
+    r = run_migrate(url, **env, PG_MIGRATE_SURFACE_CHECK="skip")
+    assert r.returncode == 0, r.stdout                             # and the schema is still declared (before: "is not new")
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT rule, object FROM kernel.rls_violations").fetchall() == []
+
+        def call(role, org, sql, *args):
+            with c.transaction(force_rollback=False):
+                c.execute(f"SET LOCAL ROLE {role}")
+                c.execute("SELECT set_config('app.org_id', %s, true)", (org or "",))
+                return c.execute(sql, args).fetchall()
+        lineage = lambda org: call("pipeshub_node", org, "SELECT kernel.org_lineage(%s)", org)[0][0]    # noqa: E731
+        assert call("pipeshub_node", ORG_P, "SELECT org_hierarchy.offer_child(%s)", ORG_A) == [(True,)]
+        assert lineage(ORG_A) == [ORG_A]                            # an offer alone links nothing
+        assert call("pipeshub_node", ORG_B, "SELECT org_hierarchy.accept_parent(%s)", ORG_P) == [(False,)]   # not offered to B
+        assert call("pipeshub_node", ORG_A, "SELECT org_hierarchy.accept_parent(%s)", ORG_P) == [(True,)]
+        assert lineage(ORG_A) == [ORG_A, ORG_P]
+        assert call("pipeshub_node", ORG_A, "SELECT org_hierarchy.accept_parent(%s)", ORG_P) == [(False,)]   # a child keeps its parent
+
+        with pytest.raises(pg.ObjectNotInPrerequisiteState):          # the import runs only while its job runs
+            call("pipeshub_jobs", None, "SELECT org_hierarchy.import_links(%s, %s)", [ORG_B], [ORG_P])
+        c.execute("INSERT INTO platform.jobs (kind, status) VALUES ('parents_import', 'running')")
+        call("pipeshub_jobs", None, "SELECT org_hierarchy.import_links(%s, %s)", [ORG_B], [ORG_P])
+        assert lineage(ORG_B) == [ORG_B, ORG_P]
+
+        for role, sql in (("pipeshub_vetted_kernel", f"INSERT INTO org_hierarchy.org_links VALUES ('{'d' * 24}', '{ORG_P}')"),   # kernel owner: SELECT only
+                          ("pipeshub_vetted_org_hierarchy", "UPDATE kernel.settings SET owner = owner"),                       # its own schema only
+                          ("pipeshub_vetted_org_hierarchy", "SELECT 1 FROM platform.kv_entries LIMIT 1"),
+                          ("pipeshub_node", f"INSERT INTO org_hierarchy.org_links VALUES ('{'d' * 24}', '{ORG_P}')")):
+            with pytest.raises(pg.InsufficientPrivilege), c.transaction(force_rollback=True):
+                c.execute(f"SET LOCAL ROLE {role}")
+                c.execute(sql)
+        with c.transaction(force_rollback=True):                     # a write grant outside its schema is a catalog violation
+            c.execute("GRANT INSERT ON platform.kv_entries TO pipeshub_vetted_org_hierarchy")
+            assert any(rule.startswith("42 ") for rule, _ in c.execute("SELECT rule, object FROM kernel.rls_violations"))
+
+    refused = {                                                       # a schema or owner that did not come by the one path is still refused
+        "an owner that already holds a privilege": "CREATE SCHEMA late_a AUTHORIZATION pipeshub_owner; CREATE ROLE pipeshub_vetted_late_a NOLOGIN; "
+                                                   "GRANT SELECT ON kernel.settings TO pipeshub_vetted_late_a; SET LOCAL ROLE pipeshub_owner; "
+                                                   "SELECT kernel.declare_extension_schema('late_a')",
+        "an owner that is a member of another role": "CREATE SCHEMA late_b AUTHORIZATION pipeshub_owner; CREATE ROLE pipeshub_vetted_late_b NOLOGIN IN ROLE pipeshub_app; "
+                                                     "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_b')",
+        "an owner that can log in": "CREATE SCHEMA late_c AUTHORIZATION pipeshub_owner; CREATE ROLE pipeshub_vetted_late_c LOGIN; "
+                                    "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_c')",
+        "a schema the owner role does not own": "CREATE SCHEMA late_d; SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_d')",
+        "a core schema": "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('identity')",
+        "a schema that holds a type": "CREATE SCHEMA late_e AUTHORIZATION pipeshub_owner; CREATE TYPE late_e.colour AS ENUM ('red'); "
+                                      "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_e')",
+        "a schema that holds a domain": "CREATE SCHEMA late_f AUTHORIZATION pipeshub_owner; CREATE DOMAIN late_f.d AS int; "
+                                        "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_f')",
+        "a schema that holds a collation": "CREATE SCHEMA late_g AUTHORIZATION pipeshub_owner; CREATE COLLATION late_g.c FROM \"C\"; "
+                                           "SET LOCAL ROLE pipeshub_owner; SELECT kernel.declare_extension_schema('late_g')",
+    }
+    for why, sql in refused.items():
+        with cluster.admin(name) as c, c.transaction(force_rollback=True):
+            with pytest.raises(pg.RaiseException, match="is not new|is not available"):
+                c.execute(sql)
+            assert why
 
 
 # ---- built-in function definitions are part of the snapshot ----------------------------------------------------------

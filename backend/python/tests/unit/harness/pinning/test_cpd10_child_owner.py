@@ -64,10 +64,9 @@ def skill_md() -> str:
     return f"---\nname: {SKILL['name']}\ndescription: Use when writing up a meeting.\n---\n\n{SKILL['body']}\n"
 
 
-@pytest.fixture(autouse=True)
-def _skills_on(monkeypatch: pytest.MonkeyPatch, assembly_world: None) -> None:
-    # After the world's own environment, which turns skills off.
-    monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "true")
+@pytest.fixture
+def world_skills() -> bool:
+    return True
 
 
 @dataclass

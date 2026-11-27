@@ -45,12 +45,13 @@ class Config:
 
 
 class NodeStorage:
-    """``POST /internal/upload`` as Node answers an oversize file: multer's LIMIT_FILE_SIZE becomes a BadRequestError,
-    status 400 with free text (``fp.service.ts:146-151,226-229,326-329``, ``storage.routes.ts:61-83``). Never 413."""
+    """``POST /internal/upload`` as Node answers: multer's LIMIT_FILE_SIZE is a 413 (``fp.service.ts``), and a form the
+    route cannot use (``bad_form``) a 400."""
 
     def __init__(self, limit_ref: list[int]) -> None:
         self.limit_ref = limit_ref
         self.stored = 0
+        self.bad_form = False
 
     async def upload(self, request: web.Request) -> web.Response:
         reader = await request.multipart()
@@ -59,8 +60,10 @@ class NodeStorage:
             if part.name == "file":
                 while chunk := await part.read_chunk(1 << 16):
                     size += len(chunk)
+        if self.bad_form:
+            return web.json_response({"error": {"code": "HTTP_BAD_REQUEST", "message": "No files available for processing"}}, status=400)
         if size > self.limit_ref[0]:  # multer: `>`
-            return web.json_response({"error": {"code": "HTTP_BAD_REQUEST", "message": f"This file is larger than the {self.limit_ref[0] // MIB} MB limit. Make it smaller or split it, then upload it again."}}, status=400)
+            return web.json_response({"error": {"code": "HTTP_PAYLOAD_TOO_LARGE", "message": f"This file is larger than the {self.limit_ref[0] // MIB} MB limit. Make it smaller or split it, then upload it again."}}, status=413)
         self.stored += 1
         return web.json_response({"_id": "d" * 24}, headers={"X-Document-Id": "d" * 24})
 
@@ -89,18 +92,27 @@ async def world(tmp_path) -> AsyncIterator[object]:
 
 
 
-async def test_a_400_over_the_limit_is_413_resolved(world) -> None:
+async def test_a_413_carries_the_limit_it_was_refused_under(world) -> None:
     with pytest.raises(StorageUploadError) as e:
         await world.create(31 * MIB)
     assert (e.value.status, e.value.limit_bytes) == (413, 30 * MIB)
 
 
-async def test_a_400_under_the_limit_is_a_500_storage_rejected_not_413_not_503(world) -> None:
-    """A 400 for another reason (the setting was lowered after the file size check, or a bad form) is not an oversize file."""
+async def test_a_413_carries_the_setting_read_now_even_when_the_route_refused_a_smaller_file(world) -> None:
+    """The route's own limit can differ from the setting (lowered since); the push quotes the setting, never a guess."""
     world.node.limit_ref[0] = 1  # the route refuses, while the setting the push reads says 30 MiB
     with pytest.raises(StorageUploadError) as e:
         await world.create(1000)
+    assert (e.value.status, e.value.limit_bytes) == (413, 30 * MIB)
+
+
+async def test_a_400_is_not_an_oversize_file(world) -> None:
+    """A form the route cannot use is a 400 with no limit, so the push answers STORAGE_REJECTED, not a 413 or a retry."""
+    world.node.bad_form = True
+    with pytest.raises(StorageUploadError) as e:
+        await world.create(31 * MIB)
     assert e.value.status == 400 and e.value.limit_bytes is None
+    assert world.config.reads == []  # a 400 does not read the limit
 
 
 async def test_file_of_exactly_the_limit_is_stored(world) -> None:
@@ -110,16 +122,8 @@ async def test_file_of_exactly_the_limit_is_stored(world) -> None:
     assert e.value.status == 413
 
 
-async def test_a_400_for_a_file_of_exactly_the_setting_is_not_413(world) -> None:
-    """Multer's check is `>`: a file of exactly the limit is not oversize, so a 400 for it has another cause."""
-    world.node.limit_ref[0] = 1  # the route refuses
-    with pytest.raises(StorageUploadError) as e:
-        await world.create(30 * MIB)
-    assert e.value.status == 400
-
-
 async def test_setting_is_read_uncached_at_upload_time(world) -> None:
-    """The limit is lowered between two pushes; a cached read would still say 30 MiB and mislabel the 400."""
+    """The limit is lowered between two pushes; a cached read would still say 30 MiB and quote the wrong limit."""
     world.limit[0] = 5 * MIB
     world.config.settings = {"fileUploadMaxSizeBytes": 5 * MIB}
     with pytest.raises(StorageUploadError) as e:

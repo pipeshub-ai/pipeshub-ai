@@ -18,7 +18,8 @@ from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import ids_outside_connection
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
 from app.core.org_context import bound_org_id
 from app.harness.contracts.generated.pipeshub.citation_source import (
@@ -80,6 +81,8 @@ async def check_record_access(
         else None
     )
     decided = list(zip([*asked, *references], statuses, strict=True))
+    if connection_limit(user) is not None:
+        decided = await _within_connection_limit(request, graph_provider, org_id, user_id, decided)
     readable = sorted(
         {s.record_id for s, status in decided if isinstance(s, PipeshubRecordSource) and status == "readable"}
     )
@@ -105,6 +108,21 @@ async def check_record_access(
             else None
         ),
     )
+
+
+async def _within_connection_limit(
+    request: Request, graph_provider: object, org_id: str, user_id: str, decided: list[tuple[Source, str]],
+) -> list[tuple[Source, str]]:
+    """A connected app limited to some connections reads nothing outside them: such a record reads as denied."""
+    readable_ids = [s.record_id for s, status in decided if isinstance(s, PipeshubRecordSource) and status == "readable"]
+    outside = await ids_outside_connection(request, graph_provider, org_id, user_id, readable_ids)
+    # shortcut: a live item is decided by an indexed copy this route never sees, so under a limit it reads as denied;
+    # resolve the copy's id here if limited apps need live citations.
+    return [
+        (s, "denied" if status == "readable" and (
+            isinstance(s, PipeshubLiveSource) or s.record_id in outside) else status)
+        for s, status in decided
+    ]
 
 
 def _distinct(references: list[Source]) -> list[Source]:

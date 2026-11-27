@@ -136,14 +136,39 @@ describe('an apiClient answer that arrives after the session ended', () => {
     expect(seen.resolved).toBe(true);
   });
 
-  it('neither refreshes nor signs out on a stale 401', async () => {
+  it.each([
+    ['401', {}],
+    ['401 saying the session is over', { error: { message: 'Session expired, please login again' } }],
+  ])('neither refreshes nor signs out on a stale %s', async (_label, data) => {
     const pending = deferredServer();
     watch(apiClient.get('/api/v1/users'));
     await flush();
 
     signOut();
     signIn();
-    pending[0].answer({ status: 401 });
+    pending[0].answer({ status: 401, data });
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('does not sign the next person out when a download says "session is over" while its body is read', async () => {
+    const pending = deferredServer();
+    watch(apiClient.get('/api/v1/file', { responseType: 'blob' }));
+    await flush();
+
+    let readBody!: () => void;
+    const json = JSON.stringify({ error: { message: 'Session expired, please login again' } });
+    const body = Object.defineProperty(new Blob([json]), 'text', {
+      value: () => new Promise<string>((resolve) => (readBody = () => resolve(json))),
+    });
+    pending[0].answer({ status: 401, data: body });
+    await flush();
+    signOut();
+    signIn();
+    readBody();
     await flush();
 
     expect(fetchMock).not.toHaveBeenCalled();

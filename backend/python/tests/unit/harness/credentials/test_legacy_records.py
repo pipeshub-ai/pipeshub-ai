@@ -148,3 +148,32 @@ async def test_on_a_remove_revokes_then_raises_when_the_old_record_stays(monkeyp
         await seam.remove("toolset", ORG, "ts-1", "u1", user_id="u1")
     row = writer.find(ORG, "ts-1", "user:u1")
     assert row is not None and row["status"] == "revoked"
+
+
+async def test_revoke_instance_off_never_reaches_the_binder(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONTROL_PLANE_CREDENTIALS, raising=False)
+
+    async def node() -> FakeBindingWriter:
+        raise AssertionError("binder reached")
+
+    await LegacyCredentialRecords(DictConfig({}), node).revoke_instance(ORG, "ts-1")  # type: ignore[arg-type]
+
+
+async def test_revoke_instance_on_revokes_every_owner_of_that_instance_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CONTROL_PLANE_CREDENTIALS, "true")
+    _, writer, seam, _ = world()
+    bound = ((ORG, "ts-1", "u1"), (ORG, "ts-1", "_shared"), (ORG, "ts-2", "u1"), ("org-2", "ts-1", "u1"))
+    for org, instance, owner in bound:
+        assert await seam.save("toolset", org, instance, owner, record(), user_id="u1")
+    assert await seam.save("toolset", ORG, "ts-1", "agent-1", record(agentKey="agent-1"))
+
+    await seam.revoke_instance(ORG, "ts-1", user_id="admin-1")
+
+    status = {(o, i, w): (writer.find(o, i, w) or {}).get("status") for o, i, w in (
+        (ORG, "ts-1", "user:u1"), (ORG, "ts-1", "user:_shared"), (ORG, "ts-1", "agent:agent-1"),
+        (ORG, "ts-2", "user:u1"), ("org-2", "ts-1", "user:u1"),
+    )}
+    assert status == {
+        (ORG, "ts-1", "user:u1"): "revoked", (ORG, "ts-1", "user:_shared"): "revoked", (ORG, "ts-1", "agent:agent-1"): "revoked",
+        (ORG, "ts-2", "user:u1"): "active", ("org-2", "ts-1", "user:u1"): "active",
+    }

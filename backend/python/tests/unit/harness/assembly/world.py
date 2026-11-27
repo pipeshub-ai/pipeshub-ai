@@ -446,8 +446,12 @@ def session_tools(discover: Any) -> Any:  # noqa: ANN401
     return tools
 
 
-def deployment(*, org: str = ORG) -> ExitStack:
-    """Patches the outermost I/O the real loaders reach; ``org`` owns the MCP server instance."""
+def deployment(*, org: str = ORG, skills: bool = False) -> ExitStack:
+    """Patches the outermost I/O the real loaders reach; ``org`` owns the MCP server instance.
+
+    ``skills`` turns the deployment's skills switch on. Pass it here rather than ``monkeypatch.setenv`` inside
+    this scope: monkeypatch outlives the patch below and would put back the value it saw, this world's ``false``,
+    for every later test of the process."""
     from app.agents.tools.factories.registry import ClientFactoryRegistry
 
     async def discover(
@@ -485,7 +489,9 @@ def deployment(*, org: str = ORG) -> ExitStack:
     # MCP_TOOL_APPROVALS off: the fake server's tool declares no hints, so main's MCP rules (#4003) would ask
     # for every call; these worlds test the run, not those rules (test_sync3_tool_rules covers the durable ask).
     stack.enter_context(patch.dict("os.environ", {
-        "PIPESHUB_ENABLE_SKILLS": "false", "PIPESHUB_ENABLE_CODE_EXECUTION": "false", "MCP_TOOL_APPROVALS": "false",
+        "PIPESHUB_ENABLE_SKILLS": "true" if skills else "false",
+        "PIPESHUB_ENABLE_CODE_EXECUTION": "false",
+        "MCP_TOOL_APPROVALS": "false",
     }))
     return stack
 
