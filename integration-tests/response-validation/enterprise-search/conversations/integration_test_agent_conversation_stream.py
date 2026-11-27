@@ -383,10 +383,12 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             {},
             {"query": "missing mode"},
             {"query": "", "chatMode": "quick"},
-            {"query": "unsupported mode", "chatMode": "auto"},
-            {"query": "unsupported mode", "chatMode": "deep"},
-            {"query": "unsupported mode", "chatMode": "planExecute"},
-            {"query": "unsupported mode", "chatMode": "verification"},
+            # Agent routes take every agent mode (quick, auto, react, deep, planExecute,
+            # verification); the assistant's own modes and unknown ones are refused.
+            {"query": "unsupported mode", "chatMode": "agent"},
+            {"query": "unsupported mode", "chatMode": "internal_search"},
+            {"query": "unsupported mode", "chatMode": "web_search"},
+            {"query": "unsupported mode", "chatMode": "not-a-mode"},
         ],
     )
     def test_stream_agent_conversation_invalid_payload_returns_400(
@@ -693,16 +695,9 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                 },
             ),
             ("empty chatMode", {"query": "x", "chatMode": ""}),
-            ("auto chatMode", {"query": "x", "chatMode": "auto"}),
-            ("deep chatMode", {"query": "x", "chatMode": "deep"}),
-            (
-                "planExecute chatMode",
-                {"query": "x", "chatMode": "planExecute"},
-            ),
-            (
-                "verification chatMode",
-                {"query": "x", "chatMode": "verification"},
-            ),
+            # Every agent mode is valid here; the assistant's own modes are not.
+            ("agent chatMode", {"query": "x", "chatMode": "agent"}),
+            ("web_search chatMode", {"query": "x", "chatMode": "web_search"}),
             (
                 "internal_search chatMode",
                 {"query": "x", "chatMode": "internal_search"},
