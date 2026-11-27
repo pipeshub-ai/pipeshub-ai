@@ -12,6 +12,11 @@ import type {
   OutboxStatus,
 } from './types';
 
+/** The org's events: those about the org itself or one of its people (`orderingKeyFor`). */
+const orgEvents = (orgId: string): { orderingKey: { $regex: string } } => ({
+  orderingKey: { $regex: `^(org|user):${escapeRegExp(orgId)}(:|$)` },
+});
+
 export class MongoOutboxRepository implements OutboxRepository {
   async append(event: NewOutboxEvent, tx?: Tx): Promise<void> {
     const session = sessionOf(tx);
@@ -116,6 +121,14 @@ export class MongoOutboxRepository implements OutboxRepository {
       _id: { $in: batch.map((row) => row._id) },
     });
     return deleted.deletedCount;
+  }
+
+  async deleteAllForOrg(orgId: string): Promise<number> {
+    return (await OutboxEvent.deleteMany(orgEvents(orgId))).deletedCount;
+  }
+
+  countForOrg(orgId: string): Promise<number> {
+    return OutboxEvent.countDocuments(orgEvents(orgId)).exec();
   }
 
   async statusCounts(): Promise<Record<OutboxStatus, number>> {

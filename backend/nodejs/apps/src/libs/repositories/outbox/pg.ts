@@ -176,6 +176,26 @@ export class PgOutboxRepository implements OutboxRepository, Importable {
     });
   }
 
+  deleteAllForOrg(orgId: string): Promise<number> {
+    return inJobs(async (k) => {
+      const r = await k.query(
+        `/* pipeshub:platform.outbox_delete_all_for_org */ DELETE FROM platform.outbox WHERE org_id = $1`,
+        [orgId],
+      );
+      return r.rowCount ?? 0;
+    });
+  }
+
+  async countForOrg(orgId: string): Promise<number> {
+    const { rows } = await inJobs((k) =>
+      k.query<{ n: string }>(
+        `/* pipeshub:platform.outbox_count_for_org */ SELECT count(*) AS n FROM platform.outbox WHERE org_id = $1`,
+        [orgId],
+      ),
+    );
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async statusCounts(): Promise<Record<OutboxStatus, number>> {
     const counts: Record<OutboxStatus, number> = {
       pending: 0,

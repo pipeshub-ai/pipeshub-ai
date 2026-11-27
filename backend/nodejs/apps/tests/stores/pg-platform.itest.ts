@@ -74,6 +74,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             statusCounts: () => repo.statusCounts(),
             eraseDeliveredForOrg: (orgId, limit) =>
               repo.eraseDeliveredForOrg(orgId, limit),
+            deleteAllForOrg: (orgId) => repo.deleteAllForOrg(orgId),
+            countForOrg: (orgId) => repo.countForOrg(orgId),
           },
           appendIn: (orgId, e) => inOrg(orgId, () => repo.append(e)),
           uow: {

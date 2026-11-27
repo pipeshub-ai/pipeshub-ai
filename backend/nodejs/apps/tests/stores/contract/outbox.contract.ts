@@ -111,6 +111,29 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     });
   });
 
+  describe('deleteAllForOrg / countForOrg', () => {
+    it("removes and counts every event of the org, delivered or not, never another org's", async () => {
+      const [org, elsewhere] = [fx.newId(), fx.newId()];
+      const append = (orgId: string, key: string, orderingKey: string) =>
+        (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+          orgId,
+          ev({ key, orderingKey, value: JSON.stringify({ eventType: key, payload: { orgId } }) }),
+        );
+      await append(org, 'sent', `org:${org}`);
+      await append(org, 'pending', `user:${org}:${fx.newId()}`);
+      await append(elsewhere, 'theirs', `org:${elsewhere}`);
+      await append(elsewhere, 'their-person', `user:${elsewhere}:${fx.newId()}`);
+      const sent = (await fx.allRows()).find((row) => row.key === 'sent');
+      await fx.setRow(sent!._id, { status: 'published' });
+      expect(await repo.countForOrg(org)).to.equal(2);
+      expect(await repo.deleteAllForOrg(org)).to.equal(2);
+      expect(await repo.countForOrg(org)).to.equal(0);
+      expect(await repo.deleteAllForOrg(org)).to.equal(0);
+      expect(await repo.countForOrg(elsewhere)).to.equal(2);
+      expect((await fx.allRows()).map((row) => row.key).sort()).to.deep.equal(['their-person', 'theirs']);
+    });
+  });
+
   describe('claimNext', () => {
     it('takes the oldest due event first and marks it publishing', async () => {
       const [a, b] = await appendAll([ev({ key: 'a', orderingKey: 'o1' }), ev({ key: 'b', orderingKey: 'o2' })]);
