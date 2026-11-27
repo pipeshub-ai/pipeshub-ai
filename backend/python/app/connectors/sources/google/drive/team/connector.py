@@ -7625,6 +7625,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # A leaver still synced is asked whether they open each file: a share of their own on it (below a limited
         # folder, say) keeps their grant. One no longer synced cannot be asked, and reads nothing here any more.
         leaver = next((u for u in self.synced_users if u.is_active and (u.email or "").lower() == email), None)
+        if leaver is None and getattr(self, "_listing_cut", False) and not self._is_inactive_email(email):
+            # Left out of a cut user listing is not known to be no longer synced: the cleanup waits for a whole one.
+            raise RuntimeError(f"A leaver of shared drive {drive_id} is missing from a cut user listing")
         sources: dict[str, GoogleDriveDataSource] = {}
         # A cleanup that failed partway resumes after the last page it finished (``cursors``, stored with the drive).
         cursors = {} if cursors is None else cursors

@@ -697,3 +697,26 @@ async def test_a_leavers_cleanup_goes_on_past_a_file_whose_check_fails(sim: Sim,
         assert await sim.wrong() == [f"LEAK bob {stuck[0]}"]
     await sim.sync()
     assert await sim.wrong() == []
+
+
+async def test_a_leaver_left_out_of_a_cut_user_listing_keeps_a_file_shared_with_them(
+    sim: Sim, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bob's cleanup is still pending when a cut listing leaves him out: he is not taken for someone no longer synced,
+    whose grants go without asking Google."""
+    foreign(sim, {ALICE: "reader", BOB: "reader"})
+    sim.world.add_item("shared", "shared.txt", parent=FOREIGN)
+    sim.world.share("shared", {"type": "user", "role": "reader", "emailAddress": BOB})
+    await sim.sync()
+    del sim.world.drives[FOREIGN]["members"][BOB]
+    with monkeypatch.context() as m:
+        async def fails(*_a: object, **_k: object) -> bool:
+            raise RuntimeError("Google did not answer")
+        m.setattr(GoogleDriveTeamConnector, "_leaver_still_opens", fails)
+        await sim.sync()
+    sim.world.cut_user_listing = {BOB}
+    await sim.sync()
+    assert await sim.opens(BOB, "shared")
+    sim.world.cut_user_listing = None
+    await sim.sync()
+    assert await sim.wrong() == []
