@@ -361,6 +361,8 @@ class GraphTransactionStore(TransactionStore):
         self.explicit = explicit  # the block runs in one real transaction
         # each person this store upserted, by the id it got: without a transaction, what a grant to one the reaper removed is written to again
         self._people_written: dict[str, Person] = {}
+        # (holder collection, holder, app) pairs whose memberships this transaction has locked or keeps by a committed grant (replace_* lock_done)
+        self._lock_done: set[tuple[str, str, str]] = set()
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -705,18 +707,22 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[[list[dict]], Awaitable[_T]]) -> _T:
+    async def _write_grant(self, edges: list[dict], collection: str, write: Callable[..., Awaitable[_T]], *, replace: bool = False) -> _T:
         """Writes ``edges`` with ``write``. Before a grant, the flagged app memberships it would keep (its users' and people's own, or the members' of a
         group, role or team it comes from) are locked as the external-collaborator reaper locks them before it decides, so a reaper either waits for
-        this grant to commit and sees it, or decided before the grant existed."""
+        this grant to commit and sees it, or decided before the grant existed. In a transaction the statement that writes the grants takes the lock
+        (``lock_grants``), so a grant costs no statement of its own; a replace also skips and records the (holder, app) pairs the transaction has
+        locked or kept (``lock_done``)."""
         grants = _counted_grants(edges) if collection == CollectionNames.PERMISSION.value else []
-        held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn) if grants else []
-        if self.explicit or not grants:
+        if not grants:
             return await write(edges)
+        if self.explicit:
+            return await write(edges, lock_grants=grants, **({"lock_done": self._lock_done} if replace else {}))
+        held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
 
     async def _write_grant_alone(self, edges: list[dict], grants: list[tuple[str, str, str, str]], held: list[tuple[str, str, str]],
-                                 write: Callable[[list[dict]], Awaitable[_T]]) -> _T:
+                                 write: Callable[..., Awaitable[_T]]) -> _T:
         """Without a transaction each statement commits alone, so the lock orders nothing: the reaper may remove, between the lock and the grant, a
         person (the grant's edge then finds no node) or a membership the grant keeps. Both are looked for after the write and made again.
         shortcut: auto-commit gives no isolation, so a reaper that runs again in between wins again; explicit transactions (the default) do not need this."""
@@ -751,14 +757,15 @@ class GraphTransactionStore(TransactionStore):
         return key
 
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
-        await self._write_grant(edges, collection, lambda es: self.graph_provider.replace_edges_to(to_id, to_collection, es, collection, transaction=self.txn))
+        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.replace_edges_to(
+            to_id, to_collection, es, collection, transaction=self.txn, **lock), replace=True)
 
     async def replace_record_permissions(
         self, record_id: str, edges: list[dict], record_group_id: str | None, *, inherit: bool
     ) -> None:
-        await self._write_grant(edges, CollectionNames.PERMISSION.value, lambda es: self.graph_provider.replace_record_permissions(
-            record_id, es, record_group_id, inherit=inherit, transaction=self.txn
-        ))
+        await self._write_grant(edges, CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.replace_record_permissions(
+            record_id, es, record_group_id, inherit=inherit, transaction=self.txn, **lock
+        ), replace=True)
 
     async def link_record_to_group(
         self,
@@ -1077,8 +1084,8 @@ class GraphTransactionStore(TransactionStore):
                 to_collection=CollectionNames.GROUPS.value,
             )
 
-            await self._write_grant([perm_edge], CollectionNames.PERMISSION.value, lambda es: self.graph_provider.batch_create_edges(
-                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn
+            await self._write_grant([perm_edge], CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn, **lock
             ))
 
             self.logger.debug(f"Created user group membership: {user.email} -> {group.name}")
@@ -1530,15 +1537,15 @@ class GraphTransactionStore(TransactionStore):
                 )
 
         if permission_edges:
-            await self._write_grant(permission_edges, CollectionNames.PERMISSION.value, lambda es: self.graph_provider.batch_create_edges(
-                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn
+            await self._write_grant(permission_edges, CollectionNames.PERMISSION.value, lambda es, **lock: self.graph_provider.batch_create_edges(
+                es, collection=CollectionNames.PERMISSION.value, transaction=self.txn, **lock
             ))
 
     async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
-        return bool(await self._write_grant(edges, collection, lambda es: self.graph_provider.batch_create_edges(es, collection=collection, transaction=self.txn)))
+        return bool(await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.batch_create_edges(es, collection=collection, transaction=self.txn, **lock)))
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
-        await self._write_grant(edges, collection, lambda es: self.graph_provider.create_edges_if_absent(es, collection, transaction=self.txn))
+        await self._write_grant(edges, collection, lambda es, **lock: self.graph_provider.create_edges_if_absent(es, collection, transaction=self.txn, **lock))
 
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)

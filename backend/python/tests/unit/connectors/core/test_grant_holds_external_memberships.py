@@ -1,6 +1,6 @@
 """A grant is written only after the flagged app memberships it keeps (its user's or person's own, or the members' of the group, role or team
 it comes from) are locked in the same transaction (the lock the external-collaborator reaper takes), so a reaper cannot remove a membership on
-the strength of a grant it could not see yet."""
+the strength of a grant it could not see yet. In a transaction the statement that writes the grant takes the lock (``lock_grants``)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,25 +39,25 @@ HELD = [("groups", "g1", "records", "r1"), ("person", "p1", "records", "r1"), ("
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("write", [
-    lambda s: s.batch_create_edges(EDGES, "permission"),
-    lambda s: s.replace_edges_to("r1", "records", EDGES, "permission"),
-    lambda s: s.replace_record_permissions("r1", EDGES, None, inherit=False),
-    lambda s: s.create_edges_if_absent(EDGES, "permission"),
+@pytest.mark.parametrize(("write", "method"), [
+    (lambda s: s.batch_create_edges(EDGES, "permission"), "batch_create_edges"),
+    (lambda s: s.replace_edges_to("r1", "records", EDGES, "permission"), "replace_edges_to"),
+    (lambda s: s.replace_record_permissions("r1", EDGES, None, inherit=False), "replace_record_permissions"),
+    (lambda s: s.create_edges_if_absent(EDGES, "permission"), "create_edges_if_absent"),
 ])
-async def test_a_grant_locks_the_memberships_it_keeps_before_it_is_written(write) -> None:
+async def test_in_a_transaction_the_statement_that_writes_a_grant_locks_the_memberships_it_keeps(write, method) -> None:
     store, provider, calls = _store()
     await write(store)
-    provider.lock_external_app_memberships.assert_awaited_once_with(HELD, transaction="txn-1")
-    assert calls == ["lock", "write"]
+    assert getattr(provider, method).await_args.kwargs["lock_grants"] == HELD
+    assert calls == ["write"]      # no statement of its own
 
 
 @pytest.mark.asyncio
 async def test_a_group_membership_locks_its_member_s_memberships() -> None:
     store, provider, calls = _store()
     assert await store.create_user_group_membership("src-u1", "ext-g1", "app1")
-    provider.lock_external_app_memberships.assert_awaited_once_with([("users", "u1", "groups", "g1")], transaction="txn-1")
-    assert calls == ["lock", "write"]
+    assert provider.batch_create_edges.await_args.kwargs["lock_grants"] == [("users", "u1", "groups", "g1")]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -67,8 +67,8 @@ async def test_a_record_group_grant_locks_its_users_memberships() -> None:
     store.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
     await store.batch_upsert_record_group_permissions(
         "rg1", [Permission(email="u1@example.com", type=PermissionType.READ, entity_type=EntityType.USER)], "app1", "org1")
-    provider.lock_external_app_memberships.assert_awaited_once_with([("users", "u1", "recordGroups", "rg1")], transaction="txn-1")
-    assert calls == ["lock", "write"]
+    assert provider.batch_create_edges.await_args.kwargs["lock_grants"] == [("users", "u1", "recordGroups", "rg1")]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -82,6 +82,7 @@ async def test_no_lock_when_the_write_holds_no_grant_the_reaper_counts(edges, co
     store, provider, _ = _store()
     await store.batch_create_edges(edges, collection)
     provider.lock_external_app_memberships.assert_not_awaited()
+    assert all("lock_grants" not in c.kwargs for c in provider.batch_create_edges.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -121,7 +122,7 @@ async def test_in_a_transaction_the_person_is_not_read_again() -> None:
     provider.get_document = AsyncMock()
     await store.batch_create_edges([_grant("person", "p1")], "permission")
     provider.get_document.assert_not_awaited()
-    assert calls == ["lock", "write"]
+    assert calls == ["write"]
 
 
 @pytest.mark.asyncio
@@ -207,5 +208,6 @@ async def test_in_a_transaction_the_lock_is_taken_once_and_nothing_is_made_again
     store, provider, _ = _store(held=[("users", "u1", "app1")])
     store.ensure_app_membership = AsyncMock()
     await store.batch_create_edges([_grant("users", "u1"), _grant("groups", "g1")], "permission")
-    provider.lock_external_app_memberships.assert_awaited_once()
+    provider.lock_external_app_memberships.assert_not_awaited()      # the write's statement took it
+    provider.batch_create_edges.assert_awaited_once()
     store.ensure_app_membership.assert_not_awaited()

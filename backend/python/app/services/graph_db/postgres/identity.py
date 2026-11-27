@@ -635,17 +635,20 @@ class IdentityMixin(PgBase):
             return []
         org = current_org_id()
         cols = list(zip(*grants, strict=True))
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.lock_external_app_memberships */ WITH g AS (
-                SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),
-              a AS (SELECT g.hc, g.hi, t.doc->>'connectorId' AS app FROM g JOIN graph.nodes t ON t.org_id = $1 AND t.coll = g.tc AND t.id = g.ti
-                    WHERE g.tc IN ('records', 'recordGroups')),
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.lock_external_app_memberships */ WITH g AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),
+              -- a user's or person's grant counts only while its holder has a flagged membership (one probe of edges_external_by_holder): only then is its target read
+              hg AS (SELECT g.* FROM g WHERE g.hc IN ('users', 'person') AND EXISTS (SELECT 1 FROM graph.edges f WHERE f.org_id = $1 AND f.coll = 'userAppRelation'
+                       AND f.from_coll = g.hc AND f.from_id = g.hi AND f.doc->>'isExternalUser' = 'true')
+                     UNION ALL SELECT g.* FROM g WHERE g.hc IN ('groups', 'roles', 'teams')),
+              a AS (SELECT hg.hc, hg.hi, t.doc->>'connectorId' AS app FROM hg JOIN graph.nodes t ON t.org_id = $1 AND t.coll = hg.tc AND t.id = hg.ti
+                    WHERE hg.tc IN ('records', 'recordGroups')),
               k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person')
-                UNION SELECT m.from_coll, m.from_id, a.app FROM a
+                -- a group's, role's or team's: the app's flagged memberships (edges_external_by_app), each probed for its membership of the holder
+                UNION SELECT f.from_coll, f.from_id, a.app FROM a
                   JOIN graph.edges f ON f.org_id = $1 AND f.coll = 'userAppRelation' AND f.to_id = a.app AND f.to_coll = 'apps' AND f.doc->>'isExternalUser' = 'true'
-                  JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = f.from_coll AND m.from_id = f.from_id
-                    AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER'
-                  WHERE a.hc IN ('groups', 'roles', 'teams')
-                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams'))
+                  WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
+                    AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
+                UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams'))
             SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
             WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
             ORDER BY 1, 2, 3 FOR UPDATE OF u""", org, *(list(c) for c in cols)), transaction, write=True)

@@ -13,7 +13,7 @@ from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.utils.db_query_log import CALLER_FRAME, caller_origin
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from logging import Logger
 
     from app.core.db import KernelDB, Tx
@@ -66,6 +66,11 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
         raise ValueError(f"edge without both ends: {e}")
     props = {k: v for k, v in e.items() if k not in ("_from", "_to", "from_id", "to_id", "from_collection", "to_collection")}
     return fc, fi, tc, ti, props
+
+
+def _grant_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
+    """Grants (holder collection, holder, target collection, target) as the four arrays the lock of the memberships they keep binds."""
+    return [[g[i] for g in grants] for i in range(4)]
 
 
 def _ekey(coll: str, props: dict) -> str:

@@ -98,6 +98,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     # entities.py
     "create_named_entities_if_absent": (NO_PROJECTION, _ENTITY),
     "add_named_entity_aliases": (NO_PROJECTION, _ENTITY),
+    "replace_edges_to": (PROJECTED, ""),
     "replace_named_entity_values": (NO_PROJECTION, _ENTITY),
     "copy_named_entity_mentions": (NO_PROJECTION, _ENTITY),
     "delete_dangling_named_entity_mentions": (NO_PROJECTION, _ENTITY),

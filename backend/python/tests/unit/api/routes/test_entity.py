@@ -641,7 +641,7 @@ class TestCreateTeam:
         a retry must finish that team, not add one."""
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(conflicts_on=3, honours_explicit=honours_explicit)  # the node, the lock of the owner's memberships, the edge
+        graph = _TeamGraph(conflicts_on=_EDGE_STATEMENT[honours_explicit], honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         resp = await create_team(req)
@@ -658,7 +658,7 @@ class TestCreateTeam:
         self, honours_explicit: bool,
     ) -> None:
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(fails_on=3, honours_explicit=honours_explicit)  # the node, the lock of the owner's memberships, the edge
+        graph = _TeamGraph(fails_on=_EDGE_STATEMENT[honours_explicit], honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         with pytest.raises(HTTPException) as exc:
@@ -673,6 +673,11 @@ class TestCreateTeam:
 
 class _Conflict(RuntimeError):
     pass
+
+
+# The edge's statement: the node's, then (outside a transaction) the lock of the owner's memberships, then the edge's; in a transaction the edge's
+# statement takes the lock itself.
+_EDGE_STATEMENT = {True: 2, False: 3}
 
 
 class _TeamGraph:
@@ -736,7 +741,7 @@ class _TeamGraph:
             self.teams.setdefault(node["_key"], {}).update(node)
         return True
 
-    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+    async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None, *, lock_grants: list = ()) -> bool:
         self._statement()
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True

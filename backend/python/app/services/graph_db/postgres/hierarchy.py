@@ -28,6 +28,7 @@ from app.services.graph_db.postgres.base import (
     _edge,
     _edge_scope,
     _ekey,
+    _grant_columns,
     _j,
 )
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
@@ -38,6 +39,8 @@ from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.core.db import Tx
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
@@ -131,7 +134,8 @@ class HierarchyMixin(PgBase):
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction)
 
     async def create_edges_if_absent(
-        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False
+        self, edges: list[dict], collection: str, transaction: str | None = None, *, count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
     ) -> None:
         """Create the edges that are not there (both ends must exist); an existing edge keeps its properties."""
         if count_created:  # this store does not report which edges a write created; the store's before/after comparison covers it
@@ -145,12 +149,33 @@ class HierarchyMixin(PgBase):
             _VALIDATOR.validate_edge(collection, props)
             key = _ekey(collection, props)
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
-        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+        # as batch_create_edges: the memberships lock_grants keep are locked before the first row is written
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ WITH g AS (SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) AS g(hc, hi, tc, ti)),
+                  -- a user's or person's grant counts only while its holder has a flagged membership (one probe of edges_external_by_holder): only then is its target read
+                  hg AS (SELECT g.* FROM g WHERE g.hc IN ('users', 'person') AND EXISTS (SELECT 1 FROM graph.edges f WHERE f.org_id = $1 AND f.coll = 'userAppRelation'
+                           AND f.from_coll = g.hc AND f.from_id = g.hi AND f.doc->>'isExternalUser' = 'true')
+                         UNION ALL SELECT g.* FROM g WHERE g.hc IN ('groups', 'roles', 'teams')),
+                  a AS (SELECT hg.hc, hg.hi, t.doc->>'connectorId' AS app FROM hg JOIN graph.nodes t ON t.org_id = $1 AND t.coll = hg.tc AND t.id = hg.ti
+                        WHERE hg.tc IN ('records', 'recordGroups')),
+                  k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person')
+                    -- a group's, role's or team's: the app's flagged memberships (edges_external_by_app), each probed for its membership of the holder
+                    UNION SELECT f.from_coll, f.from_id, a.app FROM a
+                      JOIN graph.edges f ON f.org_id = $1 AND f.coll = 'userAppRelation' AND f.to_id = a.app AND f.to_coll = 'apps' AND f.doc->>'isExternalUser' = 'true'
+                      WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
+                        AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
+                    UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
+                  held AS (SELECT 1 FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+                    WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
+                      AND cardinality($5::text[]) > 0      -- no grant to lock: nothing is read
+                    ORDER BY u.from_coll, u.from_id, u.to_id FOR UPDATE OF u)
+            INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
             FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-            WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
+            WHERE (SELECT count(*) FROM held) >= 0      -- held is locked once, before the first row is written
+              AND EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
               AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
-            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, collection, _j(list(rows.values()))), transaction, write=True)
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, collection, _j(list(rows.values())),
+                                            *_grant_columns(lock_grants)), transaction, write=True)
 
     async def copy_document_relationships(self, source_key: str, target_key: str, transaction: str | None = None) -> bool:
         """Copy a record's taxonomy edges (departments, categories, languages, topics) to another record; an edge the target has stays."""

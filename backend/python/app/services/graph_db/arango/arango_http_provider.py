@@ -1658,6 +1658,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         for fields in _STAGE_STATE_INDEXES:
             await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
+        # The flagged (external-collaborator) app memberships of a holder and of an app: a grant's lock reads those, never every membership.
+        for fields in (["_from", "isExternalUser"], ["_to", "isExternalUser"]):
+            await self.http_client.ensure_persistent_index(CollectionNames.USER_APP_RELATION.value, fields)
         await self.http_client.ensure_persistent_index(
             CollectionNames.STAGE_STATES.value, _STAGE_STATE_PAGE_FIELDS, name=_STAGE_STATE_PAGE_INDEX
         )
@@ -4544,6 +4547,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
     ) -> bool | int:
         """
         Batch create edges - FULLY ASYNC.
@@ -4571,7 +4575,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             arango_edges = self._translate_edges_to_arango(edges)
 
             if collection != CollectionNames.NODE_RELATIONS.value:
-                batch_query = f"""
+                held, held_vars = self._held_aql(lock_grants)      # the grants' memberships are touched before the edges are written
+                batch_query = f"""{held}
                 FOR edge IN @edges
                     UPSERT {{ _from: edge._from, _to: edge._to }}
                     INSERT edge
@@ -4580,7 +4585,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     {"RETURN OLD == null ? [NEW._from, NEW._to] : null" if report else "RETURN NEW"}
                 """
                 results = await self.http_client.execute_aql(
-                    batch_query, {"edges": arango_edges, "@collection": collection}, txn_id=transaction,
+                    batch_query, {"edges": arango_edges, "@collection": collection, **held_vars}, txn_id=transaction,
                 )
                 made = _created_ends(results, collection) if report else results or []
                 self.logger.debug(f"✅ Successfully created {len(made)} edges in collection '{collection}'.")
@@ -4635,6 +4640,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
     ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its document.
 
@@ -4648,8 +4654,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return 0 if count_created else None
 
             arango_edges = self._translate_edges_to_arango(edges)
+            held, held_vars = self._held_aql(lock_grants)
 
-            query = f"""
+            query = f"""{held}
             FOR edge IN @edges
                 UPSERT {{ _from: edge._from, _to: edge._to }}
                 INSERT edge
@@ -4659,7 +4666,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
             done = await self.http_client.execute_aql(
                 query,
-                {"edges": arango_edges, "@collection": collection},
+                {"edges": arango_edges, "@collection": collection, **held_vars},
                 txn_id=transaction
             )
             made = _created_ends(done, collection) if report else []
@@ -5086,6 +5093,47 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return deleted
         except Exception:
             raise
+
+    async def replace_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+        *,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_done: set[tuple[str, str, str]] | None = None,
+    ) -> None:
+        """The interface's delete then create, locking only the grants it creates: a holder whose edge into the node was there is removed and
+        written again in this transaction, and a reaper's snapshot still holds the committed edge. ``lock_done`` as on PostgreSQL."""
+        if not lock_grants:
+            await super().replace_edges_to(to_id, to_collection, edges, collection, transaction)
+            return
+        to_node = f"{to_collection}/{to_id}"
+        kept: set[tuple[str, str]] = set()
+        app = None
+        for coll in self._logical_edge_collections(collection):
+            rows = await self.http_client.execute_aql(
+                f"""
+                LET app = DOCUMENT(@to_node).connectorId
+                LET gone = (FOR edge IN {coll} FILTER edge._to == @to_node REMOVE edge IN {coll} RETURN OLD._from)
+                RETURN {{ app, gone }}
+                """,
+                {"to_node": to_node},
+                txn_id=transaction,
+            )
+            for row in rows or []:
+                app = row.get("app") or app
+                kept.update(tuple(f.split("/", 1)) for f in row.get("gone") or [])
+        if to_collection not in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
+            app = None      # a grant on a group keeps the holder's memberships of every app: no pair stands for it
+        done = lock_done if lock_done is not None and app else set()
+        created = [g for g in lock_grants if (g[0], g[1]) not in kept and (g[0], g[1], app) not in done]
+        if edges:
+            await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
+        if lock_done is not None and app:
+            lock_done.update((g[0], g[1], app) for g in lock_grants)
 
     async def delete_all_edges_for_node(
         self,
@@ -9612,6 +9660,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception:
             raise
 
+    @staticmethod
+    def _held_aql(grants: Sequence[tuple[str, str, str, str]]) -> tuple[str, dict]:
+        """``LET held``: the touch of the flagged memberships *grants* keep, as ``lock_external_app_memberships`` describes, for the head of the
+        query that writes them (each held one as {principal, app}); ("", {}) when there is no grant."""
+        if not grants:
+            return "", {}
+        uar = CollectionNames.USER_APP_RELATION.value
+        return f"""
+            LET held = (FOR k IN UNIQUE(FLATTEN(
+                FOR g IN @held_grants
+                    LET on_records = g.tc IN @held_record_colls
+                    LET t = on_records ? DOCUMENT(CONCAT(g.tc, "/", g.ti)) : null
+                    LET app = t != null ? CONCAT("{CollectionNames.APPS.value}/", t.connectorId) : null
+                    LET holder = CONCAT(g.hc, "/", g.hi)
+                    RETURN g.hc IN @held_people_colls
+                        ? (FOR u IN {uar} FILTER u._from == holder AND u.isExternalUser == true AND (on_records ? u._to == app : true) RETURN u._key)
+                        : (on_records AND app != null
+                            ? (FOR u IN {uar} FILTER u._to == app AND u.isExternalUser == true
+                                FILTER LENGTH(FOR m IN {CollectionNames.PERMISSION.value}
+                                    FILTER m._from == u._from AND m._to == holder AND m.type == "USER" LIMIT 1 RETURN 1) > 0
+                                RETURN u._key)
+                            : [])
+            ))
+                UPDATE k WITH {{ updatedAtTimestamp: @held_now }} IN {uar}
+                RETURN {{ principal: NEW._from, app: NEW._to }})""", {
+            "held_grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
+            "held_record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
+            "held_people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
+            "held_now": get_epoch_timestamp_in_ms()}
+
     async def lock_external_app_memberships(
         self,
         grants: list[tuple[str, str, str, str]],
@@ -9626,34 +9704,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ``(principal collection, principal, app)``; a principal with none writes nothing."""
         if not grants:
             return []
-        uar = CollectionNames.USER_APP_RELATION.value
-        rows = await self.http_client.execute_aql(
-            f"""
-            LET keys = UNIQUE(FLATTEN(
-                FOR g IN @grants
-                    LET on_records = g.tc IN @record_colls
-                    LET t = on_records ? DOCUMENT(CONCAT(g.tc, "/", g.ti)) : null
-                    LET app = t != null ? CONCAT("{CollectionNames.APPS.value}/", t.connectorId) : null
-                    LET holder = CONCAT(g.hc, "/", g.hi)
-                    RETURN g.hc IN @people_colls
-                        ? (FOR u IN {uar} FILTER u._from == holder AND u.isExternalUser == true AND (on_records ? u._to == app : true) RETURN u._key)
-                        : (on_records AND app != null
-                            ? (FOR u IN {uar} FILTER u._to == app AND u.isExternalUser == true
-                                FILTER LENGTH(FOR m IN {CollectionNames.PERMISSION.value}
-                                    FILTER m._from == u._from AND m._to == holder AND m.type == "USER" LIMIT 1 RETURN 1) > 0
-                                RETURN u._key)
-                            : [])
-            ))
-            FOR k IN keys
-                UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar}
-                RETURN {{ principal: NEW._from, app: NEW._to }}
-            """,
-            bind_vars={"grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
-                       "record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
-                       "people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
-                       "now": get_epoch_timestamp_in_ms()},
-            txn_id=transaction,
-        )
+        held, held_vars = self._held_aql(grants)
+        rows = await self.http_client.execute_aql(f"{held}\n            FOR h IN held RETURN h", bind_vars=held_vars, txn_id=transaction)
         return sorted({(*r["principal"].split("/", 1), r["app"].split("/", 1)[1]) for r in rows or []})
 
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:

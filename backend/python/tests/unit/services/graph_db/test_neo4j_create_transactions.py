@@ -309,7 +309,7 @@ async def _repair_default_kb(provider: Neo4jProvider) -> None:
 _PATHS: dict[str, tuple[Callable[[Neo4jProvider], Awaitable[None]], int]] = {
     # name: (create, statements it sends when nothing fails)
     "agent": (_create_agent, 9),
-    "team": (_create_team, 3),  # the members' external app memberships are locked before their grants (lock_external_app_memberships)
+    "team": (_create_team, 2),  # the grant's statement locks the members' external app memberships itself
     "knowledge_base": (_create_kb, 4),
     "default_knowledge_base": (_create_default_kb, 4),
     "default_knowledge_base_repair": (_repair_default_kb, 3),
@@ -320,7 +320,7 @@ _PATHS: dict[str, tuple[Callable[[Neo4jProvider], Awaitable[None]], int]] = {
 # batch_upsert_nodes does), and the statement it would have been.
 _REPORTED_FAILURES: dict[str, tuple[str, str, int]] = {
     "agent": ("batch_create_edges", "agentHasKnowledge", 9),
-    "team": ("batch_create_edges", "permission", 3),
+    "team": ("batch_create_edges", "permission", 2),
     "knowledge_base": ("batch_create_edges", "userAppRelation", 4),
     "default_knowledge_base": ("batch_upsert_nodes", "apps", 1),
 }

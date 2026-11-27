@@ -81,7 +81,7 @@ class _Tx:
 
     async def run(self, query, parameters=None) -> _Result:
         self.server.statements += 1
-        fails = "REMOVE r.matchLock" not in query      # the bulk write fails, not the lock of its holders' memberships before it
+        fails = not query.lstrip().startswith("UNWIND $rows AS row")      # the bulk write fails, not a lock of its memberships sent apart
         if self.server.fail_at == "run" and fails:
             self.server.attempts += 1
             raise self.server.error

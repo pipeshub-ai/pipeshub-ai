@@ -835,7 +835,7 @@ class TestRecordLinkDefaults:
         await instance.replace_record_permissions("r1", edges, "g1", inherit=False, transaction="tx")
 
         instance.delete_edges_to.assert_awaited_once_with("r1", "records", "permission", "tx")
-        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx")
+        instance.batch_create_edges.assert_awaited_once_with(edges, "permission", "tx", lock_grants=())
         # Every record group, not only g1: the edge to a group that can no longer be
         # looked up must go too.
         instance.delete_edges_between_collections.assert_awaited_once_with(

@@ -1223,10 +1223,15 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
     ) -> bool | int:
         """
         Batch create edges/relationships between nodes. With ``count_created`` it returns how many edges the call created
         (a found edge that was only rewritten is not one) instead of True; ``edge_effects.note_created`` gets their end ids either way.
+
+        The statement that writes the edges first locks the flagged memberships ``lock_grants`` keep, as
+        :meth:`lock_external_app_memberships` does, so a grant costs no statement of its own (the same in ``create_edges_if_absent``,
+        ``replace_edges_to`` and ``replace_record_permissions``, where a provider may leave out a grant its write keeps unchanged).
 
         Args:
             edges (List[Dict]): List of edges in generic format:
@@ -1253,8 +1258,10 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         count_created: bool = False,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
     ) -> int | None:
         """Create the edges that are not there and leave the ones that are untouched. With ``count_created`` it returns how many it created.
+        ``lock_grants`` as in :meth:`batch_create_edges`.
 
         The create-only counterpart of :meth:`batch_create_edges`, which replaces an
         existing edge's properties. For a repair or a re-run that must not reset what
@@ -1454,8 +1461,15 @@ class IGraphDBProvider(ABC):
         edges: list[dict],
         collection: str,
         transaction: str | None = None,
+        *,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_done: set[tuple[str, str, str]] | None = None,
     ) -> None:
-        """Delete every *collection* edge into the node, then create *edges*.
+        """Delete every *collection* edge into the node, then create *edges* (locking as :meth:`batch_create_edges`).
+
+        A provider may lock only the grants it creates: a holder's edge that was there is a committed grant the reaper reads. ``lock_done``
+        holds the transaction's (holder collection, holder, app) pairs already locked or kept on a record or record group; a provider may skip
+        those and adds the ones it locks or keeps (this default locks every grant and keeps no pair).
 
         Concrete by design: a provider with real transactions keeps the two calls.
         Neo4j overrides it with one statement, since with NEO4J_EXPLICIT_TRANSACTIONS
@@ -1463,7 +1477,7 @@ class IGraphDBProvider(ABC):
         """
         await self.delete_edges_to(to_id, to_collection, collection, transaction)
         if edges:
-            await self.batch_create_edges(edges, collection, transaction)
+            await self.batch_create_edges(edges, collection, transaction, lock_grants=lock_grants)
 
     async def replace_record_permissions(
         self,
@@ -1473,8 +1487,10 @@ class IGraphDBProvider(ABC):
         *,
         inherit: bool,
         transaction: str | None = None,
+        lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        lock_done: set[tuple[str, str, str]] | None = None,
     ) -> None:
-        """Replace the PERMISSION edges into the record and set whether it inherits from its group.
+        """Replace the PERMISSION edges into the record and set whether it inherits from its group (locking as :meth:`replace_edges_to`).
 
         *inherit* true writes the INHERIT_PERMISSIONS edge to *record_group_id*, when
         there is one. False removes the record's inherit edge to every record group,
@@ -1484,7 +1500,8 @@ class IGraphDBProvider(ABC):
         new permissions beside an inherit edge that should have gone.
         """
         await self.replace_edges_to(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants,
+            lock_done=lock_done,
         )
         if not inherit:
             await self._stop_inheriting_from_record_groups(record_id, transaction)

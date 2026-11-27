@@ -478,7 +478,8 @@ async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World)
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct"}
 
 
-async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_from_a_reaper_that_overlaps_it(world: _World) -> None:
+@pytest.mark.parametrize("how", ["batch", "replace"])
+async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_from_a_reaper_that_overlaps_it(world: _World, how: str) -> None:
     """ext-fresh is a flagged collaborator of the App and a member of the group fresh, which grants nothing yet: the reaper would drop it. The
     store writes fresh's grant on a record in a transaction still open while the reaper runs, after locking the flagged memberships of fresh's
     members on the record's App: the reaper waits for it (Neo4j) or conflicts and runs again (ArangoDB), and ext-fresh keeps the App."""
@@ -493,14 +494,90 @@ async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_f
                                         "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
     assert await g.batch_create_edges([{"from_id": w.sid("ext-fresh"), "from_collection": "users", "to_id": w.sid("fresh"), "to_collection": coll,
                                         "type": "USER", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
-    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation"])
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    fresh = {"from_id": w.sid("fresh"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
+             "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}
     try:
-        assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges(
-            [{"from_id": w.sid("fresh"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
-              "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}], "permission")
+        store = GraphTransactionStore(g, tid, explicit=True)
+        if how == "batch":
+            assert await store.batch_create_edges([fresh], "permission")
+        else:      # the record's grants as they are (kept: nothing to lock) and fresh's (created: locked)
+            await store.replace_record_permissions(w.sid("r-own-live"), [*_r_own_live_grants(w), fresh], None, inherit=False)
     except BaseException:
         with contextlib.suppress(Exception):
             await g.rollback_transaction(tid)
         raise
     await _reap_while(w, tid)
     assert "ext-fresh" in await _edges_to_app(w)
+
+
+def _r_own_live_grants(w: _World) -> list[dict]:
+    """The grants on r-own-live as the world holds them: own-live's (a group, role or team) and ext-direct's own."""
+    return [{"from_id": w.sid("own-live"), "from_collection": NODE_TARGETS[w.kind], "to_id": w.sid("r-own-live"), "to_collection": "records",
+             "type": GRANT_TYPE[w.kind], "role": "WRITER", "createdAtTimestamp": TS},
+            {"from_id": w.sid("ext-direct"), "from_collection": "users", "to_id": w.sid("r-own-live"), "to_collection": "records",
+             "type": "USER", "role": "READER", "createdAtTimestamp": TS}]
+
+
+async def test_a_resync_that_keeps_the_grants_locks_nothing(world: _World) -> None:
+    """r-own-live's grants written again as they are: each is committed and the reaper reads it, so the replace locks none of the memberships
+    they keep. It finishes without waiting (Neo4j) or conflicting (ArangoDB) while another transaction holds ext-own-live's and ext-direct's."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+    hold = await g.begin_transaction(["users", "records", "apps", coll], ["userAppRelation"])
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    try:
+        held = await g.lock_external_app_memberships([(coll, w.sid("own-live"), "records", w.sid("r-own-live")),
+                                                      ("users", w.sid("ext-direct"), "records", w.sid("r-own-live"))], transaction=hold)
+        assert {w.plain(k) for _, k, _ in held} == {"ext-own-live", "ext-direct"}
+        await asyncio.wait_for(GraphTransactionStore(g, tid, explicit=True).replace_record_permissions(
+            w.sid("r-own-live"), _r_own_live_grants(w), None, inherit=False), timeout=10)
+        await g.commit_transaction(tid)
+    finally:
+        await g.rollback_transaction(hold)
+        with contextlib.suppress(Exception):
+            await g.rollback_transaction(tid)
+    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def test_a_group_s_new_grants_on_records_of_one_app_lock_its_members_once_a_transaction(world: _World) -> None:
+    """own-live's new grants on r-src-live and r-own-gone, both of the App, in one transaction: on ArangoDB the store records (own-live, App)
+    with the first, and the second replace is handed it, so it does not lock own-live's members again. Neo4j keeps no pair (its check that an
+    edge is created costs what the lock does): the second replace locks them again, which costs a lookup and changes nothing."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+
+    def grant(holder: str, record: str) -> dict:
+        return {"from_id": w.sid(holder), "from_collection": coll, "to_id": w.sid(record), "to_collection": "records", "type": GRANT_TYPE[w.kind],
+                "role": "WRITER", "createdAtTimestamp": TS}
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    try:
+        store = GraphTransactionStore(g, tid, explicit=True)
+        await store.replace_record_permissions(w.sid("r-src-live"), [grant("src-live", "r-src-live"), grant("own-live", "r-src-live")], None, inherit=False)
+        if hasattr(g, "client"):
+            assert store._lock_done == set()
+            await store.replace_record_permissions(w.sid("r-own-gone"), [grant("own-live", "r-own-gone")], None, inherit=False)
+            await g.commit_transaction(tid)
+            return
+        assert (coll, w.sid("own-live"), w.sid(APP)) in store._lock_done
+        handed, locked = [], []
+        replace, create = g.replace_record_permissions, g.batch_create_edges
+
+        async def spy_replace(*a, **k) -> object:
+            handed.append(set(k.get("lock_done") or ()))
+            return await replace(*a, **k)
+
+        async def spy_create(*a, **k) -> object:
+            locked.append(list(k.get("lock_grants") or ()))
+            return await create(*a, **k)
+        g.replace_record_permissions, g.batch_create_edges = spy_replace, spy_create
+        try:
+            await store.replace_record_permissions(w.sid("r-own-gone"), [grant("own-live", "r-own-gone")], None, inherit=False)
+        finally:
+            del g.replace_record_permissions, g.batch_create_edges
+        assert (coll, w.sid("own-live"), w.sid(APP)) in handed[0]
+        assert locked == [[]]      # its replace writes through batch_create_edges, handed no grant to lock
+        await g.commit_transaction(tid)
+    finally:
+        with contextlib.suppress(Exception):
+            await g.rollback_transaction(tid)
