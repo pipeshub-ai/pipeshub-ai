@@ -366,7 +366,8 @@ def set_supervisor(sup: TableSupervisor | None) -> None:
     _holder["s"] = sup
 
 
-Acquire = Callable[[float], contextlib.AbstractAsyncContextManager[None]]
+# (wait seconds, threads the table asks for) -> the threads its permit covers, which the table then runs with
+Acquire = Callable[[float, int], contextlib.AbstractAsyncContextManager[int]]
 
 
 async def run_tables(
@@ -402,9 +403,9 @@ async def run_tables(
                         results.append(TableResult(id=spec.id, status="error", err=not_started))
                         continue
                     else:
-                        async with acquire(remaining):
+                        async with acquire(remaining, spec.threads or supervisor.threads) as granted:
                             try:
-                                raw = await supervisor.run_unlocked(spec.model_dump(exclude={"image"}), images[spec.image])
+                                raw = await supervisor.run_unlocked({**spec.model_dump(exclude={"image"}), "threads": granted}, images[spec.image])
                             except Exception as exc:  # one table fails; the request, and the other tables, go on
                                 logger.warning("table structure failed for one table: %s", type(exc).__name__)
                                 raw = {"status": "error", "err": "service_exception"}
@@ -422,5 +423,5 @@ async def run_tables(
 
 
 @contextlib.asynccontextmanager
-async def no_gate(_wait_s: float) -> AsyncIterator[None]:
-    yield
+async def no_gate(_wait_s: float, threads: int) -> AsyncIterator[int]:
+    yield threads

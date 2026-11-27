@@ -56,6 +56,8 @@ def measured_model_info() -> ModelInfo:
 
 
 class FakeSupervisor:
+    threads = 1
+
     def __init__(self, delay: float = 0.0, fail: set[str] | None = None) -> None:
         self.delay = delay
         self._turn = asyncio.Lock()

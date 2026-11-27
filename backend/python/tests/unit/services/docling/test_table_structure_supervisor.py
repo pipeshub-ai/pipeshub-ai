@@ -332,9 +332,9 @@ async def test_the_model_starts_before_the_permit_is_taken_and_within_the_caller
     permits: list[float] = []
 
     @contextlib.asynccontextmanager
-    async def acquire(wait_s: float):  # noqa: ANN202
+    async def acquire(wait_s: float, threads: int):  # noqa: ANN202
         permits.append(wait_s)
-        yield
+        yield threads
 
     meta = ts.TableRequestMeta.model_validate({"v": 1, "tables": [
         {"id": "p1:b0", "image": "c0", "scale_factor": 1.0, "page_w": 100.0, "page_h": 100.0, "table_bbox": [0, 0, 8, 6], "cap": 10,

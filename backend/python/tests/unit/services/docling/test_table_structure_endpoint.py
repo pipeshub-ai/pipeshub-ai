@@ -136,8 +136,8 @@ async def test_negative_control_a_permit_held_for_the_whole_request_starves_the_
     sup.delay = 0.3
 
     @asynccontextmanager
-    async def no_permit_per_table(_wait) -> AsyncIterator[None]:
-        yield
+    async def no_permit_per_table(_wait, threads) -> AsyncIterator[int]:
+        yield threads
 
     meta = ts.TableRequestMeta.model_validate({"v": 1, "tables": [table(i) for i in range(4)]})
 
@@ -257,3 +257,35 @@ async def test_an_image_part_is_read_no_further_than_the_byte_limit(wired) -> No
         r = await post(1, files={"c0": ("c0.png", big, "image/png")})
     assert r.status_code == 422
     assert sizes and all(0 < s <= mod.MAX_IMAGE_BYTES + 1 for s in sizes)
+
+
+@pytest.mark.parametrize("limit", [1, 3, 4])
+async def test_concurrent_tables_never_run_more_threads_than_the_gate_holds(limit: int) -> None:
+    gate = CountingGate(limit)
+    state = {"in_use": 0, "peak": 0, "asked": []}
+
+    class Recording(FakeSupervisor):
+        async def run_unlocked(self, spec: dict, png: bytes) -> dict:
+            state["asked"].append(spec["threads"])
+            state["in_use"] += spec["threads"]
+            state["peak"] = max(state["peak"], state["in_use"])
+            await asyncio.sleep(0.05)
+            state["in_use"] -= spec["threads"]
+            return await super().run_table(spec, png)
+
+    async def fake_reserve(permit, demand, *, deadline_s=None, cancel=None) -> object:
+        class P:
+            def release(self_inner) -> None:
+                pass
+
+        return P()
+
+    meta = ts.TableRequestMeta.model_validate({"v": 1, "tables": [{**table(i), "threads": 64} for i in range(3)]})
+    with patch.object(mod, "_resource_governor", FakeGovernor(gate)), patch.object(mod, "reserve_or_adopt", fake_reserve):
+        outs = await asyncio.gather(*(
+            ts.run_tables(meta, {f"c{i}": PNG for i in range(3)}, Recording(), mod._table_permit, deadline=time.monotonic() + 30)
+            for _ in range(6)
+        ))
+    assert all(refused is None and [t.status for t in results] == ["ok"] * 3 for results, refused in outs)
+    assert state["peak"] <= limit and set(state["asked"]) == {limit}  # each table runs with what its permits cover
+    assert gate.in_use == 0 and set(gate.acquires) == {limit}

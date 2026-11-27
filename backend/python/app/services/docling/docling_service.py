@@ -401,35 +401,42 @@ def _parse_failure_response(error_code: str, error: str) -> JSONResponse:
 
 
 @contextlib.asynccontextmanager
-async def _table_permit(wait_s: float) -> AsyncIterator[None]:
-    """One HEAVY_PARSE permit (cost 1) and, under the capacity profile, one member reservation, for one table.
+async def _table_permit(wait_s: float, threads: int = 1) -> AsyncIterator[int]:
+    """HEAVY_PARSE permits for one table and, under the capacity profile, one member reservation; yields the threads the
+    table may run with.
+
+    A permit is a core's worth of heavy parsing, so a table asking for *threads* takes that many permits, at most the
+    gate's limit, and runs with the threads its permits cover: lent threads never oversubscribe the host.
 
     Taken only once the request holds the model's turn (``run_tables``), so a request queued for the model holds nothing;
     the permit is held for the table's own run, at most its time bound, and one table at a time per process. Both waits
     are one bounded wait: *wait_s* is what is left of the caller's deadline."""
     wait = max(0.0, min(wait_s, MAX_DEADLINE_MS / 1000))
     cost = 0
+    granted = max(1, threads)
     member_permit = None
     start = time.monotonic()
     try:
         if _resource_governor is not None:
             gate = _resource_governor.gate(gate_pool(ParseTier.HEAVY))
+            cap = parse_admission_cap(_resource_governor, gate_pool(ParseTier.HEAVY))
+            granted = max(1, min(granted, gate.limit if cap is None else cap))
             admitted = await acquire_gate_with_backpressure(
-                gate, 1, ParseTier.HEAVY, "table-structure",
+                gate, granted, ParseTier.HEAVY, "table-structure",
                 logger=logger, log_prefix="docling-table",
                 queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS, gate_timeout_seconds=wait,
-                cap=parse_admission_cap(_resource_governor, gate_pool(ParseTier.HEAVY)),
+                cap=cap,
             )
             if not admitted:
                 raise table_model.Busy
-            cost = 1
+            cost = granted
         try:
             member_permit = await reserve_or_adopt(
                 None, docling_demand(parse_class(None)), deadline_s=max(0.0, wait - (time.monotonic() - start))
             )
         except AdmissionTimeout as exc:
             raise table_model.Busy from exc
-        yield
+        yield granted
     finally:
         _release_docling_gate(cost)
         if member_permit is not None:
