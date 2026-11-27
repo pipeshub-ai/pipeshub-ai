@@ -97,7 +97,7 @@ KWARGS = {"get_stage_states_with_records": {"limit": 10}, "get_record_content_re
 def test_every_public_method_of_the_module_is_in_the_no_org_cases() -> None:
     from app.services.graph_db.postgres.codegraph import CodeGraphMixin
     public = {n for n, f in vars(CodeGraphMixin).items() if not n.startswith("__") and callable(f)}
-    assert public - {"ensure_pipeline_schema", "_pointer_page", "_sweep_orgs", "_sweep", "_raise_failed"} == {c[0] for c in CALLS}
+    assert public - {"ensure_pipeline_schema", "_pointer_page", "_sweep_orgs", "_code_scope_orgs", "_sweep", "_raise_failed"} == {c[0] for c in CALLS}
 
 
 @pytest.mark.parametrize(("name", "args"), CALLS, ids=[c[0] for c in CALLS])
