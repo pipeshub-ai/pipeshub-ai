@@ -14,7 +14,7 @@ from app.services.graph_db.postgres.kg.drainer import drain_org
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
-from .test_kg_read import flip
+from .test_kg_read import _admin, _switch, flip
 from .test_kh_listing_flat import prov
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -54,14 +54,14 @@ async def world(p, db, org: str, grants: list[dict], *, deleted: tuple[str, ...]
     await flip(db, org)
 
 
-async def pages(p, org: str, viewer: str) -> dict[str, Any]:
-    """What every knowledge-hub page shows the viewer: the browse of each App and of F, and the flat listing of each App (rows, arrows, total)."""
+async def pages(p, org: str, viewer: str, apps: tuple[str, ...] = ("app1", "app2")) -> dict[str, Any]:
+    """What every knowledge-hub page shows the viewer: the browse of each App (of ``apps``) and of F, and the flat listing of each App (rows, arrows, total)."""
     with ctx(org):
         gate = await p.get_knowledge_hub_access_context_v2(user_key=viewer, org_id=org)
         out: dict[str, Any] = {}
-        for name, kw in [*((f"browse {a}", {"app_id": a, "flatten": False, "start_id": a, "start_type": "app"}) for a in ("app1", "app2")),
+        for name, kw in [*((f"browse {a}", {"app_id": a, "flatten": False, "start_id": a, "start_type": "app"}) for a in apps),
                          ("browse F", {"app_id": "", "flatten": False, "start_id": "F", "start_type": "folder"}),
-                         *((f"list {a}", {"app_id": a, "flatten": True}) for a in ("app1", "app2"))]:
+                         *((f"list {a}", {"app_id": a, "flatten": True}) for a in apps)]:
             page = await p.get_knowledge_hub_connector_page_v3(org_id=org, grantee_ids=gate["grantee_ids"], gated_app_ids=gate["gated_app_ids"], granted_ids=None, user_key=viewer,
                                                                limit=50, include_scope=True, **kw)
             out[name] = (sorted((r["id"], r["hasChildren"]) for r in page["rows"]), page["total"], page.get("counts"))
@@ -192,24 +192,30 @@ async def test_a_class_whose_literal_id_another_collection_holds_too_is_the_walk
     assert verdicts and all(v is None for v in verdicts) and "L1" in seen(got), (verdicts, got)
 
 
-@pytest.mark.parametrize("state", ["shadow", "not verified"])
-async def test_a_gated_connector_kg_does_not_serve_takes_the_read_by_id(pg_db, monkeypatch, reads, state) -> None:
-    """app2 is current in kg but kg does not answer access for it (``drainer.serves``: in shadow, or never verified): the page reads the grants by id."""
-    import os
+# a connector kg holds current but does not serve (``kg.read.serves``): its keys are not vouched for, so every page reads the grants by node id
+NOT_SERVED = {
+    "shadow": "mode = 'shadow'",
+    "stale_code_epoch": "code_epoch = s.code_epoch - 1",
+    "not_verified": "verified_at = NULL",
+}
 
-    import asyncpg
+
+@pytest.mark.parametrize("state", list(NOT_SERVED))
+async def test_a_gated_connector_kg_does_not_serve_reads_the_grants_by_id_and_lists_what_the_walk_lists(pg_db, reads, state) -> None:
+    """app2 is current in kg but kg does not serve it (in shadow, copied by other code, not verified): the browse and flat pages read every grant by id and list what the walk
+    lists. A connector copied by other code is not listed (a browse of it says it is being prepared, by any grant read), so its case is app1's pages."""
     p, org = prov(pg_db), new_org()
-    await world(p, pg_db, org, [_perm("u1", "users", "L1"), _perm("u1", "users", "A1")])
-    change = {"shadow": "mode = 'shadow'", "not verified": "verified_at = NULL"}[state]
-    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
-    try:
-        await con.execute(f"UPDATE kg.projection_state s SET {change} FROM kg.node_keys k WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND s.org_id = $1 AND k.coll = 1 "
-                          "AND k.id = 'app2'", org)
-    finally:
-        await con.close()
+    await world(p, pg_db, org, [_perm("u1", "users", "F"), _perm("grp1", "groups", "L1", "records", "GROUP"), _perm("u1", "users", "A1"), _perm("sg", "groups", "L5", "records", "GROUP")])
+    await _admin(f"UPDATE kg.projection_state s SET {NOT_SERVED[state]} FROM kg.node_keys k WHERE k.org_id = s.org_id AND k.sk = s.app_sk AND s.org_id = $1 AND k.coll = 1 "
+                 "AND k.id = 'app2'", org)
+    apps = ("app1",) if state == "stale_code_epoch" else ("app1", "app2")
     reads.clear()
-    got = await pages(p, org, "u1")
-    assert reads and not any(reads) and {"L1", "A1"} <= seen(got), (reads, got)
+    got = await pages(p, org, "u1", apps)
+    assert reads and not any(reads), reads
+    with _switch("0"):
+        walk = await pages(p, org, "u1", apps)
+    assert got == walk and {"F", "k0", "k1", "L1", "L5"} <= seen(got), got
+    assert ("A1" in seen(got)) is (state != "stale_code_epoch"), got
 
 
 def _on_kg_grants(monkeypatch, then) -> None:
