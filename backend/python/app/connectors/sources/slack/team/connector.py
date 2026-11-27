@@ -109,6 +109,7 @@ from app.connectors.sources.slack.common.bursts import (
     channel_burst_id,
     channel_record_ids,
     regrouped_record_ids,
+    saved_records,
     thread_burst_id,
     thread_group_id,
     thread_record_ids,
@@ -1869,9 +1870,9 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
 
             await self._enrich_link_records_linked_id(records)
             if records:
-                await self.data_entities_processor.on_new_records(records)
+                rejected = await self.data_entities_processor.on_new_records(records)
                 await self._delete_regrouped_records(regrouped_record_ids(
-                    msgs, (r for r, _ in records),
+                    msgs, saved_records(records, rejected),
                     lambda ts: channel_record_ids(channel_id, ts),
                 ), channel_id)
 
@@ -2452,10 +2453,10 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
                 f"[ThreadProcess] Creating {burst_msg_count} burst records and "
                 f"{burst_file_count} file records for thread ts={ts}"
             )
-            await self.data_entities_processor.on_new_records(burst_recs_batch)
+            rejected = await self.data_entities_processor.on_new_records(burst_recs_batch)
             if replies_complete:
                 await self._delete_regrouped_records(regrouped_record_ids(
-                    all_msgs, (r for r, _ in burst_recs_batch),
+                    all_msgs, saved_records(burst_recs_batch, rejected),
                     lambda mts: thread_record_ids(ctx.channel_id, ts, mts),
                 ), thread_group_id(ctx.channel_id, ts))
 
@@ -2478,9 +2479,10 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         than ``last_reply_ts``.
 
         Creates thread-burst/single records for the new replies only.
-        Returns False when the new replies could only be partly fetched, and
-        None when Slack refused them (the stored records are kept), so the
-        caller must not move the thread's sync point.
+        Returns False when the new replies could only be partly fetched (their
+        last burst, perhaps cut short, is not written), and None when Slack
+        refused them (the stored records are kept), so the caller must not
+        move the thread's sync point.
         """
         thread_ts = parent_msg.get("ts", "")
         new_replies, replies_complete = await self._fetch_thread_replies_raw(
@@ -2521,7 +2523,7 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
                     file_children_by_ts.setdefault(mts, []).append(cr)
 
         # -- Thread-burst MessageRecords for new replies -----------------------
-        bursts = self._detect_bursts(new_replies)
+        bursts = bursts_to_write(self._detect_bursts(new_replies), replies_complete=replies_complete)
         burst_recs_batch: list[tuple[Record, list[Permission]]] = []
 
         for burst in bursts:
@@ -2575,10 +2577,10 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
                     rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
-            await self.data_entities_processor.on_new_records(burst_recs_batch)
+            rejected = await self.data_entities_processor.on_new_records(burst_recs_batch)
             if replies_complete:
                 await self._delete_regrouped_records(regrouped_record_ids(
-                    new_replies, (r for r, _ in burst_recs_batch),
+                    new_replies, saved_records(burst_recs_batch, rejected),
                     lambda mts: thread_record_ids(ctx.channel_id, thread_ts, mts),
                 ), thread_group_id(ctx.channel_id, thread_ts))
 

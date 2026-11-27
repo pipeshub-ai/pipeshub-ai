@@ -47,9 +47,10 @@ def thread_record_ids(channel_id: str, thread_ts: str, ts: str) -> tuple[str]:
 
 
 def bursts_to_write(bursts: list[Any], *, replies_complete: bool | None) -> list[Any]:
-    """The bursts a full read of a thread can write. A read that stopped part way may have
-    cut its last burst short; written, it would replace the stored burst of the same first
-    reply and drop the replies not read. It waits for a read that gets them all."""
+    """The bursts a read of a thread's replies (all of them, or those after the sync point)
+    can write. A read that stopped part way may have cut its last burst short; written, it
+    would replace the stored burst of the same first reply, which an earlier read may have
+    stored longer, and drop the replies not read. It waits for a read that gets them all."""
     return bursts if replies_complete else bursts[:-1]
 
 
@@ -58,6 +59,15 @@ def burst_revision(messages: Sequence[dict[str, Any]]) -> str:
     messages is indexed again."""
     all_ts = "|".join(sorted(m.get("ts", "") for m in messages))
     return hashlib.md5(all_ts.encode()).hexdigest()[:8]
+
+
+def saved_records(
+    records_with_permissions: Iterable[tuple[Record, Any]], rejected: Iterable[Record] | None,
+) -> list[Record]:
+    """The records ``on_new_records`` stored: those it did not quarantine (``rejected``,
+    its return value). A rejected record's messages keep the records they are stored in."""
+    rejected_ids = {r.id for r in rejected or ()}
+    return [r for r, _ in records_with_permissions if r.id not in rejected_ids]
 
 
 def regrouped_record_ids(
@@ -91,7 +101,8 @@ class SlackRegroupMixin:
         self, external_ids: Iterable[str], external_record_group_id: str,
     ) -> None:
         """Delete the stored message records under these ids in this group (a channel or a
-        thread). Call it only after the records now holding their messages were saved. A
+        thread). Call it only after the records now holding their messages were saved, with
+        ids found from the saved ones (``saved_records``), never a quarantined one. A
         failed lookup or delete keeps the record. A single's id is its bare ts, which is
         unique only within a channel, so a record of another group is never deleted."""
         processor = self.data_entities_processor

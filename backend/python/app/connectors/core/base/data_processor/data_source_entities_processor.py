@@ -3651,13 +3651,16 @@ class DataSourceEntitiesProcessor:
         records_with_permissions: list[tuple[Record, list[Permission]]],
         *,
         replace_permissions: bool = False,
-    ) -> None:
+    ) -> list[Record]:
+        """Returns the records quarantined, not written, because the schema rejected them:
+        a caller that removes what a record replaces must keep it for these."""
         # Records this attempt committed or quarantined: the rest count failed if it fails for good.
         settled = 0
+        quarantined: list[Record] = []
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
-                return
+                return quarantined
 
             narrowed_connectors: set[str] = set()
             for start in range(0, len(records_with_permissions), _RECORDS_PER_TRANSACTION):
@@ -3676,6 +3679,7 @@ class DataSourceEntitiesProcessor:
                             one = await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
                         except SchemaValidationError as e:
                             self._quarantine_record(item[0], e)
+                            quarantined.append(item[0])
                             settled += 1
                             continue
                         settled += 1
@@ -3689,6 +3693,7 @@ class DataSourceEntitiesProcessor:
                 # does not get here.
                 for *written_slice, published in written:
                     await self._after_slice_committed(*written_slice, published=published)
+            return quarantined
         except Exception as e:
             if not will_retry(self, e):
                 # A retry re-runs the whole call, so after a partial commit this also counts

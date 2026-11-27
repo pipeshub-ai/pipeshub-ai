@@ -292,6 +292,51 @@ class TestRegroupedMessages:
 
         assert store.message_ts_count().get(last) == 1
 
+    async def test_a_regrouped_burst_the_schema_rejects_keeps_the_records_it_would_replace(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        # 4.5 minutes from each side, so the time between reading the clock for each ts cannot split the burst.
+        parent, answer, late, between = (ts_minutes_ago(m) for m in (30, 29, 20, 24.5))
+        workspace.post(GENERAL, parent, ALICE, "question")
+        workspace.reply(GENERAL, parent, answer, BOB, "answer")
+        workspace.reply(GENERAL, parent, late, ALICE, "later")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        workspace.reply(GENERAL, parent, between, BOB, "in between")
+        # The one burst the thread now is: written, it would replace the record holding `late`.
+        store.schema_rejects = lambda r: isinstance(r, MessageRecord) and between in block_ts([r])
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(thread_records(store, GENERAL, parent)) == [parent, answer, late]
+
+    async def test_a_thread_whose_new_replies_are_read_only_in_part_keeps_what_an_earlier_part_stored(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        parent, answer = ts_minutes_ago(300), ts_minutes_ago(290)
+        new = [ts_minutes_ago(m) for m in (5, 4, 3, 2)]
+        workspace.post(GENERAL, parent, ALICE, "question")
+        workspace.reply(GENERAL, parent, answer, BOB, "answer")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        for i, ts in enumerate(new):
+            workspace.reply(GENERAL, parent, ts, BOB if i % 2 else ALICE, f"reply {i}")
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None,
+                       when=lambda p: bool(p.get("cursor")))
+        stored = []
+        for read_first in (4, 3):  # the parent and three new replies, then two
+            workspace.page_size["conversations.replies"] = read_first
+            await connector.run_sync()
+            stored.append(set(block_ts(thread_records(store, GENERAL, parent))))
+        assert stored[0] <= stored[1]
+
+        workspace._faults.clear()
+        workspace.page_size.pop("conversations.replies")
+        await connector.run_sync()
+        assert block_ts(thread_records(store, GENERAL, parent)) == [parent, answer, *new]
+
 
 class TestCheckpoints:
     async def test_a_failed_later_page_does_not_move_the_checkpoint_past_unread_messages(self, workspace, store, checkpoints) -> None:
