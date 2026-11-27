@@ -379,6 +379,12 @@ jobs:
             services: etcd-kv-it
             tests: tests/integration/kv
             select: etcd
+          - suite: kv
+            backend: redis
+            compose: docker-compose.integration.kv.yml
+            services: redis-kv-it
+            tests: tests/integration/kv
+            select: redis
 
     env:
       # 'true' when this pull request changes code this suite covers

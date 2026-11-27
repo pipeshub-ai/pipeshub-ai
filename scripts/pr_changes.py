@@ -228,6 +228,14 @@ MATRIX_PYTHON = (
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
     CHECKS[f"matrix_{_suite}"] = MATRIX_PYTHON
+# The kv suite also runs the Node key-value service against the same stores (tests/integration/kv/test_kv_cross_language.py).
+CHECKS["matrix_kv"] = MATRIX_PYTHON + (
+    "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+    "backend/nodejs/apps/src/libs/keyValueStore/**",
+    "backend/nodejs/apps/src/libs/encryptor/**",
+    "backend/nodejs/apps/tests/helpers/kv-cross-language-driver.ts",
+    "backend/nodejs/apps/package-lock.json",
+)
 # The storage job runs the Python storage tests against the Node storage server.
 CHECKS["matrix_storage"] = MATRIX_PYTHON + STORAGE_NODE
 

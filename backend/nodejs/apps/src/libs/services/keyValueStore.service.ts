@@ -9,6 +9,16 @@ import {
 } from '../keyValueStore/constants/KeyValueStoreType';
 import { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
 
+// An encrypted value (`iv:ciphertext:tag`, hex) as the Python services kept it until they stored it as its own text: JSON-encoded,
+// with the quotes. Read as the text inside, which is what this service keeps and what its callers decrypt.
+const QUOTED_CIPHERTEXT = /^"[0-9a-f]{24}:[0-9a-f]*:[0-9a-f]{32}"$/;
+
+function readable<T>(stored: T | null): T | null {
+  return typeof stored === 'string' && QUOTED_CIPHERTEXT.test(stored)
+    ? (stored.slice(1, -1) as T)
+    : stored;
+}
+
 export class KeyValueStoreService implements IKVStoreConnection {
   private static instance: KeyValueStoreService;
   private store!: DistributedKeyValueStore<any>;
@@ -205,7 +215,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async get<T>(key: string): Promise<T | null> {
     await this.ensureConnection();
-    return await this.store.getKey(key);
+    return readable<T>((await this.store.getKey(key)) as T | null);
   }
 
   /**
@@ -238,7 +248,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
     callback: (value: T | null) => void,
   ): Promise<void> {
     await this.ensureConnection();
-    await this.store.watchKey(key, callback);
+    await this.store.watchKey(key, (value: T | null) => callback(readable(value)));
   }
 
   /**
@@ -260,7 +270,15 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
     await this.ensureConnection();
-    const success = await this.store.compareAndSet(key, expectedValue, newValue);
+    let success = await this.store.compareAndSet(key, expectedValue, newValue);
+    if (!success && typeof expectedValue === 'string') {
+      // The caller expects what `get` returned; the store may keep it in the older quoted form. One retry against the kept form
+      // when it reads as the expected value: the store's compare is still the atomic check.
+      const kept = (await this.store.getKey(key)) as T | null;
+      if (kept !== expectedValue && readable(kept) === expectedValue) {
+        success = await this.store.compareAndSet(key, kept, newValue);
+      }
+    }
     if (success) {
       await this.publishCacheInvalidation(key);
     }

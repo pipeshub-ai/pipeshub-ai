@@ -279,10 +279,16 @@ describe('KeyValueStoreService', () => {
       await service.connect();
     });
 
-    it('should delegate to store.watchKey', async () => {
+    it('should delegate to store.watchKey, passing each value on as get reads it', async () => {
       const cb = sinon.stub();
       await service.watchKey('watched-key', cb);
-      expect(mockStore.watchKey.calledWith('watched-key', cb)).to.be.true;
+      expect(mockStore.watchKey.calledOnce).to.be.true;
+      expect(mockStore.watchKey.firstCall.args[0]).to.equal('watched-key');
+      const forward = mockStore.watchKey.firstCall.args[1] as (v: unknown) => void;
+      forward('plain');
+      forward(`"${'a'.repeat(24)}:${'b'.repeat(8)}:${'c'.repeat(32)}"`);
+      expect(cb.firstCall.args[0]).to.equal('plain');
+      expect(cb.secondCall.args[0]).to.equal(`${'a'.repeat(24)}:${'b'.repeat(8)}:${'c'.repeat(32)}`);
     });
   });
 
