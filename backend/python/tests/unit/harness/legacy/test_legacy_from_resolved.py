@@ -310,9 +310,8 @@ def test_the_identity_compared_is_the_request_s_own_never_the_body_s(rig: Rig) -
     assert _refusal(rig.agent_stream(header=foreign)) == "resolved_subject_mismatch"
 
 
-def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``auth.py`` replaces a client-credentials token's ``userId`` (the client id) by ``createdBy``: the identity
-    the routes act as. Node signs ``sub`` for that identity; the client id is nobody's turn."""
+def _app_caller(world: World, monkeypatch: pytest.MonkeyPatch) -> tuple[Rig, str, str]:
+    """A client-credentials caller, and a header signed for the identity it acts as and one for its client id."""
     monkeypatch.delenv(POLICY_STORE_ENV, raising=False)
     token_claims = {
         "userId": "client-7", "client_id": "client-7", "createdBy": "u-bob", "orgId": "org-1",
@@ -321,15 +320,46 @@ def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, mo
     rig = Rig(world, monkeypatch, extra_users={"app": _normalize_regular_payload(dict(token_claims), "bearer")})
     as_identity = sign(claims(NOW, org="org-1", sub="u-bob", agent="shared", cid=CONVERSATION, access={"run": True}))
     as_client = sign(claims(NOW, org="org-1", sub="client-7", agent="shared", cid=CONVERSATION, access={"run": True}))
+    return rig, as_identity, as_client
+
+
+def _refused_before_any_header(rig: Rig, *headers: str) -> None:
+    # An app's token is no person: refused before any header is read, whichever identity the header signs.
+    for header in headers:
+        assert rig.agent_stream(caller="app", header=header).status_code == 403
+    assert rig.loop.calls == []
+
+
+def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``auth.py`` replaces a client-credentials token's ``userId`` (the client id) by ``createdBy``: the identity
+    the routes act as. Node signs ``sub`` for that identity; the client id is nobody's turn."""
+    rig, as_identity, as_client = _app_caller(world, monkeypatch)
     if edition_defaults.agents_run_as_the_caller():
-        # An app's token is no person: refused before any header is read, whichever identity the header signs.
-        for header in (as_client, as_identity):
-            assert rig.agent_stream(caller="app", header=header).status_code == 403
-        assert rig.loop.calls == []
+        _refused_before_any_header(rig, as_client, as_identity)
         return
     assert _refusal(rig.agent_stream(caller="app", header=as_client)) == "resolved_subject_mismatch"
     _served(rig.agent_stream(caller="app", header=as_identity))
     assert rig.loop.user_info["userId"] == "u-bob"
+
+
+def test_an_app_caller_is_refused_where_agents_run_as_the_caller(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import edition
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    rig, as_identity, as_client = _app_caller(world, monkeypatch)
+    _refused_before_any_header(rig, as_client, as_identity)
+
+
+def test_a_service_account_agent_runs_on_the_callers_binding_where_agents_run_as_the_caller(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import edition
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    mine = [{"installation": "inst-1", "owner": "user:u-bob", "ref": "bnd-1"}]
+    _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=mine)))
+    assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 0
+    assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
 
 
 # -- CPD10-24 -----------------------------------------------------------------------------------------------------

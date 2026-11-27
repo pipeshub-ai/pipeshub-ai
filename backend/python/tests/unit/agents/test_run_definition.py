@@ -493,3 +493,45 @@ class TestLiveListingCredentials:
         assert resolve.await_args.kwargs["executing_user_id"] == "u1"
         assert resolve.await_args.kwargs["agent_id"] == "agent-1"
         assert resolve.await_args.kwargs["is_service_account"] is True
+
+
+class TestRunDefinitionWhereAgentsRunAsTheCaller:
+    """With ``app.edition.AGENTS_RUN_AS_THE_CALLER`` on, admission serves only a person acting as themself, and a
+    service-account agent's definition lists its MCP servers as that person, never with the agent's credentials."""
+
+    @pytest.fixture(autouse=True)
+    def _caller_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app import edition
+
+        monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+
+    @staticmethod
+    async def _admitted(user: dict[str, Any], agent: dict[str, Any]) -> None:
+        """Every dependency of the route, as FastAPI runs them, then the route."""
+        import inspect
+
+        from app.api.routes.agent import get_agent_run_definition
+
+        request = _request(user)
+        for dependency in _route("/{agent_id}/run-definition", "GET").dependant.dependencies:
+            named = inspect.signature(dependency.call).parameters
+            await dependency.call(request, **({"agent_id": "agent-1"} if "agent_id" in named else {}))
+        services = _services({"role": "READER"}, agent)
+        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": "org-1"})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock):
+            await get_agent_run_definition(request, "agent-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", [_service_account_agent(), _agent()], ids=["service-account", "ordinary"])
+    async def test_a_service_token_is_refused_whatever_the_agent(self, agent: dict[str, Any]) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await self._admitted(_SLACK_SERVICE_TOKEN, agent)
+        assert refused.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_agent_lists_its_servers_as_the_caller(self) -> None:
+        _, listing = await TestHubOffSavedAgentPins._define(_service_account_agent(), hub=False)
+        listing.assert_awaited_once()
+        assert not listing.await_args.kwargs.get("is_service_account", False)

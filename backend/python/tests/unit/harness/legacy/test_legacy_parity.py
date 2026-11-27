@@ -136,6 +136,21 @@ def test_legp_a_service_account_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert toolset_path("inst-1", owner[0]) not in fed.world.config.reads
 
 
+def test_legp_a_service_account_agent_runs_as_the_caller_where_agents_run_as_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import edition
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    read, read_response, fed, fed_response = _pair(
+        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=("u-bob", "user:u-bob")
+    )
+    assert read_response.status_code == fed_response.status_code == 200
+    assert _handed(fed) == _handed(read)
+    assert _handed(fed)["query_info"]["credentialOwner"] == "u-bob"
+    assert toolset_path("inst-1", "sa") not in read.world.config.reads
+
+
 def test_legp_a_credential_the_store_does_not_hold_stops_both_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nothing is bound for a credential nobody connected: the header-fed turn reads it and answers as today."""
     read, read_response, fed, fed_response = _pair(

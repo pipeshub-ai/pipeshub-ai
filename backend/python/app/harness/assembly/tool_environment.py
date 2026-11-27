@@ -367,12 +367,18 @@ async def _system_assistant(
     }
 
 
+# How a run's actor reached it, where the actor is a person acting as themself: a session, their own personal access
+# token, or a trigger they set. A service identity and an OAuth application (whose actor may be an identity the app
+# names, not a person) are not.
+PERSON_VIAS = frozenset({"session", "pat", "trigger"})
+
+
 def refuse_unidentified_run(run: RunContext) -> None:
-    """Where the edition runs every agent as the identified person asking, a run that names no person (a service
-    identity, or no actor or org) is refused before anything is read for it."""
+    """Where the edition runs every agent as the identified person asking, a run whose actor is not a person with an
+    org (see ``PERSON_VIAS``) is refused before anything is read for it."""
     from app import edition
 
-    if edition.AGENTS_RUN_AS_THE_CALLER and (run.via == "service" or not run.actor_id or not run.org_id):
+    if edition.AGENTS_RUN_AS_THE_CALLER and (run.via not in PERSON_VIAS or not run.actor_id or not run.org_id):
         raise RunRefused("unidentified_caller", "the run names no identified person to act as")
 
 
@@ -513,6 +519,7 @@ async def _turn_scope(
 async def build_tool_environment(
     run: RunContext, services: RunServices, model: ResolvedModel
 ) -> ToolEnvironment:
+    refuse_unidentified_run(run)
     if run.chat is not None:
         from app.harness.assembly.chat import build_chat_environment
 

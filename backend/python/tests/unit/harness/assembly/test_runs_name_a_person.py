@@ -67,12 +67,33 @@ def _claim(via: str):  # noqa: ANN202 - a NodeClaim
     return claim(spec)
 
 
-def test_a_service_run_is_refused_where_agents_run_as_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("via", ["service", "oauth_app"])
+def test_a_run_whose_actor_is_no_person_is_refused_where_agents_run_as_the_caller(
+    monkeypatch: pytest.MonkeyPatch, via: str
+) -> None:
+    """A service identity, and an OAuth application, whose actor may be an identity the app names, not a person."""
     monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
     with pytest.raises(RunRefused) as refused:
-        _run_context(_claim("service"))
+        _run_context(_claim(via))
     assert refused.value.error_type == "unidentified_caller"
-    assert _run_context(_claim("session")).via == "session"
+
+
+@pytest.mark.parametrize("via", ["session", "pat", "trigger"])
+def test_a_person_s_run_builds_where_agents_run_as_the_caller(monkeypatch: pytest.MonkeyPatch, via: str) -> None:
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    assert _run_context(_claim(via)).via == via
+
+
+async def test_the_tool_environment_refuses_before_it_reads_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No agent, graph or config read happens for a refused run: the environment is given nothing to read with."""
+    from app.harness.assembly.context import RunContext
+    from app.harness.assembly.tool_environment import build_tool_environment
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    run = RunContext.from_claim(_claim("oauth_app"))
+    with pytest.raises(RunRefused) as refused:
+        await build_tool_environment(run, None, None)  # type: ignore[arg-type]
+    assert refused.value.error_type == "unidentified_caller"
 
 
 def test_with_the_switch_off_a_service_run_still_builds(monkeypatch: pytest.MonkeyPatch) -> None:
