@@ -235,6 +235,7 @@ CHECKS["matrix_kv"] = (
     "backend/nodejs/apps/src/libs/keyValueStore/**",
     "backend/nodejs/apps/src/libs/encryptor/**",
     "backend/nodejs/apps/tests/helpers/kv-cross-language-driver.ts",
+    "backend/nodejs/apps/package.json",
     "backend/nodejs/apps/package-lock.json",
 )
 # The storage job runs the Python storage tests against the Node storage server.

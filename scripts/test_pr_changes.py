@@ -98,6 +98,12 @@ class TestDecisions(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(runs(path) & MATRIX, {"matrix_storage", "matrix_kv"})
 
+    def test_the_node_manifest_runs_the_kv_leg(self) -> None:
+        # the kv suite installs the Node packages and runs the Node driver, so a manifest-only change runs it as the lock does
+        for path in ("backend/nodejs/apps/package.json", "backend/nodejs/apps/package-lock.json"):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, {"matrix_storage", "matrix_kv"})
+
     def test_node_code_outside_storage_runs_no_matrix_leg(self) -> None:
         self.assertEqual(runs("backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts") & MATRIX, set())
 
