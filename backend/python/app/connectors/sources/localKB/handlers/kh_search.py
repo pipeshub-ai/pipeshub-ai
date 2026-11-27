@@ -215,7 +215,7 @@ async def search_page(
     )
 
     # One batch check names the parents of the rows this page returns.
-    await provider.name_knowledge_hub_parents(merged.rows, org_id, access)
+    await provider.name_knowledge_hub_parents(merged.rows, org_id, access, user_key=user_key)
 
     more_beyond = any(
         payload["hasMore"] or _connector_key(app_id) not in merged.exhausted

@@ -98,7 +98,7 @@ class KhBrowseMixin(PgBase):
         start, aid = resolved
         # Every gated connector's grants, as the flat listing reads them (``_kh_grants``): the access check and the class verdicts read them all, since a walk can pass
         # through a node of another gated connector; a row's own grant, the seeds and the chain-tops are this App's.
-        gs = await self._kh_grants(aid, org_id, grantee_ids, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction, by_class=by_class, ids_out=grants_out is not None)
+        gs = await self._kh_grants(aid, org_id, grantee_ids, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction, by_class=by_class)
         access, held = gs.access, gs
         tops: list[int] = []
         top = await self._kh_top_grants(org, aid, user_key, gs, transaction) if gs else None
@@ -191,7 +191,7 @@ class KhBrowseMixin(PgBase):
         if u == "not_ready":
             return await self._kh_not_ready(org, start_id, at_app=at_app, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
         app_id, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "app_sk", "app_doc", "hidden", "served", "sets"))
-        if grants_out is not None:
+        if grants_out is not None and not gs.by_sk:
             grants_out[app_id] = sorted(gs.own)
         if u["filtered"]:      # the start is admitted; the filters leave its connector out
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
