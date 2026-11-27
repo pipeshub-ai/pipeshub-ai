@@ -21,12 +21,11 @@ import {
   FORK_COPY_BATCH_SIZE,
   replaceTurnWithBranch,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
-import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import { fakeReplicaSetSession, InMemoryChatStore, oid } from '../controller/chat-test-harness'
 import { labelContentHash, labelStateOf } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 import { configureVisibility, rememberAnswerClosures, resetVisibility, visibleRows, type ReaderRow } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
 import { memoryClosureStore, type Row } from '../services/conversation/privacy/closure-world'
 import type { ChatSessionDto } from '../../../../src/libs/repositories/conversation/types'
-import { MongoTx } from '../../../../src/libs/repositories/mongo'
 
 describe('fork-conversation helpers', () => {
   it('buildForkTitle prefixes the original title', () => {
@@ -418,7 +417,7 @@ describe('copySessionUpToMessage', () => {
         String(owner),
         String(orgId),
         { sessionType: 'chat' },
-        new MongoTx({} as never),
+        fakeReplicaSetSession() as never,
       )
       expect.fail('expected the copy to fail')
     } catch (error) {
@@ -435,7 +434,7 @@ describe('copySessionUpToMessage', () => {
     const { source, rows, owner, orgId } = seed(store, 2, { projectId })
     const target = String(rows[1]!._id)
 
-    const kept = await copySessionUpToMessage(source, target, String(owner), String(orgId), { sessionType: 'chat', projectId })
+    const kept = await copySessionUpToMessage(source, target, String(owner), String(orgId), { sessionType: 'chat', projectId: String(projectId) })
     expect(String(kept.conversation.projectId)).to.equal(String(projectId))
     expect(kept.conversation.projectVisibility).to.equal('private')
 
@@ -573,7 +572,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const artifacts = await copyArtifactsForFork(
       source,
       String(forkPoint._id),
-      new Types.ObjectId().toHexString(),
+      new Types.ObjectId(),
       copyArtifacts as never,
     )
     return copySessionUpToMessage(
@@ -695,7 +694,7 @@ describe('copySessionUpToMessage with artifacts', () => {
       return { copies: [copied], failed: [] }
     })
 
-    const artifacts = await copyArtifactsForFork(seeded.source, String(seeded.forkPoint._id), forkId, copyArtifacts as never)
+    const artifacts = await copyArtifactsForFork(seeded.source, String(seeded.forkPoint._id), new Types.ObjectId(forkId), copyArtifacts as never)
     const result = await copySessionUpToMessage(
       seeded.source,
       String(seeded.forkPoint._id),
@@ -718,7 +717,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const copyArtifacts = sinon.stub()
 
     try {
-      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId().toHexString(), copyArtifacts as never)
+      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId(), copyArtifacts as never)
       expect.fail('expected a 404')
     } catch (error) {
       expect(error).to.be.instanceOf(NotFoundError)
@@ -767,7 +766,7 @@ describe('fork origin', () => {
       title: 'Quarterly numbers',
     } as ChatSessionDto
     const { conversation } = await copySessionUpToMessage(
-      dto,
+      dto as never,
       String(mid._id),
       String(owner),
       String(orgId),
@@ -785,7 +784,8 @@ describe('fork origin', () => {
     const { store, owner, source, mid, fork } = await seedFork()
     const copyOfMid = store.messagesOf(fork._id)[1]!
 
-    const origin = await resolveForkOrigin(fork, String(owner))
+    // The store hands back the fork as a document, whose ids are ObjectIds; the route reads it as its plain view.
+    const origin = await resolveForkOrigin(fork as never, String(owner))
 
     expect(origin).to.deep.equal({
       conversationId: source._id,
@@ -799,9 +799,9 @@ describe('fork origin', () => {
     const { owner, source, mid, fork } = await seedFork()
     const asMap = { ...fork, metadata: new Map(Object.entries(metaOf(fork))) }
     const asObject = { ...fork, metadata: metaOf(fork) }
-    expect((await resolveForkOrigin(asObject, String(owner)))?.conversationId).to.equal(source._id)
-    expect((await resolveForkOrigin(asMap, String(owner)))?.conversationId).to.equal(source._id)
-    expect((await resolveForkOrigin(asMap, String(owner)))?.messageId).to.equal(String(mid._id))
+    expect((await resolveForkOrigin(asObject as never, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap as never, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap as never, String(owner)))?.messageId).to.equal(String(mid._id))
   })
 
   it('has no origin for a chat that is not a fork', async () => {
@@ -812,24 +812,24 @@ describe('fork origin', () => {
   it('has no origin when the notes do not name a message', async () => {
     const { owner, fork } = await seedFork()
     const broken = { ...fork, metadata: { forkedFromConversationId: 'x' } }
-    expect(await resolveForkOrigin(broken, String(owner))).to.equal(undefined)
+    expect(await resolveForkOrigin(broken as never, String(owner))).to.equal(undefined)
   })
 
   it('withholds the title from a viewer who does not own the original', async () => {
     const { source, fork } = await seedFork()
-    const origin = await resolveForkOrigin(fork, String(oid()))
+    const origin = await resolveForkOrigin(fork as never, String(oid()))
     expect(origin).to.include({ conversationId: source._id, title: null })
   })
 
   it('withholds the title once the original is archived', async () => {
     const { owner, fork } = await seedFork({ archive: true })
-    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+    expect((await resolveForkOrigin(fork as never, String(owner)))?.title).to.equal(null)
   })
 
   it('still answers, without the title, when the original no longer exists', async () => {
     const { store, owner, source, fork } = await seedFork()
     store.sessions.splice(store.sessions.findIndex((x) => String(x._id) === source._id), 1)
-    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+    expect((await resolveForkOrigin(fork as never, String(owner)))?.title).to.equal(null)
   })
 
   it('leaves out the position for a fork made before the count was recorded', async () => {
@@ -845,7 +845,7 @@ describe('fork origin', () => {
   it('does not fail the caller when the lookup breaks', async () => {
     const { owner, fork } = await seedFork()
     const repo = { findOwned: sinon.stub().rejects(new Error('db down')) }
-    expect(await resolveForkOrigin(fork, String(owner), repo as never)).to.equal(undefined)
+    expect(await resolveForkOrigin(fork as never, String(owner), repo as never)).to.equal(undefined)
   })
 })
 

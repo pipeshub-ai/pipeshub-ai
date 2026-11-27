@@ -104,7 +104,8 @@ describe('kept closures give the verdicts of the walk, with shares made after th
         if (row.messageType !== 'bot_response' && row.messageType !== 'error') continue
         const session = world.shareSessions.get(String(row.sessionId))
         const ver = typeof row.labelVer === 'string' ? row.labelVer : 'legacy'
-        for (const audience of ['everyone', 'outside', { outside: [CAROL, BOB, IVY] }, { userIds: [CAROL, BOB, IVY] }] as const) {
+        const audiences: closures.WidenAudience[] = ['everyone', 'outside', { outside: [CAROL, BOB, IVY] }, { userIds: [CAROL, BOB, IVY] }]
+        for (const audience of audiences) {
           const a = JSON.stringify(await closures.widenOK(row, ver, audience, { ...(session !== undefined && { session }) }))
           const b = JSON.stringify(await walk.widenOK(row, ver, audience, { deps, ...(session !== undefined && { session }) }))
           if (a !== b) differences.push(`seed ${String(seed)} widenOK ${String(row._id)} to ${JSON.stringify(audience)}: kept closures ${a}, walk ${b}`)

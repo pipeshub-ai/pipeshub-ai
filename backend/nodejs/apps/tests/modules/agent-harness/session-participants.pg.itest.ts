@@ -123,7 +123,7 @@ for (const bin of pgBins()) {
           async () => {
             const next = sinon.stub();
             const res = { status: () => res, json: () => res };
-            await controller.shareConversationById(appConfig, () => using)(
+            await controller.shareConversationById(appConfig, undefined, () => using)(
               {
                 headers: { authorization: 'Bearer owner' },
                 params: { conversationId: sessionId },

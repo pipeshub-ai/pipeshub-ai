@@ -597,7 +597,7 @@ describe('notification/routes/notification.routes', () => {
       const port = await listen();
       const res = await fetch(`http://127.0.0.1:${port}/api/v1/notifications/read-all`, { method: 'PATCH' });
       expect(res.status).to.equal(200);
-      const filter = updateMany.firstCall.args[0] as Record<string, unknown>;
+      const filter = updateMany.firstCall.args[0] as unknown as Record<string, unknown>;
       expect(rows.filter((doc) => matchesFilter(doc, filter)).map((doc) => doc.type)).to.deep.equal([
         'mail.deliveryFailed',
       ]);

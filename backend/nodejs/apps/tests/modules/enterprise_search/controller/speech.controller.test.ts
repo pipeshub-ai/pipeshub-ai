@@ -95,8 +95,9 @@ describe('SpeechController', () => {
         data: { detail: { code: 'REQUEST_NOT_ALLOWED', message: 'This request is not allowed right now. Ask your admin.' } },
       })
       const res = makeRes()
+      const next = sinon.stub()
 
-      await getSpeechCapabilities(appConfig)(makeReq(), res, sinon.stub())
+      await getSpeechCapabilities(appConfig)(makeReq(), res, next)
 
       expect(res.status.calledWith(403)).to.be.true
       expect(res.json.firstCall.args[0].detail).to.equal('This request is not allowed right now. Ask your admin.')

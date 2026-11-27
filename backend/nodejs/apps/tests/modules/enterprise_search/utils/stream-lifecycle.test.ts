@@ -275,7 +275,7 @@ describe('stream-lifecycle', () => {
 
   describe('abort (server-initiated stop)', () => {
     it('aborts the signal and destroys the bound stream without calling it a client disconnect', () => {
-      const handle = attachUpstreamAbort(createMockRes(), 'req-1')
+      const handle = attachUpstreamAbort(createMockRes())
       const stream = new Readable({ read() {} })
       handle.bindStream(stream)
 
@@ -288,7 +288,7 @@ describe('stream-lifecycle', () => {
     })
 
     it('destroys a stream that is bound after the abort', () => {
-      const handle = attachUpstreamAbort(createMockRes(), 'req-1')
+      const handle = attachUpstreamAbort(createMockRes())
       handle.abort()
       const stream = new Readable({ read() {} })
 

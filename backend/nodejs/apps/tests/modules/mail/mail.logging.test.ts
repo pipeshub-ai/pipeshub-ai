@@ -439,7 +439,7 @@ describe('mail and notification logging', function () {
     });
 
     it('a line about a recipient keeps the recipient as target_user_id inside another user’s request', () => {
-      const service = new NotificationService({} as any);
+      const service = new NotificationService({} as any, undefined as any);
       runWithRequestContext({ rootId: requestId, userId: '64b0000000000000000000b9' } as any, () => {
         service.sendToUser(ADMIN_ID, 'newNotification', {});
       });

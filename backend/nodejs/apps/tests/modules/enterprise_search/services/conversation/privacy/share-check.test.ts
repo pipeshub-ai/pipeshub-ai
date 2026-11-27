@@ -111,7 +111,8 @@ describe('the share check', () => {
     })
 
     it("a service agent's mark, or a search as a service identity, is never shared, at any depth, below shares and copies too", async () => {
-      for (const direct of [{ agents: [X({ kind: 'service' })] }, { saVrids: ['vr-1'] }, { agents: [X({ kind: 'service' })], saVrids: ['shared-sign-in:srv'] }]) {
+      const directs: Array<Record<string, unknown[]>> = [{ agents: [X({ kind: 'service' })] }, { saVrids: ['vr-1'] }, { agents: [X({ kind: 'service' })], saVrids: ['shared-sign-in:srv'] }]
+      for (const direct of directs) {
         const used = answer('X says.', DANA, { direct })
         const shown = share(answer('Built.', DANA, { parents: [given(used)] }))
         const built = answer('Built again.', DANA, { parents: [given(shown)] })
@@ -198,7 +199,8 @@ describe('the share check', () => {
       for (const tagset of [1, 0]) {
         const { rows } = older(tagset)
         for (const row of rows) expect(await widen(world(rows, { agents }), row), `${String(row.content)} ${String(tagset)}`).to.deep.equal({ ok: true })
-        for (const closedSkills of [{}, { X: [], G: [] }, { X: [BOB], G: [DANA] }]) {
+        const closedSkillSets: Array<Record<string, string[] | 'unknown'>> = [{}, { X: [], G: [] }, { X: [BOB], G: [DANA] }]
+        for (const closedSkills of closedSkillSets) {
           const last = rows[rows.length - 1] as Row
           expect(await widen(world(rows, { agents, closedSkills }), last), JSON.stringify(closedSkills)).to.deep.equal({ ok: true })
         }
@@ -243,7 +245,8 @@ describe('the share check', () => {
       const unwired = world(rows, { agents })
       delete unwired.deps.hasClosedSkill
       expect(await widen(unwired, own), 'nothing asks the record').to.deep.equal({ ok: true, limitedTo: ['X'] })
-      for (const closedSkills of [unread, {}, { X: [CAROL] }])
+      const closedSkillSets: Array<Record<string, string[] | 'unknown'>> = [unread, {}, { X: [CAROL] }]
+      for (const closedSkills of closedSkillSets)
         expect(await widen(world(rows, { agents, closedSkills, service: { X: 'unknown' } }), own), JSON.stringify(closedSkills)).to.deep.equal(NOT_WIDENABLE)
     })
 
@@ -292,12 +295,13 @@ describe('the share check', () => {
       const { rows, own, further } = older()
       const w = world(rows, { agents, service: { X: true } })
       for (const row of [own, further]) expect(await widen(w, row), String(row.content)).to.deep.equal(NOT_AGENT)
-      for (const [direct, refused] of [
+      const refusals: Array<[Record<string, unknown[]>, typeof NOT_AGENT]> = [
         [{ agents: [X({ kind: 'service' })] }, NOT_AGENT],
         [{ agents: [X()], saVrids: ['vr-1'] }, NOT_AGENT],
         [{ agents: [X()], saVrids: ['shared-sign-in:srv'] }, NOT_SIGN_IN],
-      ] as const) {
-        const a = answer('X said.', CAROL, { direct: { ...direct } as Record<string, unknown[]>, tagset: 1 })
+      ]
+      for (const [direct, refused] of refusals) {
+        const a = answer('X said.', CAROL, { direct: { ...direct }, tagset: 1 })
         const built = answer('Built.', CAROL, { direct: { agents: [X()] }, parents: [given(a)] })
         const each = world([a, built], { agents })
         for (const row of [a, built]) expect(await widen(each, row), JSON.stringify(direct)).to.deep.equal(refused)
@@ -659,7 +663,8 @@ describe('the share check', () => {
     })
 
     it('is counted on by everyone who does not read the thread it was made in, whatever they can open', async () => {
-      for (const direct of [{ records: [R] }, {}]) {
+      const directs: Array<Record<string, unknown[]>> = [{ records: [R] }, {}]
+      for (const direct of directs) {
         const { copy, bobs, carols, w } = told(direct, THREAD)
         const danas = answer('Dana.', DANA, { parents: [given(copy)] })
         w.store.set(String(danas._id), danas)

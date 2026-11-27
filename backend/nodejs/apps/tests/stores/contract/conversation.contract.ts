@@ -591,8 +591,8 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const s = await open(org, user, {}, { ...userMsg('first question'), appliedFilters: filters });
       await repo.appendMessages(s._id, org, [botMsg('answer'), userMsg('second question')]);
       const [stored] = await repo.listMessages(s._id, { orgId: org, limit: 1 });
-      expect(stored.dto.appliedFilters?.records).to.have.length(1);
-      expect(await repo.findOpeningMessage(s._id, org)).to.deep.equal({ content: 'first question', appliedFilters: stored.dto.appliedFilters });
+      expect(stored!.dto.appliedFilters?.records).to.have.length(1);
+      expect(await repo.findOpeningMessage(s._id, org)).to.deep.equal({ content: 'first question', appliedFilters: stored!.dto.appliedFilters });
       expect(await repo.findOpeningMessage(s._id, fx.newId())).to.equal(null);
       expect(await repo.findOpeningMessage(fx.newId(), org)).to.equal(null);
       const silent = await repo.createSession({ orgId: org, userId: user, initiator: user, title: 'no question', lastActivityAt: Date.now(), status: 'Complete', sessionType: 'chat' });
@@ -869,7 +869,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
         await repo.appendMessages(s._id, org, [
           {
             ...labelled('Revenue grew.'),
-            citations: [{ citationId: cit._id, relevanceScore: 0.5 }],
+            citations: [{ citationId: cit!._id, relevanceScore: 0.5 }],
             referenceData: [{ name: 'PROJ-1', id: '1', type: 'issue', app: 'jira' }],
             followUpQuestions: [{ question: 'And Q4?', confidence: 'High' }],
             reasoning: [{ content: 'read R first' }],

@@ -666,7 +666,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
         const conversation = makeConversation({ userId: owner })
         const messageId = new mongoose.Types.ObjectId()
         const findById = sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 1 })
-        const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
+        const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) } as never)
         const update = ChatSession.updateOne as sinon.SinonStub
         update.resetHistory()
 
@@ -754,7 +754,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 } as never)
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
       stubSessionWrite()
       sinon.stub(ChatSession, 'findById').resolves(null)

@@ -124,7 +124,7 @@ describe('notification/notification-payload.resolver', () => {
 
     it('keeps dedupeKey on the stored doc but drops emailIntent', () => {
       const event = toBrokerMessage(JSON.stringify(outboxEvent));
-      const doc = buildNotificationDocForUser(event!, user);
+      const doc = buildNotificationDocForUser(event!, String(user));
       expect(doc).to.include({ dedupeKey: 'chat.activity:s1:u1' });
       expect(doc).to.not.have.any.keys('emailIntent', 'recipientUserIds', 'recipientRoles');
     });

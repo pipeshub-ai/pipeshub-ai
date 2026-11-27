@@ -31,11 +31,11 @@ describe('conversation edition defaults', () => {
     expect(ext.content).to.be.instanceOf(RecordPermissionChatContentAccess)
     expect(ext.acl.versionBump()).to.deep.equal({})
     expect(ext.routes.requestFields('firstSend')).to.deep.equal({})
-    expect(ext.routes.firstSend()).to.deep.equal([])
+    expect(ext.routes.firstSend({} as never)).to.deep.equal([])
     // A list row stays as the default edition stores it, whatever fields this build's schema adds.
     expect(ext.lists.select({} as never)).to.equal(defaultListSelect(schemaExtensions))
     expect(ext.archives.decide({} as never, { isArchived: true } as never, 'u', 'unarchive')).to.deep.equal({ archived: true })
-    expect(ext.views.displayTitle('t' as never, {} as never)).to.equal('t')
+    expect(ext.views.displayTitle('t')).to.equal('t')
     expect(await ext.lifecycle.userDeleted('o', 'u', {} as never)).to.deep.equal({})
   })
 
@@ -52,7 +52,7 @@ describe('conversation edition defaults', () => {
   })
 
   it('an override replaces only its area, and undefined restores every default', () => {
-    const acl = { versionBump: () => ({ $inc: { v: 1 } }), bumpDocument: () => undefined }
+    const acl = { versionBump: () => ({ $inc: { v: 1 } }), bumpDocument: () => undefined, projectPlacement: () => ({ set: {}, unset: [] }) }
     useConversationExtensions({ acl })
     expect(conversationExtensions().acl).to.equal(acl)
     expect(conversationExtensions().turns).to.equal(defaultTurnExtension)

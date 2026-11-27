@@ -154,7 +154,7 @@ describe('PostgreSQL conversation row shapes', () => {
   const msg = (over: Record<string, unknown> = {}) => ({
     id: P, session_id: O, seq: 1, message_type: 'bot_response' as const, content: 'c', content_format: 'MARKDOWN', status: null, confidence: null,
     citations: [], follow_up_questions: [], feedback: [], metadata: null, model_info: {}, applied_filters: {}, attachments: [], reference_data: [], tools: [],
-    reasoning: [], parts: [], created_at: new Date(), updated_at: new Date(), ...over,
+    reasoning: [], parts: [], label_ver: null, created_at: new Date(), updated_at: new Date(), ...over,
   })
 
   it('a message row maps to the document shape, details included', () => {

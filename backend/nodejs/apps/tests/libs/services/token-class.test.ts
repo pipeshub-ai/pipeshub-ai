@@ -79,7 +79,7 @@ describe('the token class: telling the app session from what runs and clients ho
     const sent = (command as unknown as { headers: Record<string, string> }).headers.authorization;
     expect(sent).to.match(/^Bearer /);
     expect(sent).to.not.equal(`Bearer ${session}`);
-    expect(decoded(sent.slice('Bearer '.length))[TOKEN_CLASS_CLAIM]).to.equal(TOKEN_CLASS.run);
+    expect(decoded(sent!.slice('Bearer '.length))[TOKEN_CLASS_CLAIM]).to.equal(TOKEN_CLASS.run);
   });
 
   it('any other bearer goes to the AI backend as it came', () => {

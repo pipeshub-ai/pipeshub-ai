@@ -47,6 +47,8 @@ describe('notification.controller on the repository seam', () => {
     repo = {
       insert: sinon.stub(),
       insertMany: sinon.stub(),
+      insertNew: sinon.stub(),
+      deleteByIds: sinon.stub(),
       exists: sinon.stub().resolves(false),
       list: sinon.stub().resolves([]),
       counts: sinon.stub().resolves({ unread: 2, read: 3, archived: 1 }),

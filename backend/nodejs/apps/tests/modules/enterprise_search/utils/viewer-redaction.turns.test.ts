@@ -10,6 +10,7 @@ import {
   type Readable,
   type ViewerMessage,
 } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { settlesAt } from '../../../helpers/settles-at'
 
 /**
  * The per-record view withholds an answer whole when anything its turn's question names is unreadable to the reader.
@@ -72,8 +73,6 @@ const store = (rows: Array<ViewerMessage & Record<string, unknown>>) =>
   )
 /** A store that never answers, as a database that is not connected holds a read. */
 const silent = () => sinon.stub().returns(new Promise(() => undefined))
-/** Well inside the 10 s a database that is not there holds a read, and far past a 50 ms deadline. */
-const BOUND_MS = 1_000
 
 const hiddenOf = (m: object | undefined) => (m as { answerHidden?: unknown } | undefined)?.answerHidden
 
@@ -148,11 +147,11 @@ describe('the per-record view judges an answer with its whole turn', () => {
 
     it('a turn the store has not answered by the read’s deadline leaves its answer unconfirmed, at the deadline', async () => {
       const known = knownFor(CAROL)
-      const started = Date.now()
-      known.deadline = started + 50
-      const [out] = await redactWithTurns(appConfig, viewerOf(CAROL, ORG), [answer(2)], ownerOf, { known, rowsBefore: silent() })
+      const [out] = await settlesAt(50, () => {
+        known.deadline = Date.now() + 50
+        return redactWithTurns(appConfig, viewerOf(CAROL, ORG), [answer(2)], ownerOf, { known, rowsBefore: silent() })
+      })
       expect(hiddenOf(out)).to.deep.equal(UNCONFIRMED)
-      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
     })
   })
 
@@ -194,22 +193,23 @@ describe('the per-record view judges an answer with its whole turn', () => {
 
     it('a first turn the store has not placed by the read’s deadline is unread: its answer is unconfirmed, at the deadline', async () => {
       const known = knownFor(CAROL)
-      const started = Date.now()
-      known.deadline = started + 50
       const placesOf = sinon.stub().returns(new Promise(() => undefined))
-      const [out] = await redactWithTurns(appConfig, viewerOf(CAROL, ORG), [bare(answer(2))], ownerOf, { known, sessionId: ROOM, rowsBefore: store([question(1)]), placesOf })
+      const [out] = await settlesAt(50, () => {
+        known.deadline = Date.now() + 50
+        return redactWithTurns(appConfig, viewerOf(CAROL, ORG), [bare(answer(2))], ownerOf, { known, sessionId: ROOM, rowsBefore: store([question(1)]), placesOf })
+      })
       expect(hiddenOf(out)).to.deep.equal(UNCONFIRMED)
-      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
     })
   })
 
   describe('storedAnswerShown', () => {
     it('an answer the store has not read by the read’s deadline is not shown', async () => {
       const known = knownFor(CAROL)
-      const started = Date.now()
-      known.deadline = started + 50
-      expect(await storedAnswerShown(appConfig, viewerOf(CAROL, ORG), ROOM, 2, ownerOf, { known, rowsBefore: silent() })).to.equal(false)
-      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
+      const shown = await settlesAt(50, () => {
+        known.deadline = Date.now() + 50
+        return storedAnswerShown(appConfig, viewerOf(CAROL, ORG), ROOM, 2, ownerOf, { known, rowsBefore: silent() })
+      })
+      expect(shown).to.equal(false)
     })
   })
 
@@ -266,10 +266,8 @@ describe('the per-record view judges an answer with its whole turn', () => {
     })
 
     it('gives up a read the store has not answered by the read’s deadline: the page stays as it came, in chat order', async () => {
-      const started = Date.now()
-      const out = await withWholeTurns([card(4), question(3)], ROOM, ORG, { rowsBefore: silent(), deadline: started + 50 })
+      const out = await settlesAt(50, () => withWholeTurns([card(4), question(3)], ROOM, ORG, { rowsBefore: silent(), deadline: Date.now() + 50 }))
       expect(ids(out)).to.deep.equal(['q3', 'c4'])
-      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
     })
   })
 })

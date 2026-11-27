@@ -39,8 +39,8 @@ describe('createKeyedRateLimiter 429 body', () => {
     expect(status).to.equal(429)
     expect(body).to.deep.equal({ jsonrpc: '2.0', error: { code: -32000, message: 'Slow down' } })
     expect(seen).to.have.length(1)
-    expect(seen[0][0]).to.equal('Slow down')
-    expect(seen[0][1]).to.be.a('number')
+    expect(seen[0]![0]).to.equal('Slow down')
+    expect(seen[0]![1]).to.be.a('number')
   })
 
   it('a limiter with a code writes {code, message, details: {retryAfter}}', async () => {

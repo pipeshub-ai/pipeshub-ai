@@ -14,7 +14,7 @@ describe('a new version of an answer keeps the share of the version it replaces'
   it('the agents it stays with and the shares it counts on are archived with it', () => {
     const consent = { by: 'dana', at: new Date(0), ver: 'v1', scope: 'everyone' as const, agents: ['X'], on: [{ row: 'r0', ver: 'v0' }, { row: 'copy', ver: '' }] };
     const [entry] = archivedLabelHistory({ messageType: 'bot_response', labelVer: 'v1', provenance: label, consent })!;
-    expect(entry.consent).to.deep.equal(consent);
+    expect(entry!.consent).to.deep.equal(consent);
   });
 
   it('a share of another version is not archived with this one', () => {
@@ -26,6 +26,6 @@ describe('a new version of an answer keeps the share of the version it replaces'
 
   it('an answer never shared archives as before', () => {
     const [entry] = archivedLabelHistory({ messageType: 'bot_response', labelVer: 'v1', provenance: label })!;
-    expect(Object.keys(entry).sort()).to.deep.equal(['provenance', 'ver']);
+    expect(Object.keys(entry!).sort()).to.deep.equal(['provenance', 'ver']);
   });
 });

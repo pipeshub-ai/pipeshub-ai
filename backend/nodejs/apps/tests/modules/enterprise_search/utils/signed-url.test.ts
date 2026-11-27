@@ -70,10 +70,10 @@ describe('signed-url helpers', () => {
         `https://${'a'.repeat(300000)}`,
         '![a](https://h/?'.repeat(20000),
       ]
+      // None holds a signed link, so each comes back as it was. A pattern that backtracks takes minutes on them and a
+      // linear pass milliseconds: the test's own timeout is the bound, where one on the host's clock fails a busy gate.
       for (const input of inputs) {
-        const start = Date.now()
-        stripSignedUrlLinks(input)
-        expect(Date.now() - start).to.be.lessThan(1000)
+        expect(stripSignedUrlLinks(input) === input, `${String(input.length)} characters`).to.equal(true)
       }
     })
 

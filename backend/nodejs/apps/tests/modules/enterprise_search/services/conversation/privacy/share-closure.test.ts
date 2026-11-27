@@ -8,6 +8,7 @@ import type {
 import {
   consentCoversViewer,
   fullCheck,
+  ShareAudience,
   ShareClosureDeps,
   ShareableRow,
   widenCheck,
@@ -202,7 +203,8 @@ describe('the share check: an answer and everything it built on', () => {
       const d3 = answer('d3', DANA, { parents: [parentOf(d2)] });
       const world = { rows: [c, d1, d2, d3], opens: { [DANA]: [] as string[], [CAROL]: [R] } };
       for (const row of [d1, d2, d3]) {
-        for (const audience of ['everyone', { userIds: [BOB] }, 'outside'] as const) {
+        const audiences: ShareAudience[] = ['everyone', { userIds: [BOB] }, 'outside'];
+        for (const audience of audiences) {
           const out = await widenCheck(depsOf(world), row, row.labelVer, audience);
           expect(out, `${String(row._id)} ${JSON.stringify(audience)}`).to.deep.equal({ ok: false, code: 'SHARE_NOT_WIDENABLE' });
         }

@@ -180,7 +180,8 @@ describe('closures give the verdicts of the walk they replace', function () {
       for (const row of world.rows) {
         if (row.messageType !== 'bot_response' && row.messageType !== 'error') continue
         const session = world.shareSessions.get(String(row.sessionId))
-        for (const audience of ['everyone', 'outside', { outside: [CAROL, BOB, IVY] }, { userIds: [CAROL, BOB, IVY] }] as const) {
+        const audiences: closures.WidenAudience[] = ['everyone', 'outside', { outside: [CAROL, BOB, IVY] }, { userIds: [CAROL, BOB, IVY] }]
+        for (const audience of audiences) {
           const opts = { deps, ...(session !== undefined && { session }) }
           const widened = await closures.widenOK(row, currentOf(row), audience, opts)
           const a = JSON.stringify(widened)

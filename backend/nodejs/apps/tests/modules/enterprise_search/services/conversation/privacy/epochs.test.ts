@@ -11,6 +11,7 @@ import {
   redisEpochSource,
   unavailableEpochSource,
 } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/epochs'
+import { settlesAt } from '../../../../../helpers/settles-at'
 
 const ORG = '6566c3a6f0a1b2c3d4e5f601'
 const DANA = '6566c3a6f0a1b2c3d4e5f6aa'
@@ -93,9 +94,7 @@ describe('permission epochs: a store that hangs', () => {
 
   it('holds a read no longer than its deadline, and the read is "unknown"', async () => {
     const store = hanging()
-    const started = Date.now()
-    expect(await readEpochs(failFastEpochSource(store.source), KEYS)).to.equal(null)
-    expect(Date.now() - started).to.be.below(EPOCH_READ_TIMEOUT_MS + 200)
+    expect(await settlesAt(EPOCH_READ_TIMEOUT_MS, () => readEpochs(failFastEpochSource(store.source), KEYS))).to.equal(null)
     expect(EPOCH_READ_TIMEOUT_MS).to.be.at.most(250)
   })
 

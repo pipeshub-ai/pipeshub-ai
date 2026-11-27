@@ -28,6 +28,7 @@ import { labelContentHash } from '../../../../../../src/modules/enterprise_searc
 import { formatPreviousConversations } from '../../../../../../src/modules/enterprise_search/utils/utils'
 import type { EpochSource } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/epochs'
 import type { Readable } from '../../../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { settlesAt } from '../../../../../helpers/settles-at'
 
 const ORG = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 const ROOM = 'bbbbbbbbbbbbbbbbbbbbbbbb'
@@ -2442,10 +2443,8 @@ describe('the reader check: who may see an answer', () => {
       const old = legacy('Old: R says the launch moved.', [R])
       const fresh = builtOn(old, IVY)
       const w = legacyWorld([old, fresh], { rowsUpTo: () => new Promise(() => undefined) })
-      const started = Date.now()
-      const verdicts = await visibleRows(reader(CAROL), session, [fresh], { deps: w.deps, member: true, timeoutMs: 50 })
+      const verdicts = await settlesAt(50, () => visibleRows(reader(CAROL), session, [fresh], { deps: w.deps, member: true, timeoutMs: 50 }))
       expect(verdicts.get(String(fresh._id))?.verdict).to.equal('unchecked')
-      expect(Date.now() - started).to.be.lessThan(1_000)
     })
 
     it('never through the old view: a row written under the rules, a full parent, or one labelled since', async () => {

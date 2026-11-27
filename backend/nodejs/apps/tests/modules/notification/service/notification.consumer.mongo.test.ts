@@ -41,7 +41,7 @@ const uri = process.env.PCC_MONGO_URI;
     await OutboxEvent.deleteMany(redeliveries);
     sinon
       .stub(RecipientResolver, 'resolveNotificationRecipientUserIds')
-      .callsFake(async (_org, ids) => (ids ?? []).map((id) => new Types.ObjectId(id)));
+      .callsFake(async (_org, ids) => ((ids as string[] | undefined) ?? []).map((id) => new Types.ObjectId(id)) as never);
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() };
     const broker = {
       isConnected: () => true,

@@ -135,7 +135,8 @@ describe('user_query authorship', () => {
   it('carries only the author fields it was given, and nothing for a legacy caller', () => {
     const author = new mongoose.Types.ObjectId()
     const plain = buildUserQueryMessage('q')
-    const stamped = buildUserQueryMessage('q', undefined, 'quick', undefined, undefined, { authorUserId: author, clientMessageId: 'k', filesShared: false, runId: undefined })
+    // `clientMessageId` is an edition's field: the builder carries whatever author fields it is given.
+    const stamped = buildUserQueryMessage('q', undefined, 'quick', undefined, undefined, { authorUserId: author, clientMessageId: 'k', filesShared: false, runId: undefined } as never)
     expect(plain).to.not.have.any.keys('authorUserId', 'clientMessageId', 'filesShared', 'shareToolResults', 'runId')
     expect(stamped).to.include({ authorUserId: author, clientMessageId: 'k', filesShared: false })
     expect(stamped).to.not.have.any.keys('runId', 'shareToolResults')
@@ -954,8 +955,8 @@ describe('Saving chat answers (enterprise search utils)', () => {
       await attachSharedBy([{ initiator }], orgId)
 
       expect(find.calledOnce).to.equal(true)
-      expect(find.calledWithMatch({ isDeleted: false })).to.equal(true)
-      const [filter] = find.firstCall.args as [Record<string, any>]
+      expect(find.calledWithMatch({ isDeleted: false } as never)).to.equal(true)
+      const [filter] = find.firstCall.args as unknown as [Record<string, any>]
       expect(Object.keys(filter).sort()).to.deep.equal(['_id', 'isDeleted', 'orgId'])
       expect(filter.orgId).to.be.instanceOf(mongoose.Types.ObjectId)
       expect(filter._id.$in[0]).to.be.instanceOf(mongoose.Types.ObjectId)

@@ -49,7 +49,7 @@ describe('notification controller: the token-scope filter on every query', () =>
           next,
         );
         expect(next.called, String(next.firstCall?.args[0])).to.equal(false);
-        const filter = update.firstCall.args[0] as Record<string, unknown>;
+        const filter = update.firstCall.args[0] as unknown as Record<string, unknown>;
         if (hidden) expect(filter.type).to.deep.equal(HIDDEN);
         else expect(filter).to.not.have.property('type');
       });
@@ -64,10 +64,11 @@ describe('notification controller: the token-scope filter on every query', () =>
       const count = sinon.stub(Notifications, 'countDocuments').resolves(0 as never);
       const many = sinon.stub(Notifications, 'updateMany').resolves({ modifiedCount: 0 } as never);
       const user = { ...ids(), ...token };
-      await listNotifications()({ user, query: {} } as never, res() as never, sinon.stub());
-      await getNotificationStats({ user } as never, res() as never, sinon.stub());
-      await markAllRead({ user } as never, res() as never, sinon.stub());
-      const filters = [find.firstCall.args[0], ...count.getCalls().map((c) => c.args[0]), many.firstCall.args[0]] as Record<string, unknown>[];
+      const next = sinon.stub();
+      await listNotifications()({ user, query: {} } as never, res() as never, next);
+      await getNotificationStats({ user } as never, res() as never, next);
+      await markAllRead({ user } as never, res() as never, next);
+      const filters = [find.firstCall.args[0], ...count.getCalls().map((c) => c.args[0]), many.firstCall.args[0]] as unknown as Record<string, unknown>[];
       expect(filters).to.have.length(5);
       for (const f of filters) {
         if (hidden) expect(f.type).to.deep.equal(HIDDEN);

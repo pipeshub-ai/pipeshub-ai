@@ -207,7 +207,8 @@ describe('Enterprise Search Utils', () => {
       const read = sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: id, messageType: 'tool_call' } as any)
       const retire = sinon.stub(ChatSessionMessage, 'updateOne').resolves({ matchedCount: 0 } as any)
       const upd = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
-      await retireMessagesById([id], { sessionId, orgId })
+      // The ids go into the filters as given: strings here, as the other helpers of this block take them.
+      await retireMessagesById([id], { sessionId, orgId } as never)
       await appendMessageFeedback(id, orgId, {})
       expect(read.firstCall.args[0]).to.deep.include({ _id: id, orgId, sessionId })
       expect(retire.firstCall.args[0]).to.deep.include({ _id: id, orgId, sessionId })
@@ -2192,7 +2193,7 @@ describe('Enterprise Search Utils', () => {
 
       await deleteAgentConversation(new mongoose.Types.ObjectId(VALID_OID), 'agent-1', 'caller-1', VALID_OID2)
 
-      const filter = findOneStub.firstCall.args[0] as Record<string, unknown>
+      const filter = findOneStub.firstCall.args[0] as unknown as Record<string, unknown>
       expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', isDeleted: false })
       expect(filter).to.not.have.property('userId')
     })
@@ -4031,6 +4032,9 @@ describe('chatSessions helpers', () => {
           return rest as typeof conversation
         },
         viewRunFailures: (conversation) => conversation,
+        viewSources: (rows) => Promise.resolve(rows),
+        rowShownTo: () => Promise.resolve(true),
+        viewOthersRow: (view) => view,
       },
     })
     try {
@@ -4213,7 +4217,7 @@ describe('chatSessions helpers', () => {
     })
     expect(chain.sort.firstCall.args[0]).to.deep.equal({ lastActivityAt: -1, _id: -1 })
     expect(chain.limit.firstCall.args[0]).to.equal(10000)
-    expect(agg.firstCall.args[0][0].$match.sessionId).to.deep.equal({ $in: [accessible] })
+    expect((agg.firstCall.args[0][0] as { $match: { sessionId: unknown } }).$match.sessionId).to.deep.equal({ $in: [accessible] })
   })
 
   it('findSessionIdsMatchingContent matches the caller\'s own questions and answers only, never tool output', async () => {

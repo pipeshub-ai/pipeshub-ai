@@ -40,9 +40,10 @@ describe('catchAsync', () => {
       { headersSent: false, writableEnded: false },
     ]) {
       const end = sinon.stub();
+      const next = sinon.stub();
       await catchAsync<object>(async () => {
         throw new Error('x');
-      })({}, { ...r, end } as never, sinon.stub());
+      })({}, { ...r, end } as never, next);
       expect(end.called).to.equal(false);
     }
   });

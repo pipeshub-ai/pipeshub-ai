@@ -30,7 +30,7 @@ import {
 } from '../../../src/modules/enterprise_search/utils/utils';
 import { historyTurns } from '../../../src/modules/enterprise_search/utils/utils';
 import { extendLedger, HistoryLedger } from '../../../src/modules/agent-harness/domain/session-import';
-import { inMongoTransaction, mongoTx } from '../../../src/libs/repositories/agent-harness/durable-transaction/mongo';
+import { inMongoTransaction } from '../../../src/libs/repositories/agent-harness/durable-transaction/mongo';
 import { HarnessRun } from '../../../src/modules/agent-harness/domain/execution';
 import { RunTranscript, UserTurn } from '../../../src/modules/agent-harness/ports/conversation-writer';
 import {
@@ -100,7 +100,7 @@ class LegacyWriter {
       ...buildUserQueryMessage(turn.query, undefined, turn.chatMode, turn.attachments as never),
       ...(turn.senderId !== undefined ? { senderId: new Types.ObjectId(turn.senderId) } : {}),
     };
-    await this.accounted(sessionId, tx, () => appendMessages(sessionId, ORG, [message], mongoTx(tx)));
+    await this.accounted(sessionId, tx, () => appendMessages(sessionId, ORG, [message], tx));
   }
 
   async saveRunTranscript(run: HarnessRun, transcript: RunTranscript, tx: ClientSession): Promise<boolean> {
@@ -111,7 +111,7 @@ class LegacyWriter {
         await markConversationFailed(
           conversation,
           transcript.message,
-          mongoTx(tx),
+          tx,
           transcript.code,
           undefined,
           undefined,
@@ -130,13 +130,13 @@ class LegacyWriter {
             updatedAt: new Date(),
           }) as unknown as IMessage,
       );
-      if (questions.length > 0) await appendMessages(run.sessionId, run.orgId, questions, mongoTx(tx));
+      if (questions.length > 0) await appendMessages(run.sessionId, run.orgId, questions, tx);
       const reread = (await this.session(run, tx))!;
       await saveCompleteConversation(
         reread,
         transcript.completion as unknown as IAIResponse,
         run.orgId,
-        mongoTx(tx),
+        tx,
         run.input?.model as IAIModel | undefined,
       );
       await ChatSessionMessage.findOneAndUpdate(

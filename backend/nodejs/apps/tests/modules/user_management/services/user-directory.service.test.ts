@@ -45,7 +45,7 @@ describe('MongoUserDirectory', () => {
     const names = await new MongoUserDirectory().displayNames(org, [a.toString(), a.toString(), 'bad'])
 
     expect(find.calledOnce).to.equal(true)
-    const [filter] = find.firstCall.args as [{ orgId: mongoose.Types.ObjectId; isDeleted: boolean; _id: { $in: unknown[] } }]
+    const [filter] = find.firstCall.args as unknown as [{ orgId: mongoose.Types.ObjectId; isDeleted: boolean; _id: { $in: unknown[] } }]
     expect(filter.orgId.toString()).to.equal(org)
     expect(filter.isDeleted).to.equal(false)
     expect(filter._id.$in).to.have.length(1)
@@ -136,7 +136,7 @@ describe('MongoUserDirectory.searchOrgMembers', () => {
 
     const out = await new MongoUserDirectory().searchOrgMembers(org, 'jo sm.*', 7)
 
-    const [filter] = find.firstCall.args as [Record<string, any>]
+    const [filter] = find.firstCall.args as unknown as [Record<string, any>]
     expect(filter.orgId.toString()).to.equal(org)
     expect(filter.isDeleted).to.equal(false)
     expect(filter.isDisabled).to.deep.equal({ $ne: true })
@@ -200,7 +200,7 @@ describe('MongoUserDirectory.listOrgMembers', () => {
 
     const out = await new MongoUserDirectory().listOrgMembers(org, 5, [left.toString(), 'not-an-id'])
 
-    const [filter] = find.firstCall.args as [Record<string, any>]
+    const [filter] = find.firstCall.args as unknown as [Record<string, any>]
     expect(filter.orgId.toString()).to.equal(org)
     expect(filter.isDeleted).to.equal(false)
     expect(filter.isDisabled).to.deep.equal({ $ne: true })
@@ -216,7 +216,7 @@ describe('MongoUserDirectory.listOrgMembers', () => {
 
     await new MongoUserDirectory().listOrgMembers(org, 5)
 
-    const [filter] = find.firstCall.args as [Record<string, any>]
+    const [filter] = find.firstCall.args as unknown as [Record<string, any>]
     expect(filter.hasLoggedIn).to.deep.equal({ $ne: false })
     expect(filter.fullName).to.deep.equal({ $gt: '' })
   })

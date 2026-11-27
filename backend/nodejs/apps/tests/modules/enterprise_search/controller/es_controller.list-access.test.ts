@@ -192,7 +192,7 @@ describe('es_controller list surfaces', () => {
         it('GET /show/archives/search matches archived chats by title, plus own archived agent chats', async () => {
           seedWorld()
           sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
-          sinon.stub(ChatSession, 'aggregate').callsFake((async ([stage]: Array<{ $match: Filter }>) =>
+          sinon.stub(ChatSession, 'aggregate').callsFake((async ([stage]: [{ $match: Filter }]) =>
             ChatSession.find(stage.$match as never).lean().exec()) as never)
           const handler = withListScope(
             controller.searchArchivedConversations(appConfig) as JsonHandler,
@@ -279,7 +279,7 @@ describe('es_controller list surfaces', () => {
       const mine = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'my notes' })
       const matching = [...others, mine].map((s) => ({ sessionId: s._id, content: 'needle in here' }))
       // Groups come back in insertion order and are capped, as in the real pipeline.
-      sinon.stub(ChatSessionMessage, 'aggregate').callsFake((async ([{ $match }, , { $limit }]: Array<Record<string, any>>) => {
+      sinon.stub(ChatSessionMessage, 'aggregate').callsFake((async ([{ $match }, , { $limit }]: [Record<string, any>, unknown, Record<string, any>]) => {
         const allowed = $match.sessionId ? new Set($match.sessionId.$in.map(String)) : undefined
         return matching
           .filter((m) => !allowed || allowed.has(String(m.sessionId)))

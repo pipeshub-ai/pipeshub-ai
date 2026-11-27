@@ -1,6 +1,7 @@
 import { expect } from 'chai';
 import { ESLint, Linter } from 'eslint';
-import * as tsParser from '@typescript-eslint/parser';
+// The meta package's types resolve under this project's moduleResolution; @typescript-eslint/parser's need node16.
+import { parser as tsParser } from 'typescript-eslint';
 
 // ts-node compiles to CJS; the config module is ESM.
 // eslint-disable-next-line @typescript-eslint/no-implied-eval -- a real import(), which ts-node would turn into require()
@@ -11,7 +12,7 @@ const importEsm = new Function('s', 'return import(s)') as (
 const DOMAIN_FILES = [
   'src/modules/authz/domain/fixture.ts',
   'src/modules/enterprise_search/services/conversation/domain/fixture.ts',
-];
+] as const;
 const OUTSIDE_FILE = 'src/modules/authz/service/fixture.ts';
 
 const lint = async (code: string, filePath: string): Promise<string[]> => {
@@ -25,6 +26,7 @@ const lint = async (code: string, filePath: string): Promise<string[]> => {
     ],
   });
   const [result] = await eslint.lintText(code, { filePath });
+  if (!result) throw new Error(`eslint returned no result for ${filePath}`);
   return result.messages.map((m) => `${m.ruleId}: ${m.message}`);
 };
 

@@ -7,6 +7,7 @@ import { ACTORS } from '../helpers/conversation-world'
 import { Kind, turnWorld, worldAppConfig } from '../helpers/turn-world'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { conversationContextOf } from '../../../../src/modules/enterprise_search/services/conversation/http/conversation-context'
 
 const SOLO = { projectId: undefined, projectVisibility: undefined, isShared: false, sharedWith: [] }
 const BODY = { query: 'And the roadmap?', runId: 'client-run-1', clientMessageId: 'k-1', baseSeq: 0, filesShared: true }
@@ -49,7 +50,8 @@ describe('by default a follow-up behaves as before', () => {
       await w.answerStream('Roadmap.')
       await turn.res.ended
 
-      expect(turn.lease).to.equal(undefined)
+      // Where `runLease()` puts one: the default guards take none.
+      expect(conversationContextOf(turn.req).lease).to.equal(undefined)
       const payload = w.s.ai.streamCalls[0]!.body
       expect(payload).to.deep.equal({ ...legacyPayload(kind, w.s.ids[kind], priorHistory, priorLabel), protocol: 'agui' })
       expect(turn.res.headers).to.not.have.property('x-run-id')

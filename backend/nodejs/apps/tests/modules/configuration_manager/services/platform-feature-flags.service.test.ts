@@ -5,6 +5,8 @@ import * as cmConfig from '../../../../src/modules/configuration_manager/config/
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { FixedClock } from '../../../../src/libs/types/clock'
 import { PlatformFeatureFlags } from '../../../../src/modules/configuration_manager/services/platform-feature-flags.service'
+import { FAIL_FAST_CACHE_TIMEOUT_MS } from '../../../../src/libs/services/cache/fail-fast-cache'
+import { settlesAt } from '../../../helpers/settles-at'
 
 /** Two flags that default to off. */
 const FLAG_KEYS = { stored: 'ENABLE_API_TOOLSETS', unset: 'ENABLE_PROJECTS' } as const
@@ -67,9 +69,7 @@ describe('PlatformFeatureFlags', () => {
     await flags.isEnabled(FLAG_KEYS.stored)
     clock.advance(10_000)
     kvGet.returns(new Promise(() => undefined)) // Redis paused: the read never settles
-    const started = Date.now()
-    expect(await flags.isEnabled(FLAG_KEYS.stored)).to.equal(true)
-    expect(Date.now() - started).to.be.lessThan(1_000)
+    expect(await settlesAt(FAIL_FAST_CACHE_TIMEOUT_MS, () => flags.isEnabled(FLAG_KEYS.stored))).to.equal(true)
     expect(await flags.isEnabled(FLAG_KEYS.stored)).to.equal(true)
     expect(kvGet.callCount, 'not read again within the TTL').to.equal(2)
   })

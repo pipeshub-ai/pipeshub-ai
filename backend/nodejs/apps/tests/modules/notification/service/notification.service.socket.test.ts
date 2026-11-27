@@ -370,7 +370,7 @@ describe('NotificationService over a real socket', () => {
       expect(upgraded).to.equal(400);
 
       await waitFor(() => warn.getCalls().filter((c) => c.args[0] === 'socket.engine.connection_error').length === 2);
-      const lines = warn.getCalls().filter((c) => c.args[0] === 'socket.engine.connection_error').map((c) => c.args[1]);
+      const lines = warn.getCalls().filter((c) => c.args[0] === 'socket.engine.connection_error').map((c) => (c.args as unknown[])[1]);
       expect(lines).to.deep.equal([
         { code: 1, message: 'Session ID unknown', transport: 'polling', upgrade: false, userAgent: 'TestBrowser/1.0' },
         { code: 1, message: 'Session ID unknown', transport: 'websocket', upgrade: true, userAgent: 'TestBrowser/1.0' },
@@ -801,10 +801,10 @@ describe('NotificationService over a real socket', () => {
 
       const listed = await service.localSocketsIn('room-1');
       expect(listed.map((s) => s.data.userId)).to.deep.equal([alice.userId]);
-      listed[0].emit('just-you', { n: 3 });
+      listed[0]!.emit('just-you', { n: 3 });
       expect(await here.nextEvent()).to.deep.equal(['just-you', { n: 3 }]);
-      listed[0].join('room-2');
-      listed[0].leave('room-1');
+      listed[0]!.join('room-2');
+      listed[0]!.leave('room-1');
       await waitFor(() => socketsInRoom('room-1') === 0);
       expect((await service.localSocketsIn('room-2')).map((s) => s.data.userId)).to.deep.equal([alice.userId]);
     });

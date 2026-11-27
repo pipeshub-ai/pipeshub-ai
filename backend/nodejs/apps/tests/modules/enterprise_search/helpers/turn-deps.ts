@@ -5,7 +5,7 @@ import { MongoConversationHistory } from '../../../../src/modules/enterprise_sea
 export function turnDeps(over: Partial<ConversationTurnDeps> = {}): ConversationTurnDeps {
   return {
     feed: new MongoConversationHistory(),
-    users: { displayNames: async () => new Map(), findByIds: async () => [] },
+    users: { displayNames: async () => new Map(), findByIds: async () => [], searchOrgMembers: async () => [] },
     ...over,
   }
 }

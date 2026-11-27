@@ -98,7 +98,6 @@ import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegati
 import * as localReposRoutes from '../src/modules/local_repos/routes/local_repos.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
-import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 
 // ---------------------------------------------------------------------------
 // Helpers

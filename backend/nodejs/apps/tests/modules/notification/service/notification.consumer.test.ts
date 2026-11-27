@@ -464,7 +464,7 @@ describe('notification/service/notification.consumer', () => {
       mockConsumer.isConnected.returns(true);
       sinon
         .stub(RecipientResolver, 'resolveNotificationRecipientUserIds')
-        .callsFake(async (_org, ids) => (ids ?? []).map((id) => new mongoose.Types.ObjectId(id)));
+        .callsFake(async (_org, ids) => ((ids as string[] | undefined) ?? []).map((id) => new mongoose.Types.ObjectId(id)) as never);
       insertManyStub = sinon.stub(NotificationSchema.Notifications, 'insertMany');
       await consumer.consume(sinon.stub().resolves());
       const wrapped = mockConsumer.consume.firstCall.args[0];
@@ -614,7 +614,7 @@ describe('notification/service/notification.consumer', () => {
       mockConsumer.isConnected.returns(true);
       sinon
         .stub(RecipientResolver, 'resolveNotificationRecipientUserIds')
-        .callsFake(async (_org, ids) => (ids ?? []).map((id) => new mongoose.Types.ObjectId(id)));
+        .callsFake(async (_org, ids) => ((ids as string[] | undefined) ?? []).map((id) => new mongoose.Types.ObjectId(id)) as never);
       insertManyStub = sinon
         .stub(NotificationSchema.Notifications, 'insertMany')
         .callsFake(async (docs: unknown) =>

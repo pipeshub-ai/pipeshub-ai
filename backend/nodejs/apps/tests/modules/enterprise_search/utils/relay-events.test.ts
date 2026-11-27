@@ -147,7 +147,8 @@ describe('stream relay: what reaches the browser', () => {
     const seen: Array<[unknown, string]> = []
     sinon.stub(sanitizer, 'sanitizeAnswerDelta').callsFake((state, text) => {
       seen.push([state, text])
-      return { state: { n: ((state as { n?: number } | undefined)?.n ?? 0) + 1 }, out: text.toUpperCase() }
+      // A counter stands in for the sanitiser's state: only which state goes with which message is checked.
+      return { state: { n: ((state as { n?: number } | undefined)?.n ?? 0) + 1 } as never, out: text.toUpperCase() }
     })
     const relay = new StreamRelay()
     expect(relayed(relay, 'TEXT_MESSAGE_CONTENT', { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'ab', runId: RUN })?.delta).to.equal('AB')
@@ -160,7 +161,7 @@ describe('stream relay: what reaches the browser', () => {
     const seen: unknown[] = []
     sinon.stub(sanitizer, 'sanitizeAnswerDelta').callsFake((state, text) => {
       seen.push(state)
-      return { state: { n: ((state as { n?: number } | undefined)?.n ?? 0) + 1 }, out: text }
+      return { state: { n: ((state as { n?: number } | undefined)?.n ?? 0) + 1 } as never, out: text }
     })
     const relay = new StreamRelay()
     const content = (fields: Row) => relayed(relay, 'TEXT_MESSAGE_CONTENT', { type: 'TEXT_MESSAGE_CONTENT', delta: 'x', ...fields })

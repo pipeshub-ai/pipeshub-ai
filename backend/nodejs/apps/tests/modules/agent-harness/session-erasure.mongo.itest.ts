@@ -85,6 +85,7 @@ import { Conversation } from '../../../src/modules/enterprise_search/schema/conv
 import { AgentConversation } from '../../../src/modules/enterprise_search/schema/agent.conversation.schema';
 import { HarnessConversationRetention } from '../../../src/libs/repositories/agent-harness/conversation-retention/mongo';
 import { deleteConversationByIdWith } from '../../../src/modules/enterprise_search/controller/es_controller';
+import { behindGuard, realGuards } from '../enterprise_search/helpers/guarded-chat';
 import { SessionRunStopper } from '../../../src/modules/agent-harness/application/session-run-stopper';
 import * as conversationArtifacts from '../../../src/modules/artifacts/services/conversation-artifacts.service';
 import type { AppConfig } from '../../../src/modules/tokens_manager/config/config';
@@ -399,14 +400,15 @@ describe('E7 session erasure on a MongoDB replica set', function () {
     const a = await seed(w, { running: true });
     const live = a.liveRunId!;
     const stopper = new SessionRunStopper({ runs: w.harness.backend.executionStore, executions: w.harness.service });
-    const handler = deleteConversationByIdWith({} as AppConfig, w.jobs, stopper);
+    // As the route mounts it: the delete guard grants the chat, then the handler deletes it.
+    const handler = behindGuard(realGuards(), 'delete', deleteConversationByIdWith({} as AppConfig, w.jobs, stopper));
     const cleanup = sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves();
     let status = 0;
     try {
       await handler(
         { params: { conversationId: a.sessionId }, user: { userId: w.harness.tenant.actorId, orgId: a.orgId }, context: {} } as never,
         { status: (code: number) => ({ json: () => { status = code; } }) } as never,
-        (error: unknown) => { throw error; },
+        ((error: unknown) => { throw error; }) as never,
       );
     } finally {
       cleanup.restore();
@@ -424,7 +426,7 @@ describe('E7 session erasure on a MongoDB replica set', function () {
   it('ER-1, ER-18: deleting a chat conversation enqueues its erasure in the delete transaction, due at once; a repeat adds none', async () => {
     const w = world();
     const a = await seed(w, { running: false });
-    const handler = deleteConversationByIdWith({} as AppConfig, w.jobs);
+    const handler = behindGuard(realGuards(), 'delete', deleteConversationByIdWith({} as AppConfig, w.jobs));
     const call = async () => {
       let status = 0;
       let failure: unknown;
@@ -434,7 +436,7 @@ describe('E7 session erasure on a MongoDB replica set', function () {
         await handler(
           { params: { conversationId: a.sessionId }, user: { userId: w.harness.tenant.actorId, orgId: a.orgId }, context: {} } as never,
           { status: (code: number) => ({ json: () => { status = code; } }) } as never,
-          (error: unknown) => { failure = error; },
+          ((error: unknown) => { failure = error; }) as never,
         );
       } finally {
         cleanup.restore();
@@ -462,7 +464,7 @@ describe('E7 session erasure on a MongoDB replica set', function () {
     const orgId = new Types.ObjectId().toString();
     const userId = new Types.ObjectId().toString();
     const session = await ChatSession.create({ sessionType: 'agent', agentKey: 'agent-1', userId, orgId, initiator: userId, title: SENTINEL });
-    const deleted = await deleteAgentConversation(String(session._id), 'agent-1', userId, orgId, async (tx) => {
+    const deleted = await deleteAgentConversation(session._id, 'agent-1', userId, orgId, async (tx) => {
       await w.jobs.enqueue({ orgId, sessionId: String(session._id), reason: 'user_delete', by: `p_${userId}` }, tx);
     });
     expect(deleted?.isDeleted).to.equal(true);
@@ -470,7 +472,7 @@ describe('E7 session erasure on a MongoDB replica set', function () {
     expect((await ChatSession.findById(session._id).select('+erasureRequestedAt').lean())?.erasureRequestedAt, 'BF-2').to.be.a('number');
     // Without an erasure queue the delete asks for none.
     const plain = await ChatSession.create({ sessionType: 'agent', agentKey: 'agent-1', userId, orgId, initiator: userId, title: SENTINEL });
-    await deleteAgentConversation(String(plain._id), 'agent-1', userId, orgId);
+    await deleteAgentConversation(plain._id, 'agent-1', userId, orgId);
     expect((await ChatSession.findById(plain._id).select('+erasureRequestedAt').lean())?.erasureRequestedAt).to.equal(undefined);
   });
 

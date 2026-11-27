@@ -55,14 +55,14 @@ describe('chat test harness: the in-memory store only keeps what was really save
     const read = await ChatSession.findById(stored._id)
     expect(read).to.not.equal(stored)
     read!.title = 'renamed'
-    read!.conversationErrors.push({ message: 'failed once', errorType: 'internal_error' })
+    read!.conversationErrors!.push({ message: 'failed once', errorType: 'internal_error' })
     expect(store.session(stored._id)?.title, 'an unsaved change').to.equal('kept')
     expect(store.session(stored._id)?.conversationErrors).to.have.length(0)
 
     await read!.save()
     const after = store.session(stored._id)
     expect(after?.title).to.equal('renamed')
-    expect(after?.conversationErrors.map((e) => e.message), 'the save’s $push lands once').to.deep.equal(['failed once'])
+    expect(after?.conversationErrors?.map((e) => e.message), 'the save’s $push lands once').to.deep.equal(['failed once'])
   })
 
   it('with copies, what a new conversation’s creator changes after its save reaches the store only by a write', async () => {
@@ -235,7 +235,7 @@ describe('chat test harness: the in-memory store only keeps what was really save
       // server also refuses a filter the update does not use and two filters for one identifier
       const { session } = seed({ sharedWith: [{ userId: oid(), accessLevel: 'write' }] })
       const outcome = (update: Record<string, unknown>, arrayFilters?: Array<Record<string, unknown>>, _id: unknown = session._id): Promise<string> =>
-        ChatSession.updateOne({ _id }, update, arrayFilters ? { arrayFilters } : undefined).then(
+        ChatSession.updateOne({ _id } as never, update, arrayFilters ? { arrayFilters } : undefined).then(
           () => 'written',
           (e: Error) => e.message,
         )

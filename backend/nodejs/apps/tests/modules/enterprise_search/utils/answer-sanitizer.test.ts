@@ -24,7 +24,7 @@ const ENTITIES: Record<string, string> = { colon: ':', sol: '/', bsol: '\\', quo
 const decoded = (text: string): string =>
   text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, body: string) =>
     body[0] === '#'
-      ? String.fromCodePoint(body[1].toLowerCase() === 'x' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10))
+      ? String.fromCodePoint(body[1]!.toLowerCase() === 'x' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10))
       : ENTITIES[body] ?? m,
   )
 const URL_ATTRIBUTE = new RegExp(
@@ -43,7 +43,7 @@ const RAW_MERMAID_ELEMENT = new RegExp(`class\\s*=\\s*["'][^"']*mermaid[^"']*["'
 function liveOutsideUrls(markdown: string): string[] {
   const hits: string[] = []
   for (const text of [decoded(marked.parse(markdown, { async: false }) as string), decoded(markdown)]) {
-    for (const m of text.matchAll(URL_ATTRIBUTE)) if (!(m[1].toLowerCase() === 'a' && m[2].toLowerCase() === 'href')) hits.push(m[0].slice(0, 80))
+    for (const m of text.matchAll(URL_ATTRIBUTE)) if (!(m[1]!.toLowerCase() === 'a' && m[2]!.toLowerCase() === 'href')) hits.push(m[0].slice(0, 80))
     if (CSS_URL.test(text)) hits.push('css url()')
     if (RAW_MERMAID_ELEMENT.test(text)) hits.push('mermaid element')
   }
@@ -261,8 +261,8 @@ describe('sanitizeAnswerMessage', () => {
     }
     const out = sanitizeAnswerMessage(row)
     expect(liveOutsideUrls(out.content)).to.deep.equal([])
-    expect(liveOutsideUrls(out.parts[0].content as string)).to.deep.equal([])
-    expect(liveOutsideUrls((out.parts[1] as { parts: Array<{ content: string }> }).parts[0].content)).to.deep.equal([])
+    expect(liveOutsideUrls(out.parts[0]!.content as string)).to.deep.equal([])
+    expect(liveOutsideUrls((out.parts[1] as { parts: Array<{ content: string }> }).parts[0]!.content)).to.deep.equal([])
     expect(out.parts[2]).to.equal(row.parts[2])
     expect(row.content).to.equal(`![x](${PIXEL})`)
 

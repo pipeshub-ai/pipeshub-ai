@@ -44,6 +44,8 @@ const worldOf = (c: Case): World => {
     rows: c.world.rows,
     store: new Map(c.world.rows.map((r) => [String(r._id), r])),
     sessions: new Map(c.world.sessions.map((s) => [String(s._id), s])),
+    // These seeds read no share.
+    shareSessions: new Map(),
     opens: new Map(Object.entries(c.world.opens).map(([k, v]) => [k, new Set(v)])),
     deleted: new Set(c.world.deleted),
     agents: new Map(Object.entries(c.world.agents).map(([k, v]) => [k, v === null ? undefined : new Set(v)])),

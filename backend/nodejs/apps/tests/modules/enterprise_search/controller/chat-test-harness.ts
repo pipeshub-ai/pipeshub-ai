@@ -209,8 +209,6 @@ const matchesCondition = (candidates: unknown[], condition: unknown, raw: unknow
         return !(argument as unknown[]).some((a) => candidates.some((c) => equals(c, a)))
       case '$exists':
         return candidates.some((c) => c !== undefined) === Boolean(argument)
-      case '$gt':
-        return candidates.some((c) => compare(c, argument, (o) => o > 0))
       case '$gte':
         return candidates.some((c) => compare(c, argument, (o) => o >= 0))
       case '$lt':
@@ -722,12 +720,13 @@ export class InMemoryChatStore {
   /** The unique indexes of `chatSessionMessages`: `{sessionId, seq}` and the partial `{sessionId, authorUserId, clientMessageId}`. */
   assertUniqueKeys(doc: MessageDoc): void {
     const key = (m: MessageDoc, fields: string[]): string => JSON.stringify(fields.map((f) => normalize(m.get(f))))
-    const clientKey = typeof doc.clientMessageId === 'string' ? ['sessionId', 'authorUserId', 'clientMessageId'] : undefined
+    // An edition's field: read by path, as the schema here may not declare it.
+    const clientKey = typeof doc.get('clientMessageId') === 'string' ? ['sessionId', 'authorUserId', 'clientMessageId'] : undefined
     for (const other of this.messages) {
       if (key(other, ['sessionId', 'seq']) === key(doc, ['sessionId', 'seq'])) {
         throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_seq_1'), { code: 11000, keyPattern: { sessionId: 1, seq: 1 } })
       }
-      if (clientKey && typeof other.clientMessageId === 'string' && key(other, clientKey) === key(doc, clientKey)) {
+      if (clientKey && typeof other.get('clientMessageId') === 'string' && key(other, clientKey) === key(doc, clientKey)) {
         throw Object.assign(new Error('E11000 duplicate key error collection: chatSessionMessages index: sessionId_1_authorUserId_1_clientMessageId_1'), {
           code: 11000,
           keyPattern: { sessionId: 1, authorUserId: 1, clientMessageId: 1 },

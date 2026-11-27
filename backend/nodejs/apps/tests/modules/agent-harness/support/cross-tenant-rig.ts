@@ -80,6 +80,11 @@ import { InMemoryMembership } from '../../control-plane/support/in-memory-servic
 import { continueAs } from '../../../helpers/request-org-context';
 import { bindingProof, ringBindingKey } from '../../../../src/modules/agent-harness/domain/sandbox-binding';
 import { ensureRigSecretKey } from './rig-secret-key';
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types';
+import { DefaultConversationGuards } from '../../../../src/modules/enterprise_search/services/conversation/http/default-conversation-guards';
+import { MongoConversationHistory } from '../../../../src/modules/enterprise_search/services/conversation/persistence/message-history';
+import { ProjectServiceAccessAdapter } from '../../../../src/modules/projects/services/project-access.adapter';
+import { MongoUserDirectory } from '../../../../src/modules/user_management/services/user-directory.service';
 
 export type Role = 'owner' | 'peer' | 'admin' | 'member' | 'orgAdmin';
 
@@ -232,6 +237,15 @@ export async function startCrossTenantRig(tenants: readonly Tenant[]): Promise<C
     scopedJwtSecret: 'qa26-scoped',
     storageBackend: 'http://127.0.0.1:9',
     storage: { storageType: 'local' },
+  });
+  // The conversation routes' guards and the turn handlers' dependencies, as the chat container binds them.
+  container
+    .bind(CONVERSATION_TYPES.ConversationGuards)
+    .toConstantValue(new DefaultConversationGuards({ projects: new ProjectServiceAccessAdapter() }));
+  container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue({
+    feed: new MongoConversationHistory(),
+    users: new MongoUserDirectory(),
+    appConfig: container.get('AppConfig'),
   });
   bindAgentHarness(container, {
     sessions: new HarnessChatSessionRepository(),

@@ -761,7 +761,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('refuses a project the caller cannot use before opening the stream', async () => {
-      const handler = streamChat(createMockAppConfig())
+      const handler = streamChat(createMockAppConfig(), turnDeps())
       // The flag is cached across the suite; this test is about project access, not the flag.
       sinon.stub(ProjectsFeature, 'assertEnabled').resolves()
       sinon.stub(ProjectService, 'assertAccess').rejects(new NotFoundError('Project not found'))
@@ -1208,7 +1208,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should pass the missing-query error to next when Express gives one', async () => {
-      const handler = addMessageStream(createMockAppConfig())
+      const handler = addMessageStream(createMockAppConfig(), turnDeps())
       const next = sinon.stub()
 
       await handler(createMockRequest({ body: {} }), createMockResponse(), next)
@@ -4653,7 +4653,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should pass the missing-query and missing-user errors to next when Express gives one', async () => {
-      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig(), turnDeps())
       const params = { conversationId: VALID_OID, agentKey: 'agent-1' }
       const next = sinon.stub()
 
@@ -6463,7 +6463,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('should refuse a Slack-minted token when the instance has more than one org', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       // This edition's Slack config carries no orgId, so two orgs means there is
       // no safe answer — it must refuse rather than pick one.
@@ -6495,7 +6495,7 @@ describe('Enterprise Search Controller', () => {
     })
 
     it('never looks a Slack-minted token up by its email (SEC-C-03, ADR-SLACKID-01)', async () => {
-      const handler = streamChatInternal(createMockAppConfig())
+      const handler = streamChatInternal(createMockAppConfig(), turnDeps())
 
       stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
       const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)

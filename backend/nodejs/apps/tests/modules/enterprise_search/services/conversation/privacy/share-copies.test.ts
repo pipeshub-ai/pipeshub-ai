@@ -117,7 +117,8 @@ describe('a shared copy that later answers were given', () => {
       })
 
       it("of a private thread, it is its asker's alone, whoever can open what it used, and also when it used nothing", async () => {
-        for (const direct of [{ records: [R] }, {}]) {
+        const directs: Array<Record<string, unknown[]>> = [{ records: [R] }, {}]
+        for (const direct of directs) {
           const { copy, later, w } = toldPrivately(direct)
           const inFork = { ...fork, sharedWith: [{ userId: DANA, accessLevel: 'read', addedAt: new Date('2026-10-05T10:00:00Z') }] }
           const forked = { ...later, sessionId: FORK }

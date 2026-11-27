@@ -16,7 +16,6 @@ import {
   agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
-  conversationUnshareParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   REQUEST_FILTER_KEYS,
