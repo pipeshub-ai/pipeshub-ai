@@ -328,13 +328,20 @@ describe('ChatApi stream bodies — no model resolved', () => {
     expectNoModelFields();
   });
 
-  it.each(['agent', 'internal_search', 'web_search', 'agent:auto', 'agent:deep', 'agent:quick', '', undefined])(
-    'sends quick mode on an agent route, the only one it takes, from %s',
-    async (chatMode) => {
-      await ChatApi.streamMessage({ ...base, agentId: 'agent-1', chatMode: chatMode as never }, {});
-      expect(sentBody().chatMode).toBe('quick');
-    },
-  );
+  // An agent route takes the agent's own modes: the one an agent mode names, and auto for anything else.
+  it.each([
+    ['agent', 'auto'],
+    ['internal_search', 'auto'],
+    ['web_search', 'auto'],
+    ['agent:auto', 'auto'],
+    ['agent:deep', 'deep'],
+    ['agent:quick', 'quick'],
+    ['', 'auto'],
+    [undefined, 'auto'],
+  ])('sends an agent route a mode it takes, from %s: %s', async (chatMode, sent) => {
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1', chatMode: chatMode as never }, {});
+    expect(sentBody().chatMode).toBe(sent);
+  });
 
   it('still sends a chosen model, falling back to its name for the friendly name', async () => {
     await ChatApi.streamMessage({ ...base, modelKey: 'k1', modelName: 'gpt-5', modelFriendlyName: '' }, {});

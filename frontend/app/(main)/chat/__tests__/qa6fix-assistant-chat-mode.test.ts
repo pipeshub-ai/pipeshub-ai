@@ -42,17 +42,20 @@ describe('QA6-F5: the assistant chat mode the page sends', () => {
     expect(QUERY_MODES.map((m) => m.id).sort()).toEqual(['agent', 'chat', 'web-search']);
   });
 
+  // A chat opens in agent mode whatever older mode it stored: nothing in the page chooses the others now, and the
+  // settings outlive the chat, so an older mode left there would carry over to the next new chat.
   it.each(['image', 'analysis', 'anything-else'])('F5-4: a conversation that stored %s restores to a mode the routes accept', (stored) => {
     useChatStore.getState().setQueryMode('web-search');
     applyConversationModelInfoToStore({ modelKey: 'm', modelName: 'n', chatMode: stored }, ASSISTANT_CTX);
-    expect(useChatStore.getState().settings.queryMode).toBe('chat');
-    expect(sent()).toBe('internal_search');
+    expect(useChatStore.getState().settings.queryMode).toBe('agent');
+    expect(sent()).toBe('agent');
+    expect(ACCEPTED).toContain(sent());
   });
 
-  it('F5-4: the modes the server serves restore as themselves', () => {
+  it('F5-4: the modes the server serves restore to one the routes accept', () => {
     for (const [stored, queryMode, wire] of [
-      ['internal_search', 'chat', 'internal_search'],
-      ['web_search', 'web-search', 'web_search'],
+      ['internal_search', 'agent', 'agent'],
+      ['web_search', 'agent', 'agent'],
       ['agent', 'agent', 'agent'],
     ] as const) {
       applyConversationModelInfoToStore({ modelKey: 'm', modelName: 'n', chatMode: stored }, ASSISTANT_CTX);
