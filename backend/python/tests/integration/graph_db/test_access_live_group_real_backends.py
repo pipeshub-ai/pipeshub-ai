@@ -14,6 +14,7 @@ ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -273,3 +274,30 @@ async def test_the_reaper_keeps_a_collaborator_granted_while_it_runs(world: _Wor
     else:
         rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
     assert fired and {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
+
+
+async def test_the_reaper_keeps_a_collaborator_whose_grant_commits_while_it_decides(world: _World) -> None:
+    """A writer grants ext-own-gone a record and ensures its membership in one transaction, still open while the reaper runs; the reaper's view cannot
+    see that grant. The writer's touch of the edge conflicts with the removal (ArangoDB) or holds it until the writer commits (Neo4j), so the
+    collaborator keeps the App once the grant is committed."""
+    w, g = world, world.graph
+    ext, rec_id = w.sid("ext-own-gone"), w.sid("r-own-live")
+    tid = await g.begin_transaction(["users", "records", "apps"], ["permission", "userAppRelation"])
+    committed = False
+    try:
+        assert await g.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": rec_id, "to_collection": "records", "type": "USER", "role": "READER",
+                                            "createdAtTimestamp": TS}], collection="permission", transaction=tid)
+        await g.ensure_app_membership(ext, "users", w.sid(APP), is_external=True, transaction=tid)
+        reap = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        await asyncio.sleep(1.0)      # the reaper decides (or waits on the writer's lock) while the grant is uncommitted
+        await g.commit_transaction(tid)
+        committed = True
+        await reap
+    finally:
+        if not committed:
+            await g.rollback_transaction(tid)
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid(APP)})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}", {"app": f"apps/{w.sid(APP)}"})
+    assert {w.plain(r["id"]) for r in rows} == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}

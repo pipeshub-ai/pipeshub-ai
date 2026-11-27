@@ -9561,9 +9561,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Ensure a principal (user or person) has a membership edge to an app.
 
-        Create-only. An existing edge is left untouched, so this can never downgrade
-        a real member to an external collaborator, and re-running it over an
-        already-synced app is a no-op.
+        Create-only. An existing edge keeps its flag, so this can never downgrade a
+        real member to an external collaborator. Its ``updatedAtTimestamp`` is written:
+        a reaper removing the edge in a snapshot older than this write then conflicts
+        with it instead of removing the membership of a grant it could not see
+        (``reap_stale_external_app_relations``).
         """
         try:
             now = get_epoch_timestamp_in_ms()
@@ -9582,7 +9584,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             UPSERT { _from: @from_id, _to: @to_id }
             INSERT @doc
-            UPDATE {}
+            UPDATE { updatedAtTimestamp: @now }
             IN @@collection
             """
             await self.http_client.execute_aql(
@@ -9591,6 +9593,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "from_id": doc["_from"],
                     "to_id": doc["_to"],
                     "doc": doc,
+                    "now": now,
                     "@collection": CollectionNames.USER_APP_RELATION.value,
                 },
                 txn_id=transaction,
@@ -9842,7 +9845,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             grant_exists = self._external_grant_exists_aql("uar._from", "@connector_id")
 
             # The grant is checked by the statement that removes the edge: a grant written between a separate read and the removal would
-            # otherwise lose its holder the App. The removed edges' principals are what the person cleanup below needs.
+            # otherwise lose its holder the App. A grant committed after this statement's snapshot is not seen, but its writer touches the
+            # holder's edge after it (ensure_app_membership): the removal then conflicts and nothing is removed (the next pass decides again).
+            # The removed edges' principals are what the person cleanup below needs.
             stale_rows = await self.http_client.execute_aql(
                 f"""
                 FOR uar IN {CollectionNames.USER_APP_RELATION.value}

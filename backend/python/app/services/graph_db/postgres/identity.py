@@ -613,7 +613,8 @@ class IdentityMixin(PgBase):
     # ---- account links and app membership ------------------------------------------------------------------------
     async def ensure_app_membership(self, principal_id: str, principal_collection: str, connector_id: str, *, is_external: bool,
                                     source_user_id: str | None = None, transaction: str | None = None) -> None:
-        """Create-only: an existing edge is left alone, so a member is never downgraded to an external collaborator."""
+        """Create-only: an existing edge keeps its document, so a member is never downgraded to an external collaborator. It is still written (to itself): the
+        row lock makes a reaper that is deciding on this edge wait for this transaction, and see the grant written before it (``reap_stale_external_app_relations``)."""
         now = get_epoch_timestamp_in_ms()
         props = {"isExternalUser": is_external, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
         if source_user_id is not None:
@@ -623,7 +624,7 @@ class IdentityMixin(PgBase):
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.ensure_app_membership */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, 'userAppRelation', $2, p.id, 'apps', a.id, '', $5::jsonb FROM graph.nodes p, graph.nodes a
             WHERE p.org_id = $1 AND p.coll = $2 AND p.id = $3 AND a.org_id = $1 AND a.coll = 'apps' AND a.id = $4
-            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, principal_collection, principal_id, connector_id, _j(props)), transaction, write=True)
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc""", org, principal_collection, principal_id, connector_id, _j(props)), transaction, write=True)
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str, transaction: str | None = None) -> None:
         """The org's "All" team gets an edge to the app (the app is created bare when missing, as MERGE does). Idempotent."""
