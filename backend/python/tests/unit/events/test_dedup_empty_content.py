@@ -99,20 +99,47 @@ def _dedup_doc(**fields: Any) -> dict[str, Any]:  # noqa: ANN401
     return {"_key": "rec-1", "orgId": ORG, "recordType": "WEBPAGE", "mimeType": BLOCKS_MIME, **fields}
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("content", [_streamed(EMPTY_PAGE), EMPTY_PAGE, b"<p></p>"], ids=["bytes", "dict", "html"])
-async def test_dedup_of_blank_content_looks_for_no_twin_and_writes_no_checksum(content: Any) -> None:  # noqa: ANN401
+BLANK_CONTENT = pytest.mark.parametrize(
+    "content", [_streamed(EMPTY_PAGE), EMPTY_PAGE, b"<p></p>"], ids=["bytes", "dict", "html"],
+)
+
+
+def _dedup_graph() -> MagicMock:
     graph = MagicMock()
     graph.find_duplicate_records = AsyncMock(return_value=[{"_key": "twin", "virtualRecordId": "vr-shared"}])
     graph.update_node = AsyncMock(return_value=True)
-    ep = EventProcessor(logging.getLogger("test.dedup_empty"), MagicMock(), graph, MagicMock())
-    mime = "text/html" if content == b"<p></p>" else BLOCKS_MIME
+    return graph
 
-    # The record still holds the hash every blank page shared: it is left alone, not rewritten or used.
-    decision = await ep._check_duplicate_by_md5(content, _dedup_doc(md5Checksum=EMPTY_PAGE_MD5, mimeType=mime))
+
+def _mime_of(content: Any) -> str:  # noqa: ANN401
+    return "text/html" if content == b"<p></p>" else BLOCKS_MIME
+
+
+@pytest.mark.asyncio
+@BLANK_CONTENT
+async def test_dedup_of_blank_content_looks_for_no_twin_and_writes_nothing(content: Any) -> None:  # noqa: ANN401
+    graph = _dedup_graph()
+    ep = EventProcessor(logging.getLogger("test.dedup_empty"), MagicMock(), graph, MagicMock())
+
+    decision = await ep._check_duplicate_by_md5(content, _dedup_doc(mimeType=_mime_of(content)))
 
     graph.find_duplicate_records.assert_not_awaited()
     graph.update_node.assert_not_awaited()
+    assert decision.virtual_record_id is None
+    assert decision.skip_indexing is False
+
+
+@pytest.mark.asyncio
+@BLANK_CONTENT
+@pytest.mark.parametrize("stale", [EMPTY_PAGE_MD5, "md5-of-the-text-it-had"], ids=["shared-blank-hash", "old-text"])
+async def test_dedup_of_blank_content_clears_the_checksum_the_record_still_holds(content: Any, stale: str) -> None:  # noqa: ANN401
+    graph = _dedup_graph()
+    ep = EventProcessor(logging.getLogger("test.dedup_empty"), MagicMock(), graph, MagicMock())
+
+    decision = await ep._check_duplicate_by_md5(content, _dedup_doc(md5Checksum=stale, mimeType=_mime_of(content)))
+
+    graph.find_duplicate_records.assert_not_awaited()
+    assert [c.args[2] for c in graph.update_node.await_args_list] == [{"md5Checksum": None}]
     assert decision.virtual_record_id is None
     assert decision.skip_indexing is False
 
@@ -291,3 +318,24 @@ async def _index_expecting_reuse(records: Records, key: str, content: bytes) -> 
     with patch("app.events.events.keep_old_copy.swap_allowed", AsyncMock(return_value=False)):
         async for _ in ep.on_event(event):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_page_whose_text_was_removed_is_not_a_twin_for_that_text() -> None:
+    """Text, then blank, then another page with the first text: that page is indexed itself, not given EMPTY."""
+    records = Records()
+    records.add("emptied")
+    records.add("new-copy")
+    first = await _index(records, "emptied", _streamed(CONTENT_PAGE))
+    records.rows["emptied"].update(indexingStatus=ProgressStatus.COMPLETED.value, extractionStatus=ProgressStatus.COMPLETED.value)
+    text_md5 = records.rows["emptied"]["md5Checksum"]
+
+    await _index(records, "emptied", _streamed(EMPTY_PAGE), EventTypes.UPDATE_RECORD.value)
+    records.rows["emptied"]["indexingStatus"] = ProgressStatus.EMPTY.value
+    vrid = await _index(records, "new-copy", _streamed(CONTENT_PAGE))
+
+    assert records.rows["emptied"].get("md5Checksum") is None
+    assert records.rows["new-copy"]["md5Checksum"] == text_md5
+    assert vrid != records.rows["emptied"]["virtualRecordId"]
+    assert records.rows["new-copy"]["indexingStatus"] != ProgressStatus.EMPTY.value
+    assert first  # the text was indexed under a vrid of its own first
