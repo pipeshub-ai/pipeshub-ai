@@ -92,7 +92,15 @@ export async function startStreamHttp(
     journal: { readRun: (_o, runId, after, limit) => Promise.resolve(journal.events.filter((e) => e.runId === runId && e.seq > after).slice(0, limit)) },
     journals: new JournalService(new InMemoryPayloadStore(), testCipher()),
     tail: new InMemoryJournalTail(),
-    conversations: { finishedConversation: () => Promise.resolve(finishedConversation(journal.sessionId, cited)) },
+    conversations: {
+      finishedConversation: () =>
+        Promise.resolve({
+          ...finishedConversation(journal.sessionId, cited, journal.runId),
+          initiator: 'user-owner',
+        }),
+    },
+    // Every answer readable here: what hides one is stream-service.test's.
+    conversationView: (_viewer, conversation) => Promise.resolve(conversation),
     liveBus: null,
     sharedCitations: new SharedCitationService(records),
   });

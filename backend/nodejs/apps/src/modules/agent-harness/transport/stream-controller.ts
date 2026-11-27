@@ -81,6 +81,7 @@ export class RunStreamController {
       {
         run: access.run,
         audience: access.access.audience,
+        viewerId: scope.actorId,
         ...(access.access.title !== undefined
           ? { title: access.access.title }
           : {}),

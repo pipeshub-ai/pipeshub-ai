@@ -124,6 +124,7 @@ import {
 import {
   historyForModel,
   newReadable,
+  messageActor,
   redactConversationFor,
   redactMessagesFor,
   redactSearchesFor,
@@ -157,6 +158,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { SharedCitationService } from '../../agent-harness/application/shared-citations';
 import { SharedArtifactService } from '../../agent-harness/application/shared-artifacts';
 import { messageArtifactIds } from '../../agent-harness/projection/artifact-access';
+import { messageSources } from '../../agent-harness/projection/citation-source';
 import type {
   ParticipantsChanged,
   SessionParticipantRecorder,
@@ -326,6 +328,13 @@ export interface ViewerChecks {
   artifacts?: SharedArtifactService;
 }
 
+/** Whose read it is, and whether its citation check could be made. */
+interface ViewerRead {
+  orgId: string;
+  sessionId: string;
+  checkFailed: boolean;
+}
+
 /** A message a collaborator sent, or their run answered (SS2). */
 const sentByCollaborator = (message: unknown): boolean => {
   const sender = (message as { senderId?: unknown } | null)?.senderId;
@@ -352,7 +361,7 @@ async function withViewerChecks<
   response: T,
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<T> {
   const checked = await withAccessChecks(response, req, checks, ids);
   const viewer = String(req.user?.userId);
@@ -367,22 +376,13 @@ async function withViewerChecks<
   };
 }
 
-/** Whose turn a message is: its sender's, or the initiator's when it names none (as session forks decide). */
-const messageActor = (message: unknown, owner: string): string => {
-  // An ObjectId as Mongo stores it, or its hex string.
-  const sender = (
-    message as { senderId?: { toString(): string } | null } | null
-  )?.senderId;
-  return sender === undefined || sender === null ? owner : sender.toString();
-};
-
 async function withAccessChecks<
   T extends { messages: unknown[]; access: { isOwner: boolean } },
 >(
   response: T,
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<T> {
   if (response.access.isOwner) {
     const foreign = response.messages.filter(sentByCollaborator);
@@ -408,7 +408,7 @@ async function checkedForViewer(
   messages: unknown[],
   req: AuthenticatedUserRequest,
   checks: ViewerChecks,
-  ids: { orgId: string; sessionId: string },
+  ids: ViewerRead,
 ): Promise<unknown[]> {
   const viewer = {
     authorization: req.headers.authorization,
@@ -420,18 +420,19 @@ async function checkedForViewer(
     surface: 'conversation' as const,
   };
   const citations = checks.citations ?? unconfiguredCitations;
-  const [cited, withArtifacts] = await Promise.all([
+  const [access, withArtifacts] = await Promise.all([
     // Without a record-access port the citations are left to the conversation's record-access redaction
     // (redactMessagesFor), which asks for them itself: one access decision per citation, never two.
     citations.checksRecords()
-      ? citations.messagesFor(viewer, messages)
-      : Promise.resolve(messages),
+      ? citations.decide(viewer, messageSources(messages))
+      : null,
     (checks.artifacts ?? unconfiguredArtifacts).decide(
       viewer,
       messageArtifactIds(messages),
     ),
   ]);
-  return withArtifacts.messages(cited);
+  if (access?.unavailable === true) ids.checkFailed = true;
+  return withArtifacts.messages(access?.messages(messages) ?? messages);
 }
 
 /** A share change and who may read the conversation before and after it (SS1). */
@@ -650,6 +651,7 @@ const redactPageFor = async <M extends ViewerMessage>(
   ownerOf: (message: M) => string | undefined,
   // The harness decided the citations of this page's messages for the viewer; rows read past its edges it never saw.
   citationsDecided = false,
+  checkFailed = false,
 ): Promise<M[]> => {
   const read = async (from: number, limit: number): Promise<M[]> =>
     (await getMessages(conversation._id, {
@@ -699,6 +701,7 @@ const redactPageFor = async <M extends ViewerMessage>(
     {
       leadUnknown,
       trailUnknown,
+      checkFailed,
       ...(citationsDecided && {
         citationsDecided: (m: M) => page.has(m),
       }),
@@ -924,6 +927,10 @@ export const uploadChatAttachments =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(aiResponse, 'Upload Chat Attachments');
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -1028,6 +1035,13 @@ export const uploadChatAttachmentsInternal =
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiServiceCommand.execute();
+      // An error answer that was not JSON (a proxy's page) is mapped, so it keeps the envelope and Retry-After.
+      if (aiResponse.statusCode >= 400 && aiResponse.data === undefined) {
+        throw handleBackendError(
+          aiResponse,
+          'Upload Chat Attachments (Internal)',
+        );
+      }
       const statusCode = aiResponse?.statusCode || 500;
       const responseData = aiResponse?.data || {};
 
@@ -2325,6 +2339,11 @@ export const getConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
+      const viewerRead = {
+        orgId: String(orgId),
+        sessionId,
+        checkFailed: false,
+      };
       const conversationResponse = await attachSharedByIfRecipient(
         await withViewerChecks(
           buildConversationResponse(
@@ -2346,7 +2365,7 @@ export const getConversationById =
           ),
           req,
           checks,
-          { orgId: String(orgId), sessionId },
+          viewerRead,
         ),
         orgId,
       );
@@ -2360,8 +2379,9 @@ export const getConversationById =
           conversationResponse.messages,
           skip,
           totalMessages,
-          () => initiatorId,
+          (m) => messageActor(m, initiatorId),
           checks.citations?.checksRecords() === true,
+          viewerRead.checkFailed,
         )) as never,
         messageSortOptions as { field: keyof IMessage },
       ) as unknown as typeof conversationResponse.messages;
@@ -5023,7 +5043,11 @@ export const listAllArchivesConversation =
         appConfig,
         viewerOf(userId, orgId),
         entries.map((e) => e.dto),
-        (m) => ownerBySession.get(sessionOfMessage.get(m) ?? ''),
+        (m) =>
+          messageActor(
+            m,
+            ownerBySession.get(sessionOfMessage.get(m) ?? '') ?? '',
+          ),
       );
       // redactMessagesFor keeps the order, so each visible message belongs to the session of the stored one at its place.
       const messagesBySession = new Map<string, any[]>();
@@ -5271,27 +5295,17 @@ export const search =
         throw handleBackendError(error, 'Search');
       }
 
-      if (!aiResponse?.data) {
-        throw new InternalServerError('Failed to get response from AI service');
-      }
       // A search that found nothing, or could not check access, says why as codes the client words. The error is
       // mapped as for any other failure, so the body keeps its envelope (code, message, requestId); only the codes are added.
-      const noticed = (aiResponse.data as { accessNotices?: unknown })
-        .accessNotices;
+      // An error answer that was not JSON has no data: its status is still mapped below.
+      const noticed = (
+        aiResponse?.data as { accessNotices?: unknown } | undefined
+      )?.accessNotices;
       if (
         (aiResponse.statusCode === 404 || aiResponse.statusCode === 503) &&
         Array.isArray(noticed)
       ) {
-        const mapped = handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        const mapped = handleBackendError(aiResponse, 'Search');
         throw Object.assign(mapped, {
           metadata: {
             ...(mapped as { metadata?: object }).metadata,
@@ -5300,16 +5314,10 @@ export const search =
         });
       }
       if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data: aiResponse.data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Search',
-        );
+        throw handleBackendError(aiResponse, 'Search');
+      }
+      if (!aiResponse.data) {
+        throw new InternalServerError('Failed to get response from AI service');
       }
 
       // An agent searching on a user's behalf sends false: its searches are not
@@ -5477,20 +5485,11 @@ export const retrieve =
         throw handleBackendError(error, 'Retrieve');
       }
       const data = aiResponse.data;
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(aiResponse, 'Retrieve');
+      }
       if (data === undefined) {
         throw new InternalServerError('Failed to get response from AI service');
-      }
-      if (aiResponse.statusCode !== 200) {
-        throw handleBackendError(
-          {
-            response: {
-              status: aiResponse.statusCode,
-              data,
-              headers: aiResponse.headers,
-            },
-          },
-          'Retrieve',
-        );
       }
       res.status(HTTP_STATUS.OK).json({
         requestId,
@@ -7876,6 +7875,11 @@ export const getAgentConversationById =
       const conversationWithMessages = attachMessages(session, messages);
 
       // Build conversation response using existing helper
+      const viewerRead = {
+        orgId: String(orgId),
+        sessionId,
+        checkFailed: false,
+      };
       const builtResponse = await withViewerChecks(
         buildConversationResponse(
           {
@@ -7896,7 +7900,7 @@ export const getAgentConversationById =
         ),
         req,
         checks,
-        { orgId: String(orgId), sessionId },
+        viewerRead,
       );
       // The recipient list is the owner's business: a viewer is told who shared
       // the chat, never who else can read it.
@@ -7916,8 +7920,9 @@ export const getAgentConversationById =
           conversationResponse.messages,
           skip,
           totalMessages,
-          () => initiatorId,
+          (m) => messageActor(m, initiatorId),
           checks.citations?.checksRecords() === true,
+          viewerRead.checkFailed,
         )) as never,
         messageSortOptions as { field: keyof IMessage },
       ) as unknown as typeof conversationResponse.messages;

@@ -359,7 +359,7 @@ describe('Connector routes over HTTP', () => {
         connectorName: 'Google Drive',
       })
 
-      expect(r.status).to.equal(500)
+      expect(r.status).to.equal(502)
       expect(h.syncEvents.published).to.have.length(0)
     })
 

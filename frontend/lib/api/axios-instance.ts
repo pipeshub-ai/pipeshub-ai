@@ -49,6 +49,19 @@ const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
   originalError: error,
 });
 
+/** Safe methods (RFC 9110 9.2.1): sending one again cannot repeat a change. */
+const REPLAYABLE_METHODS = new Set(['get', 'head', 'options']);
+
+/**
+ * A 401 the renewed session cannot fix: the server refused this request (a handler or a
+ * service behind it said 401), not the session. Shown with the server's words, never read as a sign-out.
+ */
+const refusedWithSession = (error: AxiosError): ProcessedError => ({
+  ...processError(error),
+  type: ErrorType.AUTHORIZATION_ERROR,
+  message: extractApiErrorMessage(error.response?.data) ?? 'You do not have permission to perform this action.',
+});
+
 function rejectShown(
   processedError: ProcessedError,
   config: { suppressErrorToast?: boolean | ((error: ProcessedError) => boolean) } | undefined,
@@ -151,9 +164,6 @@ apiClient.interceptors.response.use(
     if (!isAxiosError(error)) {
       return Promise.reject(error);
     }
-    // Neither a toast nor a refresh for the last session: a stale 401 must not sign the next person out.
-    if (sessionEnded(error.config)) return dropped();
-
     if (error.response?.data instanceof Blob) {
       try {
         const text = await error.response.data.text();
@@ -163,19 +173,23 @@ apiClient.interceptors.response.use(
       }
     }
 
+    // Neither a toast nor a refresh for the last session: a stale 401 must not sign the next person out.
+    // Checked after the Blob decode, which can span a sign-out and the next sign-in.
+    if (sessionEnded(error.config)) return dropped();
+
     const originalRequest = error.config as InternalAxiosRequestConfig & {
       _retry?: boolean;
     };
 
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
-      const apiMessage = extractApiErrorMessage(error.response.data);
-      if (apiMessage === SESSION_EXPIRED_LOGOUT_MESSAGE) {
-        localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
-        sessionStorage.clear();
-        logoutAndRedirect();
-        return dropped();
-      }
+    // The server says the session is over: sign out, whether or not this request was already replayed.
+    if (error.response?.status === 401 && extractApiErrorMessage(error.response.data) === SESSION_EXPIRED_LOGOUT_MESSAGE) {
+      localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+      sessionStorage.clear();
+      logoutAndRedirect();
+      return dropped();
+    }
 
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
 
       // If a refresh is already running (timer or another 401), this just
@@ -183,6 +197,10 @@ apiClient.interceptors.response.use(
       const outcome = await refreshOrSignOut();
       if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
       if (outcome !== 'refreshed') return dropped();
+      // A write is never sent twice: the server may have acted on it before it answered 401.
+      if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {
+        return rejectShown(refusedWithSession(error), originalRequest);
+      }
       const newToken = useAuthStore.getState().accessToken;
       if (newToken) {
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
@@ -190,7 +208,9 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     }
 
-    return rejectShown(processError(error), originalRequest);
+    // A 401 here came back with the token the refresh just issued, so it is not about the session.
+    const processed = error.response?.status === 401 ? refusedWithSession(error) : processError(error);
+    return rejectShown(processed, originalRequest);
   },
 );
 

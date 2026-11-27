@@ -2,6 +2,7 @@ import dns from 'dns';
 import https from 'https';
 import net from 'net';
 import { InvalidClientError } from '../../../libs/errors/oauth.errors';
+import { isWebUrl } from '../../../libs/utils/zod-formats';
 
 /**
  * OAuth Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document): a client
@@ -193,6 +194,10 @@ const isStringList = (v: unknown): v is string[] =>
 const optionalString = (v: unknown): string | undefined =>
   typeof v === 'string' && v.length > 0 ? v : undefined;
 
+/** A link or logo shown on the consent page: anything but http(s) is dropped. */
+const optionalWebUrl = (v: unknown): string | undefined =>
+  typeof v === 'string' && isWebUrl(v) ? v : undefined;
+
 /** Fetches and checks the document a client id names. Every failure is an `InvalidClientError`. */
 export async function fetchClientMetadataDocument(
   clientId: string,
@@ -248,10 +253,10 @@ export async function fetchClientMetadataDocument(
     client_id: clientId,
     redirect_uris: redirectUris,
     client_name: optionalString(doc.client_name),
-    client_uri: optionalString(doc.client_uri),
-    logo_uri: optionalString(doc.logo_uri),
-    policy_uri: optionalString(doc.policy_uri),
-    tos_uri: optionalString(doc.tos_uri),
+    client_uri: optionalWebUrl(doc.client_uri),
+    logo_uri: optionalWebUrl(doc.logo_uri),
+    policy_uri: optionalWebUrl(doc.policy_uri),
+    tos_uri: optionalWebUrl(doc.tos_uri),
     grant_types: grantTypes,
     token_endpoint_auth_method: 'none',
     scope: optionalString(doc.scope),

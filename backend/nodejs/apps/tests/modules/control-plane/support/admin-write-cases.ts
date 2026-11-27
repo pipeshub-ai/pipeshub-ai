@@ -209,6 +209,17 @@ export const BINDING_WRITE_CASES: readonly WriteCase[] = [
     }),
     object: bindingObject,
   },
+  {
+    id: 'B7 binding revoke (installation target change)',
+    route: `POST ${INTERNAL_BINDINGS}/revoke-installation`,
+    prepare: bindingImported,
+    request: () => ({
+      method: 'POST',
+      path: `${INTERNAL_BINDINGS}/revoke-installation`,
+      body: { installation: BINDING_INSTALLATION },
+    }),
+    object: (orgId, _target, json) => [org(orgId), 'binding', String(json?.bindings?.[0]?.id)],
+  },
 ];
 
 const CP = '/api/v1/control-plane';

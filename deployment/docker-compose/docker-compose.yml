@@ -241,6 +241,8 @@ services:
 
       # Public endpoints
       - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+      - INTERNAL_ROUTES_PUBLIC_ACCESS=${INTERNAL_ROUTES_PUBLIC_ACCESS:-log}
+      - INTERNAL_ROUTES_TRUSTED_CIDRS=${INTERNAL_ROUTES_TRUSTED_CIDRS:-}
 
       # Internal service URLs (fixed; all services share the container network)
       - QUERY_BACKEND=http://localhost:8000
@@ -397,7 +399,7 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # Auth / tokens
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}

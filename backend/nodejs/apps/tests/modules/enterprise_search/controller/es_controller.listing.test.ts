@@ -252,7 +252,7 @@ describe('es_controller listing and paging', () => {
 
       expect(used.body).to.deep.equal({ success: true, agents: [{ name: 'Research bot' }] })
       expect(failed.body).to.be.undefined
-      expect(failed.error?.statusCode).to.equal(500)
+      expect(failed.error?.statusCode).to.equal(502)
       expect(failed.error?.message).to.not.include('boom')
       expect(missing.error?.statusCode).to.equal(400)
       expect(ai.calls.map((c) => c.url)).to.deep.equal([

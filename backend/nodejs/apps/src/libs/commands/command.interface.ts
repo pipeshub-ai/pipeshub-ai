@@ -151,5 +151,32 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     throw new InternalServerError('Unexpected error in retry logic.');
   }
 
+  /**
+   * The answer's JSON. A 204 has none, and an error answer that is not JSON (a
+   * proxy's HTML page) is dropped so its status still reaches the caller. A 2xx
+   * that is not JSON still throws: a broken success is not hidden.
+   */
+  protected async readBody<B>(response: Response): Promise<B | undefined> {
+    if (response.status === 204) return undefined;
+    try {
+      return (await response.json()) as B;
+    } catch (error) {
+      if (response.status >= 400 && error instanceof SyntaxError) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /** The answer's Retry-After, which the error middleware relays on a 429/503/504. */
+  protected retryAfterHeaders(response: Response): {
+    headers?: Record<string, string>;
+  } {
+    const retryAfter = response.headers.get('retry-after');
+    return retryAfter !== null && retryAfter !== ''
+      ? { headers: { 'retry-after': retryAfter } }
+      : {};
+  }
+
   public abstract execute(): Promise<T>;
 }
