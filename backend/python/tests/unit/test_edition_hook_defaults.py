@@ -30,6 +30,12 @@ def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     assert app.mock_calls == [] and registry.mock_calls == []
 
 
+@pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
+@pytest.mark.parametrize("key", ["/services/aiModels", "a" * 24 + "/services/aiModels", ""])
+def test_the_key_value_store_binds_no_org_for_any_key(key: str) -> None:
+    assert edition.kv_key_binds_org(key) is False
+
+
 APP = Path(edition.__file__).parent
 # The sandbox's Docker socket proxy reads no PipesHub setting.
 READS_NO_SETTINGS = {"docker_proxy_main.py"}
