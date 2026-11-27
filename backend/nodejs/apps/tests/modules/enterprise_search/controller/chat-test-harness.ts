@@ -964,9 +964,22 @@ export class InMemoryChatStore {
       store.citations.push(this)
       return realCitationSave.call(this, options as never)
     } as never)
-    sinon.stub(Citation, 'insertMany').callsFake(((docs: unknown[]) => {
+    // Real Mongoose `insertMany()` runs, as `save()` does: it validates the documents and stamps them (timestamps, the
+    // version key) itself. Only the driver call is faked; what it inserted a later populated read finds, as after a save.
+    const realCitationInsertMany = Citation.insertMany.bind(Citation)
+    sinon.stub(Citation.collection, 'insertMany').callsFake(((docs: Array<{ _id?: unknown }>, options?: SessionOption) => {
+      assertSessionUsable(options)
+      return Promise.resolve({
+        acknowledged: true,
+        insertedCount: docs.length,
+        insertedIds: Object.fromEntries(docs.map((doc, index) => [index, doc._id])),
+      })
+    }) as never)
+    sinon.stub(Citation, 'insertMany').callsFake((async (docs: unknown[], options?: Record<string, unknown>) => {
       store.writes.push(...docs.map(() => 'citation.save'))
-      return Promise.resolve(docs)
+      const inserted = (await realCitationInsertMany(docs as never, options as never)) as unknown as Array<InstanceType<typeof Citation>>
+      store.citations.push(...inserted)
+      return inserted
     }) as never)
     sinon.stub(Citation, 'updateMany').callsFake((() => {
       store.writes.push('citation.updateMany')

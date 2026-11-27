@@ -63,7 +63,15 @@ const answerWithCitation = (answer: string): Row => ({
   runId: RUN,
   result: {
     answer,
-    citations: [{ content: 'Q3 revenue was 12M.', chunkIndex: 0, citationType: 'vectordb|document', metadata: { recordId: 'r1' } }],
+    // As the AI service sends a citation: its record, name, type and origin, which every stored citation keeps.
+    citations: [
+      {
+        content: 'Q3 revenue was 12M.',
+        chunkIndex: 0,
+        citationType: 'vectordb|document',
+        metadata: { recordId: 'r1', recordName: 'Q3 report.pdf', mimeType: 'application/pdf', origin: 'UPLOAD' },
+      },
+    ],
     confidence: 'High',
   },
 })
