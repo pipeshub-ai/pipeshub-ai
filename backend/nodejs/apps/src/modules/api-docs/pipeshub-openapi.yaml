@@ -21877,8 +21877,8 @@ components:
           additionalProperties: true
     OAuthConfig:
       type: object
-      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
-        is on) and, in lists, the provider endpoints, for the organization's apps only.
+      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked unless the server sets
+        HIDE_SECRET_CONFIG=false) and, in lists, the provider endpoints, for the organization's apps only.
       properties:
         personal:
           type: boolean
@@ -21972,7 +21972,7 @@ components:
               example: "123456789-abc.apps.googleusercontent.com"
             clientSecret:
               type: string
-              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked when HIDE_SECRET_CONFIG is on)
+              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked unless the server sets HIDE_SECRET_CONFIG=false)
               example: "GOCSPX-xxxxxxxxxxxxx"
             tenantId:
               type: string
@@ -27231,8 +27231,8 @@ components:
             toolset's credential form. Returned to administrators, and to the owner of a personal
             instance, and only when not empty; nested objects are always masked, a non-empty client
             secret or field the toolset's form marks secret or types as a password (an API token, for
-            one) is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true` and
-            `reveal=true` is not sent, and every other value is returned as stored. An organization
+            one) is masked (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or
+            `reveal=true` is sent, and every other value is returned as stored. An organization
             OAuth instance stores none (its client is in the linked OAuth configuration); a personal
             OAuth instance holds its owner's own `clientId` and `clientSecret` here.
           additionalProperties: true
@@ -27241,8 +27241,8 @@ components:
       description: |
         An OAuth client configuration of a toolset type. Administrators also get the
         stored configuration fields (from `clientId` down); the client secret is masked
-        (`••••••••`) only when the server sets `HIDE_SECRET_CONFIG=true` and `reveal=true`
-        is not sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
+        (`••••••••`) unless the server sets `HIDE_SECRET_CONFIG=false` or `reveal=true`
+        is sent. Other fields the toolset's OAuth form declares (for example `tenantId`)
         are returned under their own names.
       properties:
         _id:
@@ -27563,22 +27563,22 @@ components:
           type: string
     StoredAtlassianConfig:
       type: object
-      description: Atlassian OAuth client, as stored. Empty when nothing has been saved.
+      description: Atlassian OAuth client. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
     StoredOneDriveConfig:
       type: object
-      description: Microsoft app credentials for OneDrive, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for OneDrive. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         hasAdminConsent:
@@ -27587,13 +27587,13 @@ components:
           description: Confirms tenant admin consent was granted; only `true` is accepted
     StoredSharePointConfig:
       type: object
-      description: Microsoft app credentials for SharePoint, as stored. Empty when nothing has been saved.
+      description: Microsoft app credentials for SharePoint. Empty when nothing has been saved.
       properties:
         clientId:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         tenantId:
           type: string
         sharepointDomain:
@@ -27606,7 +27606,7 @@ components:
     StoredGoogleWorkspaceOAuthConfig:
       type: object
       description: |
-        Google Workspace OAuth client and Gmail real-time update settings, as stored. Every
+        Google Workspace OAuth client and Gmail real-time update settings. Every
         field is present once something has been saved; empty when nothing has been saved.
       additionalProperties: false
       properties:
@@ -27614,7 +27614,7 @@ components:
           type: string
         clientSecret:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -27623,7 +27623,7 @@ components:
     StoredGoogleWorkspaceCredentials:
       type: object
       description: |
-        Google Workspace credentials, as stored. A business organization gets the
+        Google Workspace credentials. A business organization gets the
         service-account key fields with `adminEmail`; an individual one gets the caller's
         OAuth tokens merged with the OAuth client (`clientId`, `clientSecret`). Empty when
         nothing has been saved.
@@ -27639,7 +27639,7 @@ components:
           type: string
         private_key:
           type: string
-          description: Returned unmasked
+          description: Masked unless revealed (see the operation)
         client_email:
           type: string
         client_id:
@@ -27672,7 +27672,7 @@ components:
           x-speakeasy-name-override: oauthClientId
         clientSecret:
           type: string
-          description: OAuth client secret, returned unmasked (individual)
+          description: OAuth client secret (individual); masked unless revealed
         enableRealTimeUpdates:
           type: boolean
         topicName:
@@ -70811,7 +70811,7 @@ paths:
         List the organization's OAuth client configurations of a toolset type (the type is matched
         case-insensitively and is not checked against the registry, so an unknown type is an empty
         list). Any member may call it: administrators also get the stored client fields (the
-        client secret masked only under `HIDE_SECRET_CONFIG=true`), other members only the
+        client secret masked unless the server sets `HIDE_SECRET_CONFIG=false`), other members only the
         metadata. The query string is not read.
       operationId: listToolsetOAuthConfigs
       security:
@@ -80398,8 +80398,8 @@ paths:
 
         **API keys:** for anyone who isn't an org admin, each provider's `configuration.apiKey`
         comes back as the placeholder `****************`, and so does `configuration.baseUrl`
-        (admins always get the stored address). Admins get the stored key, unless the
-        server hides secrets from everyone (`HIDE_SECRET_CONFIG=true`). When updating a provider,
+        (admins always get the stored address). Admins get the stored key masked too,
+        unless the server sets `HIDE_SECRET_CONFIG=false` or they reveal it. When updating a provider,
         sending the placeholder back keeps the stored key.
 
         Only stored providers are listed. `configured` is true when a stored provider that can
@@ -81789,7 +81789,7 @@ paths:
         is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
         models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
         connector and action OAuth apps, action credentials) to receive the stored values
-        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        instead of placeholders. Secrets are masked by default; a server that sets `HIDE_SECRET_CONFIG=false` returns them.
         The flag is ignored for OAuth-app tokens. Admin only.
       operationId: getSecretRevealStatus
       security:
@@ -93931,14 +93931,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Atlassian OAuth client stored for the caller's organization, decrypted and
-        as stored: the client secret is not masked. An empty object when none has been saved.
-
-        The request carries no parameters: the query string is not read.
+        Returns the Atlassian OAuth client stored for the caller's organization.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getAtlassianOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94060,14 +94062,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for OneDrive for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getOneDriveCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94186,14 +94189,15 @@ paths:
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         Returns the Microsoft app credentials stored for SharePoint for the caller's
-        organization, decrypted and as stored: the client secret is not masked. An empty
-        object when none have been saved.
-
-        The request carries no parameters: the query string is not read.
+        organization. `clientId`, `clientSecret` and `tenantId` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none have been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getSharePointCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94311,13 +94315,16 @@ paths:
       description: |
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
-        Returns the Google Workspace OAuth client and Gmail real-time update settings,
-        decrypted and as stored: the client secret is not masked. An empty object when none
-        has been saved. The query string is not read.
+        Returns the Google Workspace OAuth client and Gmail real-time update settings.
+        `clientId` and `clientSecret` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when none has been saved.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceOauthConfig
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
@@ -94468,21 +94475,26 @@ paths:
         - Configuration Manager
       summary: Get Google Workspace credentials
       description: |
-        Returns the stored Google Workspace credentials, decrypted and as stored (nothing is
-        masked). What is read depends on the organization's account type:
+        Returns the stored Google Workspace credentials. What is read depends on the
+        organization's account type:
 
         - **business**: the service-account key saved for the organization, with the admin
           email and real-time update settings.
         - **individual**: the caller's own OAuth tokens merged with the Google Workspace
           OAuth client configuration. Both must be stored, otherwise the answer is empty.
 
-        An empty object when nothing is stored. The query string is not read.
+        `clientId`, `clientSecret`, `access_token`, `refresh_token`, `private_key`
+        and `private_key_id` are masked (`****************`) unless the server sets
+        `HIDE_SECRET_CONFIG=false` or the caller sends `reveal=true` where the deployment allows it.
+        An empty object when nothing is stored.
 
         **Deprecated:** this endpoint is kept for older clients and will be removed in a future release.
 
         **Admin Access Required.**
       deprecated: true
       operationId: getGoogleWorkspaceCredentials
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       security:
         - bearerAuth: []
         - oauth2: [config:read]
