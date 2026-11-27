@@ -7,6 +7,7 @@ import { Logger } from '../../services/logger.service';
 import { ensurePgRuntime } from '../../db/runtime-boot';
 import { PgListener, listenUrl } from '../../db/listen';
 import type { Tx } from '../../db/uow';
+import { kvKeyBindsOrg } from '../../../edition';
 
 export const KV_CHANNEL = 'pipeshub_kv_changed';
 const CLEAR_ALL = '__CLEAR_ALL__';
@@ -32,11 +33,18 @@ export class PostgresDistributedKeyValueStore<
     private readonly deserializer: (buffer: Buffer) => T,
   ) {}
 
+  /**
+   * `key` (for a listing, its prefix) decides the org the unit binds: the ambient one when the edition says the key is its, else none.
+   * `null` is a unit that touches no entry (notify, health): always unbound, whatever the edition claims.
+   */
   private async unit<R>(
     write: boolean,
+    key: string | null,
     fn: (tx: Tx) => Promise<R>,
   ): Promise<R> {
-    return ensurePgRuntime().withUow({ preOrg: true, write }, async (tx) => {
+    const opts =
+      key !== null && kvKeyBindsOrg(key) ? { write } : { preOrg: true, write };
+    return ensurePgRuntime().withUow(opts, async (tx) => {
       const out = await fn(tx);
       if (write && Date.now() - this.lastPurge > PURGE_EVERY_MS) {
         this.lastPurge = Date.now();
@@ -49,7 +57,7 @@ export class PostgresDistributedKeyValueStore<
   }
 
   async createKey(key: string, value: T): Promise<void> {
-    const r = await this.unit(true, (tx) =>
+    const r = await this.unit(true, key, (tx) =>
       tx.query(
         // an expired row counts as absent: only a dead row may be replaced
         `/* pipeshub:kv.setnx */ INSERT INTO platform.kv_entries (key, value, updated_at) VALUES ($1, $2, now())
@@ -64,7 +72,7 @@ export class PostgresDistributedKeyValueStore<
   }
 
   async updateValue(key: string, value: T): Promise<void> {
-    const r = await this.unit(true, (tx) =>
+    const r = await this.unit(true, key, (tx) =>
       tx.query(
         // like SET XX without EX: the new value carries no expiry
         `/* pipeshub:kv.update */ UPDATE platform.kv_entries SET value = $2, expires_at = NULL, updated_at = now()
@@ -78,7 +86,7 @@ export class PostgresDistributedKeyValueStore<
   }
 
   async getKey(key: string): Promise<T | null> {
-    const r = await this.unit(false, (tx) =>
+    const r = await this.unit(false, key, (tx) =>
       tx.query<{ value: Buffer }>(
         '/* pipeshub:kv.get */ SELECT value FROM platform.kv_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > now())',
         [key],
@@ -89,7 +97,7 @@ export class PostgresDistributedKeyValueStore<
   }
 
   async deleteKey(key: string): Promise<void> {
-    await this.unit(true, (tx) =>
+    await this.unit(true, key, (tx) =>
       tx.query(
         '/* pipeshub:kv.delete */ DELETE FROM platform.kv_entries WHERE key = $1',
         [key],
@@ -99,7 +107,7 @@ export class PostgresDistributedKeyValueStore<
   }
 
   private async keys(prefix: string): Promise<string[]> {
-    const r = await this.unit(false, (tx) =>
+    const r = await this.unit(false, prefix, (tx) =>
       tx.query<{ key: string }>(
         `/* pipeshub:kv.range */ SELECT key FROM platform.kv_entries
          WHERE starts_with(key, $1) AND (expires_at IS NULL OR expires_at > now()) ORDER BY key`,
@@ -156,7 +164,7 @@ export class PostgresDistributedKeyValueStore<
   ): Promise<boolean> {
     try {
       const next = this.serializer(newValue);
-      const r = await this.unit(true, (tx) =>
+      const r = await this.unit(true, key, (tx) =>
         expectedValue === null
           ? tx.query(
               `/* pipeshub:kv.casnew */ INSERT INTO platform.kv_entries (key, value, updated_at) VALUES ($1, $2, now())
@@ -186,7 +194,7 @@ export class PostgresDistributedKeyValueStore<
     const payload =
       Buffer.byteLength(key) <= MAX_NOTIFY_PAYLOAD ? key : CLEAR_ALL;
     try {
-      await this.unit(true, (tx) =>
+      await this.unit(true, null, (tx) =>
         tx.query(
           `/* pipeshub:kv.notify */ SELECT pg_notify('${KV_CHANNEL}', $1)`,
           [payload],
@@ -218,7 +226,7 @@ export class PostgresDistributedKeyValueStore<
 
   async healthCheck(): Promise<boolean> {
     try {
-      await this.unit(false, (tx) =>
+      await this.unit(false, null, (tx) =>
         tx.query(
           '/* pipeshub:kv.health */ SELECT 1 FROM platform.kv_entries WHERE false',
         ),

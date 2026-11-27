@@ -77,7 +77,7 @@ const EXEMPT: readonly Exempt[] = [
   { file: 'app/globals.css', line: '--text-field-focus-color: var(--olive-9)', why: 'line, fill or focus ring: no text' },
   { file: 'app/globals.css', line: 'color-mix(in srgb, var(--olive-9) 18%, transparent)', why: 'line, fill or focus ring: no text' },
   { file: 'app/components/upload-progress-tracker.tsx', line: "borderTopColor: 'var(--slate-10)'", why: 'line, fill or focus ring: no text' },
-  { file: 'app/(main)/workspace/general/page.tsx', line: "backgroundColor: 'var(--slate-9)'", why: 'line, fill or focus ring: no text' },
+  { file: 'app/(main)/workspace/general/data-collection.tsx', line: "backgroundColor: 'var(--slate-9)'", why: 'line, fill or focus ring: no text' },
   {
     file: 'app/(main)/chat/components/message-area/message-bubble.tsx',
     line: "backgroundColor: 'var(--slate-9)'",

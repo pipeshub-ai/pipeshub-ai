@@ -4,6 +4,7 @@ the intent the deleting service recorded first."""
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
@@ -26,6 +27,12 @@ from tests.unit.modules.indexing.test_entity_index_rebuild import (
     FakeStore,
     _done_org,
 )
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 if TYPE_CHECKING:
     from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
@@ -68,7 +75,7 @@ def _setup(*intents: dict, clock: dict | None = None) -> tuple[Graph, Store, Fak
     clock = clock if clock is not None else {"now": NOW}
     graph.docs[ORGS]["org-1"] = _done_org()  # nothing else to do
     for intent in intents:
-        config.kv[f"{PENDING_DIRECTORY}{intent['connectorId']}"] = intent
+        config.kv[f"{PENDING_DIRECTORY}{intent['orgId']}/{intent['connectorId']}/r"] = intent
     rebuilder = EntityIndexRebuilder(
         logger=logging.getLogger("t"), graph_provider=graph, store=store, lock=FakeLock(),
         config_service=config, now_ms=lambda: clock["now"],
@@ -251,7 +258,7 @@ async def test_a_failed_removal_for_a_deleted_connector_leaves_an_intent_for_the
 
     await rebuilder.tick()
 
-    intent = config.kv[f"{PENDING_DIRECTORY}app-1"]
+    intent = config.kv[f"{PENDING_DIRECTORY}org-1/app-1/r"]
     assert (intent["orgId"], intent["connectorId"], intent["connectorName"]) == ("org-1", "app-1", "Drive")
 
 
@@ -333,7 +340,7 @@ async def test_a_failed_post_write_check_leaves_an_intent_for_the_reconcile_pass
     with pytest.raises(RuntimeError, match="graph down"):
         await rebuilder.tick()
 
-    assert f"{PENDING_DIRECTORY}app-1" in config.kv
+    assert f"{PENDING_DIRECTORY}org-1/app-1/r" in config.kv
 
 
 async def test_losing_the_lock_after_the_write_leaves_an_intent_for_the_reconcile_pass() -> None:
@@ -343,5 +350,54 @@ async def test_losing_the_lock_after_the_write_leaves_an_intent_for_the_reconcil
 
     await rebuilder.tick()
 
-    assert f"{PENDING_DIRECTORY}app-1" in config.kv
+    assert f"{PENDING_DIRECTORY}org-1/app-1/r" in config.kv
     assert graph.updates == []
+
+
+async def test_the_reconcile_reads_and_cleans_inside_the_intents_org() -> None:
+    from app.core.org_context import current_org_id, peek
+
+    graph, store, config, rebuilder = _setup({"orgId": "org-9", "connectorId": "gone", "requestedAt": 0})
+    seen: list[str | None] = []
+    read, clean = graph.get_document, store.delete_entities_by_connector
+
+    async def reading(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        if a[0] == "gone":
+            seen.append(current_org_id())
+        return await read(*a, **kw)
+
+    async def cleaning(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        seen.append(current_org_id())
+        return await clean(*a, **kw)
+
+    graph.get_document, store.delete_entities_by_connector = reading, cleaning
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert seen == ["org-9", "org-9"] and peek() is None
+
+
+async def test_an_intent_that_cannot_be_cleared_does_not_hold_up_another_orgs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, store, config, rebuilder = _setup(
+        {"orgId": "org-8", "connectorId": "stuck", "requestedAt": 0}, {"orgId": "org-9", "connectorId": "gone", "requestedAt": 1},
+    )
+    delete = config.delete_config
+
+    async def refuse(key: str) -> bool:
+        return False if "/stuck/" in key else await delete(key)
+
+    monkeypatch.setattr(config, "delete_config", refuse)
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert [c["org"] for c in store.cleanups] == ["org-8", "org-9"]
+    assert f"{PENDING_DIRECTORY}org-9/gone/r" not in config.kv
+
+
+async def test_a_delete_recorded_while_the_reconcile_cleans_stays_pending() -> None:
+    _, store, config, rebuilder = _setup({"orgId": "org-9", "connectorId": "gone", "requestedAt": 0})
+    clean, later = store.delete_entities_by_connector, f"{PENDING_DIRECTORY}org-9/gone/later"
+
+    async def cleaning(*a: Any, **kw: Any) -> Any:  # noqa: ANN401
+        config.kv[later] = {"orgId": "org-9", "connectorId": "gone", "requestedAt": 5}
+        return await clean(*a, **kw)
+
+    store.delete_entities_by_connector = cleaning
+    assert await rebuilder.tick() == "entity_cleanup"
+    assert list(config.kv) == [later]

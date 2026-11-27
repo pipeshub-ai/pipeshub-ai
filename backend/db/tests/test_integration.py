@@ -493,6 +493,89 @@ def test_profile_fence_is_volatile_read_committed_and_callable_by_the_login(db):
         assert {("pipeshub_query_login", "USAGE"), ("pipeshub_node_login", "USAGE")} <= grants
 
 
+def _prologue(fence: str) -> str:
+    """The units' shape (app/core/db/uow.py, src/libs/db/uow.ts): the org is set in a materialized pre that the fence's subquery reads."""
+    return ("WITH pre AS MATERIALIZED (SELECT %s::text AS role, set_config('app.org_id', %s, true) AS org) "
+            f"SELECT s.fence FROM pre, LATERAL (SELECT set_config('role', pre.role, true), {fence}(1) AS fence WHERE pre.org IS NOT NULL) s")
+
+
+def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
+    """kernel.org_writes_held holds no org here, so both fences answer as before; a body that holds one org (as an extra migration
+    location would plant) refuses that org's write units with 25006, and only them."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    held, other = "a" * 24, "b" * 24
+
+    def prologue(login: str, role: str, fence: str, org: str) -> None:
+        with connect(cluster, name, login) as c:
+            c.autocommit = False
+            try:
+                c.execute(_prologue(fence), (role, org))
+            finally:
+                c.rollback()
+
+    def every_unit(org: str) -> None:
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_profile_epoch", org)
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_store_epoch", org)
+
+    for org in (held, other, ""):
+        every_unit(org)
+    def hold_body(body: str) -> None:      # what an extra migration location's run does: the owner replaces the body
+        with connect(cluster, name) as c:
+            c.execute("GRANT CREATE ON SCHEMA kernel TO pipeshub_vetted_kernel")
+            c.execute("SET ROLE pipeshub_vetted_kernel")
+            c.execute("CREATE OR REPLACE FUNCTION kernel.org_writes_held(p_org text) RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER "
+                      f"SET search_path = pg_catalog, kernel, pg_temp SET standard_conforming_strings = on AS $fn$ BEGIN {body} END $fn$")
+            c.execute("RESET ROLE")
+            c.execute("REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel")
+
+    hold_body(f"RETURN p_org = '{held}';")
+    try:
+        for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction, match="writes are held"):
+                prologue("pipeshub_node_login", "pipeshub_node", fence, held)
+        every_unit(other)
+        every_unit("")
+    finally:
+        hold_body("RETURN false;")
+    with connect(cluster, name) as c:      # nobody but the fences' owner can call the hook
+        for role in ("pipeshub_node", "pipeshub_jobs"):
+            assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
+
+
+def test_a_hold_is_recorded_behind_the_fences_barriers_so_no_writer_in_flight_outlives_it(db):
+    """The fences ask for the hold after they hold their install-wide barrier (7341 for the profile fence, 7340 for the document
+    store's), shared to commit: whoever records a hold takes both exclusively first, so it cannot start while any writer is past its
+    fence, and while it is open every new writer is refused; the fences take no lock of their own for the hold."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    org, other = "a" * 24, "b" * 24
+    take = "SELECT pg_try_advisory_xact_lock(7341, 1) AND pg_try_advisory_xact_lock(7340, 1)"
+
+    def unit(fence: str, who: str) -> psycopg.Connection:
+        c = connect(cluster, name, "pipeshub_node_login")
+        c.autocommit = False
+        c.execute(_prologue(fence), ("pipeshub_node", who))
+        return c
+
+    with connect(cluster, name) as k:
+        for fence in ("assert_profile_epoch", "assert_store_epoch"):
+            src = k.execute("SELECT prosrc FROM pg_proc WHERE oid = %s::regprocedure", (f"kernel.{fence}(int)",)).fetchone()[0]
+            assert src.count("advisory") == 1 and "org_writes_held" in src
+    for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+        with unit(fence, org) as writer, connect(cluster, name) as opener:      # a writer is past its fence
+            opener.autocommit = False
+            assert opener.execute(take).fetchone()[0] is False
+            opener.rollback()
+            writer.rollback()                                                  # it ends
+            assert opener.execute(take).fetchone()[0] is True                  # now the hold can be recorded
+            for who in (org, other, ""):                                       # and nobody writes until it commits
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                    unit(fence, who).close()
+            opener.rollback()
+        unit(fence, org).close()
+
+
 def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrades_again(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)
@@ -1057,6 +1140,58 @@ def test_in_enforce_each_service_role_reads_and_writes_only_its_prefixes(kv_db):
             if (seen, listed, wrote, changed, removed) != (may_read, may_read, may_write, may_write, may_write):
                 wrong.append((role, key, seen, listed, wrote, changed, removed))
     assert wrong == []
+
+
+PREFIXED_PATH = ("CREATE OR REPLACE FUNCTION platform.kv_access_path(p_key text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS "
+                 "$$ SELECT CASE WHEN pg_catalog.starts_with(p_key, 'ns1/') THEN pg_catalog.substr(p_key, 5) ELSE p_key END $$")
+
+
+def _prefixed_access(cluster, name):
+    """(role, key, read, wrote) for every row of KV_MATRIX, the key stored under the prefix ns1/."""
+    out = []
+    for role, key, _, _ in KV_MATRIX:
+        with _as(cluster, name, role) as c:
+            seen = c.execute("SELECT value FROM platform.kv_entries WHERE key = %s", ("ns1/" + key,)).fetchone() is not None
+            try:
+                c.execute(UPSERT, ("ns1/" + key,))
+                wrote = True
+            except psycopg.errors.InsufficientPrivilege:
+                wrote = False
+            c.rollback()
+            out.append((role, key, seen, wrote))
+    return out
+
+
+def test_in_enforce_the_matrix_checks_the_path_kv_access_path_gives(kv_db):
+    """By default the path is the key, so a key under a prefix is judged as that whole key (the allow-list roles see none of
+    them). A replaced body (as an extra migration location may install) makes the matrix check the path after the prefix: each role then
+    reads and writes the prefixed keys exactly as it does the plain ones, and the policies and the catalog stay as registered."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, True)
+    with connect(cluster, name) as c:
+        for k in sorted({k for _, k, _, _ in KV_MATRIX}):
+            c.execute("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'secret-value')", ("ns1/" + k,))
+    expected = {(role, key): (may_read, may_write) for role, key, may_read, may_write in KV_MATRIX}
+    default = _prefixed_access(cluster, name)
+    # the allow-list roles see no prefixed key, and the deny-list ones read admin-only keys under it: the prefix changes the answer
+    assert all((seen, wrote) == (False, False) for role, _k, seen, wrote in default if role in ("indexing", "kv"))
+    assert [x for x in default if (x[2], x[3]) != expected[(x[0], x[1])]] != []
+    with connect(cluster, name) as c, c.transaction():
+        c.execute("SET LOCAL ROLE pipeshub_owner")
+        c.execute(PREFIXED_PATH)
+    assert [x for x in _prefixed_access(cluster, name) if (x[2], x[3]) != expected[(x[0], x[1])]] == []
+    with connect(cluster, name) as c:
+        assert [r for r in c.execute("SELECT rule, object FROM kernel.rls_violations") if "kv_" in r[0] or "kv_entries" in r[1]] == []
+
+
+def test_platform_0015_downgrades_to_the_policies_on_the_key_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url, "downgrade", "platform_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regprocedure('platform.kv_access_path(text)')").fetchone()[0] is None
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    assert run_migrate(url).returncode == 0
 
 
 def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_purged_only_where_the_writer_can_read(kv_db):
