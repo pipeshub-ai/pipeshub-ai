@@ -27,7 +27,11 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.models.entities import FileRecord, RecordType
-from app.services.graph_db.neo4j.neo4j_provider import FOLDER_MIME_TYPES, LISTED
+from app.services.graph_db.neo4j.neo4j_provider import (
+    FOLDER_MIME_TYPES,
+    LISTED,
+    Neo4jProvider,
+)
 from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
@@ -246,6 +250,115 @@ async def test_a_page_reads_the_listed_ids_on_the_id_index_whatever_the_plan(w) 
     assert hits <= 12 * BIG, hits
 
 
+async def test_a_wide_folders_window_reads_its_edges_in_order_from_the_children_order_index(w, monkeypatch) -> None:
+    """A folder wider than the split browse holds whole, sorted by name: each window of its children is read from the children order index
+    in the page's order, so it reads about a window of edges, not the folder's 5,000, and never sorts them. The pages list every child."""
+    stamped = await w.g.stamp_kh_children_order()
+    assert stamped["stamped"] >= BIG
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    ran: list[tuple[str, dict[str, Any]]] = []
+    execute = w.g.client.execute_query
+
+    async def capture(query: str, parameters: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if "kh_ur.khFrom = $start_id" in query:
+            ran.append((query, parameters or {}))
+        return await execute(query, parameters, *args, **kwargs)
+
+    monkeypatch.setattr(w.g.client, "execute_query", capture)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))      # each child once, in the name order
+    assert ran, "the windows were read from the index"
+    monkeypatch.setattr(w.g.client, "execute_query", execute)
+    query, parameters = ran[0]
+    async with w.g.client.driver.session(database="neo4j") as s:
+        prof = (await (await s.run("PROFILE " + query.replace("CYPHER replan=skip", "", 1), parameters)).consume()).profile
+    ops = list(_plan_ops(prof))
+    plan = "; ".join(f"{o['operatorType']} {o.get('rows')} {(o.get('args') or {}).get('Details', '')[:100]}" for o in ops)
+    seeks = [o for o in ops if o["operatorType"].startswith("DirectedRelationshipIndexSeek")]
+    assert seeks and all(o["rows"] <= parameters["kh_uread"] + 1 for o in seeks), plan
+    assert not [o for o in ops if o["operatorType"].startswith(("Sort", "Top", "PartialSort"))], [o["operatorType"] for o in ops]
+
+
+async def test_a_window_with_two_edges_to_one_child_is_not_taken_for_the_last(w, monkeypatch) -> None:
+    """Two hierarchy edges join the folder to its first children (a parent-child and an attachment edge, as a graph written before the
+    writers merged edges by their ends can hold). The index holds one entry per edge, so a window of edges reads fewer children than it
+    asked for: that must not read as the folder's end, or the children after the window are never listed."""
+    await w.g.client.execute_query(
+        "MATCH (p:Record {id: $p}) UNWIND $kids AS kid MATCH (c:Record {id: kid}) CREATE (p)-[:NODE_RELATION {relationshipType: 'ATTACHMENT'}]->(c)",
+        parameters={"p": w.n("BIG"), "kids": [w.n("c0"), w.n("c1")]})
+    await w.g.stamp_kh_children_order()
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 4)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=60,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items] == sorted(w.n(f"c{i}") for i in range(BIG))[:60] and page.pagination.hasNext
+
+
+async def test_a_stub_whose_order_stamp_is_stale_is_still_listed(w, monkeypatch) -> None:
+    """A stub of the folder whose edge still carries a named child's order (a stale stamp): the index's stub read misses it and a window
+    meets it. The page is then read again without the index from its start, so the stub, which leads to a record the viewer may read, is
+    listed."""
+    stub, below = w.n("c5"), w.n("c6")
+    now = get_epoch_timestamp_in_ms()
+    assert await w.g.batch_create_edges([{"from_id": stub, "from_collection": REC, "to_id": below, "to_collection": REC,
+                                          "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+                                        collection=CollectionNames.NODE_RELATIONS.value)
+    await w.g.update_node(stub, REC, {"isPlaceholder": True})
+    await w.g.stamp_kh_children_order()
+    # The stamp a write path that missed the stub flag would have left.
+    await w.g.client.execute_query("MATCH (:Record {id: $p})-[e:NODE_RELATION]->(:Record {id: $s}) SET e.khOrd = '0' + toLower($s)",
+                                   parameters={"p": w.n("BIG"), "s": stub})
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))
+
+
+@pytest.mark.parametrize("write", ["rename", "new_edge"])
+async def test_a_child_a_writer_moves_to_the_front_is_on_the_first_page(w, monkeypatch, write: str) -> None:
+    """A write that moves a child of the wide folder to the front of the name order, through the provider: a record renamed by a field
+    write, or a new record hung under the folder by an edge write that only creates what is missing. The first page must list it first:
+    the windows read the children from their order stamps, so a writer that left the old stamp (or none) would leave it out of the page."""
+    await w.g.stamp_kh_children_order()
+    now = get_epoch_timestamp_in_ms()
+    if write == "rename":
+        first = w.n("c4999")
+        assert await w.g.update_record_fields_for_ids([first], {"recordName": f"a first {w.run}"}) == 1
+    else:
+        first = w.n("A0")
+        assert await w.g.create_node_if_absent(first, REC, _rec(w, first).to_arango_base_record() | {"recordName": f"a first {w.run}"})
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.n("BIG"), "from_collection": REC, "to_id": first, "to_collection": REC, "relationshipType": "PARENT_CHILD",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.NODE_RELATIONS.value)
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.user, "from_collection": USR, "to_id": first, "to_collection": REC, "role": "READER", "type": "USER",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.PERMISSION.value)
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=20,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items][:1] == [first], [i.id for i in page.items][:3]
+    assert await w.g.count_stale_kh_children_order() == 0
+
+
 # A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it
 # because the statement tests the org or App next to its match by id, and with other statistics it seeks the org or App index alone.
 # A paged read (`id > $after`) on such an index is not one: only an equality or IN on the id is.
@@ -306,6 +419,7 @@ def _calls(w: W) -> dict[str, Any]:
                              **{"flattened": False, "depth": 1, "limit": 50, **kw})
     return {
         "browse a folder": lambda: browse(w.n("BIG"), "folder"),
+        "a folder read in windows": lambda: browse(w.n("BIG"), "folder"),
         "a later page": lambda: browse(w.n("BIG"), "folder", page=3),
         "browse the App": lambda: browse(w.app, "app"),
         "browse a group": lambda: browse(w.n("G3"), "recordGroup"),
@@ -322,7 +436,7 @@ def _calls(w: W) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("call", [
-    "browse a folder", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
+    "browse a folder", "a folder read in windows", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
     "stamp nodes", "stamp subtree", "uploads under a folder", "purge failure"])
 async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypatch, call: str) -> None:
     """Every statement these reads run seeks a record or group it has the id of on the label's unique id index, never on an index that
@@ -339,6 +453,8 @@ async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypat
         return await execute(query, parameters, *args, **kwargs)
 
     monkeypatch.setattr(w.g.client, "execute_query", capture)
+    if call == "a folder read in windows":      # as a folder wider than the split browse holds whole is read
+        monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
     await _calls(w)[call]()
     monkeypatch.setattr(w.g.client, "execute_query", execute)
     assert ran

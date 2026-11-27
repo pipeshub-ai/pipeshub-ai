@@ -215,6 +215,56 @@ async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_
     assert walked["totalCapped"] is True and 0 < walked["total"] <= 9
 
 
+async def _service_pages(p, org: str, limit: int) -> list:
+    """Every page the Knowledge Hub service gives ``u1`` for the connector, flattened and by name, by cursor."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+    service, pages, cursor = KnowledgeHubService(logging.getLogger("kh-flat"), p, _Config()), [], None
+    for _ in range(50):
+        with ctx(org):
+            page = await service.get_nodes(user_id="uid1", org_id=org, parent_id="app1", parent_type="app", flattened=True, limit=limit, sort_by="name", sort_order="asc",
+                                           **({"cursor": cursor} if cursor else {}))
+        assert page.success, page.error
+        pages.append(page)
+        cursor = page.pagination.nextCursor
+        if not cursor:
+            return pages
+    raise AssertionError("did not end")
+
+
+async def test_a_capped_total_is_never_below_the_rows_the_listing_has_shown(pg_db, monkeypatch) -> None:
+    """The readable rows lie past the first COUNT_SCAN candidates the lower bound asks the check about: it admits fewer of them than page one already shows."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    await _admin("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'u1' AND to_id < 'r0003'", org)
+    await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    monkeypatch.setattr(kh_listing, "COUNT_SCAN", 5)
+    with ctx(org):
+        raw = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=[f"r{i:04d}" for i in range(3, 12)]), limit=9)
+    assert len(raw["rows"]) == 9 and raw["total"] < 9 and raw["totalCapped"] is True      # the provider's count: what the check admitted among the first five candidates
+    pages = await _service_pages(p, org, 9)
+    shown = 0
+    for page in pages:
+        shown += len(page.items)
+        assert page.pagination.totalItems >= shown and page.pagination.totalCapped is True, (shown, page.pagination)
+    assert shown == 9
+
+
+async def test_an_exact_total_through_the_service_is_the_walks(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    pages = await _service_pages(p, org, 3)
+    ids = [i.id for page in pages for i in page.items]
+    assert ids == [f"r{i:04d}" for i in range(7)]
+    assert all(page.pagination.totalItems == len(ids) and page.pagination.totalCapped is False for page in pages)
+
+
 async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 12, readable=9)
@@ -329,6 +379,7 @@ def _nodes(plan: object) -> list[dict]:
     return found
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_every_listing_statement_reads_the_connector_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
     p, org = prov(pg_db), new_org()
@@ -367,6 +418,7 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         await con.close()
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
 async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
     """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
@@ -394,6 +446,7 @@ def _joined_reads(node: dict, relation: str, probe: bool = False) -> list[str]:
     return own + [x for c in node.get("Plans", []) for x in _joined_reads(c, relation, probe)]
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 @pytest.mark.parametrize("admitted", [False, True], ids=["walked", "by_class"])
 async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_the_organisations_nodes(pg_db, analyzed, admitted) -> None:
@@ -423,6 +476,7 @@ def _rows_read(plan: object, relation: str) -> int:
     return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
 async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
     """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
@@ -455,6 +509,7 @@ async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not
     assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
     """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
     kg_0016): never a read of the organisation by records_id or records_pkey."""
@@ -504,6 +559,7 @@ async def _generic_plan(con, sql: str) -> object:
     return json.loads(await con.fetchval("SELECT current_setting('kh.plan')"))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
     """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
@@ -855,6 +911,7 @@ async def _page_and_reads(p, org: str, **kw) -> tuple[dict, int]:
             await p.rollback_transaction(snap)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_search_for_a_rare_word_reads_its_matches_not_the_connector(pg_db) -> None:
     """A connector of 20,300 rows (300 records and 20,000 rows of other names that sort before them) and a search whose one match sorts last: the page walked the
     connector's name index from its start, filtering every row by the search, to find it (a rare word on a large connector read the connector). By the trigram index of

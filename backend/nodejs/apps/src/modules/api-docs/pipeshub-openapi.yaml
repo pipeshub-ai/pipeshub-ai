@@ -23872,6 +23872,69 @@ components:
           example: "LLM provider added successfully"
         details:
           $ref: '#/components/schemas/AIModelProviderAddedDetails'
+    CredentialReentryRequiredError:
+      type: object
+      additionalProperties: false
+      description: |
+        A save that would send a saved secret (sent back as the mask) to a different server
+        address. Nothing is stored; send the secret again in full with the new address.
+      required: [status, error_code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          example: Enter the credentials again to use this new endpoint.
+    ConnectionEndpointsDifferError:
+      type: object
+      additionalProperties: false
+      description: |
+        A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+        message:
+          type: string
+          description: Names the models on another endpoint.
+        models:
+          type: array
+          description: The connection's models whose endpoint differs from its first model's.
+          items:
+            type: object
+            additionalProperties: false
+            required: [modelKey, modelType, name]
+            properties:
+              modelKey:
+                type: string
+              modelType:
+                type: string
+              name:
+                type: string
+                description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -23885,6 +23948,10 @@ components:
         status:
           type: string
           enum: [error]
+        error_code:
+          type: string
+          enum: [credential_reentry_required]
+          description: Set when a changed endpoint needs its credentials entered again.
         message:
           type: string
     PrepareEmbeddingModelRequest:
@@ -24144,6 +24211,10 @@ components:
         isReasoning:
           type: boolean
           description: Whether this is a reasoning model
+        forwardingCredentialsCleared:
+          type: boolean
+          enum: [true]
+          description: Present when the update moved the model to a new endpoint and removed its saved identity forwarding service key and credential headers.
     UpdateAIModelProviderResponse:
       type: object
       additionalProperties: false
@@ -30145,6 +30216,21 @@ components:
                 maxUserBytes:
                   type: integer
   responses:
+    StoreUnavailable:
+      description: >-
+        The database could not answer just now (the graph store, or the config store on a read, lost its connection,
+        timed out or is restarting); nothing is wrong with the request, and nothing was changed. Retry after
+        `Retry-After` seconds.
+        It is never sent for a connector, setting or app that really is missing, which keeps its own answer.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (5).
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
       content:
@@ -35725,7 +35811,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The account cannot sign in (a disabled or service account).
+          description: |
+            The account cannot sign in. Possible causes:
+            - A disabled or service account
+            - A first sign-in that would create the account (single sign-on provisioning) when the installation has had
+              more users than its licence covers for 14 days (`Your organization's licence has no free seats. Ask your
+              administrator to remove users or add seats.`); people who already have an account still sign in
           content:
             application/json:
               schema:
@@ -36094,6 +36185,8 @@ paths:
         - With a bearer refresh token and `x-pipeshub-session: cookie`, the token is also set as
           the session cookie (how the web app moves a refresh token it kept in `localStorage`)
         - A refused cookie (`401`) is cleared in the answer
+        - Any 4xx other than `429` is a refusal (`400` locked account, `401`, `403`): sign in again.
+          A `5xx` or `429` is no verdict: keep the session and retry (the web app does)
         - Returns a new access token and basic user information
         - The request body and query string are not read
 
@@ -36118,7 +36211,8 @@ paths:
 
         - Call this endpoint before the access token expires
         - Store the new access token and continue using it for authenticated requests
-        - If refresh fails with 401, redirect user to login flow
+        - If the refresh is refused (any 4xx other than `429`), redirect the user to the login flow;
+          after a `5xx` or `429`, keep the session and retry later
       operationId: refreshToken
       x-pipeshub-sdk: true
       security:
@@ -36172,6 +36266,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: |
+            Too many requests from this address (the app-wide limiter runs before authentication, so it
+            is counted per IP). It says nothing about the session: keep it and retry after
+            `error.retryAfter` seconds (the same value as the `Retry-After` header, which CORS does not
+            expose to a browser on another origin).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -38674,7 +38778,8 @@ paths:
         Invalid email addresses are skipped (not rejected); valid ones follow the same
         new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
         notification is sent to the uploading admin summarizing the result
-        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+        (invited / re-invited / restored / already-members / invalid / failed-to-email, and how many were
+        not added because the licence has no seat left, with the reason).
 
         Exactly one file, under the form field `file`. The declared part type must be `text/csv`,
         `application/vnd.ms-excel`, the `.xlsx` type or `application/octet-stream`; it is parsed as a
@@ -52277,6 +52382,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The graph store could not be read while checking that the caller uploaded the
+            attachment, so nothing was deleted. Forwarded from the query service with an empty
+            body; try again later.
         default:
           description: >
             Other status codes are forwarded from the query service (e.g. 404) with an **empty**
@@ -58297,6 +58407,13 @@ paths:
             server's search deadline (`SEARCH_DEADLINE_SECONDS`, 50 by default)
             and was stopped ("This search took too long, so it was stopped and
             no results are shown. ..."): try again, or narrow it with filters.
+            Also returned when the embedding model's provider is limiting
+            requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -58487,6 +58604,13 @@ paths:
 
             When the service could not check what the caller may read, the usual error envelope
             also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
+
+            Also returned when the embedding model's provider is limiting requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -60220,7 +60344,11 @@ paths:
         '403': { description: "The token lacks agent:write; an engine agent needs an org admin; or the caller may not set the agent's policy" }
         '409': { description: An engine named in the profile cannot be used in this org now }
         '422': { description: A policy section widens the org's ceilings or is set on its own page (CP_* code naming the dimension) }
-        '503': { description: The document holds policy and this deployment keeps no agent policy }
+        '503':
+          description: |-
+            The document holds policy and this deployment keeps no agent policy, or the store holding the
+            organization's toolset instance list did not answer (nothing is imported; retry after the
+            `Retry-After` seconds).
   /agents/conversations/show/archives:
     get:
       tags:
@@ -60658,6 +60786,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The graph store could not be read while checking that the caller uploaded the
+            attachment, so nothing was deleted. Forwarded from the query service with an empty
+            body; try again later.
         default:
           description: >
             Other status codes are forwarded from the query service (e.g. 404) with an **empty**
@@ -63257,7 +63390,12 @@ paths:
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: Service unavailable - Connector service is unreachable
+          description: Service unavailable - Connector service is unreachable. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -63631,6 +63769,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/active:
     get:
       tags:
@@ -64068,6 +64208,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     delete:
       tags:
         - Connector Instances
@@ -64182,6 +64324,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/stats:
     get:
       tags:
@@ -64266,6 +64410,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/explain:
     get:
       tags:
@@ -64548,7 +64694,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached. Safe to retry.
+          description: The connector service could not be reached. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64630,6 +64781,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - Connector Instances
@@ -64683,7 +64836,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The source could not be reached to check the credential. Safe to retry.
+          description: The source could not be reached to check the credential. Safe to retry. Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -64712,6 +64870,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/oauth/authorize:
     parameters:
       - name: connectorId
@@ -64759,6 +64919,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users:
     get:
       tags:
@@ -64795,6 +64957,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/users/{userId}:
     delete:
       tags:
@@ -64834,6 +64998,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/roster:
     get:
       tags:
@@ -64911,6 +65077,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/invites:
     post:
       tags:
@@ -65000,6 +65168,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/user-access/reminders:
     post:
       tags:
@@ -65044,6 +65214,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/info:
     post:
       tags:
@@ -65093,6 +65265,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/authorize:
     post:
       tags:
@@ -65137,6 +65311,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/user-access/link/complete:
     post:
       tags:
@@ -65221,6 +65397,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/permissions/filter:
     patch:
       tags:
@@ -65334,6 +65512,12 @@ paths:
             admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
             only if `filter.mode` is not already the one you want. That read needs `connector:read` for an OAuth
             client or personal access token (`connector:write` does not grant it); a session needs no scope.
+            Also sent, with `Retry-After` (5 seconds), when the database could not answer just now; nothing was changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5), when the database could not answer.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -66096,6 +66280,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/resync:
     post:
       tags:
@@ -66314,6 +66500,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -66419,6 +66607,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Configuration --------------------
   /connectors/{connectorId}/config:
@@ -66502,6 +66692,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - Connector Configuration
@@ -66641,6 +66833,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/auth:
     put:
       tags:
@@ -66735,6 +66929,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/config/filters-sync:
     put:
       tags:
@@ -66839,6 +67035,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/toggle:
     post:
       tags:
@@ -66953,6 +67151,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -67048,6 +67248,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/oauth/callback:
     get:
       tags:
@@ -67260,6 +67462,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       deprecated: true
       x-speakeasy-deprecation-message: >-
@@ -67362,6 +67566,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
@@ -67545,6 +67751,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
 
   # -------------------- Connector Service Configuration (internal) --------------------
   /connectors/getTokenFromCode:
@@ -69300,6 +69508,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /toolsets/agents/{agentKey}/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -69372,6 +69595,21 @@ paths:
             The agent's permissions could not be checked, or the saved record could not be deleted.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -69725,7 +69963,12 @@ paths:
             The caller asked for no `scope`, or for `org`, and is not confirmed as an administrator, but
             their role could not be confirmed either, so nothing was created (`SERVICE_UNAVAILABLE`; the
             connector service's wording is replaced with `This part of PipesHub is briefly unavailable.
-            Please try again in a few seconds.`). Asking for `personal` avoids the role check.
+            Please try again in a few seconds.`). Asking for `personal` avoids the role check. Also for an
+            organization instance when the store holding the instance list did not answer while it was read
+            or re-read for the write: the instance is not created and no other instance is changed. A new OAuth
+            configuration saved just before may remain and keeps its name, so retrying with the same inline OAuth
+            credentials answers `409` until that configuration is linked (`oauthConfigId`) or deleted; any other
+            create can be retried after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -69957,6 +70200,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so no instance was changed. New `authConfig` values saved to the OAuth
+            configuration just before may remain. When the instance had a linked OAuth configuration, a
+            retry after the `Retry-After` seconds updates it in place. When it had none, that save created
+            a new configuration that no instance links to: retry with its `oauthConfigId`, or delete it
+            first, or a retry with the same `authConfig` creates another one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -70046,6 +70301,15 @@ paths:
             The agent-usage check or the store could not be read or written.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so the instance stays, with its users' sign-ins and its rules, and no other
+            instance is changed. Safe to retry after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -70321,6 +70585,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /toolsets/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -70384,6 +70663,21 @@ paths:
             The saved record could not be deleted.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -71675,7 +71969,9 @@ paths:
         arguments, auth mode or token URL), every stored credential for the instance is
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
-        a change of auth mode or catalog type counts.
+        a change of auth mode or catalog type counts, and of URL when the template lets it be
+        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
+        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71760,6 +72056,23 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
+            catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
+            of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
+            store kept one of them or could not answer: the instance was not changed, though some credentials may
+            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -72432,6 +72745,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential, or on an OAuth instance the caller's registered OAuth client, could not be confirmed
+            deleted: the config store kept it or could not answer, so it may still be stored and the caller stays
+            connected. Retry after `Retry-After` seconds; a retry that finds nothing stored answers 200. The body's
+            detail is "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/instances/{instanceId}/auto-authenticate:
     post:
       tags:
@@ -72556,6 +72884,21 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential or the caller's registered OAuth client could not be confirmed deleted: the config store kept
+            it or could not answer, so it may still be stored and the caller stays connected. Retry after `Retry-After`
+            seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -73348,6 +73691,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the agent stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mcp-servers/agents/{agentKey}/instances/{instanceId}/reauthenticate:
     post:
       tags:
@@ -73410,6 +73768,21 @@ paths:
             Unexpected failure in the gateway or in the connectors service.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The credential or the agent's registered OAuth client could not be confirmed deleted: the config store kept
+            it or could not answer, so it may still be stored and the agent stays connected. Retry after `Retry-After`
+            seconds; a retry that finds nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -74083,6 +74456,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The new auth scheme needs the old credentials removed first, and the config store kept one or could not
+            answer: the toolset and its OAuth app were not changed (some credentials may already be gone). Retry after
+            `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's database just now. Please try
+            again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - API Toolsets
@@ -74136,7 +74524,17 @@ paths:
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
-          description: Which agents use the toolset couldn't be checked, so nothing was deleted
+          description: |
+            Which agents use the toolset couldn't be checked, so nothing was deleted (no `Retry-After`). Also when a
+            credential, the OAuth app or the record could not be confirmed deleted: the config store kept it or could
+            not answer ("We couldn't reach PipesHub's database just now. Please try again in a few seconds.", with
+            `Retry-After`). The record goes last, so the delete can be sent again; the toolset may already be gone when
+            only the store's reply to its delete was lost.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -74292,6 +74690,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and the caller stays connected. Retry after `Retry-After` seconds; a retry that finds nothing
+            stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try again
+            in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/shared-credentials:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -74401,6 +74814,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '503':
+          description: |
+            The credential could not be confirmed deleted: the config store kept it or could not answer, so it may still
+            be stored and members stay connected through it. Retry after `Retry-After` seconds; a retry that finds
+            nothing stored answers 200. The body's detail is "We couldn't reach PipesHub's database just now. Please try
+            again in a few seconds."
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -77381,6 +77809,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     post:
       tags:
         - OAuth Configuration
@@ -77555,6 +77985,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/StoreUnavailable'
     put:
       tags:
         - OAuth Configuration
@@ -79161,7 +79593,13 @@ paths:
                 connectionId:
                   type: string
                   format: uuid
-                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                  description: |
+                    Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
+                    with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
                   description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
@@ -79206,13 +79644,19 @@ paths:
                 $ref: '#/components/schemas/AIModelBatchSSEEvent'
         '400':
           description: |
-            Invalid body, or connectionId does not match a saved connection for this provider
+            Invalid body, or connectionId does not match a saved connection for this provider.
+            `error_code: credential_reentry_required` when connectionId names a connection whose
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CredentialReentryRequiredError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79242,7 +79686,12 @@ paths:
       tags:
         - AI Models Providers
       summary: Rotate credentials for every model in a connection
-      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      description: |
+        Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+        The new credentials are health-checked against the connection's first model and written to every
+        model of the connection. When the connection's models do not all share one endpoint and baseUrl
+        (a model was moved to another endpoint), the request is refused with 400
+        `credential_reentry_required` before any health check, and nothing is stored.
       operationId: rotateConnectionCredentials
       security:
         - bearerAuth: []
@@ -79276,15 +79725,32 @@ paths:
       responses:
         '200':
           description: Credentials updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+                    description: Models whose credentials were replaced.
         '400':
           description: |
-            Health check rejected the new credentials, or the body included a non-credential field
+            Health check rejected the new credentials, or the body included a non-credential field.
+
+            Also returned as `ConnectionEndpointsDifferError` (`credential_reentry_required`) when the connection's models use more than one endpoint; nothing is checked or stored.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Missing, invalid or expired bearer token.
           content:
@@ -79320,7 +79786,9 @@ paths:
       tags:
         - AI Models Providers
       summary: Set identity forwarding for every model in a connection
-      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      description: |
+        Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+        A save carrying a new secret (a non-empty `serviceApiKey`, or a typed value for a credential header such as `Authorization`) is refused with 400 `credential_reentry_required` when the connection's models do not all share one endpoint and baseUrl; nothing is stored. A save without a new secret applies to every entry whatever its endpoint.
       operationId: setConnectionIdentityForwarding
       security:
         - bearerAuth: []
@@ -79384,7 +79852,13 @@ paths:
                   updated:
                     type: integer
         '400':
-          description: Invalid settings
+          description: Invalid settings, or a new secret for a connection whose models use more than one endpoint (`ConnectionEndpointsDifferError`; nothing is stored).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ConnectionEndpointsDifferError'
         '401':
           description: Authentication required
         '403':
@@ -79654,6 +80128,14 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
+
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
             application/json:
@@ -79678,6 +80160,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:

@@ -687,6 +687,9 @@ _SCAN_REVIEWED = {
     "get_app_users": "RETURN MERGE(user, {...}) is the AQL function",
     "get_knowledge_hub_root_nodes_v2": "RETURN MERGE(node, {...}) is the AQL function",
     "get_node_relations_batch": "RETURN MERGE(e, {...}) is the AQL function",
+    # Knowledge-hub listing state, as stamp_kh_listing_state is (HARMLESS by the classes' definition): no edge is added, removed or retyped
+    # and no access rule, model, place or trash state changes, so nothing a vector point's scope fields are made of moves.
+    "stamp_kh_children_order": "SETs only the children order stamps (khFrom, khOrd, khChild) on hierarchy edges",
 }
 
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
+from app.config.configuration_service import ConfigKeyNotDeletedError
 from app.harness.credentials.bindings import BindingDocuments
 from app.harness.credentials.legacy_records import LegacyCredentialRecords
 from app.harness.credentials.sources import TOOLSET_KIND, ToolsetSecretSource
@@ -88,3 +90,61 @@ async def test_lw2_on_a_narrowing_reaches_both_and_the_source_answers_no_secret(
     _ = await seam.save("toolset", ORG, "ts-1", "u1", withdrawn, narrowing=True)
     assert config.values[OLD] == withdrawn
     assert await source.read(ORG, SCOPE) is None
+
+
+@dataclass
+class KeepsKeys(DictConfig):
+    """Answers every delete False and keeps the key; ``down``: the confirming read raises, as an unreachable store does."""
+
+    down: bool = False
+
+    async def delete_config(self, key: str) -> bool:
+        return False
+
+    async def get_config(self, key: str, default: Any = None, use_cache: bool = False, **kw: Any) -> Any:  # noqa: ANN401
+        if self.down and kw.get("raise_on_error"):
+            raise ConnectionError("store unreachable")
+        return await super().get_config(key, default, use_cache)
+
+
+def kept_world(config: KeepsKeys) -> tuple[FakeBindingWriter, LegacyCredentialRecords]:
+    writer = FakeBindingWriter(config)
+
+    async def node() -> FakeBindingWriter:
+        return writer
+
+    return writer, LegacyCredentialRecords(config, node)  # type: ignore[arg-type]
+
+
+async def test_off_a_remove_the_store_refused_raises_and_the_record_stays(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONTROL_PLANE_CREDENTIALS, raising=False)
+    config = KeepsKeys({OLD: record()})
+    _, seam = kept_world(config)
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await seam.remove("toolset", ORG, "ts-1", "u1")
+    assert config.values[OLD] == record()
+
+
+async def test_off_a_remove_over_an_unreachable_store_raises_its_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONTROL_PLANE_CREDENTIALS, raising=False)
+    _, seam = kept_world(KeepsKeys({OLD: record()}, down=True))
+    with pytest.raises(ConnectionError):
+        await seam.remove("toolset", ORG, "ts-1", "u1")
+
+
+async def test_off_removing_a_record_that_is_not_there_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(CONTROL_PLANE_CREDENTIALS, raising=False)
+    _, seam = kept_world(KeepsKeys())
+    await seam.remove("toolset", ORG, "ts-1", "u1")
+
+
+async def test_on_a_remove_revokes_then_raises_when_the_old_record_stays(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(CONTROL_PLANE_CREDENTIALS, "true")
+    config = KeepsKeys()
+    writer, seam = kept_world(config)
+    _ = await seam.save("toolset", ORG, "ts-1", "u1", record())
+    config.values[OLD] = record("stale-old-path-token-0123456789")
+    with pytest.raises(ConfigKeyNotDeletedError):
+        await seam.remove("toolset", ORG, "ts-1", "u1", user_id="u1")
+    row = writer.find(ORG, "ts-1", "user:u1")
+    assert row is not None and row["status"] == "revoked"

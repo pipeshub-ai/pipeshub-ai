@@ -176,6 +176,7 @@ async def test_a_hierarchy_edge_to_another_collection_does_not_count_as_a_child_
     assert got == {("records", "real")}
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) -> None:
     """A parent's ``leaf`` needs one existing hierarchy child, never the list: a batch that touches a record group of 3,000 children reads a few edges of it, fresh and analysed.
     Children whose node is gone, and links that are not hierarchy links, still do not count."""
@@ -213,6 +214,7 @@ async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) ->
         assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child; plan {plan}"
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_children_of_a_page_of_records_are_read_by_seeks_not_by_the_orgs_relations(pg_db) -> None:
     """A restamp page asks for the children of its 200 records: the read costs their own edges, not the org's 6,000 relations under three large folders, fresh and analysed."""
     from .test_kg_read import _admin
