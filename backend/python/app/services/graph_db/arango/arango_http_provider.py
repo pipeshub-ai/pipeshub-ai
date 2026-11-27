@@ -431,6 +431,13 @@ _DEDUPE_MAX_PASSES = 10_000
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
+# A code file carries its record's connectorId and recordGroupId (the scoped path lookup reads them).
+_CODE_FILE_SCOPE_FIELDS = ("connectorId", "recordGroupId")
+
+
+def _scope_changed_keys(docs: list[dict]) -> list[str]:
+    """The keys of the ``records`` documents whose write sets a field their code file copies."""
+    return [d["_key"] for d in docs if d.get("_key") and any(f in d for f in _CODE_FILE_SCOPE_FIELDS)]
 
 
 def _remove_opts(transaction: str | None) -> str:
@@ -4197,16 +4204,31 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate nodes from generic format to ArangoDB format
             arango_nodes = self._translate_nodes_to_arango(nodes)
 
-            if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
+            if collection != CollectionNames.RECORDS.value:
+                result = await self.http_client.batch_insert_documents(
+                    collection, arango_nodes, txn_id=transaction, overwrite=True
+                )
+                return result.get("errors", 0) == 0
+            if scoped := _scope_changed_keys(arango_nodes):
+                return await self._write_records_keeping_code_file_scope(
+                    scoped, lambda txn: self._upsert_record_nodes(arango_nodes, txn), transaction)
+            return await self._upsert_record_nodes(arango_nodes, transaction)
+
+        except Exception:
+            raise
+
+    async def _upsert_record_nodes(self, arango_nodes: list[dict], transaction: str | None) -> bool:
+        """batch_upsert_nodes on ``records``."""
+        try:
+            if record_created_at_insert_only():
                 await self._upsert_record_base_docs(arango_nodes, transaction)
                 return True
 
-            if collection == CollectionNames.RECORDS.value:
-                # the insert-only switch is off: the older write, except that an update never writes the incarnation id
-                arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
+            # the insert-only switch is off: the older write, except that an update never writes the incarnation id
+            arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
 
             result = await self.http_client.batch_insert_documents(
-                collection, arango_nodes, txn_id=transaction, overwrite=True
+                CollectionNames.RECORDS.value, arango_nodes, txn_id=transaction, overwrite=True
             )
 
             return result.get("errors", 0) == 0
@@ -4382,10 +4404,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bool: True if successful
         """
         try:
-            result = await self.http_client.update_document(
-                collection, key, updates, txn_id=transaction
-            )
-            return result is not None
+            async def write(txn: str | None) -> bool:
+                return await self.http_client.update_document(collection, key, updates, txn_id=txn) is not None
+            if collection == CollectionNames.RECORDS.value and _scope_changed_keys([{**updates, "_key": key}]):
+                return await self._write_records_keeping_code_file_scope([key], write, transaction)
+            return await write(transaction)
         except Exception:
             raise
 
@@ -4515,7 +4538,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             bind_vars["@collection"] = collection
 
-            result = await self.http_client.execute_aql(aql_query, bind_vars, txn_id=transaction)
+            async def write(txn: str | None) -> list | None:
+                return await self.http_client.execute_aql(aql_query, bind_vars, txn_id=txn)
+            scoped = _scope_changed_keys(arango_nodes) if collection == CollectionNames.RECORDS.value else []
+            result = await (self._write_records_keeping_code_file_scope(scoped, write, transaction) if scoped else write(transaction))
 
             # Check if all updates succeeded
             if result and isinstance(result, list):
@@ -11463,6 +11489,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, {"@blocks": CollectionNames.BLOCKS.value, "limit": limit}
         )
         return len(result or [])
+
+    async def _write_records_keeping_code_file_scope(
+        self, keys: list[str], write: Callable[[str | None], Awaitable[_T]], transaction: str | None,
+    ) -> _T:
+        """``write`` to ``records``, then copy the written records' connectorId and recordGroupId onto their code files, in one transaction: the
+        caller's, else a stream transaction of its own. The scoped path lookup reads the copy, so a stale one would hide a file its user can open."""
+        if transaction is not None:
+            result = await write(transaction)
+            await self._sync_code_file_scope(keys, transaction)
+            return result
+        txn = await self.http_client.begin_transaction([], [CollectionNames.RECORDS.value, CollectionNames.CODE_FILES.value])
+        committed = False
+        try:
+            result = await write(txn)
+            await self._sync_code_file_scope(keys, txn)
+            await self.http_client.commit_transaction(txn)
+            committed = True
+            return result
+        finally:
+            if not committed:
+                await asyncio.shield(self._abort_quietly(txn))
+
+    async def _sync_code_file_scope(self, keys: list[str], transaction: str) -> None:
+        await self.http_client.execute_aql("""
+        FOR k IN @keys
+            FOR c IN @@files
+                FILTER c._key == k
+                LET r = DOCUMENT(@@records, k)
+                FILTER r != null AND r.orgId == c.orgId AND (c.connectorId != r.connectorId OR c.recordGroupId != r.recordGroupId)
+                UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
+        """, {"keys": sorted(set(keys)), "@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value}, txn_id=transaction)
 
     async def backfill_code_path_scope(self, limit: int = 5000) -> int:
         """Copy a code file's scope from its record, and set a record group's repoKey; see the interface."""

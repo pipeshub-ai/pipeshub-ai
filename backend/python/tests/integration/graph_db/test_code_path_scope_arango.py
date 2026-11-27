@@ -7,6 +7,7 @@ Needs ARANGO_IT_URL (see tests/integration/real_graph.py); without it the tests 
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,8 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
 LOG = logging.getLogger("code-path-scope-arango")
-ARANGO_DB = "code_path_scope_it"
+# The backfill reads and marks every org of the database: a database per xdist worker keeps a run from marking another's orgs.
+ARANGO_DB = f"code_path_scope_it_{os.environ.get('PYTEST_XDIST_WORKER', 'main')}"
 
 
 @pytest.fixture
@@ -128,3 +130,28 @@ async def test_the_lookup_indexes_exist(arango) -> None:
     assert ("orgId", "filePath", "connectorId", "recordGroupId") in fields(await arango.http_client.get_indexes(CollectionNames.CODE_FILES.value))
     groups = fields(await arango.http_client.get_indexes(CollectionNames.RECORD_GROUPS.value))
     assert {("orgId", "repoKey"), ("orgId", "connectorId", "parentExternalGroupId")} <= groups
+
+
+@pytest.mark.parametrize("how", ["batch_update_nodes", "update_node", "batch_upsert_nodes"])
+async def test_a_code_record_moved_to_another_repo_is_found_in_the_new_repo_only(arango, how) -> None:
+    """The scoped lookup reads the code file's copy of its record's group: every write that moves the record moves the copy with it."""
+    org, connector = _new_org()
+    with for_org(org, job="code-path-scope-test"):
+        world = await world_of.write_world(arango, org, connector, 5)
+    await world_of.backfill(arango, LOG)
+    moved, new_group = world["records"][3], world["groups"][4][1]
+    with for_org(org, job="code-path-scope-test"):
+        if how == "batch_update_nodes":
+            await arango.batch_update_nodes([{"id": moved, "recordGroupId": new_group}], "records")
+        elif how == "update_node":
+            await arango.update_node(moved, "records", {"recordGroupId": new_group})
+        else:
+            doc = await arango.get_document(moved, "records")
+            await arango.batch_upsert_nodes([{**doc, "recordGroupId": new_group}], "records")
+        scoped = {repo: await world_of.records_at(arango, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")}
+    assert scoped == {"acme/repo3": [], "acme/repo4": sorted([moved, world["records"][4]])}, scoped
+    ops._SCOPED_ORGS.clear()
+    await arango.remove_sync_point(migration.marker_key(org), CollectionNames.SYNC_POINTS.value)     # the org-wide lookup, as the oracle
+    with for_org(org, job="code-path-scope-test"):
+        assert not await migration.scope_ready(arango, org)
+        assert {repo: await world_of.records_at(arango, org, connector, world, repo) for repo in ("acme/repo3", "acme/repo4")} == scoped
