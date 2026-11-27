@@ -47,7 +47,7 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         stored |= {f"graph.{t}": "org" for t in ("stats_changes", "stats_records", "stats_counts", "stats_apps")}      # graph_0021, plain tables
         stored["graph.stats_sweeps"] = "org"                                                                     # graph_0023
         stored |= {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
-        stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials", "session_families")}
+        stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials", "session_families", "org_slugs")}
         stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events", "agent_registrations", "agent_call_events")}
         stored |= {"integrations.slack_threads": "org", "integrations.slack_user_links": "org"}
         stored |= {f"kg.{t}": "org" for t in ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "restamp_queue", "scopes", "counts", "analyze_requests")}
