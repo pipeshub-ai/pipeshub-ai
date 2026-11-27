@@ -1,0 +1,123 @@
+{
+  "_comment": "CTL-5: rollout keys a policy layer stored before CTL-5 may still carry. A reader strips exactly these and keeps every other dimension of the layer; any other unknown key still makes the layer unreadable. Node (control-plane readPolicyLayer) and Python (harness_core.policy.retired read_policy_layer, the live-layer loader) read these cases alike. A section left empty by the strip is dropped.",
+  "retiredRolloutKeys": [
+    "ENABLE_COLLABORATOR_TURNS",
+    "ENABLE_AGENT_ACTIVITY_PANEL",
+    "ENABLE_FOLLOWUP_SUGGESTIONS",
+    "ENABLE_DURABLE_ASSISTANT_AGENT"
+  ],
+  "cases": [
+    {
+      "id": "RK-1",
+      "note": "a retired stage beside a tool deny and a live stage: the deny and the stage stay",
+      "stored": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "org",
+          "id": "org-1"
+        },
+        "approvals": {
+          "tools": {
+            "jira@inst-42/create_issue": "deny"
+          }
+        },
+        "rollout": {
+          "ENABLE_FOLLOWUP_SUGGESTIONS": true,
+          "ENABLE_SKILLS": false
+        }
+      },
+      "read": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "org",
+          "id": "org-1"
+        },
+        "approvals": {
+          "tools": {
+            "jira@inst-42/create_issue": "deny"
+          }
+        },
+        "rollout": {
+          "ENABLE_SKILLS": false
+        }
+      }
+    },
+    {
+      "id": "RK-2",
+      "note": "only retired stages: the rollout section goes, the budget stays",
+      "stored": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "agent",
+          "id": "a7"
+        },
+        "budgets": {
+          "maxTurns": 4
+        },
+        "rollout": {
+          "ENABLE_AGENT_ACTIVITY_PANEL": false,
+          "ENABLE_COLLABORATOR_TURNS": true,
+          "ENABLE_DURABLE_ASSISTANT_AGENT": true
+        }
+      },
+      "read": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "agent",
+          "id": "a7"
+        },
+        "budgets": {
+          "maxTurns": 4
+        }
+      }
+    },
+    {
+      "id": "RK-3",
+      "note": "a key that was never a rollout dimension still makes the layer unreadable",
+      "stored": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "org",
+          "id": "org-1"
+        },
+        "approvals": {
+          "tools": {
+            "jira@inst-42/create_issue": "deny"
+          }
+        },
+        "rollout": {
+          "ENABLE_SOMETHING_NEW": true
+        }
+      },
+      "read": null
+    },
+    {
+      "id": "RK-4",
+      "note": "a layer with no rollout section is read as it is",
+      "stored": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "org",
+          "id": "org-1"
+        },
+        "models": {
+          "routes": [
+            "openai:gpt-x"
+          ]
+        }
+      },
+      "read": {
+        "schemaVersion": 1,
+        "scope": {
+          "kind": "org",
+          "id": "org-1"
+        },
+        "models": {
+          "routes": [
+            "openai:gpt-x"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -416,7 +416,7 @@ class RecordsMixin(PgBase):
                 ORDER BY n.id COLLATE ucs_basic LIMIT $5""", org, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, connector_id, after, n), None)
         return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in UNSUPPORTED_PAGE_FIELDS}} for r in rows]
 
-    # ---- the property projection sweep (graph_0021) --------------------------------------------------------------------------------
+    # ---- the property projection sweep (graph_0024) --------------------------------------------------------------------------------
     # Both selections are vetted reads (the planner may use their indexes: row-level security keeps a plain statement from them). The org is the
     # ambient one, never the argument; an argument the read refuses (a page over its bound) raises, so no page is silently cut short.
     _CHANGE_INDEX = "graph.nodes_record_change"
@@ -452,10 +452,10 @@ class RecordsMixin(PgBase):
         return [self._shape(_doc(r["doc"]), _RECORDS, None) for r in rows]
 
     async def ensure_record_change_index(self) -> None:
-        """The index is a revision's (graph_0021 builds ``nodes_record_change`` online, before the upgrade's transaction), never DDL at run time: this
+        """The index is a revision's (graph_0024 builds ``nodes_record_change`` online, before the upgrade's transaction), never DDL at run time: this
         only refuses to go on where the migration has not run."""
         if not await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.record_change_index_exists */ SELECT to_regclass($1) IS NOT NULL", self._CHANGE_INDEX), None):
-            raise RuntimeError("The record change index is missing: run the database migrations (graph_0021)")
+            raise RuntimeError("The record change index is missing: run the database migrations (graph_0024)")
 
     async def record_change_index_online(self) -> bool:
         """The index exists and is valid (an invalid one, left by a stopped build, is not used)."""
@@ -552,6 +552,16 @@ class RecordsMixin(PgBase):
                 raise
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_sync_point")
             return None
+
+    async def list_sync_points(self, org_id: str, collection: str, *, after_key: str | None = None, limit: int = 500) -> list[dict]:
+        """One org's sync points in syncPointKey order; see the interface. Only the ambient org's: another reads nothing."""
+        org = current_org_id()
+        if org_id != org:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.list_sync_points */ SELECT doc FROM graph.nodes
+            WHERE org_id = $1 AND coll = $2 AND doc ? 'syncPointKey' AND ($3::text IS NULL OR doc->>'syncPointKey' > $3)
+            ORDER BY doc->>'syncPointKey' LIMIT $4""", org, collection, after_key, limit), None)
+        return [_arango(_doc(r["doc"]), collection) for r in rows]
 
     async def upsert_sync_point(self, sync_point_key: str, sync_point_data: dict, collection: str, transaction: str | None = None) -> bool:
         """Create or merge the point keyed by ``syncPointKey`` (a null clears a property). Like the Neo4j provider it stamps the caller's dict."""

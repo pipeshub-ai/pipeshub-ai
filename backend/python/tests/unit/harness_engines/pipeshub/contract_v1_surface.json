@@ -1,0 +1,543 @@
+{
+  "contract": 1,
+  "exitCodes": {
+    "1": "tool_error",
+    "2": "refused",
+    "64": "usage",
+    "65": "not_found",
+    "69": "unavailable",
+    "70": "bad_answer",
+    "75": "approval_pending",
+    "77": "not_permitted",
+    "78": "not_in_run"
+  },
+  "layout": {
+    "AGENTS.md": {
+      "kind": "file",
+      "mode": "0444"
+    },
+    "README.md": {
+      "kind": "link",
+      "target": "AGENTS.md"
+    },
+    "VERSION": {
+      "kind": "file",
+      "mode": "0444"
+    },
+    "bin": {
+      "kind": "dir"
+    },
+    "bin/ph": {
+      "kind": "link",
+      "target": "/usr/local/bin/ph"
+    },
+    "inputs": {
+      "kind": "link",
+      "target": "/workspace/in"
+    },
+    "knowledge": {
+      "kind": "link",
+      "target": "session/knowledge"
+    },
+    "outputs": {
+      "kind": "link",
+      "target": "/workspace/out"
+    },
+    "session": {
+      "kind": "dir"
+    },
+    "skills": {
+      "kind": "link",
+      "target": "/skills"
+    },
+    "tools": {
+      "kind": "link",
+      "target": "session/tools"
+    },
+    "tools.txt": {
+      "kind": "link",
+      "target": "session/tools.txt"
+    },
+    "workspace": {
+      "kind": "link",
+      "target": "/workspace"
+    }
+  },
+  "ph": {
+    "ask": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "--option": {
+          "action": "append"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "question": {
+          "nargs": "+"
+        }
+      },
+      "required": 1
+    },
+    "call": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "tool": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "describe": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "tool": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "fetch": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "record_ids": {
+          "nargs": "+"
+        }
+      },
+      "required": 1
+    },
+    "git": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "git clone": {
+      "options": {
+        "--full": {
+          "action": "store_true"
+        },
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "--ref": {
+          "action": "store"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "directory": {
+          "nargs": "?"
+        },
+        "url": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "git fetch": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "directory": {
+          "nargs": "?"
+        }
+      },
+      "required": 0
+    },
+    "git push": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "inputs": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "inputs get": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "name": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "ph": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "--version": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "policy": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "policy check": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--hook": {
+          "action": "store_true"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "--path": {
+          "action": "append"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "tool": {
+          "nargs": "?"
+        }
+      },
+      "required": 0
+    },
+    "publish": {
+      "options": {
+        "--as": {
+          "action": "store"
+        },
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "file": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "search": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "query": {
+          "nargs": "+"
+        }
+      },
+      "required": 1
+    },
+    "skill": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "skill list": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "skill show": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "name": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "tools": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "tools call": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "tool": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "tools describe": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "tool": {
+          "nargs": "1"
+        }
+      },
+      "required": 1
+    },
+    "tools list": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {},
+      "required": 0
+    },
+    "tools search": {
+      "options": {
+        "--help": {
+          "action": "help"
+        },
+        "--json": {
+          "action": "store_true"
+        },
+        "--limit": {
+          "action": "store",
+          "type": "int"
+        },
+        "-h": {
+          "action": "help"
+        }
+      },
+      "positionals": {
+        "query": {
+          "nargs": "+"
+        }
+      },
+      "required": 1
+    }
+  },
+  "schemaFile": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "str",
+    "title": "str",
+    "type": "object"
+  },
+  "session": {
+    "VERSION": {
+      "kind": "file"
+    },
+    "bin/ph": {
+      "kind": "file"
+    },
+    "gateway.json": {
+      "kind": "file"
+    },
+    "ph.py": {
+      "kind": "file"
+    },
+    "sdk": {
+      "kind": "link",
+      "target": "sdk-<digest>"
+    },
+    "sdk-<digest>/DIGEST": {
+      "kind": "file"
+    },
+    "sdk-<digest>/python/pipeshub_tools/__init__.py": {
+      "kind": "file"
+    },
+    "sdk-<digest>/python/pipeshub_tools/_runtime.py": {
+      "kind": "file"
+    },
+    "sdk-<digest>/python/pipeshub_tools/py.typed": {
+      "kind": "file"
+    },
+    "sdk-<digest>/ts/_runtime.d.mts": {
+      "kind": "file"
+    },
+    "sdk-<digest>/ts/_runtime.mjs": {
+      "kind": "file"
+    },
+    "sdk-<digest>/ts/index.d.mts": {
+      "kind": "file"
+    },
+    "sdk-<digest>/ts/index.mjs": {
+      "kind": "file"
+    },
+    "skills.txt": {
+      "kind": "file"
+    },
+    "tools": {
+      "kind": "link",
+      "target": "tools-<digest>"
+    },
+    "tools-<digest>/INDEX.md": {
+      "kind": "file"
+    },
+    "tools.txt": {
+      "kind": "file"
+    }
+  }
+}

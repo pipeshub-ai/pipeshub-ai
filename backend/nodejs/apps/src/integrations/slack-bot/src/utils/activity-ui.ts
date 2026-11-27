@@ -1,4 +1,7 @@
-import { markdownToSlackMrkdwn } from "./md_to_mrkdwn";
+import type { SlackAGUICallbacks } from './agui-stream';
+import { markdownToSlackMrkdwn } from './md_to_mrkdwn';
+import { escapeSlackText } from './slack-escape';
+import { toolActivityLabel, toolStatusLabel } from './tool-display';
 
 const MAX_REASONING_CHARS = 600;
 const MAX_NARRATION_CHARS = 800;
@@ -58,13 +61,14 @@ function formatToolCountLine(
   count: number,
 ): string {
   const suffix = count > 1 ? ` (×${count})` : "";
+  const shown = escapeSlackText(label);
   if (marker === "running") {
-    return `• ${label}${suffix}...`;
+    return `• ${shown}${suffix}...`;
   }
   if (marker === "failed") {
-    return `• ✗ ${label}${suffix}`;
+    return `• ✗ ${shown}${suffix}`;
   }
-  return `• ✓ ${label}${suffix}`;
+  return `• ✓ ${shown}${suffix}`;
 }
 
 /**
@@ -309,12 +313,13 @@ export class SlackActivityBuilder {
           { kind: "subagent" }
         >;
         const sub = subEntry.row;
+        const role = escapeSlackText(sub.role);
         if (sub.status === "running") {
-          lines.push(`• Delegating to ${sub.role}...`);
+          lines.push(`• Delegating to ${role}...`);
         } else if (sub.status === "failed") {
-          lines.push(`• ✗ ${sub.role}`);
+          lines.push(`• ✗ ${role}`);
         } else {
-          lines.push(`• ✓ ${sub.role}`);
+          lines.push(`• ✓ ${role}`);
         }
         i += 1;
       }
@@ -324,7 +329,7 @@ export class SlackActivityBuilder {
     }
 
     if (this.statusMessage.trim()) {
-      sections.push(`_${this.statusMessage}_`);
+      sections.push(`_${escapeSlackText(this.statusMessage)}_`);
     }
 
     let text = sections.join("\n\n");
@@ -336,4 +341,61 @@ export class SlackActivityBuilder {
     }
     return text;
   }
+}
+
+export type SlackActivityCallbacks = Pick<
+  SlackAGUICallbacks,
+  | 'onStatus'
+  | 'onReasoning'
+  | 'onNarration'
+  | 'onToolStart'
+  | 'onToolResult'
+  | 'onSubAgent'
+>;
+
+/** The stream callbacks that build the activity timeline; `changed` schedules its next render. */
+export function slackActivityCallbacks(
+  builder: SlackActivityBuilder,
+  changed: () => void,
+): SlackActivityCallbacks {
+  return {
+    onStatus: (message) => {
+      builder.setStatus(message);
+      changed();
+    },
+    onReasoning: (delta, done) => {
+      if (delta) {
+        builder.appendReasoning(delta);
+        changed();
+      }
+      if (done) {
+        builder.finishReasoning();
+        changed();
+      }
+    },
+    onNarration: (text) => {
+      builder.appendNarration(text);
+      changed();
+    },
+    onToolStart: (toolName, displayName) => {
+      builder.startTool(toolName, toolStatusLabel(toolName, displayName));
+      changed();
+    },
+    onToolResult: (toolName, displayName, status) => {
+      builder.finishTool(
+        toolName,
+        toolActivityLabel(toolName, displayName),
+        status === 'failed' || status === 'blocked',
+      );
+      changed();
+    },
+    onSubAgent: (role, phase) => {
+      if (phase === 'started') {
+        builder.startSubAgent(role);
+      } else {
+        builder.finishSubAgent(role, phase);
+      }
+      changed();
+    },
+  };
 }

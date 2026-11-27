@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/approval-request.schema.json",
+  "title": "ApprovalRequest",
+  "description": "A configuration-time approval request and its decisions (02-lld §2.6). At most one `open` request per target; decisions are append-only; a decision applies the change by compare-and-set on `target.revision`, so a moved target closes it as `superseded` (02-lld §6.2). Rows in `cpApprovalRequests` (ApprovalStore, 03-interfaces §2.7).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "orgId",
+    "target",
+    "change",
+    "changeDigest",
+    "requestedBy",
+    "approvers",
+    "state",
+    "decisions",
+    "createdAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "$ref": "common.schema.json#/$defs/ApprovalRef" },
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "revision"],
+      "properties": {
+        "type": { "enum": ["installation", "catalog-item", "policy-layer", "grant"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "revision": { "$ref": "common.schema.json#/$defs/Revision" }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "$ref": "#/$defs/ChangeKind" },
+        "descriptors": { "$ref": "installation.schema.json#/$defs/ToolDigests" },
+        "config": { "type": "object" },
+        "item": { "$ref": "common.schema.json#/$defs/ItemRef" }
+      }
+    },
+    "changeDigest": { "$ref": "common.schema.json#/$defs/Digest" },
+    "requestedBy": { "$ref": "common.schema.json#/$defs/ActorRef" },
+    "approvers": {
+      "description": "Resolved from the approval policy when the request was made.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["principal"],
+        "properties": {
+          "principal": { "type": "string", "pattern": "^(?:role:[A-Za-z]{1,32}|group:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}|user:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$" }
+        }
+      }
+    },
+    "state": { "$ref": "#/$defs/ApprovalState" },
+    "decisions": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/Decision" } },
+    "createdAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "expiresAt": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/Timestamp" }] }
+  },
+  "$defs": {
+    "ChangeKind": {
+      "description": "Which changes the approval policy can require approval for (FR-15).",
+      "x-constant": "CHANGE_KINDS",
+      "enum": ["install", "descriptor_change", "url_change", "upgrade", "scope_widening", "publish", "plugin_install", "enable_engine"]
+    },
+    "ApprovalState": {
+      "x-constant": "APPROVAL_STATES",
+      "enum": ["open", "approved", "rejected", "superseded", "expired", "withdrawn"]
+    },
+    "Decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["by", "decision", "at"],
+      "properties": {
+        "by": { "$ref": "common.schema.json#/$defs/ActorRef" },
+        "decision": { "enum": ["approve", "reject"] },
+        "subset": {
+          "description": "The tools an approver accepted when approving part of a descriptor set.",
+          "type": "array",
+          "maxItems": 2000,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" }
+        },
+        "at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "note": { "type": "string", "maxLength": 2000 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "id": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "orgId": "o1",
+      "target": { "type": "installation", "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V", "revision": 1 },
+      "change": {
+        "type": "install",
+        "descriptors": { "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+        "config": { "url": "https://mcp.linear.app/sse" }
+      },
+      "changeDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "requestedBy": "user:u7",
+      "approvers": [{ "principal": "role:orgAdmin" }],
+      "state": "approved",
+      "decisions": [{ "by": "user:u1", "decision": "approve", "subset": ["list_issues"], "at": 1760000000000, "note": "" }],
+      "createdAt": 1759990000000,
+      "expiresAt": null
+    }
+  ]
+}

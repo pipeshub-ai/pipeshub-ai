@@ -5,7 +5,7 @@ agree with the Python reference of the staleness test, the change seek pages by 
 stamped far in the future does not hide later changes, a trashed record is never selected, the index is the revision's (valid, found by the
 sweep), and the epoch on the connector's ``apps`` document is a compare-and-set that exactly one of several claimants wins.
 
-Needs a migrated database (graph_0021): PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+Needs a migrated database (graph_0024): PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
 """
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ async def test_the_selection_is_the_callers_org_only(w: World, org_ctx: Callable
 
 
 async def test_the_change_index_is_the_revisions_and_is_valid(w: World) -> None:
-    """graph_0021 builds nodes_record_change before the upgrade commits. Kills: DDL at run time, an index that is not valid read as online."""
+    """graph_0024 builds nodes_record_change before the upgrade commits. Kills: DDL at run time, an index that is not valid read as online."""
     await w.p.ensure_record_change_index()
     await w.p.ensure_record_change_index()
     assert await w.p.record_change_index_online() is True

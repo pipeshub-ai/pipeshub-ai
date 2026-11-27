@@ -285,11 +285,16 @@ export interface UserRepository {
   ): Promise<UserDto | null>;
   /** Brings removed accounts at these addresses back as members; returns every live account at them, restored now or already live. */
   restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
-  /** Makes these people admins (service accounts excluded). */
+  /** Makes these live people admins; removed accounts are skipped, and a batch naming a live service account is refused. */
   promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void>;
   setRole(orgId: string, id: string, role: UserRole): Promise<void>;
   /** Serialises concurrent admin changes in this organisation (inside a transaction). */
   lockOrgAdminChanges(orgId: string, tx: Tx): Promise<void>;
+  /**
+   * Inside `tx`, holds a live human admin's account until `tx` ends, so a demotion or removal of the account and the
+   * caller's write (an approval decision) cannot both commit; false when the account is not one.
+   */
+  holdLiveAdmin(orgId: string, id: string, tx?: Tx): Promise<boolean>;
   /**
    * Runs `fn` while holding this organisation's admin-role lease, for stores whose
    * units of work are not transactions (a standalone MongoDB), where
@@ -310,6 +315,14 @@ export interface UserRepository {
     orgId: string,
     domain: string,
     exceptId: string | undefined,
+    disabled: boolean,
+  ): Promise<number>;
+  /** Disables every live account of the organisation that is enabled (its deletion); the ids it disabled, sorted. */
+  disableEnabledAccounts(orgId: string): Promise<string[]>;
+  /** Sets the disabled flag of these live accounts of the organisation; how many changed. */
+  setAccountsDisabled(
+    orgId: string,
+    ids: string[],
     disabled: boolean,
   ): Promise<number>;
   /** Moves the account to this address; null when it does not exist. */

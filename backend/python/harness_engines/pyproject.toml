@@ -1,0 +1,20 @@
+# Standalone distribution of the engine adapters. Depends on harness-core only,
+# never on the PipesHub app (import-linter contracts in backend/python/pyproject.toml).
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-engines"
+version = "0.1.0"
+description = "Engine adapters for the agent harness: launch renderer, session driver, event mapper, state codec."
+requires-python = ">=3.12"
+dependencies = ["harness-core>=0.1.0", "httpcore>=1.0", "h11>=0.14"]
+
+[tool.setuptools]
+package-dir = { "harness_engines" = "." }
+packages = ["harness_engines", "harness_engines.pipeshub", "harness_engines.opencode", "harness_engines.opencode.testing", "harness_engines.opencode_api", "harness_engines.codex", "harness_engines.claude_code", "harness_engines.acp", "harness_engines.acp.testing"]
+
+[tool.setuptools.package-data]
+harness_engines = ["py.typed", "allowlist.json", "vendor_rules.json", "vendor_rules.json.sig", "vendor_hosts.json", "vendor_hosts.json.sig", "acp_agents.json", "acp_agents.json.sig"]
+"harness_engines.pipeshub" = ["VERSION", "AGENTS.md", "ph.py", "install.sh"]

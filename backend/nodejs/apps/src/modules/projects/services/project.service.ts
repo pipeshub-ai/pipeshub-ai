@@ -23,6 +23,7 @@ import {
   ProjectMemberView,
   ProjectRole,
 } from '../types/project.interfaces';
+import { envFlag } from '../../../libs/utils/env-flags';
 
 /** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
 type ProjectAccessFields = Pick<
@@ -44,9 +45,7 @@ export type ProjectListItem = Omit<IProject, 'pinnedBy'> & {
 };
 
 const logger = Logger.getInstance({ service: 'ProjectService' });
-const unitOfWork = createUnitOfWork(
-  process.env.REPLICA_SET_AVAILABLE === 'true',
-);
+const unitOfWork = createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE'));
 
 export interface CreateProjectInput {
   name: string;

@@ -76,7 +76,9 @@ class RecordingGraph:
         self.flags: list[bool] = []
         self.fail_writes = False
 
-    async def get_document(self, key: str, _collection: str, transaction: object = None) -> dict[str, Any] | None:
+    async def get_document(
+        self, key: str, _collection: str, transaction: object = None, *, raise_on_error: bool = False
+    ) -> dict[str, Any] | None:
         return dict(self.doc) if key == self.doc["_key"] else None
 
     async def update_node(self, key: str, _collection: str, updates: dict[str, Any], transaction: object = None) -> None:
@@ -115,7 +117,7 @@ class World:
 @pytest.fixture
 async def world(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> AsyncIterator[World]:
     caplog.set_level(logging.INFO, logger="app")
-    monkeypatch.setenv("SECRET_KEY", "oauth-callback-store-test")
+    monkeypatch.setenv("SECRET_KEY", "oauth-callback-store-test-key-of-32-chars")
     monkeypatch.setattr(routes, "_get_settings_base_path", AsyncMock(return_value="/settings/connectors"))
     monkeypatch.setattr(routes, "check_beta_connector_access", AsyncMock())
     refresh = MagicMock(get_token_refresh_service=MagicMock(return_value=AsyncMock()))

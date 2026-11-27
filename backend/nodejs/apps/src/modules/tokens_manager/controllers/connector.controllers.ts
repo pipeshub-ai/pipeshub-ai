@@ -277,15 +277,17 @@ const fireConnectorScheduleReconcile = (
   setImmediate(async () => {
     // A later save may mark the connector pending while this one runs; only older marks are cleared.
     const startedAt = Date.now();
-    const markPending = (): Promise<void> =>
-      scheduler
-        .markReconcilePending(connectorId, String(orgId))
-        .catch((err: unknown) => {
-          logger.error(
-            'Could not record a schedule change for the hourly repair',
-            { error: err },
-          );
-        });
+    // Never throws: it runs in the catch below, and anything thrown there would reject this detached callback.
+    const markPending = async (): Promise<void> => {
+      try {
+        await scheduler.markReconcilePending(connectorId, String(orgId));
+      } catch (err: unknown) {
+        logger.error(
+          'Could not record a schedule change for the hourly repair',
+          { error: err },
+        );
+      }
+    };
     // Set when the orchestrator threw: it has already written its own line for that failure.
     let reported = false;
     try {

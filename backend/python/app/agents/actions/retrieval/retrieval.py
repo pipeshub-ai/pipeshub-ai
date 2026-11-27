@@ -15,7 +15,11 @@ from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.knowledge_graph.ops.results import search_result_summary
 from app.agents.actions.knowledge_graph.ops.search import execute_search
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.modules.agents.context.source_catalog import SourceCatalog
 from app.modules.agents.qna.chat_state import ChatState
 
@@ -45,7 +49,7 @@ def _search_internal_knowledge_args_summary(args: dict[str, Any]) -> str | None:
     return summary
 
 
-@ToolsetBuilder("Retrieval")\
+@ToolsetBuilder("Retrieval", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Internal knowledge retrieval tool - always available, no authentication required")\
     .with_category(ToolsetCategory.UTILITY)\
@@ -94,7 +98,7 @@ class Retrieval:
             ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find relevant information", required=True),
             ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter to a specific source by its ID. Pass a single ID per call — use one call per source and run them in parallel. Pass a KB collection's id or an app connector's id — both use this same parameter. Omit to search all accessible sources.", required=False, items={"type": "string"}),
         ],
-        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=_search_internal_knowledge_args_summary,
         result_summary=search_result_summary,
         display_name="Searched the knowledge base",

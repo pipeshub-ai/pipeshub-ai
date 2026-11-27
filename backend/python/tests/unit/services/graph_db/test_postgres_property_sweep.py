@@ -102,7 +102,7 @@ async def test_ensure_runs_no_ddl_and_refuses_where_the_migration_has_not_run() 
     present = Tx([], True)
     await provider(present).ensure_record_change_index()
     assert all("CREATE" not in sql.upper() for sql, _ in present.sent)
-    with pytest.raises(RuntimeError, match="graph_0021"):
+    with pytest.raises(RuntimeError, match="graph_0024"):
         await provider(Tx([], False)).ensure_record_change_index()
 
 

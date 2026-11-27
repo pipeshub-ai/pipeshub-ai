@@ -1,0 +1,11 @@
+id: chat-kb-answer
+description: Plain chat over prefetched knowledge, answer with a citation.
+route: chat
+chat_mode: internal_search
+task: What is the refund policy?
+fixtures:
+  knowledge:
+    - {id: kb-refund, title: Refund policy, text: "Customers may request a refund within 30 days of purchase."}
+script:
+  turns:
+    - reply: {text: "Refunds are accepted within 30 days of purchase [source](ref1).", chunks: 2}

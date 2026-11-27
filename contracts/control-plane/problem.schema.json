@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/problem.schema.json",
+  "title": "Problem",
+  "description": "The control plane's one error shape (02-lld §10): HTTP bodies, refusals stored on runs, tool results for unavailable items, and the frontend. `code` is one of `errors.json`; `remediation` is what the frontend offers as the action.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "status",
+    "message",
+    "retryable"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^CP_[A-Z0-9_]{1,124}$"
+    },
+    "status": {
+      "type": "integer",
+      "minimum": 400,
+      "maximum": 599
+    },
+    "message": {
+      "description": "One sentence for the person; never a secret, a token or another org's data.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "subject": {
+      "$ref": "#/$defs/ProblemSubject"
+    },
+    "dimension": {
+      "description": "The policy dimension at fault (`budgets.maxCostUsd`), if any.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_.]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "layer": {
+      "description": "The layer that widened or refused, if any.",
+      "anyOf": [
+        {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json#/$defs/LayerName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "remediation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Remediation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "$defs": {
+    "ProblemSubject": {
+      "description": "What the problem is about; ids only, never content.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "installation": {
+          "$ref": "common.schema.json#/$defs/InstallationRef"
+        },
+        "item": {
+          "$ref": "common.schema.json#/$defs/ItemRef"
+        },
+        "binding": {
+          "$ref": "common.schema.json#/$defs/BindingRef"
+        },
+        "scope": {
+          "$ref": "common.schema.json#/$defs/ScopeRef"
+        }
+      }
+    },
+    "Remediation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "actor"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "actor": {
+          "$ref": "common.schema.json#/$defs/RemediationActor"
+        },
+        "href": {
+          "description": "A path inside the product, never an absolute URL.",
+          "type": "string",
+          "pattern": "^/[^/\\\\]",
+          "maxLength": 2048
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "code": "CP_CREDENTIAL_MISSING",
+      "status": 409,
+      "message": "Connect your Linear account to use Linear tools in this agent.",
+      "retryable": false,
+      "subject": {
+        "installation": "inst_01J9ZQ3V8R5X7T2K4M6N8P0Q1S",
+        "item": "mcp:pipeshub/linear@3"
+      },
+      "dimension": null,
+      "layer": null,
+      "remediation": {
+        "action": "connect_account",
+        "actor": "self",
+        "href": "/workspace/connections?installation=inst_01J9ZQ3V8R5X7T2K4M6N8P0Q1S"
+      },
+      "requestId": "req-7f3a"
+    },
+    {
+      "code": "CP_WIDENING",
+      "status": 422,
+      "message": "The agent's budget is higher than the org allows.",
+      "retryable": false,
+      "subject": {
+        "scope": "agent:a7"
+      },
+      "dimension": "budgets.maxCostUsd",
+      "layer": "agent",
+      "remediation": {
+        "action": "ask_admin",
+        "actor": "layer_admin"
+      }
+    },
+    {
+      "code": "CP_UNAVAILABLE",
+      "status": 503,
+      "message": "Settings cannot be read right now; try again shortly.",
+      "retryable": true
+    }
+  ]
+}

@@ -65,7 +65,7 @@ export function ProjectSharingSettings({ project, onUpdated }: ProjectSharingSet
             <Select.Item value="org">{t('chat.projects.sharingSettings.visibilityOrg')}</Select.Item>
           </Select.Content>
         </Select.Root>
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {project.visibility === 'org'
             ? t('chat.projects.sharingSettings.visibilityOrgHint')
             : t('chat.projects.sharingSettings.visibilityPrivateHint')}
@@ -89,7 +89,7 @@ export function ProjectSharingSettings({ project, onUpdated }: ProjectSharingSet
             <Select.Item value="members">{t('chat.projects.sharingSettings.chatSharingMembers')}</Select.Item>
           </Select.Content>
         </Select.Root>
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {project.chatSharing === 'members'
             ? t('chat.projects.sharingSettings.chatSharingMembersHint')
             : t('chat.projects.sharingSettings.chatSharingPrivateHint')}

@@ -10,6 +10,7 @@ import socket
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -22,7 +23,11 @@ from app.services.sandbox_alerts.cooldown import (
     emailed_at_ms,
 )
 from app.services.sandbox_alerts.evaluator import AlertDecision, evaluate
-from app.services.sandbox_alerts.event import build_alert_event, build_resolved_event
+from app.services.sandbox_alerts.event import (
+    EXPIRES_AFTER,
+    build_alert_event,
+    build_resolved_event,
+)
 from app.services.sandbox_alerts.leader import AlertLeader
 from app.services.sandbox_alerts.window import read_window
 
@@ -38,7 +43,19 @@ PUBLISH_TIMEOUT_S = 10.0
 _LEVELS = ("critical", "warning")
 
 ProducerFactory = Callable[[], Awaitable[IMessagingProducer]]
+
+
+@dataclass
+class UnsentCopies:
+    """An alert (or resolved notice) some orgs' signed copies of which were accepted and some not: it is sent again with the same
+    alert id to the orgs still missing, so Node, which keeps one delivery per alert id and org, never notifies an org twice."""
+
+    event: dict[str, Any]
+    alert_id: str
+    expires_at: float
+    accepted: set[str] = field(default_factory=set)
 SnapshotFn = Callable[[], dict[str, Any]]
+OrgIds = Callable[[], Awaitable[list[str]]]
 
 
 def _default_snapshot() -> dict[str, Any]:
@@ -49,19 +66,13 @@ def _default_snapshot() -> dict[str, Any]:
 
 def envelope_blocks_alerts() -> str | None:
     """Why Node will reject every alert under the current envelope settings,
-    or ``None``. An alert has no org, so it is sent unsigned, and a consumer
-    that requires a signed context drops unsigned messages."""
+    or ``None``. With signing on, each org's copy of an alert is signed under
+    that org (`SandboxAlertRunner._publish`); with it off the one copy is
+    unsigned, which a consumer that requires a signed context drops."""
     from app.core.envelope import ctx_required, sign_enabled
-    from app.core.org_context import enforcing
 
-    if ctx_required():
-        return "ENVELOPE_CTX_REQUIRED is on"
-    try:
-        enforce = enforcing()
-    except ValueError:
-        enforce = False
-    if sign_enabled() and enforce:
-        return "ENVELOPE_SIGN is on with ORG_CONTEXT_MODE=enforce"
+    if ctx_required() and not sign_enabled():
+        return "ENVELOPE_CTX_REQUIRED is on and ENVELOPE_SIGN is off"
     return None
 
 
@@ -97,8 +108,10 @@ class SandboxAlertRunner:
         host: str | None = None,
         store_timeout_s: float = STORE_TIMEOUT_S,
         publish_timeout_s: float = PUBLISH_TIMEOUT_S,
+        org_ids: OrgIds | None = None,
     ) -> None:
         self._settings = settings
+        self._org_ids = org_ids
         self._publish_timeout_s = publish_timeout_s
         # Failures already logged at WARNING, until the next success.
         self._failing: set[str] = set()
@@ -123,6 +136,9 @@ class SandboxAlertRunner:
         self._resolve_notified = False
         # Claims of unsent alerts whose release failed: (level, alert id, value it replaced).
         self._pending_releases: list[tuple[str, str, dict[str, Any] | None]] = []
+        # shortcut: kept in memory, so a restart (or a new leader) does not finish them; its claim stays held, so the alert is
+        # suppressed for the missing orgs rather than sent twice to the others. Only reachable with signing on and more than one org.
+        self._unsent: list[UnsentCopies] = []
 
     @property
     def is_leader(self) -> bool:
@@ -135,6 +151,7 @@ class SandboxAlertRunner:
         if self._pending_releases:
             await self._release_targets(list(self._pending_releases))
         now = self._clock()
+        await self._send_unsent(now)
         totals = await asyncio.to_thread(read_window, self._directory, now, self._settings.window_s)
         if totals.stale:
             await asyncio.to_thread(_delete, totals.stale)
@@ -240,7 +257,8 @@ class SandboxAlertRunner:
         except Exception:
             self._logger.warning("sandbox load alert %s: building the alert failed", level, exc_info=True)
             event = None
-        if event is not None and await self._publish(event, alert_id):
+        accepted: set[str] = set()
+        if event is not None and (await self._publish(event, alert_id, accepted) or self._keep_unsent(event, alert_id, accepted, now)):
             self._recovered("send")
             totals = decision.totals
             self._logger.warning(
@@ -272,13 +290,17 @@ class SandboxAlertRunner:
             fired = claimed[level]
             claimed_at = fired.get("claimedAt")
             fired_at = claimed_at / 1000 if isinstance(claimed_at, (int, float)) else now
+            # The notice supersedes the alerts it resolves: an org still missing one of their copies must not get it after the notice.
+            resolved_ids = {str(v.get("alertId", "")) for v in claimed.values()}
+            self._unsent = [u for u in self._unsent if u.alert_id not in resolved_ids]
             alert_id = str(uuid.uuid4())
             event = build_resolved_event(
                 level=level, resolved_alert_id=str(fired.get("alertId", "")),
                 alert_fired_at=fired_at, clear_since=self._clear_since or now,
                 settings=self._settings, alert_id=alert_id, host=self._host, fired_at=now,
             )
-            if not await self._publish(event, alert_id):
+            accepted: set[str] = set()
+            if not await self._publish(event, alert_id, accepted) and not self._keep_unsent(event, alert_id, accepted, now):
                 self._resolve_checked = False
                 return
             self._resolve_notified = True
@@ -302,25 +324,71 @@ class SandboxAlertRunner:
             self._resolve_checked = False
             self._warn_once("resolve", "sandbox load alert: could not mark resolved; retrying next interval")
 
-    async def _publish(self, event: dict[str, Any], alert_id: str) -> bool:
-        try:
-            if self._producer is None:
-                self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
-            sent = await asyncio.wait_for(
-                self._producer.send_message(NOTIFICATION_TOPIC, event, key=f"sandbox-capacity-{alert_id}"),
-                self._publish_timeout_s,
-            )
-        except Exception as exc:
-            if isinstance(exc, TimeoutError):
-                # A producer that hung once is rebuilt on the next try.
-                await self._drop_producer()
-            self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
+    def _keep_unsent(self, event: dict[str, Any], alert_id: str, accepted: set[str], now: float) -> bool:
+        """After a send some orgs accepted and some did not: keep the alert, with its id, for the orgs still missing (sent again at
+        every evaluation) and count it as sent, so its claims stay held and no new alert id reaches the orgs that have it. A send
+        nobody accepted is not kept: the caller gives its claims back and the next evaluation sends a new alert."""
+        if not accepted:
             return False
-        if sent is False:
+        self._unsent.append(UnsentCopies(event, alert_id, now + EXPIRES_AFTER.total_seconds(), accepted))
+        return True
+
+    async def _send_unsent(self, now: float) -> None:
+        for unsent in list(self._unsent):
+            # Node drops an event past its expiry, so one that expired before every org took it is given up.
+            if now >= unsent.expires_at or await self._publish(unsent.event, unsent.alert_id, unsent.accepted):
+                self._unsent.remove(unsent)
+
+    async def _publish(self, event: dict[str, Any], alert_id: str, accepted: set[str] | None = None) -> bool:
+        """Send the alert; True when every copy was accepted. With signing on, each org whose copy was accepted is added to
+        ``accepted``, and an org already in it is not sent again."""
+        from app.core.envelope import sign_enabled
+        from app.core.org_context import for_org
+
+        accepted = set() if accepted is None else accepted
+        try:
+            if sign_enabled() and self._org_ids is not None:
+                # A signed message names one org: each org's admins get the copy signed under their org (Node delivers it to that
+                # org only), so nothing is sent unsigned and nothing runs unbound. One org's failed copy does not stop the others'.
+                sent = True
+                for org in await asyncio.wait_for(self._org_ids(), self._publish_timeout_s):
+                    if org in accepted:
+                        continue
+                    try:
+                        with for_org(org, job="sandbox-alerts"):
+                            ok = await self._send({**event, "payload": {**event["payload"], "orgId": org}}, alert_id)
+                    except Exception as exc:
+                        await self._send_failed(exc)
+                        ok = False
+                    if ok:
+                        accepted.add(org)
+                    else:
+                        sent = False
+            else:
+                sent = await self._send(event, alert_id)
+        except Exception as exc:
+            await self._send_failed(exc)
+            return False
+        if not sent:
             self._warn_once("publish", "sandbox load alert: publish failed (not accepted)")
             return False
         self._recovered("publish")
         return True
+
+    async def _send(self, message: dict[str, Any], alert_id: str) -> bool:
+        """One copy, on a producer built first when there is none (the last one hung and was dropped): True when accepted."""
+        if self._producer is None:
+            self._producer = await asyncio.wait_for(self._producer_factory(), self._publish_timeout_s)
+        sent = await asyncio.wait_for(
+            self._producer.send_message(NOTIFICATION_TOPIC, message, key=f"sandbox-capacity-{alert_id}"), self._publish_timeout_s,
+        )
+        return sent is not False
+
+    async def _send_failed(self, exc: Exception) -> None:
+        if isinstance(exc, TimeoutError):
+            # A producer that hung once is rebuilt for the next copy.
+            await self._drop_producer()
+        self._warn_once("publish", "sandbox load alert: publish failed (%r)", exc)
 
     async def _drop_producer(self) -> None:
         producer, self._producer = self._producer, None
@@ -349,6 +417,18 @@ def _delete(paths: tuple[Path, ...]) -> None:
             os.unlink(path)
 
 
+def graph_org_ids(graph_provider: Any) -> OrgIds:  # noqa: ANN401
+    """The installation's active orgs, the recipients of a signed alert; a failed list fails the send, which is retried."""
+    from app.core.org_context import system
+
+    async def ids() -> list[str]:
+        with system("sandbox-alerts"):
+            orgs = await graph_provider.get_all_orgs(active=True, raise_on_error=True)
+        return [str(o.get("_key") or o.get("id")) for o in orgs or [] if o.get("_key") or o.get("id")]
+
+    return ids
+
+
 def default_producer_factory(
     config_service: ConfigurationService, logger: logging.Logger,
 ) -> ProducerFactory:
@@ -374,6 +454,7 @@ async def run_sandbox_alert_loop(
     state_directory: Path | None = None,
     producer_factory: ProducerFactory | None = None,
     snapshot: SnapshotFn = _default_snapshot,
+    org_ids: OrgIds | None = None,
 ) -> None:
     """Runs until cancelled. Exits at once, with one INFO line, where alerts
     are off: ``SANDBOX_ALERTS=false``, no code sandbox, E2B, or no state
@@ -393,13 +474,13 @@ async def run_sandbox_alert_loop(
     blocked = envelope_blocks_alerts()
     if blocked is not None:
         log.error(
-            "sandbox load alerts will not be delivered: they have no org to sign, and unsigned "
+            "sandbox load alerts will not be delivered: they are sent unsigned, and unsigned "
             "notification messages are rejected (%s)", blocked,
         )
     runner = SandboxAlertRunner(
         config_service, settings, state_directory,
         producer_factory=producer_factory or default_producer_factory(config_service, log),
-        snapshot=snapshot, logger=log,
+        snapshot=snapshot, logger=log, org_ids=org_ids,
     )
     unusable_logged = False
     try:

@@ -12,6 +12,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { EnterpriseFeatureNotice, isMcpInstanceReadOnly } from '@/config';
@@ -35,6 +36,8 @@ function TeamMcpServersPageContent() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const store = useMcpTeamStore();
   const [isDeleting, setIsDeleting] = useState(false);
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
@@ -42,10 +45,20 @@ function TeamMcpServersPageContent() {
 
   const serverId = searchParams.get('serverId');
   const justAdded = searchParams.get('added') === '1';
+  // A link to one server's admin section (the chat's "approve its tools"): `?serverId=<id>&tab=hub`.
+  const focusAdminSection = searchParams.get('tab') === 'hub';
+  // Links written before a server had its own page: `?instance=<id>` opens that page.
+  const legacyInstance = searchParams.get('instance');
   const selectedServer = useMemo(
     () => (serverId ? store.instances.find((i) => i._id === serverId) ?? null : null),
     [serverId, store.instances]
   );
+
+  useEffect(() => {
+    if (!legacyInstance || serverId) return;
+    const tab = focusAdminSection ? '&tab=hub' : '';
+    router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(legacyInstance)}${tab}`);
+  }, [legacyInstance, serverId, focusAdminSection, router]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -54,10 +67,10 @@ function TeamMcpServersPageContent() {
   }, [isProfileInitialized, isAdmin, router]);
 
   useEffect(() => {
-    if (flagsLoaded && !mcpEnabled) {
+    if (flagsKnown && !mcpEnabled) {
       router.replace('/workspace/general');
     }
-  }, [flagsLoaded, mcpEnabled, router]);
+  }, [flagsKnown, mcpEnabled, router]);
 
   // Loads overlap (a refresh during a delete) and can answer out of order: only the latest applies.
   const loadRequestIdRef = useRef(0);
@@ -193,6 +206,7 @@ function TeamMcpServersPageContent() {
           justAdded={justAdded}
           onDismissAdded={() => router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(selectedServer._id)}`)}
           onDelete={canEdit(selectedServer) ? () => store.openDeleteDialog(selectedServer) : undefined}
+          focusAdminSection={focusAdminSection}
         />
       ) : (
         <McpServersLayout

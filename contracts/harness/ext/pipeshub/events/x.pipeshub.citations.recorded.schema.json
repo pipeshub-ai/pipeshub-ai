@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.citations.recorded.schema.json",
+  "title": "PipeshubCitationsRecordedEvent",
+  "description": "The citation sources a tool call (or the run's pre-run steps) added to the run's in-process state: reference numbers, record short ids, records and blocks, web records. Journaled with the call's outcome (a delta) so a run resumed on another worker rebuilds the same state (PA-8). Product state for the answer's citations and the tools that read it; never read by the fold (non-critical).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.citations.recorded"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubCitationsRecordedData"
+    }
+  },
+  "$defs": {
+    "PipeshubCitationsRecordedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "array",
+          "description": "New reference-number mappings in creation order.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url",
+              "ref"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "shortIds": {
+          "type": "array",
+          "description": "New record short ids in creation order.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "full",
+              "short"
+            ],
+            "properties": {
+              "full": {
+                "type": "string"
+              },
+              "short": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "records": {
+          "type": "object",
+          "description": "Records by virtual record id, new or changed.",
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
+        "finalResults": {
+          "type": "array",
+          "description": "Blocks appended to the citable results.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "toolRecords": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "knownRecordIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "webRecords": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "webLinks": {
+          "type": "array",
+          "description": "Links a fetched page's text or a web search's results gave, per page or search, in the order met: addresses the run may open after it read private content. At most 200 per page and 5000 per session.",
+          "maxItems": 5000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "page",
+              "links"
+            ],
+            "properties": {
+              "page": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "links": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "maxLength": 2048
+                }
+              }
+            }
+          }
+        },
+        "knownRecordNames": {
+          "type": "array",
+          "description": "The record ids shown to the model, oldest first, each with its name (the id-recovery list); the whole list, when it changed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "fetchSelectedRecords": {
+          "type": "array",
+          "description": "Records newly fetched with relevance selection (a later fetch of one continues in document order).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usage": {
+          "type": "array",
+          "description": "Model calls other than the main loop's (a tool's own call, a critic, a sub-agent) that finished since the last delta, in order, each with its usage source; only on a run admitted with includeRetrievalContext, whose run_usage frame counts every attempt's calls.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "tokens"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "tokens": {
+                "$ref": "../../../core/common.schema.json#/$defs/Usage"
+              }
+            }
+          }
+        },
+        "mcpSignIn": {
+          "description": "The MCP servers needing sign-in again for a scope (the whole list, when it changed), so a resumed attempt's answer keeps main's sign-in card; only on a run started in the web app.",
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "instanceId",
+              "serverName",
+              "scopes"
+            ],
+            "properties": {
+              "instanceId": {
+                "type": "string"
+              },
+              "serverName": {
+                "type": "string"
+              },
+              "scopes": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "agentKey": {
+                "type": "string",
+                "description": "Set when the sign-in is the agent's own (a service-account agent's): only someone who can edit the agent may redo it."
+              }
+            }
+          }
+        },
+        "skillLabels": {
+          "description": "The labels of skill content an agent wrote (a learned skill, or one a run edited) that the call, the run's start or an engine's mount handed the model, each the label of the run that wrote it (FOLLOWUPS1-1). Label evidence only: the run's own-work label joins them as it joins a recalled memory's. A skill a person put in the catalog is never listed. Written only when the claim's journal accepts skill_labels.",
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "skill",
+              "label"
+            ],
+            "properties": {
+              "skill": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "label": {
+                "$ref": "../turn-label.schema.json"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.citations.recorded",
+      "data": {
+        "callId": "call_1",
+        "refs": [
+          {
+            "url": "https://pipeshub.test/record/rec-1/preview#blockIndex=0",
+            "ref": "ref1"
+          }
+        ],
+        "knownRecordIds": [
+          "rec-1"
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

@@ -52,10 +52,8 @@ Run against `https://test.pipeshub.com` and remote Neo4j Aura:
 
 ```bash
 cd integration-tests
-python -m venv .venv
+uv sync --locked            # .venv from uv.lock, every file hash-checked; fails if uv.lock is stale
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install uv
-uv pip install -e ".[dev]"    # or: uv pip install -e .
 ```
 
 1. Set **`.env`** to choose the environment: `PIPESHUB_TEST_ENV=prod` (or `local` for local backend).
@@ -198,13 +196,11 @@ cd integration-tests
 ### 2. Create virtualenv and install deps
 
 ```bash
-python -m venv .venv
+uv sync --locked            # .venv from uv.lock, every file hash-checked; fails if uv.lock is stale
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install uv
-uv pip install -e ".[dev]"
 ```
 
-(`.[dev]` is optional if your project doesn’t define dev extras; `uv pip install -e .` is enough.)
+uv comes from `backend/python/requirements/install.sh tools` (hash-pinned) or your own install.
 
 ### 3. Create env files
 

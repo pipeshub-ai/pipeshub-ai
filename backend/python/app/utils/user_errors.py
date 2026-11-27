@@ -209,6 +209,8 @@ def file_too_large_to_read(extension: str | None) -> str:
     )
 
 
+# A fixed product limit of this edition, kept on purpose: PDFs over it are indexed only by the edition
+# _EDITION_TEXT names. Do not raise it, remove it, make it configurable or read it from a hook.
 MAX_INDEXED_PDF_PAGES = 500
 
 _EDITION_TEXT = "Supported in Enterprise Edition."

@@ -77,6 +77,9 @@ export interface PgRuntimeConfig {
   pool: PgPool;
   /** Only processes that run jobs have one. */
   jobsPool?: PgPool;
+  /** The import login's pool, where a process holds it beside the jobs login's (a test stack); `service: 'import'` units
+   * run on it. Absent, they run on `jobsPool` (the copy's own process, whose jobs pool is the import login). */
+  importPool?: PgPool;
   defaultService: string;
   pooler?: Pooler;
   /** Write units call `fn(epoch)` in the prologue. `fn` is a schema-qualified function name. */
@@ -138,17 +141,21 @@ const BEGIN: Record<Isolation, string> = {
  * One statement, one round trip. `pre` reads the role before the switch (the guard); the LATERAL is correlated
  * to it so it runs after. The fence column is selected so the planner cannot drop the call.
  * The login needs USAGE/EXECUTE on the fence function, because the statement is checked before the role switch.
+ * JIT is off in every unit: its statements read rows by key, and a key list's estimate passes jit_above_cost at a few thousand keys,
+ * where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration is not ours).
  */
 function prologueSql(fence: string | undefined): string {
-  return `WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
+  // The fence reads the unit's org from app.org_id, which `pre` sets: `s` reads pre.org, so it runs after the materialized `pre`
+  // (an order given by that dependency, not by the order of expressions in one select list, which PostgreSQL does not define).
+  return `WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r, set_config('app.org_id', $2, true) AS org)
 SELECT pre.r, s.fence, s.ts FROM pre, LATERAL (
-  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
+  SELECT set_config('role', $1, true), set_config('app.request_id', $3, true),
          set_config('app.user_id', $4, true), set_config('statement_timeout', $5, true),
          set_config('lock_timeout', $6, true), set_config('plan_cache_mode', $7, true),
-         set_config('work_mem', $8, true),
+         set_config('work_mem', $8, true), set_config('jit', 'off', true),
          now()::text AS ts,
          ${fence ? `CASE WHEN $9::boolean THEN ${fence}($10::int) END` : 'NULL::int'} AS fence
-  WHERE pre.r IS NOT NULL) s`;
+  WHERE pre.r IS NOT NULL AND pre.org IS NOT NULL) s`;
 }
 
 interface Binding {
@@ -323,7 +330,11 @@ export class PgRuntime {
     // `service: 'import'` is the one-off copy of an existing install: a login of its own, on this pool
     const service = opts.service === 'import' ? 'import' : 'jobs';
     const b = this.binding(service, ctx.orgId ?? '', ctx);
-    return this.retrying(this.cfg.jobsPool, b, { ...opts, service }, fn);
+    const pool =
+      service === 'import'
+        ? (this.cfg.importPool ?? this.cfg.jobsPool)
+        : this.cfg.jobsPool;
+    return this.retrying(pool, b, { ...opts, service }, fn);
   }
 
   private countMissing(e: unknown): never {

@@ -89,7 +89,7 @@ function LogoControls({ logo, onPick, onRemove }: { logo: string | null; onPick:
           flexShrink: 0,
         }}
       >
-        {logo ? <McpLogoImage src={logo} size={24} /> : <MaterialIcon name="image" size={20} color="var(--gray-9)" />}
+        {logo ? <McpLogoImage src={logo} size={24} /> : <MaterialIcon name="image" size={20} color="var(--gray-11)" />}
       </Flex>
       <Button
         {...control}

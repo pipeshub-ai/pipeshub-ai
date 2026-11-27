@@ -48,6 +48,10 @@ from app.connectors.core.sync.sync_runner import (
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services.connector_intents import (
+    exists_in_any_org,
+    held_by_another_org,
+)
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
 from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
@@ -57,6 +61,7 @@ from app.connectors.services.storage_release import (
 )
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.local_repo.cleanup import remove_mirror
@@ -73,6 +78,7 @@ from app.modules.indexing import refresh_intent
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.logging_fields import log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1767,6 +1773,28 @@ class EventService:
         finally:
             await cleanup_helper.close()
 
+    async def _send_cleanup_events(self, connector_id: str, events: list[dict[str, Any]]) -> None:
+        """Publish a deleted connector's vector-cleanup events (failures logged, never raised), then free its lane."""
+        published = 0
+        for event in events:
+            try:
+                await self.app_container.messaging_producer.send_message(
+                    topic="record-events",
+                    message=event,
+                )
+                published += 1
+            except Exception as kafka_err:
+                log_cleanup_publish_failure(
+                    self.logger, event, f"connector {connector_id}", kafka_err
+                )
+        if events:
+            level = self.logger.info if published == len(events) else self.logger.error
+            level(
+                f"Published {published}/{len(events)} vector-cleanup event(s) "
+                f"for connector {connector_id}"
+            )
+        await free_lane_of_deleted_connector(self.logger, connector_id)
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -1788,6 +1816,7 @@ class EventService:
 
         graph_deleted = False
         owner_id: str | None = None
+        current: dict | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1803,12 +1832,24 @@ class EventService:
             # request back; that event would then arrive for a connector whose
             # rows are gone, fail to build, and be redelivered forever. The stop
             # endpoint clears it first for exactly this reason.
+            # Before anything is stopped, recorded or deleted: not every store scopes this read by org.
+            # Read again once when it fails; a second failure fails the delete, whose connector could be anyone's.
+            try:
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as read_err:
+                self.logger.warning("Connector %s not read before its delete: %s", connector_id, type(read_err).__name__)
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            elsewhere = current is None and await exists_in_any_org(self.graph_provider, connector_id)
+            if elsewhere or (current and held_by_another_org(current, org_id)):
+                self.logger.error("Connector delete refused: the connector is another org's | org=%s connector=%s", org_id, connector_id)
+                return False
             try:
                 # Only when set: a failed delete reverts and keeps this doc, and
                 # main's strict Arango app schema rejects the field on rollback.
-                current = await self.graph_provider.get_document(
-                    connector_id, CollectionNames.APPS.value
-                )
                 owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
@@ -1884,6 +1925,12 @@ class EventService:
                         f"Connector {connector_id} is already deleted from the graph; "
                         f"its storage release stays pending"
                     )
+                    if current is not None and not can_use_membership_cleanup(current):
+                        self.logger.error("Connector predates the membership arrays; its untagged embeddings may persist")
+                    # None on a redelivery whose first delivery removed the app: only a collection name, the purge spans them all.
+                    await self._send_cleanup_events(connector_id, build_gone_connector_cleanup_events(
+                        org_id=org_id, connector_id=connector_id, connector_name=(current or {}).get("type"),
+                    ))
                     return True
                 if result.get("partial"):
                     # Part of it is gone and the app's grants with it: reverting the status would show an active connector nobody can open.
@@ -1921,25 +1968,7 @@ class EventService:
                 record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
-            published = 0
-            for event in events:
-                try:
-                    await self.app_container.messaging_producer.send_message(
-                        topic="record-events",
-                        message=event,
-                    )
-                    published += 1
-                except Exception as kafka_err:
-                    log_cleanup_publish_failure(
-                        self.logger, event, f"connector {connector_id}", kafka_err
-                    )
-            if events:
-                level = self.logger.info if published == len(events) else self.logger.error
-                level(
-                    f"Published {published}/{len(events)} vector-cleanup event(s) "
-                    f"for connector {connector_id}"
-                )
-            await free_lane_of_deleted_connector(self.logger, connector_id)
+            await self._send_cleanup_events(connector_id, events)
 
             # Shared content is handed over before the connector's storage goes,
             # and its credentials go with it; an unfinished release keeps its
@@ -1968,10 +1997,11 @@ class EventService:
                 # An upsert would recreate a connector that is already gone
                 # (MERGE on Neo4j), and the reconciler would then treat its owed
                 # storage release as a reverted delete.
-                if await self.graph_provider.get_document(
+                app = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
-                ) is None:
-                    self.logger.warning(f"Connector {connector_id} is not in the graph; nothing to revert")
+                )
+                if app is None or held_by_another_org(app, org_id):
+                    self.logger.warning(f"Connector {connector_id} is not in this org's graph; nothing to revert")
                     return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{

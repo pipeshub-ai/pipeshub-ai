@@ -22,6 +22,7 @@ import pytest
 
 from app.schema import node_validator
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+from tests.support.cpu_budget import thread_cpu
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -112,12 +113,12 @@ def test_10k_records_validate_within_a_generous_budget_that_only_a_per_call_reco
     validator = NodeSchemaValidator()
     validator.validate_node("records", docs[0])  # compile once, outside the measurement
 
-    started = time.perf_counter()
-    for doc in docs:
-        validator.validate_node("records", doc)
-    elapsed = time.perf_counter() - started
+    with thread_cpu() as cpu:
+        for doc in docs:
+            validator.validate_node("records", doc)
 
-    assert elapsed < 30.0, f"10,000 validations took {elapsed:.2f}s: the schema is probably being re-compiled per call"
+    # ~0.6 s alone; a per-call recompile is one to two orders of magnitude more.
+    assert cpu.seconds < 10.0, f"10,000 validations took {cpu.seconds:.2f}s of CPU: the schema is probably being re-compiled per call"
 
 
 def test_every_generated_record_is_valid_and_each_invalid_variant_is_rejected() -> None:

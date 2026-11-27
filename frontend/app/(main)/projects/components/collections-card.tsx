@@ -199,7 +199,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
 
   if (isLoading) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('common.loading', { defaultValue: 'Loading…' })}
       </Text>
     );
@@ -215,7 +215,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
   }
   if (collections.length === 0 && savedNodes.length === 0) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('chat.projects.workspace.noCollectionsAvailable', {
           defaultValue: 'No collections to add yet.',
         })}
@@ -225,7 +225,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
 
   return (
     <Flex direction="column" gap="1">
-      <Text size="1" style={{ color: 'var(--slate-10)', marginBottom: 'var(--space-1)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', marginBottom: 'var(--space-1)' }}>
         {t('chat.projects.workspace.collectionsSubtitle', {
           defaultValue: 'Chats in this project search the selected collections and uploaded project files.',
         })}

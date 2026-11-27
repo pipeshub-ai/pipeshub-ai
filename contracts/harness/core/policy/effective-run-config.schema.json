@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/policy/effective-run-config.schema.json",
+  "title": "EffectiveRunConfig",
+  "description": "What a run's layers resolve to (02-lld \u00a72.9 effectiveConfig): per dimension the value, the layer that set it and every ceiling that applied, top to bottom. Its canonical digest is the resolution's digest. A dimension no layer sets is absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "dimensions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "dimensions": {
+      "type": "object",
+      "maxProperties": 500,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9_]*){0,7}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/EffectiveValue"
+      }
+    }
+  },
+  "$defs": {
+    "PolicyValue": {
+      "description": "A dimension's value as policy-layer.schema.json gives it: a scalar, a list of names, or a record (an engine, approval rules, sub-agent bounds, a model per role); null is unbounded.",
+      "anyOf": [
+        {
+          "type": [
+            "null",
+            "boolean",
+            "integer",
+            "number",
+            "string"
+          ],
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "AppliedCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer",
+        "value"
+      ],
+      "properties": {
+        "layer": {
+          "$ref": "policy-layer.schema.json#/$defs/LayerName"
+        },
+        "value": {
+          "$ref": "#/$defs/PolicyValue"
+        }
+      }
+    },
+    "EffectiveValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "setBy",
+        "ceilings"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/PolicyValue"
+        },
+        "setBy": {
+          "$ref": "policy-layer.schema.json#/$defs/LayerName"
+        },
+        "ceilings": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/AppliedCeiling"
+          }
+        },
+        "lockedBy": {
+          "description": "The layer that locked the dimension (C4.02): no layer below it could override it. Absent when no layer locked it.",
+          "$ref": "policy-layer.schema.json#/$defs/LayerName"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "dimensions": {
+        "engineProfile.limits.maxSteps": {
+          "value": 20,
+          "setBy": "agent",
+          "ceilings": [
+            {
+              "layer": "release",
+              "value": 50
+            },
+            {
+              "layer": "org",
+              "value": 30
+            },
+            {
+              "layer": "agent",
+              "value": 20
+            }
+          ]
+        },
+        "models.primary": {
+          "value": "azure:gpt-5",
+          "setBy": "org",
+          "ceilings": [],
+          "lockedBy": "org"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "dimensions": {}
+    }
+  ]
+}

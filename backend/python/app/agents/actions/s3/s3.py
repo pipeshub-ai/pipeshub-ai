@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -98,7 +99,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register S3 toolset
-@ToolsetBuilder("AWS S3")\
+@ToolsetBuilder("AWS S3", provider=ToolProvider.CONNECTOR)\
     .in_group("Storage")\
     .with_description("AWS S3 integration for object storage and bucket management")\
     .with_category(ToolsetCategory.APP)\
@@ -130,7 +131,7 @@ class S3:
         short_description="List all S3 buckets",
         description="List all S3 buckets accessible with the configured credentials.",
         parameters=[],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_buckets(self) -> Tuple[bool, str]:
         """List S3 buckets"""
@@ -168,7 +169,7 @@ class S3:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_bucket(
         self,
@@ -210,7 +211,7 @@ class S3:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_bucket(self, bucket_name: str) -> Tuple[bool, str]:
         """Delete an S3 bucket"""
@@ -268,7 +269,7 @@ class S3:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_objects(
         self,
@@ -376,7 +377,7 @@ class S3:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_object(
         self,
@@ -436,7 +437,7 @@ class S3:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def put_object(
         self,
@@ -494,7 +495,7 @@ class S3:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_object(
         self,
@@ -554,7 +555,7 @@ class S3:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def copy_object(
         self,

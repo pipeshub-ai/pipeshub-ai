@@ -65,6 +65,7 @@ export function ChatItemMenu({
     <DropdownMenu.Root open={isOpen} onOpenChange={handleOpenChange} modal={false}>
       <DropdownMenu.Trigger>
         <button
+          aria-label={t('common.moreOptions')}
           type="button"
           className="touch-hit"
           onMouseEnter={() => setIsMeatballHovered(true)}

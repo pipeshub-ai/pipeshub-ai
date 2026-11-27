@@ -10,6 +10,7 @@ Skips without a Neo4j: set NEO4J_IT_URI and NEO4J_IT_PASSWORD (see real_graph.py
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,12 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.neo4j.neo4j_provider import (
+    FOLDER_MIME_TYPES,
+    LISTED,
+    Neo4jProvider,
+)
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
@@ -59,12 +66,17 @@ def _chunks(xs, n=1000) -> Iterator[list[Any]]:
         yield xs[i:i + n]
 
 
+async def _node_count(g: Any) -> int:  # noqa: ANN401
+    return (await g.client.execute_query("MATCH (n) RETURN count(n) AS n"))[0]["n"]
+
+
 @pytest.fixture
 async def w(monkeypatch) -> AsyncIterator[W]:
     try:
         g = await connect_neo4j(log, monkeypatch)
     except Exception as exc:
         backend_unavailable("neo4j", exc)
+    before = await _node_count(g)
     run = uuid.uuid4().hex[:8]
     w = W()
     w.g, w.run, w.org, w.app = g, run, f"org-{run}", f"app-{run}"
@@ -142,8 +154,14 @@ async def w(monkeypatch) -> AsyncIterator[W]:
         [e(w.user, USR, w.app, APP, syncState="COMPLETED", lastSyncUpdate=now, isExternalUser=False)],
         collection=CollectionNames.USER_APP_RELATION.value)
     yield w
-    await g.client.execute_query("MATCH (n) WHERE n.connectorId = $a OR n.id = $a OR n.id = $u DETACH DELETE n",
-                                 parameters={"a": w.app, "u": w.user})
+    # Every node the seed wrote carries the test's org or App (a record's type node has its org and no connectorId), or its run suffix.
+    mine = "n.orgId = $o OR n.connectorId = $a OR n.id IN [$a, $u] OR n.id ENDS WITH $sfx"
+    params = {"o": w.org, "a": w.app, "u": w.user, "sfx": f"-{run}"}
+    await g.client.execute_query(f"MATCH (n) WHERE {mine} DETACH DELETE n", parameters=params)
+    left = await g.client.execute_query(f"MATCH (n) WHERE {mine} RETURN count(n) AS n", parameters=params)
+    assert left[0]["n"] == 0, left
+    # The tests run one at a time on their store (as CI runs this file), so the store is back to what it held before the seed.
+    assert await _node_count(g) == before
 
 
 def bfs(w, start, d) -> dict[str, int]:
@@ -204,6 +222,251 @@ async def test_big_folder_pages(w) -> None:
     assert r.pagination.totalItems == BIG
     items, pages, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
     assert len({i.id for i in items}) == BIG, len(items)
+
+
+def _plan_ops(plan: Any) -> Iterator[Any]:  # noqa: ANN401
+    yield plan
+    for child in plan.get("children") or []:
+        yield from _plan_ops(child)
+
+
+async def test_a_page_reads_the_listed_ids_on_the_id_index_whatever_the_plan(w) -> None:
+    """A split browse's page reads the ids it decided (`LISTED`) by each label's unique id index, whatever the statistics. With the
+    App and org tests in its match, a plan sought the App's connectorId index and tested the id after: every record of the App read
+    once per listed id, 62M db hits and 25 s a page on this folder, past the test's timeout over its pages."""
+    kids = sorted(w.n(f"c{i}") for i in range(BIG))
+    async with w.g.client.driver.session(database="neo4j") as s:
+        result = await s.run(f"PROFILE {LISTED.format(name='ids')} RETURN size(ids) AS n",
+                             {"kh_listed": kids, "org_id": w.org, "app_id": w.app})
+        n = (await result.single())["n"]
+        profile = (await result.consume()).profile
+    assert n == BIG
+    ops = list(_plan_ops(profile))
+    reads = [o for o in ops if "kh_x" in (o.get("args") or {}).get("Details", "")
+             and ("Seek" in o["operatorType"] or "Scan" in o["operatorType"])]
+    assert reads and all(o["operatorType"].startswith("NodeUniqueIndexSeek") for o in reads), [o["operatorType"] for o in reads]
+    # Two seeks per id (one per label) and a few property reads: a plan reading the App's records per id is thousands per id.
+    hits = sum(o.get("dbHits") or 0 for o in ops)
+    assert hits <= 12 * BIG, hits
+
+
+async def test_a_wide_folders_window_reads_its_edges_in_order_from_the_children_order_index(w, monkeypatch) -> None:
+    """A folder wider than the split browse holds whole, sorted by name: each window of its children is read from the children order index
+    in the page's order, so it reads about a window of edges, not the folder's 5,000, and never sorts them. The pages list every child."""
+    stamped = await w.g.stamp_kh_children_order()
+    assert stamped["stamped"] >= BIG
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    ran: list[tuple[str, dict[str, Any]]] = []
+    execute = w.g.client.execute_query
+
+    async def capture(query: str, parameters: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if "kh_ur.khFrom = $start_id" in query:
+            ran.append((query, parameters or {}))
+        return await execute(query, parameters, *args, **kwargs)
+
+    monkeypatch.setattr(w.g.client, "execute_query", capture)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))      # each child once, in the name order
+    assert ran, "the windows were read from the index"
+    monkeypatch.setattr(w.g.client, "execute_query", execute)
+    query, parameters = ran[0]
+    async with w.g.client.driver.session(database="neo4j") as s:
+        prof = (await (await s.run("PROFILE " + query.replace("CYPHER replan=skip", "", 1), parameters)).consume()).profile
+    ops = list(_plan_ops(prof))
+    plan = "; ".join(f"{o['operatorType']} {o.get('rows')} {(o.get('args') or {}).get('Details', '')[:100]}" for o in ops)
+    seeks = [o for o in ops if o["operatorType"].startswith("DirectedRelationshipIndexSeek")]
+    assert seeks and all(o["rows"] <= parameters["kh_uread"] + 1 for o in seeks), plan
+    assert not [o for o in ops if o["operatorType"].startswith(("Sort", "Top", "PartialSort"))], [o["operatorType"] for o in ops]
+
+
+async def test_a_window_with_two_edges_to_one_child_is_not_taken_for_the_last(w, monkeypatch) -> None:
+    """Two hierarchy edges join the folder to its first children (a parent-child and an attachment edge, as a graph written before the
+    writers merged edges by their ends can hold). The index holds one entry per edge, so a window of edges reads fewer children than it
+    asked for: that must not read as the folder's end, or the children after the window are never listed."""
+    await w.g.client.execute_query(
+        "MATCH (p:Record {id: $p}) UNWIND $kids AS kid MATCH (c:Record {id: kid}) CREATE (p)-[:NODE_RELATION {relationshipType: 'ATTACHMENT'}]->(c)",
+        parameters={"p": w.n("BIG"), "kids": [w.n("c0"), w.n("c1")]})
+    await w.g.stamp_kh_children_order()
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 4)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=60,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items] == sorted(w.n(f"c{i}") for i in range(BIG))[:60] and page.pagination.hasNext
+
+
+async def test_a_stub_whose_order_stamp_is_stale_is_still_listed(w, monkeypatch) -> None:
+    """A stub of the folder whose edge still carries a named child's order (a stale stamp): the index's stub read misses it and a window
+    meets it. The page is then read again without the index from its start, so the stub, which leads to a record the viewer may read, is
+    listed."""
+    stub, below = w.n("c5"), w.n("c6")
+    now = get_epoch_timestamp_in_ms()
+    assert await w.g.batch_create_edges([{"from_id": stub, "from_collection": REC, "to_id": below, "to_collection": REC,
+                                          "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+                                        collection=CollectionNames.NODE_RELATIONS.value)
+    await w.g.update_node(stub, REC, {"isPlaceholder": True})
+    await w.g.stamp_kh_children_order()
+    # The stamp a write path that missed the stub flag would have left.
+    await w.g.client.execute_query("MATCH (:Record {id: $p})-[e:NODE_RELATION]->(:Record {id: $s}) SET e.khOrd = '0' + toLower($s)",
+                                   parameters={"p": w.n("BIG"), "s": stub})
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))
+
+
+@pytest.mark.parametrize("write", ["rename", "new_edge"])
+async def test_a_child_a_writer_moves_to_the_front_is_on_the_first_page(w, monkeypatch, write: str) -> None:
+    """A write that moves a child of the wide folder to the front of the name order, through the provider: a record renamed by a field
+    write, or a new record hung under the folder by an edge write that only creates what is missing. The first page must list it first:
+    the windows read the children from their order stamps, so a writer that left the old stamp (or none) would leave it out of the page."""
+    await w.g.stamp_kh_children_order()
+    now = get_epoch_timestamp_in_ms()
+    if write == "rename":
+        first = w.n("c4999")
+        assert await w.g.update_record_fields_for_ids([first], {"recordName": f"a first {w.run}"}) == 1
+    else:
+        first = w.n("A0")
+        assert await w.g.create_node_if_absent(first, REC, _rec(w, first).to_arango_base_record() | {"recordName": f"a first {w.run}"})
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.n("BIG"), "from_collection": REC, "to_id": first, "to_collection": REC, "relationshipType": "PARENT_CHILD",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.NODE_RELATIONS.value)
+        await w.g.create_edges_if_absent(
+            [{"from_id": w.user, "from_collection": USR, "to_id": first, "to_collection": REC, "role": "READER", "type": "USER",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], CollectionNames.PERMISSION.value)
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=20,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items][:1] == [first], [i.id for i in page.items][:3]
+    assert await w.g.count_stale_kh_children_order() == 0
+
+
+# A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it
+# because the statement tests the org or App next to its match by id, and with other statistics it seeks the org or App index alone.
+# A paged read (`id > $after`) on such an index is not one: only an equality or IN on the id is.
+_SEEK_BESIDE_ID = re.compile(r"INDEX \w+:(?:Record|RecordGroup|App)\((?=[^)]*,)[^)]*\bid\b[^)]*\) WHERE .*\bid (?:=|IN) ")
+
+
+# Nor does any read every record or group of the org or the label: these reads start from ids, an App or a group.
+_SCANS = ("NodeIndexScan", "NodeByLabelScan", "UnionNodeByLabelsScan")
+_RECORDS = re.compile(r"\b\w+:(?:Record|RecordGroup)\b")
+# Nor seeks the org's or the App's index alone (the plan that read the App once per listed id): a per-id read never needs it.
+_ORG_OR_APP_ONLY = re.compile(r"INDEX (\w+):(Record|RecordGroup)\((orgId|connectorId)\)")
+# The reads that are of the whole App by design, each by its variable in the provider's statements.
+_APP_WIDE_READS = {
+    ("dg", "RecordGroup", "connectorId"): "the App's declared groups (RECORD_GROUP_LEVEL): the batch check, the chain tops and the walk "
+                                          "below a seed read every one, and an App has few",
+    ("sd", "Record", "connectorId"): "the chain tops' seeds: the App's open records the viewer is granted, read once per flatten",
+    ("sd", "RecordGroup", "connectorId"): "the chain tops' seeds: the App's open groups the viewer is granted, read once per flatten",
+}
+
+
+def _plan_hazards(plan: Any) -> list[str]:  # noqa: ANN401
+    """The leaves of ``plan`` that read records or groups other than by id: a seek of an index that holds the id beside the org or App, a
+    seek of the org's or App's index alone that is not one of `_APP_WIDE_READS`, or an index or label scan."""
+    out = []
+    for o in _plan_ops(plan):
+        op, details = o["operatorType"], (o.get("args") or {}).get("Details", "")
+        seek = "IndexSeek" in op and not op.startswith("NodeUniqueIndexSeek")
+        only = _ORG_OR_APP_ONLY.search(details) if seek else None
+        if ((seek and _SEEK_BESIDE_ID.search(details)) or (only and tuple(only.groups()) not in _APP_WIDE_READS)
+                or (op.startswith(_SCANS) and _RECORDS.search(details))):
+            out.append(f"{op} {details[:120]}")
+    return out
+
+
+def test_the_plan_check_rejects_a_per_id_read_on_the_org_or_app_index() -> None:
+    """The check itself, on plans of the shapes it must tell apart (no store needed)."""
+    def plan(op: str, details: str) -> dict[str, Any]:
+        return {"operatorType": "ProduceResults@neo4j", "args": {}, "children": [
+            {"operatorType": "Filter@neo4j", "args": {"Details": "kh_x.id = kh_lid"}, "children": [
+                {"operatorType": op, "args": {"Details": details}, "children": []}]}]}
+    # The incident's plan: the App's index sought for every listed id, the id tested after.
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX kh_x:Record(connectorId) WHERE connectorId = $app_id"))
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX t:RecordGroup(orgId) WHERE orgId = $org_id"))
+    assert _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX t:Record(orgId, id) WHERE orgId = $org_id AND id = kh_key"))
+    assert _plan_hazards(plan("NodeIndexScan@neo4j", "RANGE INDEX kh_x:RecordGroup(connectorId) WHERE connectorId IS NOT NULL"))
+    # A unique id seek, an App-wide read by design, and a paged read are not.
+    assert not _plan_hazards(plan("NodeUniqueIndexSeek@neo4j", "UNIQUE kh_x:Record(id) WHERE id = kh_lid"))
+    assert not _plan_hazards(plan("NodeIndexSeek@neo4j", "RANGE INDEX dg:RecordGroup(connectorId) WHERE connectorId = cache[app.id]"))
+    assert not _plan_hazards(plan("NodeIndexSeekByRange@neo4j", "RANGE INDEX r:Record(connectorId, id) WHERE connectorId = $app AND id > $after"))
+
+
+def _calls(w: W) -> dict[str, Any]:
+    svc, g, user = KnowledgeHubService(log, w.g), w.g, f"uid-{w.user}"
+    kids = sorted(w.n(f"c{i}") for i in range(BIG))
+
+    def browse(parent: str, ptype: str, **kw: Any) -> Any:  # noqa: ANN401
+        return svc.get_nodes(user_id=user, org_id=w.org, parent_id=parent, parent_type=ptype, sort_by="name", sort_order="asc",
+                             **{"flattened": False, "depth": 1, "limit": 50, **kw})
+    return {
+        "browse a folder": lambda: browse(w.n("BIG"), "folder"),
+        "a folder read in windows": lambda: browse(w.n("BIG"), "folder"),
+        "a later page": lambda: browse(w.n("BIG"), "folder", page=3),
+        "browse the App": lambda: browse(w.app, "app"),
+        "browse a group": lambda: browse(w.n("G3"), "recordGroup"),
+        "flatten the App": lambda: browse(w.app, "app", flattened=True, depth=3, limit=100),
+        "records by id": lambda: g.get_records_by_record_ids(kids, w.org),
+        "selection": lambda: g.get_selection_nodes(w.org, group_ids=[w.n("G3")], record_ids=[w.n("BIG")], exact_record_ids=kids[:500],
+                                                   limit=100),
+        "node access": lambda: g.get_knowledge_hub_node_access(w.n("BIG"), w.user, w.org, FOLDER_MIME_TYPES),
+        "stamp nodes": lambda: Neo4jStampGraph(lambda: g.client).nodes(w.org, frozenset(kids)),
+        "stamp subtree": lambda: Neo4jStampGraph(lambda: g.client).subtree_vrids(w.org, [w.n("G3")]),
+        "uploads under a folder": lambda: g.get_uploaded_document_ids(w.app, under_record_ids=[w.n("BIG")]),
+        "purge failure": lambda: g.record_purge_failure(kids, w.org, "x"),
+    }
+
+
+@pytest.mark.parametrize("call", [
+    "browse a folder", "a folder read in windows", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
+    "stamp nodes", "stamp subtree", "uploads under a folder", "purge failure"])
+async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypatch, call: str) -> None:
+    """Every statement these reads run seeks a record or group it has the id of on the label's unique id index, never on an index that
+    holds the id beside the org or App or on the org's or App's index alone (outside `_APP_WIDE_READS`), and scans no index or label
+    of records or groups. The planner picks such a seek only when the
+    statement tests the org or App beside the match by id, and on other statistics it then seeks the org or App index alone and tests
+    the id after (`LISTED`): every node of the org or App read once per id. Read from each statement's plan (EXPLAIN), so nothing is
+    written."""
+    ran: dict[str, tuple[str, dict[str, Any]]] = {}
+    execute = w.g.client.execute_query
+
+    async def capture(query: str, parameters: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ran.setdefault(query, (query, parameters or {}))
+        return await execute(query, parameters, *args, **kwargs)
+
+    monkeypatch.setattr(w.g.client, "execute_query", capture)
+    if call == "a folder read in windows":      # as a folder wider than the split browse holds whole is read
+        monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    await _calls(w)[call]()
+    monkeypatch.setattr(w.g.client, "execute_query", execute)
+    assert ran
+    beside: list[str] = []
+    async with w.g.client.driver.session(database="neo4j") as s:
+        for query, parameters in ran.values():
+            if query.lstrip().upper().startswith(("CALL DBMS", "SHOW")):
+                continue
+            prefix, body = re.match(r"\s*((?:CYPHER [^\n]*?replan=\w+\s+)?)(.*)", query, re.S).groups()
+            plan = (await (await s.run(f"{prefix}EXPLAIN {body}", parameters)).consume()).plan
+            beside += [f"{' '.join(body.split())[:120]} :: {h}" for h in _plan_hazards(plan)]
+    assert not beside, beside
 
 
 async def test_relations_batch_is_bounded_per_record_and_direction(w) -> None:

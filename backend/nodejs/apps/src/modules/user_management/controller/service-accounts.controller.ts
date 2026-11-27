@@ -90,6 +90,7 @@ export class ServiceAccountsController {
       await this.serviceAccounts.remove(
         this.orgId(req),
         req.params.id as string,
+        req.user?.userId === undefined ? undefined : String(req.user.userId),
       );
       res.status(204).send();
     } catch (error) {

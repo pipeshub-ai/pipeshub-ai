@@ -1,9 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
 import { BaseError, ErrorMetadata } from '../errors/base.error';
-import { unansweredCallError } from '../errors/backend-error';
+import {
+  REASON_CODE_PATTERN,
+  unansweredCallError,
+} from '../errors/backend-error';
 import {
   BadRequestError,
+  ExpectedRefusalError,
   HttpError,
   LargePayloadError,
   UnsupportedMediaTypeError,
@@ -132,6 +136,14 @@ export class ErrorMiddleware {
   static handleError() {
     return (error: Error, req: Request, res: Response, _next: NextFunction) => {
       try {
+        if (this.isClientAbort(error, req)) {
+          this.logger.info('Request aborted by the client', {
+            method: req.method,
+            path: req.path,
+            requestId: req.context?.requestId,
+          });
+          return;
+        }
         // A call to another PipesHub service that got no answer is a 503
         // (504 on a timeout) wherever it was thrown, not an unknown 500.
         // The parser's or router's own error is not kept as the cause: its
@@ -202,7 +214,10 @@ export class ErrorMiddleware {
         : 500;
     const errorClass = classifyRequestError(error, status);
     markRequestError(res, errorClass);
-    this.logger[levelFor(errorClass)]('http.request.error', {
+    // A refusal the route expects (a lost claim race, a role that may not write) is routine.
+    const level =
+      error instanceof ExpectedRefusalError ? 'info' : levelFor(errorClass);
+    this.logger[level]('http.request.error', {
       method: req.method,
       route: routeTemplate(req),
       status,
@@ -246,6 +261,15 @@ export class ErrorMiddleware {
       error instanceof HttpError;
     const isInternalPlumbing = error.statusCode >= 500 && !isOurOwnWording;
     const requestId = req.context?.requestId;
+    // Another service's machine code for the refusal (backend-error), so a
+    // client can say which one without parsing the sentence.
+    const reasonCode: unknown = error.metadata?.reasonCode;
+    const relayedCode =
+      !isInternalPlumbing &&
+      typeof reasonCode === 'string' &&
+      REASON_CODE_PATTERN.test(reasonCode)
+        ? reasonCode
+        : undefined;
 
     const errorResponse = {
       error: {
@@ -253,6 +277,7 @@ export class ErrorMiddleware {
         message: isInternalPlumbing
           ? INFRASTRUCTURE_FAILURE_MESSAGE
           : error.message,
+        ...(relayedCode && { reasonCode: relayedCode }),
         ...(requestId && { requestId }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
@@ -308,5 +333,22 @@ export class ErrorMiddleware {
     // Ensure no stack traces are included (defense in depth)
     const sanitizedResponse = this.sanitizeErrorResponse(errorResponse);
     jsonResponse(res, 500, sanitizedResponse);
+  }
+
+  /**
+   * The client went away before its request was read (body-parser's
+   * `request.aborted`, or a reset on the request stream): nothing failed on
+   * our side and there is no one left to answer.
+   */
+  private static isClientAbort(error: Error, req: Request): boolean {
+    const { type, code } = error as Error & { type?: unknown; code?: unknown };
+    if (type === 'request.aborted') return true;
+    // `req.destroyed` alone is not the client leaving: a request whose body was read is destroyed once read, so a
+    // reset from a service this route called (an ECONNRESET of its own) would be taken for an abort and never answered.
+    return (
+      code === 'ECONNRESET' &&
+      (req.readableAborted ||
+        (req.socket as { destroyed?: boolean } | undefined)?.destroyed === true)
+    );
   }
 }

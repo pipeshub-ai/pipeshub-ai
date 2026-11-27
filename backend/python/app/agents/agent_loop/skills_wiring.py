@@ -56,8 +56,13 @@ from typing import TYPE_CHECKING
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import SkillLearning
-from app.agent_loop_lib.hooks.middleware.builtin.skill_preloading import skill_preloading
+from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import (
+    SkillLearning,
+    SpawnSkillWriter,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.skill_preloading import (
+    skill_preloading,
+)
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
 from app.agent_loop_lib.tools.builtin.data.skills import (
     LoadSkillResourceTool,
@@ -66,11 +71,18 @@ from app.agent_loop_lib.tools.builtin.data.skills import (
     SkillSearchTool,
     SkillsListTool,
 )
-from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agent_loop_lib.tools.errors import (
+    DuplicateToolNameError,
+    DuplicateToolPathError,
+)
 from app.agents.agent_loop.skills.manager_factory import build_runtime_skill_manager
+from app.utils.env_flags import PIPESHUB_ENABLE_SKILLS, env_flag
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.agent_loop_lib.hooks.registry import HookRegistry
+    from app.agent_loop_lib.modules.providers.skills.base import SkillProvenance
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agent_loop_lib.transport.registry import TransportRegistry
@@ -82,6 +94,7 @@ __all__ = [
     "register_skill_tools",
     "register_skill_preloading",
     "register_skill_learning",
+    "skill_writer",
     "DOMAIN_SHARED_SKILL_TOOL_NAMES",
 ]
 
@@ -153,11 +166,12 @@ def skills_enabled() -> bool:
     deployment whose graph DB hasn't provisioned the `agentSkills*`
     collections/indexes yet) independently of what any org has set in Labs.
     """
-    return os.getenv("PIPESHUB_ENABLE_SKILLS", "true").strip().lower() == "true"
+    return env_flag(PIPESHUB_ENABLE_SKILLS)
 
 
 async def build_skill_manager(
     context: "AgentContext", transport_registry: "TransportRegistry",
+    *, provenance: "Callable[[], SkillProvenance] | None" = None,
 ) -> SkillManager | None:
     """Composition (store/index/tracker/governor assembly, builtin-pack
     seeding) lives in `manager_factory.py`'s `build_runtime_skill_manager`,
@@ -170,9 +184,9 @@ async def build_skill_manager(
     `api/routes/agent.py`), the returned manager is additionally wrapped in
     `ScopedSkillManager` (Phase 4 of the plan) so the prompt overview and
     all 5 skill tools only ever see/load that allowlist. An agent with NO
-    explicit assignment (empty/None) keeps today's behavior — the full
-    creator+builtin catalog, unfiltered."""
-    manager = await build_runtime_skill_manager(context, transport_registry)
+    explicit assignment (empty/None) sees the running user's own skills and
+    the builtins (`manager_factory.runtime_visibility`), never a co-worker's."""
+    manager = await build_runtime_skill_manager(context, transport_registry, provenance=provenance)
     if manager is None:
         return None
     agent_skill_names = getattr(context, "agent_skills", None)
@@ -220,7 +234,8 @@ def register_skill_preloading(hooks: "HookRegistry", manager: SkillManager) -> N
 
 def register_skill_learning(
     hooks: "HookRegistry", manager: SkillManager, runtime: "AgentRuntime",
-    *, provider: str, model_name: str, context_window: int | None = None,
+    *, provider: str, model_name: str, context_window: int | None = None, conversation_id: str | None = None,
+    agent_key: str | None = None,
 ) -> None:
     """POST_AGENT — outcome tracking always runs; candidate extraction
     only actually does anything when `SkillManagerConfig.learning_enabled`
@@ -231,6 +246,21 @@ def register_skill_learning(
     `run_child()`), but the same `HookRegistry` instance `runtime.hooks`
     already holds, so appending here is equivalent to having registered
     it earlier."""
+
+    hooks.on(HookEvent.POST_AGENT).use(SkillLearning(
+        manager=manager,
+        spawn_skill_writer=skill_writer(runtime, provider=provider, model_name=model_name, context_window=context_window),
+        source_session_id=conversation_id,
+        source_agent_key=agent_key,
+    ))
+
+
+def skill_writer(
+    runtime: "AgentRuntime", *, provider: str, model_name: str, context_window: int | None = None,
+) -> SpawnSkillWriter:
+    """The skill writer both loops' learning spawns once a run ends: a child agent on
+    `runtime` with only the skill tools (today's loop: the POST_AGENT hook above; the
+    durable harness: its post-run step, `app.harness.assembly.skill_learning`)."""
 
     async def _spawn_skill_writer(goal_description: str):
         from app.agent_loop_lib.core.types import Goal
@@ -247,4 +277,4 @@ def register_skill_learning(
         )
         return await runtime.run_child(spec, Goal(description=goal_description), parent_run_ctx=None)
 
-    hooks.on(HookEvent.POST_AGENT).use(SkillLearning(manager=manager, spawn_skill_writer=_spawn_skill_writer))
+    return _spawn_skill_writer

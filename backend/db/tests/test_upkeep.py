@@ -724,6 +724,7 @@ def test_a_one_shot_fold_exits_6_when_an_org_failed_and_a_failing_org_does_not_h
     monkeypatch.setattr(fold, "fold_org", step)
     assert fold.run(None) == ({}, {"a": "deadlock detected"}) and seen == ["a", "b", "c"]
     monkeypatch.setattr(fold, "run", lambda jobs: ({}, {"a": "x"}))
+    monkeypatch.setattr(fold, "fill_bounds", lambda jobs: ({}, {}, 0))
     monkeypatch.setattr(maintain.psycopg, "connect", lambda *a, **k: type("C", (), {"__enter__": lambda s: None, "__exit__": lambda s, *e: None})())
     monkeypatch.setenv("PG_JOBS_URL", "postgresql://x@127.0.0.1:1/x")
     assert maintain.main(["fold"]) == maintain.EXIT_PARTIAL

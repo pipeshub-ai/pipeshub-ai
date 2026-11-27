@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from app.core import org_context
+from app.services.graph_db.neo4j import kh_scope
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
@@ -89,3 +91,33 @@ async def test_the_candidates_are_real_users_and_places_a_browse_lists() -> None
     assert query.index("size(users) > 0 AND size(places) > 0") < query.index("LIMIT $apps")
     assert params == {"apps": Neo4jProvider._KH_WARM_APPS, "users": Neo4jProvider._KH_WARM_USERS,
                       "places": Neo4jProvider._KH_WARM_PLACES}
+
+
+@pytest.mark.asyncio
+async def test_each_access_check_runs_in_its_apps_org() -> None:
+    rows = [{**_row("jira", ["u1"], [("g1", "r1")]), "appOrg": org} for org in ("org-1", "org-2")]
+    p, _ = _provider(rows, {"u1": {"g1", "r1"}})
+    bound: list[tuple[str, str]] = []
+    real = p.check_access
+
+    async def check_access(user_key: str, org_id: str, **kwargs: Any) -> SimpleNamespace:  # noqa: ANN401
+        bound.append((org_id, org_context.current_org_id()))
+        return await real(user_key, org_id, **kwargs)
+
+    p.check_access = check_access  # type: ignore[method-assign]
+    assert len(await p.get_knowledge_hub_warm_samples()) == 2
+    assert bound == [("org-1", "org-1"), ("org-2", "org-2")]
+    assert org_context.peek() is None
+
+
+@pytest.mark.asyncio
+async def test_the_stale_scopes_of_one_org_only_are_listed() -> None:
+    asked: list[tuple[str, dict]] = []
+
+    async def execute_query(query: str, parameters: dict | None = None, **_k: Any) -> list[dict]:  # noqa: ANN401
+        asked.append((query, parameters or {}))
+        return [{"id": "a1"}]
+
+    assert await kh_scope.stale_connectors(SimpleNamespace(execute_query=execute_query), "org-1") == ["a1"]
+    (query, params), = asked
+    assert "coalesce(a.orgId, $org) = $org" in query and params["org"] == "org-1"

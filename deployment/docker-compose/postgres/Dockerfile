@@ -60,9 +60,10 @@ RUN ./configure --prefix=/opt/pgbouncer --with-openssl \
 FROM base-${PG_MAJOR}
 ARG PG_MAJOR
 COPY --from=build /debs/ /tmp/debs/
+# lz4 and bzip2 (gzip and zstd are in the base): scripts/pg-restore-reach.pl decompresses archived WAL of every compress-type
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libevent-2.1-7 /tmp/debs/pgbackrest_*.deb \
+ && apt-get install -y --no-install-recommends libevent-2.1-7 lz4 bzip2 /tmp/debs/pgbackrest_*.deb \
  && rm -rf /var/lib/apt/lists/* /tmp/debs
 # pg_textsearch files, then the PgBouncer binary
 COPY --from=build /usr/lib/postgresql/${PG_MAJOR}/lib/pg_textsearch* /usr/lib/postgresql/${PG_MAJOR}/lib/

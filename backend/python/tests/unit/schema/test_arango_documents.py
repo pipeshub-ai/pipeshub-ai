@@ -101,6 +101,7 @@ class TestDocumentSchemaInventory:
             "department_schema",
             "agent_template_schema",
             "agent_schema",
+            "agent_versions_schema",
             "team_schema",
             "people_schema",
             "knowledge_schema",

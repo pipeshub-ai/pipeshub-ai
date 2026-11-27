@@ -24,6 +24,7 @@ from app.sandbox.docker_proxy import (
     ProxyLimits,
     _json_depth_ok,
 )
+from tests.unit.sandbox.test_docker_proxy import TOKEN, with_token
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -128,7 +129,7 @@ async def _start(
 ) -> tuple[asyncio.Server, asyncio.Server, int]:
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock, instance="stack-a", limits=limits)
+    proxy = DockerSocketProxy(policy, sock, caller_token=TOKEN, instance="stack-a", limits=limits)
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     return upstream, server, server.sockets[0].getsockname()[1]
 
@@ -144,7 +145,7 @@ async def proxied(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_Dae
 
 async def _request(port: int, raw: bytes, timeout: float = 10) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(raw)
+    writer.write(with_token(raw))
     await writer.drain()
     data = await asyncio.wait_for(reader.read(), timeout)
     writer.close()
@@ -369,8 +370,8 @@ class TestBodyLimits:
         daemon, upstream, server, port = await self._proxy(tmp_path, policy, **limits)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            writer.write(f"PUT /containers/{OWN}/archive?path=/src HTTP/1.1\r\nHost: x\r\n"
-                         "Content-Length: 100000\r\n\r\n".encode())
+            writer.write(with_token(f"PUT /containers/{OWN}/archive?path=/src HTTP/1.1\r\nHost: x\r\n"
+                                    "Content-Length: 100000\r\n\r\n".encode()))
             for _ in range(20):  # a trickle that never finishes
                 try:
                     writer.write(b"x")
@@ -424,6 +425,8 @@ class TestBodyLimits:
 def test_listens_on_loopback_unless_told_otherwise(monkeypatch) -> None:
     monkeypatch.delenv("DOCKER_PROXY_HOST", raising=False)
     with patch.object(docker_proxy, "serve") as serve, \
+         patch.object(docker_proxy, "proxy_callers", return_value={}), \
+         patch.object(docker_proxy, "anonymous_caller", return_value=None), \
          patch.object(docker_proxy.asyncio, "run", side_effect=lambda coro: coro.close()), \
          patch.object(docker_proxy.logging, "basicConfig"):
         docker_proxy.main()

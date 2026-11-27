@@ -174,6 +174,8 @@ def _graph(access: _Access) -> AsyncMock:
 def _service(store: _FakeStore, graph: AsyncMock, *, containers: bool = True) -> mod.RetrievalService:
     service = mod.RetrievalService.__new__(mod.RetrievalService)
     service.logger = MagicMock()
+    # Knowledge publications (harness P2.13) off: the reader's own access decides, as on main.
+    service.publications = MagicMock(enabled=AsyncMock(return_value=False))
     service.config_service = AsyncMock()
     service.graph_provider = graph
     service.blob_store = MagicMock()

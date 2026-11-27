@@ -30,7 +30,13 @@ interface TokenPayload extends Record<string, any> {}
  * always truthy, so without this guard an empty secret sails past that check
  * and every token forged with an empty HMAC key verifies successfully.
  */
-function toVerificationKey(secret: string): KeyObject {
+/** Callers `.catch` a refused token, so a verification error must reject rather than throw. */
+const settled = <T>(verify: () => T): Promise<T> =>
+  new Promise((resolve) => {
+    resolve(verify());
+  });
+
+export function toVerificationKey(secret: string): KeyObject {
   if (!secret) {
     throw new Error('JWT secret is not configured');
   }
@@ -42,7 +48,7 @@ function toVerificationKey(secret: string): KeyObject {
 
 /** Algorithms a key type can legitimately verify, so a token's own `alg`
  * header cannot steer verification onto a weaker scheme. */
-function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
+export function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
   return key.type === 'secret'
     ? ['HS256', 'HS384', 'HS512']
     : [
@@ -109,7 +115,11 @@ export class AuthTokenService {
     }
   }
 
-  async verifyScopedToken(token: string, scope: string): Promise<TokenPayload> {
+  verifyScopedToken(
+    token: string,
+    scope: string,
+    audience?: string,
+  ): Promise<TokenPayload> {
     const keys = isUserActionScope(scope)
       ? [
           this.userActionVerificationKey,
@@ -120,12 +130,37 @@ export class AuthTokenService {
           this.scopedJwtVerificationKey,
         ]
       : [this.scopedJwtVerificationKey];
-    const decoded = this.verifyWithKeys(token, keys, this.scopedJwtAlgorithms);
+    return settled(() =>
+      this.withScope(
+        this.verifyWithKeys(token, keys, this.scopedJwtAlgorithms, audience),
+        scope,
+      ),
+    );
+  }
+
+  /**
+   * A token a person holds for one narrow purpose, signed with the
+   * user-action key whatever its scope, so a service holding only the scoped
+   * secret can never mint one.
+   */
+  verifyUserActionToken(token: string, scope: string): Promise<TokenPayload> {
+    return settled(() =>
+      this.withScope(
+        this.verifyWithKeys(
+          token,
+          [this.userActionVerificationKey],
+          this.scopedJwtAlgorithms,
+        ),
+        scope,
+      ),
+    );
+  }
+
+  private withScope(decoded: TokenPayload, scope: string): TokenPayload {
     const { scopes } = decoded;
     if (!scopes || !scopes.includes(scope)) {
       throw new UnauthorizedError('Invalid scope');
     }
-
     return decoded;
   }
 
@@ -149,11 +184,15 @@ export class AuthTokenService {
     token: string,
     keys: KeyObject[],
     algorithms: jwt.Algorithm[],
+    audience?: string,
   ): TokenPayload {
     let failure: unknown;
     for (const key of keys) {
       try {
-        return jwt.verify(token, key, { algorithms }) as TokenPayload;
+        return jwt.verify(token, key, {
+          algorithms,
+          ...(audience ? { audience } : {}),
+        }) as TokenPayload;
       } catch (error) {
         // A signature mismatch only means "not this key"; any other error came
         // from the key that matched and says why the token was refused.
