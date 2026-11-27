@@ -1992,7 +1992,7 @@ func kernel.apply_rls_partition(regclass,regclass,text) owner=pipeshub_owner sec
 func kernel.assert_org_writable(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=acf233f5241cac6f42be89b04a33b13a ext=-
 func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=cc876dc61477062d7871f416a9a653b6 ext=-
 func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=75d08837d920da2585b2a05c27d5a707 ext=-
-func kernel.bootstrap_admin() owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, kernel, pg_temp body=daeaf9751a00b9d5850b7fda4d2e0f93 ext=-
+func kernel.bootstrap_admin() owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=search_path=pg_catalog, kernel, pg_temp body=3b9a556d2a246c58c21628f3b7981edd ext=-
 func kernel.declare_extension_schema(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=1de19a7a0eb142d3ec416a416f875079 ext=-
 func kernel.exempt_constraint(regclass,name,text,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=32c4a15e8a767e354922828a28af36e8 ext=-
 func kernel.exempt_trigger(regprocedure,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ba198108fb9374224c91da29e844c153 ext=-
@@ -3629,8 +3629,8 @@ rel kernel.policy_template kind=r owner=pipeshub_owner rls=false force=false opt
 rel kernel.restore_window kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.rls_registry kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
-rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=92b09c918bc15f1fb9e330492b76e8f1
-rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=7df4d25d50aa3d505adf5810ab4ca3a3
+rel kernel.rls_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=d244e52e2b3d865c9359de9962264591
+rel kernel.rls_violations_core kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=8cf8353cf0059dbcfd9f8eb28866fa4b
 rel kernel.rls_warnings kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=c07853bae43882b0b3f3cc2f623ce9c7
 rel kernel.schema_epoch kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.sequence_waivers kind=r owner=pipeshub_owner rls=false force=false options=- ext=-

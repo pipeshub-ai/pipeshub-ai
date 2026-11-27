@@ -1,20 +1,24 @@
 -- A managed PostgreSQL hands out an administrator that is not a superuser: it can create roles and databases (CREATEROLE, CREATEDB)
 -- and owns the database, and the platform's own superuser installs the allow-listed extensions. The checks treat that administrator
 -- as they treat the bootstrap superuser:
--- * kernel.bootstrap_admin() names it: the owner of this database when it is not a superuser, holds CREATEROLE, has no BYPASSRLS
---   and is neither one of our roles nor a predefined one. Otherwise NULL (a superuser bootstrap has none).
+-- * kernel.bootstrap_admin() names it: the owner of this database when it is not a superuser, holds CREATEROLE and CREATEDB, has
+--   neither BYPASSRLS nor REPLICATION (it then stays an actor, and checks 22 and 41 report it) and is neither one of our roles nor a
+--   predefined one (prefixes compared literally). Otherwise NULL (a superuser bootstrap has none).
 -- * It is not an application actor (as superusers are not). On PostgreSQL 16 and later it holds ADMIN on every role it created,
---   without INHERIT or SET; checks 18 and 37 accept exactly those memberships of it. With INHERIT or SET on one of our roles it would act
+--   without INHERIT or SET; checks 18 and 37 accept exactly those memberships of it, and its memberships of roles that are not ours
+--   (a platform's own administrative role), as no check counts a superuser's. With INHERIT or SET on one of our roles it would act
 --   with that role's privileges: '37 bootstrap administrator holds an application role'.
 -- * Any role that can reach it is still an actor and still holds what it reaches: the administrator gains nothing for the
 --   application roles, and an application login that is a member of it fails the checks as before.
--- * Without a superuser the large-object functions (owned by the platform's superuser) cannot be revoked: check 43 is the warning
---   it is on a declared managed platform (kernel.rls_warnings).
+-- * Without a superuser the large-object functions (owned by the platform's superuser) cannot be revoked from PUBLIC: that access is the
+--   warning it is on a declared managed platform (kernel.rls_warnings). An actor's own grant on one (direct, or through a role it
+--   reaches) is still check 43, on a declared managed platform too.
 CREATE FUNCTION kernel.bootstrap_admin() RETURNS oid
 LANGUAGE sql STABLE SET search_path = pg_catalog, kernel, pg_temp AS $$
   SELECT r.oid FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba, kernel.settings s
-  WHERE d.datname = current_database() AND NOT r.rolsuper AND r.rolcreaterole AND NOT r.rolbypassrls
-    AND r.rolname NOT LIKE s.role_prefix || '%' AND r.rolname NOT LIKE 'pg\_%' $$;
+  WHERE d.datname = current_database() AND NOT r.rolsuper AND r.rolcreaterole AND r.rolcreatedb
+    AND NOT r.rolbypassrls AND NOT r.rolreplication          -- these two reach around row security: such an owner stays checked
+    AND NOT starts_with(r.rolname::text, s.role_prefix) AND NOT starts_with(r.rolname::text, 'pg_') $$;
 REVOKE ALL ON FUNCTION kernel.bootstrap_admin() FROM PUBLIC;
 
 -- (IS NOT DISTINCT FROM: with no bootstrap administrator the comparison must be false, never NULL, or NOT would drop the row.)
@@ -33,9 +37,10 @@ LANGUAGE sql STABLE SET search_path = pg_catalog, kernel, pg_temp AS $$
 -- The five check views with those three edits made (the role list of every one; checks 18, 37 and 43 of the core). Written out as
 -- they read after kernel_0023 with the edits applied (pg_get_viewdef text), so the revision runs no dynamic SQL.
 --   role list: AND (r.oid IS DISTINCT FROM kernel.bootstrap_admin())
---   checks 18, 37: AND (NOT ((m.member IS NOT DISTINCT FROM kernel.bootstrap_admin()) AND m.admin_option AND (NOT m.inherit_option) AND (NOT m.set_option)))
+--   check 18: AND (NOT ((m.member IS NOT DISTINCT FROM kernel.bootstrap_admin()) AND m.admin_option AND (NOT m.inherit_option) AND (NOT m.set_option)))
+--   check 37: the same, or a membership of the administrator in a role that is not ours
 --     (IS NOT DISTINCT FROM: with no bootstrap administrator the test must be false, never NULL, or NOT would hide the row)
---   check 43: (NOT (kernel.bootstrap_admin() IS NOT NULL)) AND before the managed-profile test
+--   check 43: on a declared managed platform or with a bootstrap administrator, only an actor's own grant (not PUBLIC's) is reported
 CREATE OR REPLACE VIEW kernel.rls_violations_core WITH (security_invoker = true) AS
 WITH s AS (
          SELECT settings.one,
@@ -704,7 +709,9 @@ WITH s AS (
             s
           WHERE ((NOT (m.member IN ( SELECT pg_roles.oid
                    FROM pg_roles
-                  WHERE (pg_roles.rolsuper OR (pg_roles.rolname ~~ 'pg\_%'::text))))) AND (NOT ((NOT (m.member IS DISTINCT FROM kernel.bootstrap_admin())) AND m.admin_option AND (NOT m.inherit_option) AND (NOT m.set_option))) AND (NOT ((m.member IN ( SELECT admin_roles.oid
+                  WHERE (pg_roles.rolsuper OR (pg_roles.rolname ~~ 'pg\_%'::text))))) AND (NOT ((NOT (m.member IS DISTINCT FROM kernel.bootstrap_admin())) AND ((m.admin_option AND (NOT m.inherit_option) AND (NOT m.set_option)) OR (NOT starts_with((( SELECT pg_roles.rolname
+                   FROM pg_roles
+                  WHERE (pg_roles.oid = m.roleid)))::text, s.role_prefix))))) AND (NOT ((m.member IN ( SELECT admin_roles.oid
                    FROM admin_roles)) AND ((m.roleid IN ( SELECT admin_roles.oid
                    FROM admin_roles)) OR (m.roleid IN ( SELECT pg_roles.oid
                    FROM pg_roles
@@ -810,8 +817,13 @@ WITH s AS (
             ((a.oid)::regrole)::text AS oid
            FROM actors a,
             unnest(ARRAY['lo_create(oid)'::text, 'lo_creat(integer)'::text, 'lo_from_bytea(oid,bytea)'::text, 'lo_put(oid,bigint,bytea)'::text, 'lo_get(oid)'::text, 'lo_get(oid,bigint,integer)'::text, 'lo_unlink(oid)'::text, 'lo_open(oid,integer)'::text, 'loread(integer,integer)'::text, 'lowrite(integer,bytea)'::text]) f(sig)
-          WHERE ((to_regprocedure(('pg_catalog.'::text || f.sig)) IS NOT NULL) AND has_function_privilege(a.oid, (to_regprocedure(('pg_catalog.'::text || f.sig)))::oid, 'EXECUTE'::text) AND (NOT (kernel.bootstrap_admin() IS NOT NULL)) AND (NOT COALESCE(( SELECT ((deployment_profile.profile ->> 'managed'::text))::boolean AS bool
-                   FROM platform.deployment_profile), false)))
+          WHERE ((to_regprocedure(('pg_catalog.'::text || f.sig)) IS NOT NULL) AND has_function_privilege(a.oid, (to_regprocedure(('pg_catalog.'::text || f.sig)))::oid, 'EXECUTE'::text) AND ((NOT ((kernel.bootstrap_admin() IS NOT NULL) OR COALESCE(( SELECT ((deployment_profile.profile ->> 'managed'::text))::boolean AS bool
+                   FROM platform.deployment_profile), false))) OR (EXISTS ( SELECT 1
+                   FROM pg_proc p,
+                    LATERAL aclexplode(COALESCE(p.proacl, acldefault('f'::"char", p.proowner))) x(grantor, grantee, privilege_type, is_grantable)
+                  WHERE ((p.oid = (to_regprocedure(('pg_catalog.'::text || f.sig)))::oid) AND (x.privilege_type = 'EXECUTE'::text) AND (x.grantee <> (0)::oid) AND (x.grantee IN ( SELECT reach.role
+                           FROM reach
+                          WHERE (reach.actor = a.oid))))))))
         UNION ALL
          SELECT '44 consumer inbox primary key is not (org_id, message_id)'::text AS text,
             ((c.oid)::regclass)::text AS oid
@@ -2781,8 +2793,8 @@ SELECT '142 org_erase policy is missing or differs', x.rel::text FROM (
   WHERE NOT kernel._org_erase_policy_ok(x.rel)
 UNION ALL -- 37 (the bootstrap administrator holds one of our roles with INHERIT or SET, not only ADMIN)
 SELECT '37 bootstrap administrator holds an application role ' || m.roleid::regrole::text, m.member::regrole::text
-  FROM pg_auth_members m, kernel.settings s
-  WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option) AND m.roleid::regrole::text LIKE s.role_prefix || '%';
+  FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+  WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option) AND starts_with(r.rolname::text, s.role_prefix);
 REVOKE ALL ON kernel.rls_violations FROM PUBLIC;
 
 CREATE OR REPLACE VIEW kernel.rls_warnings WITH (security_invoker = true) AS

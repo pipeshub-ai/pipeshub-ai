@@ -236,25 +236,47 @@ def live_lines(conn: psycopg.Connection) -> list[str]:
     admin = bootstrap_admin(conn)
     if admin is None:
         return sorted(normalise(out, superuser))
-    # A managed platform's administrator stands where the bootstrap superuser does: its own role line and the ADMIN-only
-    # memberships PostgreSQL 16+ gives it on every role it created are left to the semantic checks (check 37 accepts exactly
-    # those); any other line naming it is compared under the superuser's token.
-    implicit = re.compile(r"^member " + re.escape(admin) + r" -> \S+ inherit=false set=false admin=true$")
-    out = [x for x in out if not x.startswith(f"role {admin} ") and not implicit.match(x)]
-    return sorted(normalise(normalise(out, superuser), admin))
+    # A managed platform's administrator stands where the bootstrap superuser does. Its own role line, the ADMIN-only memberships
+    # PostgreSQL 16+ gives it on every role it created, its memberships of roles that are not ours, and those roles' own lines (the
+    # platform's administrative roles) are left to the semantic checks (check 37 accepts exactly those memberships); every other line
+    # naming it is compared under the superuser's token. The lines to leave out are rendered by the queries that render them in the
+    # surface, so a name that needs quoting matches too.
+    raw, rendered = admin
+    members = {"member " + line for (line,) in conn.execute(_ADMIN_MEMBERS)}
+    roles = (raw, *(r for (r,) in conn.execute(_PLATFORM_ROLES)))
+    out = [x for x in out if x not in members and not x.startswith(tuple(f"role {r} " for r in roles))]
+    return sorted(normalise(out, superuser, raw, rendered))
 
 
-def normalise(lines: Iterable[str], superuser: str) -> set[str]:
-    """Replace the bootstrap superuser's name (whatever the deployment calls it) by a fixed token."""
-    token = re.compile(r'(?<![\w"])' + re.escape(superuser) + r'(?![\w"])')
+# The administrator's memberships the semantic checks accept, as the "member" query renders them (kernel_0024, check 37).
+_ADMIN_MEMBERS = """SELECT m.member::regrole || ' -> ' || m.roleid::regrole || ' inherit=' || m.inherit_option || ' set=' || m.set_option
+        || ' admin=' || m.admin_option FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+    WHERE m.member = kernel.bootstrap_admin()
+      AND ((m.admin_option AND NOT m.inherit_option AND NOT m.set_option) OR NOT starts_with(r.rolname::text, s.role_prefix))"""
+
+
+# Roles the administrator holds (with INHERIT or SET: not one it merely created) that are not ours or predefined: the platform's own
+# administrative roles, as the role query renders them. A role the administrator only created still shows in the surface.
+_PLATFORM_ROLES = """SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid, kernel.settings s
+    WHERE m.member = kernel.bootstrap_admin() AND (m.inherit_option OR m.set_option)
+      AND NOT starts_with(r.rolname::text, s.role_prefix) AND NOT starts_with(r.rolname::text, 'pg_')"""
+
+
+def normalise(lines: Iterable[str], superuser: str, *also: str) -> set[str]:
+    """Replace the bootstrap superuser's name (whatever the deployment calls it), and each name in ``also``, by a fixed token, in
+    one pass: a token written for one name is never read again for another (an administrator called ``bootstrap``)."""
+    names = sorted({superuser, *also}, key=len, reverse=True)
+    token = re.compile(r'(?<![\w"])(?:' + "|".join(re.escape(n) for n in names) + r')(?![\w"])')
     return {token.sub(BOOTSTRAP_SUPERUSER, x) for x in lines}
 
 
-def bootstrap_admin(conn: psycopg.Connection) -> str | None:
-    """The database owner when it is a managed platform's administrator rather than a superuser (``kernel.bootstrap_admin()``)."""
+def bootstrap_admin(conn: psycopg.Connection) -> tuple[str, str] | None:
+    """The database owner when it is a managed platform's administrator rather than a superuser (``kernel.bootstrap_admin()``),
+    as ``(rolname, regrole text)``: the role query renders the first, every other query the second (quoted when the name needs it)."""
     if not conn.execute("SELECT to_regprocedure('kernel.bootstrap_admin()') IS NOT NULL").fetchone()[0]:
         return None
-    return conn.execute("SELECT kernel.bootstrap_admin()::regrole::text").fetchone()[0]
+    row = conn.execute("SELECT r.rolname, r.oid::regrole::text FROM pg_roles r WHERE r.oid = kernel.bootstrap_admin()").fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def _managed(conn: psycopg.Connection) -> bool:

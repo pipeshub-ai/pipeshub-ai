@@ -19,9 +19,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # kernel_0021's wrapper (the last one written as text), the component views with the edits taken out (as pg_get_viewdef renders
-    # them: IS NOT DISTINCT FROM reads back as NOT (... IS DISTINCT FROM ...)), kernel_0004's warnings view and kernel_0023's
-    # _fresh_vetted_owner
+    # kernel_0021's wrapper (the last one written as text), kernel_0004's warnings view and kernel_0023's _fresh_vetted_owner come
+    # back as they were. In the five component views every call of kernel.bootstrap_admin() becomes NULL::oid, which turns each
+    # exception off: no role is left out of the role list and checks 18 and 37 accept no administrator membership. One difference
+    # stays on a declared managed platform: check 43 still reports an actor's own grant on a large-object function (only PUBLIC's
+    # access is the platform's), which kernel_0023 did not; that grant is a violation on every platform.
     k21 = (_HERE / "0021_org_erase_policy.sql").read_text()
     wrapper = k21[k21.index("DROP VIEW kernel.rls_violations;"):]
     k23 = (_HERE / "0023_extension_owner.sql").read_text()
@@ -30,15 +32,10 @@ def downgrade() -> None:
     warnings = k04[k04.index("CREATE VIEW kernel.rls_warnings"):k04.index("REVOKE ALL ON kernel.rls_warnings")]
     op.execute("DROP VIEW kernel.rls_violations")
     op.execute(r"""DO $$
-DECLARE v name; def text; before text;
+DECLARE v name; def text;
 BEGIN
   FOREACH v IN ARRAY ARRAY['rls_violations_core', 'vetted_violations', 'person_violations', 'pin_violations', 'org_policy_violations']::name[] LOOP
-    def := pg_get_viewdef(format('kernel.%I', v)::regclass);
-    before := def;
-    def := replace(def, ' AND (r.oid IS DISTINCT FROM kernel.bootstrap_admin())', '');
-    def := replace(def, ' AND (NOT ((NOT (m.member IS DISTINCT FROM kernel.bootstrap_admin())) AND m.admin_option AND (NOT m.inherit_option) AND (NOT m.set_option)))', '');
-    def := replace(def, '(NOT (kernel.bootstrap_admin() IS NOT NULL)) AND ', '');
-    IF def = before OR position('bootstrap_admin' IN def) > 0 THEN RAISE EXCEPTION 'kernel_0024 downgrade: kernel.% was not restored', v; END IF;
+    def := replace(pg_get_viewdef(format('kernel.%I', v)::regclass), 'kernel.bootstrap_admin()', 'NULL::oid');
     EXECUTE format('CREATE OR REPLACE VIEW kernel.%I WITH (security_invoker = true) AS ', v) || def;
   END LOOP;
 END $$""")
