@@ -20,7 +20,7 @@ import pytest
 from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
-from app.connectors.sources.zoom.connector import ZoomConnector
+from app.connectors.sources.zoom.connector import ZoomConnector, ZoomIncompleteSyncError
 from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
@@ -392,10 +392,16 @@ async def _full_sync(world: World) -> ZoomConnector:
     graph = AsyncMock()
     graph.get_document = AsyncMock(return_value={"id": CONNECTOR_ID, "status": AppStatus.FULL_SYNCING.value})
     graph.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=world.store.unlink)
-    await sync_runner.run_sync_task(
-        connector, CONNECTOR_ID, graph, logging.getLogger("test.zoom.full_sync"),
-        start_status=AppStatus.FULL_SYNCING.value,
-    )
+    try:
+        await sync_runner.run_sync_task(
+            connector, CONNECTOR_ID, graph, logging.getLogger("test.zoom.full_sync"),
+            start_status=AppStatus.FULL_SYNCING.value,
+        )
+    except ZoomIncompleteSyncError:
+        # The runner still finishes the full sync before the run fails, and only a run that read less than all of Zoom fails.
+        assert connector.full_sync_coverage().complete is False
+    else:
+        assert connector.full_sync_coverage().complete is True
     return connector
 
 

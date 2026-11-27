@@ -10,12 +10,15 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.registry.filters import FilterCollection, FilterOptionsResponse
 from app.connectors.sources.zoom.connector import (
     ZoomConnector,
+    ZoomIncompleteSyncError,
     ZoomMeetingDetail,
     ZoomMeetingReport,
     ZoomParticipant,
+    ZoomReadError,
     ZoomUser,
 )
 from app.models.entities import MeetingRecord, OriginTypes, Record, RecordGroupType, RecordType
@@ -384,7 +387,7 @@ class TestZoomConnectorFreshDatasource:
 
 class TestZoomConnectorSyncFlow:
     @pytest.mark.asyncio
-    async def test_run_sync_continues_when_one_user_fails(self) -> None:
+    async def test_run_sync_attempts_every_user_then_ends_incomplete_when_one_fails(self) -> None:
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector._load_filters = AsyncMock()  # type: ignore[method-assign]
@@ -397,7 +400,8 @@ class TestZoomConnectorSyncFlow:
             side_effect=[Exception("u1 failed"), None]
         )
 
-        await connector.run_sync()
+        with pytest.raises(ZoomIncompleteSyncError):
+            await connector.run_sync()
 
         assert connector._sync_meetings_for_user.await_count == 2
         assert connector.full_sync_coverage().complete is False
@@ -416,7 +420,8 @@ class TestZoomConnectorSyncFlow:
             side_effect=[Exception("u1 failed"), None]
         )
 
-        await connector.run_sync()
+        with pytest.raises(ZoomIncompleteSyncError):
+            await connector.run_sync()
         assert connector.full_sync_coverage().complete is False
 
         await connector.run_sync()
@@ -2073,3 +2078,134 @@ class TestBuildAppUsersTimestamps:
         assert result[0].created_at == result[0].source_created_at
         assert result[0].updated_at == result[0].source_updated_at
         assert result[0].updated_at != result[0].created_at
+
+
+def _reads(connector: ZoomConnector, **answers: object) -> MagicMock:
+    ds = MagicMock(**{name: AsyncMock(return_value=answer) for name, answer in answers.items()})
+    connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+    return ds
+
+
+def _answer(data: object = None, *, success: bool = True, status: int | None = 200) -> MagicMock:
+    return MagicMock(success=success, data=data, message=f"HTTP {status}", error=None, status_code=status)
+
+
+class TestListingsThatAreNotWhole:
+    """An answer that cannot be the whole list is never taken for one."""
+
+    def test_the_incomplete_run_reached_its_end(self) -> None:
+        assert issubclass(ZoomIncompleteSyncError, IncompleteSyncError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [{"users": []}, {"users": None}, {"page_size": 30}, {"users": "x"}])
+    async def test_a_user_list_that_lists_no_one_makes_the_run_incomplete(self, data: object) -> None:
+        connector = _make_connector()
+        _reads(connector, users=_answer(data))
+        assert await connector._list_users() == []
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_user_page_without_a_list_keeps_the_pages_before_it(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.users = AsyncMock(side_effect=[
+            _answer({"users": [{"id": "u1"}], "next_page_token": "t"}), _answer({"next_page_token": ""}),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        assert [u.id for u in await connector._list_users()] == ["u1"]
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [{"meetings": None}, {"next_page_token": ""}, {"meetings": "x"}])
+    async def test_a_report_without_a_meeting_list_is_not_an_empty_report(self, data: object) -> None:
+        connector = _make_connector()
+        _reads(connector, report_meetings=_answer(data))
+        with pytest.raises(RuntimeError, match="no meeting list"):
+            await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
+
+    @pytest.mark.asyncio
+    async def test_a_participants_page_without_a_list_adds_the_grants_read(self) -> None:
+        connector = _make_connector()
+        _reads(connector, report_meeting_participants=_answer({"participants": None}))
+        _, participants_read = await connector._build_meeting_permissions(None, "u", "host@example.com")
+        assert participants_read is False
+
+    @pytest.mark.asyncio
+    async def test_a_page_token_that_comes_back_ends_the_listing(self) -> None:
+        connector = _make_connector()
+        ds = _reads(connector, report_meetings=_answer({"meetings": [], "next_page_token": "t"}))
+        with pytest.raises(ZoomReadError, match="page token"):
+            await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
+        assert ds.report_meetings.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_user_page_token_that_comes_back_makes_the_run_incomplete(self) -> None:
+        connector = _make_connector()
+        ds = _reads(connector, users=_answer({"users": [{"id": "u1"}], "next_page_token": "t"}))
+        assert [u.id for u in await connector._list_users()] == ["u1"]
+        assert ds.users.await_count == 2
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_participants_page_token_that_comes_back_adds_the_grants_read(self) -> None:
+        connector = _make_connector()
+        _reads(connector, report_meeting_participants=_answer(
+            {"participants": [{"user_email": "p@x.io"}], "next_page_token": "t"}))
+        perms, participants_read = await connector._build_meeting_permissions(None, "u", "host@example.com")
+        assert participants_read is False
+        assert {p.email for p in perms} == {"host@example.com", "p@x.io"}
+
+
+class TestMeetingBuild:
+    def test_a_checkpoint_older_than_six_months_asks_for_six_months(self) -> None:
+        today = date(2026, 11, 20)
+        chunks = ZoomConnector._calculate_sync_chunks(None, today - timedelta(days=400), today)
+        assert chunks[0][0] == (today - timedelta(days=180)).isoformat()
+
+    @pytest.mark.asyncio
+    async def test_the_meeting_is_filed_under_the_user_whose_report_lists_it(self) -> None:
+        connector = _make_connector()
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=date(2026, 3, 30))  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        _reads(connector, report_meetings=_answer({"meetings": [{"uuid": "u", "id": 1}]}), meeting=_answer({}),
+               recording_get=_answer({}), report_meeting_participants=_answer({"participants": []}))
+        await connector._sync_meetings_for_user(ZoomUser(id="host-id", email="host@example.com"), date(2026, 3, 31))
+        [(record, _)] = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert (record.external_record_group_id, record.host_id) == ("host-id", "host-id")
+
+    @pytest.mark.asyncio
+    async def test_the_recording_is_read_for_the_instance(self) -> None:
+        connector = _make_connector()
+        ds = _reads(connector, meeting=_answer({}), recording_get=_answer({"share_url": "https://zoom.us/rec/1"}),
+                    report_meeting_participants=_answer({"participants": []}))
+        record, _ = await connector._process_one_meeting(
+            asyncio.Semaphore(1), ZoomMeetingReport(uuid="/u//1", id=7), "host@example.com", "rg")
+        ds.recording_get.assert_awaited_once_with("%252Fu%252F%252F1")
+        assert record.recording_url == "https://zoom.us/rec/1"
+
+    @pytest.mark.asyncio
+    async def test_run_sync_knows_each_listed_users_address_by_id(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._load_filters = AsyncMock()  # type: ignore[method-assign]
+        connector._list_users = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomUser(id="zid", email=" Alt@Example.com "), ZoomUser(id="", email="x@example.com")]
+        )
+        connector._build_app_users = MagicMock(return_value=[])  # type: ignore[method-assign]
+        connector._sync_meetings_for_user = AsyncMock()  # type: ignore[method-assign]
+        await connector.run_sync()
+        assert connector._user_emails == {"zid": "alt@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_an_alternative_host_listed_by_user_id_reads_the_meeting(self) -> None:
+        connector = _make_connector()
+        connector._user_emails = {"zid": "alt@example.com"}
+        _reads(connector, report_meeting_participants=_answer({"participants": []}))
+        detail = ZoomMeetingDetail.model_validate({"settings": {"alternative_hosts": "zid; unknown ;B@x.io"}})
+        perms, _ = await connector._build_meeting_permissions(detail, "u", "host@example.com")
+        assert [p.email for p in perms] == ["host@example.com", "alt@example.com", "b@x.io"]
+
+    def test_a_pipe_or_line_break_in_a_name_stays_in_its_cell(self) -> None:
+        table = ZoomConnector._build_participants_markdown(
+            [ZoomParticipant(name="A | B\nC", user_email="a@x.io", duration=60)])
+        assert "A \\| B C" in table and len(table.splitlines()) == 3

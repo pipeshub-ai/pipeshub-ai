@@ -291,7 +291,7 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
-    "connectors-5": ("google_drive_workspace", "s3"),
+    "connectors-5": ("google_drive_workspace", "s3", "zoom_sim"),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -363,7 +363,6 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
             "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
-            "zoom",
         )
     },
     "azure": ("azure_blob", "azure_files"),
@@ -392,6 +391,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "smb": ("smb",),
     "zammad": ("zammad", "zammad_sim"),
     "zendesk": ("zendesk",),
+    "zoom": ("zoom_sim",),
 }
 CONNECTOR_TESTS = "integration-tests/connectors"
 # A connector test folder's markers, where they differ from its name.
@@ -400,6 +400,7 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
+    "zoom": ("zoom_sim",),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

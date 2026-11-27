@@ -836,14 +836,19 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         return bool(result[0]) if result else False
 
     async def get_sync_point(
-        self, connector_id: str, sync_point_key: str
+        self, connector_id: str, sync_point_key: str, *product_args: Any, **product_kwargs: Any
     ) -> Optional[Dict[str, Any]]:
         """Load a connector sync checkpoint from ``syncPoints``.
 
         Matches on the suffix of ``syncPointKey`` because the stored key is prefixed with
         ``{orgId}/{connectorId}/{syncDataPointType}/`` (see backend ``SyncPoint``), and tests
         only know the unqualified key.
+
+        The product's own ``get_sync_point(key, collection, transaction, raise_on_error=)`` has the same name:
+        a call with more than these two arguments is that one (``upsert_sync_point`` makes it), and goes to it.
         """
+        if product_args or product_kwargs:
+            return await super().get_sync_point(connector_id, sync_point_key, *product_args, **product_kwargs)
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         # RIGHT(...) rather than ENDS_WITH(...): the latter is not available in the ArangoDB
@@ -1371,7 +1376,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         """Return raw edge documents between two specific vertices in a given edge collection."""
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"""
+        query = """
             FOR e IN @@edge_coll
                 FILTER e._from == @from_id AND e._to == @to_id
                 RETURN e
