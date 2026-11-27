@@ -89,6 +89,7 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    repo_key,
     substitute_user_email,
 )
 from app.models.permission import (
@@ -1882,6 +1883,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["orgId"],
         )
 
+        # COMPOSITE: a repo's candidate groups by repoKey, then their child groups (code_graph.ops._repo_groups),
+        # built in the background as the codeFiles path index above.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value, ["orgId", "repoKey"], in_background=True,
+        )
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORD_GROUPS.value, ["orgId", "connectorId", "parentExternalGroupId"], in_background=True,
+        )
+
         # SINGLE: connectorId (cleanup operations, queried independently)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_GROUPS.value,
@@ -1954,6 +1964,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.CODE_FILES.value,
             ["orgId", "filePath"],
+        )
+
+        # COMPOSITE: a code tool's path lookup within its connector, and its repo's record groups
+        # (code_graph.ops._code_files_at); the connector-only lookup uses its leftmost prefix. Built in the
+        # background: on a store that holds code files already, writes go on meanwhile. ArangoDB 3.12 docs,
+        # https://docs.arango.ai/arangodb/3.12/indexes-and-search/indexing/basics/ : a persistent index is used
+        # "if either all index attributes is provided in a query, or if a leftmost prefix of the index attributes
+        # is specified", and in the background it is built "not using an exclusive lock during the entire index creation".
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.CODE_FILES.value,
+            ["orgId", "filePath", "connectorId", "recordGroupId"],
+            in_background=True,
         )
 
         # COMPOSITE: free-text symbol lookup, which is repo-agnostic — the agent
@@ -11441,6 +11463,43 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, {"@blocks": CollectionNames.BLOCKS.value, "limit": limit}
         )
         return len(result or [])
+
+    async def backfill_code_path_scope(self, limit: int = 5000) -> int:
+        """Copy a code file's scope from its record, and set a record group's repoKey; see the interface."""
+        # shortcut: each batch scans codeFiles from the start for rows still lacking connectorId, so a store of N files costs
+        # about N*N/limit reads once; key the walk by _key if a store with millions of code files needs it.
+        files = await self.http_client.execute_aql("""
+        FOR c IN @@files
+            FILTER c.connectorId == null
+            LET r = DOCUMENT(@@records, c._key)
+            FILTER r != null AND r.orgId == c.orgId AND r.connectorId != null
+            LIMIT @limit
+            UPDATE c WITH { connectorId: r.connectorId, recordGroupId: r.recordGroupId } IN @@files
+            RETURN 1
+        """, {"@files": CollectionNames.CODE_FILES.value, "@records": CollectionNames.RECORDS.value, "limit": limit})
+        done = len(files or [])
+        if done >= limit:
+            return done
+        groups = CollectionNames.RECORD_GROUPS.value
+        page = await self.http_client.execute_aql("""
+        FOR g IN @@groups
+            FILTER g.repoKey == null AND g.groupName != null
+            LIMIT @limit
+            RETURN { key: g._key, name: g.groupName }
+        """, {"@groups": groups, "limit": limit - done})
+        if not page:
+            return done
+        # AQL LOWER is not str.casefold, so the key is computed here; the name is read again in the update, so a rename
+        # since the page keeps the key its writer gave it.
+        rows = [{**row, "repoKey": repo_key(row["name"])} for row in page]
+        written = await self.http_client.execute_aql("""
+        FOR row IN @rows
+            FOR g IN @@groups
+                FILTER g._key == row.key AND g.groupName == row.name AND g.repoKey == null
+                UPDATE g WITH { repoKey: row.repoKey } IN @@groups
+                RETURN 1
+        """, {"@groups": groups, "rows": rows})
+        return done + len(written or [])
 
     async def update_sync_point_if(
         self,
