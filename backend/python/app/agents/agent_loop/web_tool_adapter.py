@@ -159,8 +159,10 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
 
     @property
     def tags(self) -> list[Tag]:
-        # Outbound GET: a tool guard can treat the URL as data leaving the box.
-        return [Tag("category", "egress")] if self._tool_name == "fetch_url" else []
+        # The web tools' own tags (a read whose arguments leave, the flow it takes), and for a fetch the outbound GET's
+        # category, so a tool guard can treat the URL as data leaving the box.
+        egress = [Tag("category", "egress")] if self._tool_name == FETCH_URL else []
+        return [*super().tags, *egress]
 
     @property
     def short_description(self) -> str:
