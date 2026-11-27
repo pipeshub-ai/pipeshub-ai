@@ -25,7 +25,7 @@ export const MICROSOFT_CONSUMER_TENANT_ID =
   '9188040d-6c67-4c5b-b112-36a304b66dad';
 
 // Sign-in waits on these two calls, so they get a short bound rather than the
-// 10s used for background telemetry calls.
+// 10s used for background calls.
 const MICROSOFT_METADATA_TIMEOUT_MS = 5000;
 
 export const MICROSOFT_SIGN_IN_FAILED =

@@ -67,7 +67,7 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "services/artifact_registry/registry.py": (1, _IMAGES),
     "services/storage_documents.py": (1, _IMAGES),
     "sources/external/microsoft/sharepoint/sharepoint.py": (1, _SOURCE),
-    "telemetry/modules/activity_metrics.py": (1, "telemetry buckets"),
+    "plugins/telemetry/modules/activity_metrics.py": (1, "telemetry buckets"),
     "utils/aimodels.py": (6, _MEDIA),
     "utils/attachment_mime_types.py": (2, _AGENT_TOOLS),
     "utils/image_utils.py": (3, _IMAGES),

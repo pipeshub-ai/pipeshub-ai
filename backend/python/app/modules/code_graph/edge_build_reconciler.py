@@ -16,11 +16,11 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import for_org
 from app.core.org_jobs import for_each_org
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
-from app.telemetry.modules import code_graph_metrics
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:
@@ -87,7 +87,7 @@ async def reconcile_once(
     await for_each_org(graph_provider, "code_edge_reconcile", read_org, log)
     due = [b for b in owed if is_due(b.state, now_ms)]
     started = await _start_due(event_service, log, due, limit)
-    code_graph_metrics.record_reconcile_sweep(len(due), len(owed) - len(due), started)
+    platform_events.emit("code_graph.builds.reconciled", due=len(due), waiting=len(owed) - len(due), started=started)
     return started
 
 

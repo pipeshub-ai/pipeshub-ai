@@ -37,7 +37,7 @@ from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.policy import docling_working_set_gb
-from app.telemetry.setup import setup_telemetry
+from app.plugins import load_plugins
 from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
@@ -101,10 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error("❌ Failed to initialize Docling service: %s", str(e))
         raise
 
-    try:
-        await telemetry.bind(config_service, logger).start()
-    except Exception as e:
-        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+    await plugin_host.start(config_service=config_service, logger=logger)
 
     # One governor per process, sharing the HEAVY_PARSE ceiling/adaptation
     # concept with the Parsing Service but sized from *this* container's own
@@ -151,8 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Error during resource governor shutdown")
     governor.close()
-    if telemetry.pusher is not None:
-        await telemetry.pusher.stop()
+    await plugin_host.stop()
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:
@@ -183,8 +179,9 @@ docling_app.add_exception_handler(RequestValidationError, input_free_422)
 # Mount the Docling service routes
 app.mount("/", docling_app)
 
-# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
-telemetry = setup_telemetry(app, service_name="docling_service")
+# Plug-ins (app.plugins_manifest) add their request middleware here; started and stopped in lifespan.
+plugin_host = load_plugins("docling_service")
+plugin_host.install(app)
 
 @app.get("/health")
 async def health_check() -> JSONResponse:

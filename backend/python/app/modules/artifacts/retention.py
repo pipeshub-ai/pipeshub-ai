@@ -42,12 +42,12 @@ from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import current_org_id, for_org
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import messaging_env
-from app.telemetry.modules.record_storage_metrics import record_retention
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -225,7 +225,7 @@ class RevisionRetentionSweep:
         no_org = [p for p, k in zip(pointers, key_of, strict=True) if k is None]
         if no_org:
             report.skipped_no_org = len(no_org)
-            record_retention("virtual_record", "skipped_no_org", len(no_org))
+            platform_events.emit("record.retention.swept", kind="virtual_record", outcome="skipped_no_org", count=len(no_org))
             self.logger.warning(
                 "Revision retention: %d virtual record(s) have no organisation and are skipped: %s",
                 len(no_org), [p.get("virtualRecordId") for p in no_org],
@@ -240,7 +240,7 @@ class RevisionRetentionSweep:
                     org_vrids, visibility=RecordVisibility.DELETED
                 )}
         report.skipped_trashed = len(trashed)
-        record_retention("virtual_record", "skipped_trashed", len(trashed))
+        platform_events.emit("record.retention.swept", kind="virtual_record", outcome="skipped_trashed", count=len(trashed))
 
         def leader() -> bool:
             if still_leader is None or still_leader():
@@ -407,7 +407,7 @@ class RevisionRetentionSweep:
                 or stored_at >= cutoff_ms
             ):
                 report.revisions_kept += 1
-                record_retention("revision", "kept")
+                platform_events.emit("record.retention.swept", kind="revision", outcome="kept")
             else:
                 candidates.append(revision)
         return candidates, revisions, True
@@ -430,12 +430,12 @@ class RevisionRetentionSweep:
 
         def keep_all() -> None:
             report.revisions_kept += len(candidates)
-            record_retention("revision", "kept", len(candidates))
+            platform_events.emit("record.retention.swept", kind="revision", outcome="kept", count=len(candidates))
 
         def busy() -> None:
             keep_all()
             report.skipped_busy += 1
-            record_retention("virtual_record", "skipped_busy")
+            platform_events.emit("record.retention.swept", kind="virtual_record", outcome="skipped_busy")
 
         async with self._holder_leases(vrid, str(org_id)) as lease:
             if lease is None:
@@ -460,7 +460,7 @@ class RevisionRetentionSweep:
                     [(vrid, rev) for rev in unheld_revs], updated_before_ms=cutoff_ms
                 )
                 report.stage_states_deleted += deleted
-                record_retention("stage_state", "deleted", deleted)
+                platform_events.emit("record.retention.swept", kind="stage_state", outcome="deleted", count=deleted)
             if candidates:
                 await self._retire_revisions(
                     str(org_id), candidates, revisions, mapping, holders, lease, report, leader, deadline
@@ -518,7 +518,7 @@ class RevisionRetentionSweep:
             if count <= 0:
                 return
             report.revisions_kept += count
-            record_retention("revision", "kept", count)
+            platform_events.emit("record.retention.swept", kind="revision", outcome="kept", count=count)
 
         if mapping is None or not mapping.get("currentRev"):
             keep(len(candidates))
@@ -545,7 +545,7 @@ class RevisionRetentionSweep:
                         "kept until the storage service is upgraded"
                     )
                 keep()
-                record_retention("revision", "unfenced")
+                platform_events.emit("record.retention.swept", kind="revision", outcome="unfenced")
                 continue
             # Past the tick's deadline the rest is left for the next walk; a delete can
             # be slow (a whole tree) and the leases must outlast it, so they are renewed
@@ -564,19 +564,19 @@ class RevisionRetentionSweep:
                     timeout_seconds=self._delete_timeout(deadline),
                 )
             except Exception:
-                record_retention("revision", "failed")
+                platform_events.emit("record.retention.swept", kind="revision", outcome="failed")
                 raise
             if purged is None:
                 keep()
-                record_retention("revision", "changed")
+                platform_events.emit("record.retention.swept", kind="revision", outcome="changed")
                 continue
             if purged < 1:
                 # Something else removed it since it was listed: nothing was deleted here.
                 keep()
-                record_retention("revision", "gone")
+                platform_events.emit("record.retention.swept", kind="revision", outcome="gone")
                 continue
             report.revisions_deleted += 1
-            record_retention("revision", "deleted")
+            platform_events.emit("record.retention.swept", kind="revision", outcome="deleted")
             if not await lease.renew():
                 # The delete took longer than the lease term: stop; storage's stamp check
                 # protected that delete, and the next walk reads the holders again.

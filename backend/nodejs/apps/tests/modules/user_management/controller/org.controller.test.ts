@@ -12,7 +12,8 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
-import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin';
+import { eventBuffer } from '../../../../src/plugins/telemetry/event-buffer';
 import * as outboxDispatcher from '../../../../src/libs/services/outbox/outbox.dispatcher';
 import { MongoUnitOfWork } from '../../../../src/libs/repositories/mongo';
 import {
@@ -24,6 +25,8 @@ import { ORG_DELETE_QUERY_SERVICE_PAGES } from '../../../../src/modules/user_man
 import { installOrgLifecycle, resetOrgLifecycle } from '../../../../src/libs/org-lifecycle';
 
 describe('OrgController', () => {
+  useTelemetryPlugin();
+
   // Org deletion removes the org's Slack links (ADR-SLACKID-01); in memory here.
   let slackLinks: InMemorySlackUserLinks
   beforeEach(() => {

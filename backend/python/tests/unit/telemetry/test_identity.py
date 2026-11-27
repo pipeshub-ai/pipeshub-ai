@@ -1,6 +1,6 @@
-"""Unit tests for app.telemetry.identity."""
+"""Unit tests for app.plugins.telemetry.identity."""
 
-from app.telemetry.identity import domain_from_email
+from app.plugins.telemetry.identity import domain_from_email
 
 
 class TestDomainFromEmail:

@@ -18,11 +18,11 @@ from collections import deque
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 
 from .adapters import GraphPrincipalView
 from .errors import ViewerScopesUnavailable
-from .metrics import EXPLAIN_MISMATCH
 from .projector import MAX_DEPTH, ScopeProjector
 
 if TYPE_CHECKING:
@@ -340,7 +340,7 @@ class ExplainService:
         return any(u.id == viewer_key for u in found.values())
 
     def _mismatch(self, m: Mismatch) -> None:
-        EXPLAIN_MISMATCH.inc("admit" if m.graph_admitted else "deny")
+        platform_events.emit("permission.explanation.mismatched", graph_verdict="admit" if m.graph_admitted else "deny")
         self.mismatches.append(m)
         logger.warning("explain mismatch ref=%s org=%s viewer=%s record=%s graph=%s walk=%s",
                        m.reference, m.org_id, m.viewer_key, m.record_id, m.graph_admitted, m.walk_admitted)

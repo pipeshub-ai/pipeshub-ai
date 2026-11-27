@@ -13,6 +13,7 @@ from app.events.events import EventProcessor
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.messaging.config import IndexingEvent
 from app.utils.user_errors import PDF_PAGE_LIMIT_NOTE
 from tests.unit.modules.indexing.test_page_limit import (
@@ -397,7 +398,7 @@ async def test_an_inspection_without_a_page_count_does_not_count_the_file() -> N
 async def test_a_no_pool_process_does_not_count_the_outage_metric() -> None:
     world = World({"indexingStatus": "QUEUED"})
     world.count(Unavailable(no_pool=True))
-    with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
+    with patch.object(indexing_metrics.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_not_called()
 

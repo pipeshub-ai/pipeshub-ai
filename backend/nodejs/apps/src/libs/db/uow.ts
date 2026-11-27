@@ -30,7 +30,7 @@ import {
 import { kyselyOn } from './kysely';
 import { TAG_RE, lintSql } from './lint';
 import { LockKey, lockKeyArgs } from './lock-keys';
-import { metrics } from './metrics';
+import { emitPlatformEvent } from '../platform-events';
 
 export type Isolation = 'read_committed' | 'repeatable_read' | 'serializable';
 export type Pooler =
@@ -52,6 +52,10 @@ export interface PgClient {
 /** The slice of `pg.Pool` the runtime uses. */
 export interface PgPool {
   connect(): Promise<PgClient>;
+  /** node-postgres' own counts, when the pool has them: open, open and unused, callers waiting. */
+  totalCount?: number;
+  idleCount?: number;
+  waitingCount?: number;
 }
 
 export interface UowOptions {
@@ -338,7 +342,10 @@ export class PgRuntime {
   }
 
   private countMissing(e: unknown): never {
-    if (e instanceof MissingOrgContext) metrics.orgContextMissing.inc();
+    if (e instanceof MissingOrgContext)
+      emitPlatformEvent('db.unit_of_work.refused', {
+        reason: 'org_context_missing',
+      });
     throw e;
   }
 
@@ -388,10 +395,11 @@ export class PgRuntime {
       const run = new Attempt();
       try {
         const out = await this.attempt(pool, b, opts, run, fn);
-        metrics.uow.observe(
-          { service, outcome: 'commit' },
-          secondsSince(started),
-        );
+        emitPlatformEvent('db.unit_of_work.completed', {
+          service,
+          outcome: 'commit',
+          durationSeconds: secondsSince(started),
+        });
         return out;
       } catch (e) {
         const lostEarly =
@@ -402,17 +410,20 @@ export class PgRuntime {
         if (isRetryable(e) && retries < MAX_RETRIES) {
           const code = (e as SerializationFailure | DeadlockDetected)
             .sqlstate as string;
-          metrics.retries.inc({ code });
+          emitPlatformEvent('db.unit_of_work.retried', { cause: code });
           await this.sleep(backoff(retries++));
         } else if (lostEarly && connRetries < 1) {
           connRetries++;
-          metrics.retries.inc({ code: 'connection' });
+          emitPlatformEvent('db.unit_of_work.retried', {
+            cause: 'connection',
+          });
           await this.sleep(backoff(0));
         } else {
-          metrics.uow.observe(
-            { service, outcome: outcomeOf(e) },
-            secondsSince(started),
-          );
+          emitPlatformEvent('db.unit_of_work.completed', {
+            service,
+            outcome: outcomeOf(e),
+            durationSeconds: secondsSince(started),
+          });
           throw e;
         }
       }
@@ -433,7 +444,16 @@ export class PgRuntime {
     } catch (e) {
       throw mapPgError(e);
     }
-    metrics.poolWait.observe({}, secondsSince(waited));
+    emitPlatformEvent('db.connection.acquired', {
+      waitSeconds: secondsSince(waited),
+    });
+    if (pool.totalCount !== undefined) {
+      emitPlatformEvent('db.pool.sampled', {
+        total: pool.totalCount,
+        idle: pool.idleCount ?? 0,
+        waiting: pool.waitingCount ?? 0,
+      });
+    }
     let destroy = false;
     let tx: Tx | undefined;
     // The pool detaches its own handler while a client is checked out; a connection killed between two statements
@@ -458,7 +478,7 @@ export class PgRuntime {
         run.startedAt = row?.ts;
         if (leaked !== 'none') {
           destroy = true;
-          metrics.roleLeak.inc();
+          emitPlatformEvent('db.connection.session_role_leaked');
           throw new SessionRoleLeak(String(leaked));
         }
         if (opts.lineage) {
@@ -589,10 +609,12 @@ export class PgRuntime {
       return await tx.exec(st);
     } finally {
       const site = /pipeshub:(\S+)/.exec(st.text)?.[1] ?? 'untagged';
-      metrics.query.observe(
-        { service: tx.service, site, class: tx.opts.write ? 'write' : 'read' },
-        secondsSince(t0),
-      );
+      emitPlatformEvent('db.query.completed', {
+        service: tx.service,
+        site,
+        access: tx.opts.write ? 'write' : 'read',
+        durationSeconds: secondsSince(t0),
+      });
     }
   }
 

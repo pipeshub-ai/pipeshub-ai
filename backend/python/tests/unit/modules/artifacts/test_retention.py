@@ -11,12 +11,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
 from app.modules.artifacts import retention as retention_module
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from tests.support.platform_event_capture import replace_event_listener
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -329,7 +331,7 @@ async def test_a_revision_storage_saw_written_again_is_kept_as_changed(monkeypat
     _revs(store, "v", "r1", "r0")
     store.rewritten.add("v@r1")
     counted: list[tuple[str, str, int]] = []
-    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+    replace_event_listener(monkeypatch, "record.retention.swept", lambda k, o, n=1: counted.append((k, o, n)), "kind", "outcome", "count")
 
     _, report = await _sweep(graph, store).run_page(None)
 
@@ -629,7 +631,7 @@ async def test_a_revision_already_gone_is_kept_not_deleted(monkeypatch: pytest.M
     _revs(store, "v", "r1", "r0")
     store.gone.add("v@r1")
     counted: list[tuple[str, str, int]] = []
-    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+    replace_event_listener(monkeypatch, "record.retention.swept", lambda k, o, n=1: counted.append((k, o, n)), "kind", "outcome", "count")
 
     _, report = await _sweep(graph, store).run_page(None)
 
@@ -752,7 +754,7 @@ async def test_storage_that_does_not_report_the_delete_fence_is_never_sent_a_del
     for entry in store.revisions["v"]:
         del entry["deleteFence"]
     counted: list[tuple[str, str, int]] = []
-    monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+    replace_event_listener(monkeypatch, "record.retention.swept", lambda k, o, n=1: counted.append((k, o, n)), "kind", "outcome", "count")
 
     _, report = await _sweep(graph, store).run_page(None)
 
@@ -813,13 +815,12 @@ def test_metrics_count_by_kind_and_outcome(monkeypatch: pytest.MonkeyPatch) -> N
         def inc(self, *labels: str, value: float = 1.0) -> None:
             seen.append((*labels, value))  # type: ignore[arg-type]
 
-    from app.telemetry.modules import record_storage_metrics
+    from app.plugins.telemetry.modules import record_storage_metrics
 
     monkeypatch.setattr(record_storage_metrics, "RETENTION", Counter())
-    record_storage_metrics.record_retention("stage_state", "deleted", 3)
-    record_storage_metrics.record_retention("revision", "kept", 0)
+    platform_events.emit("record.retention.swept", kind="stage_state", outcome="deleted", count=3)
+    platform_events.emit("record.retention.swept", kind="revision", outcome="kept", count=0)
     assert seen == [("stage_state", "deleted", 3.0)]
-    assert retention_module.record_retention is record_storage_metrics.record_retention
 
 
 async def test_a_lease_that_lapsed_during_the_last_delete_is_reported(caplog: pytest.LogCaptureFixture) -> None:
@@ -857,7 +858,7 @@ async def test_a_delete_storage_answers_lost_is_counted_failed_not_kept(
 
         store.delete_revision = delete_via_real_client  # type: ignore[method-assign]
         counted: list[tuple[str, str, int]] = []
-        monkeypatch.setattr(retention_module, "record_retention", lambda k, o, n=1: counted.append((k, o, n)))
+        replace_event_listener(monkeypatch, "record.retention.swept", lambda k, o, n=1: counted.append((k, o, n)), "kind", "outcome", "count")
 
         _, report = await _sweep(graph, store).run_page(None)
     finally:

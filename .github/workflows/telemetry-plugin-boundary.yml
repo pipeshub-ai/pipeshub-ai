@@ -1,0 +1,61 @@
+name: telemetry-plugin-boundary
+
+# Telemetry is a plug-in (backend/nodejs/apps/src/plugins/telemetry, backend/python/app/plugins/telemetry): the
+# application announces platform events and never imports it, and a build without it deletes the plug-in and its
+# manifest line. A pull request that reaches past that boundary (a direct prom-client or prometheus_client import, an
+# import of the plug-in, a require() the compiler does not follow) breaks such a build. These jobs check it on every
+# pull request, without building an image:
+#   - Node: the boundary test, which also strips the plug-in from a copy of the tree and compiles it
+#   - Python: the boundary, the manifest and the stripped-build tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/nodejs/apps/**'
+      - 'backend/python/**'
+      - '.github/workflows/telemetry-plugin-boundary.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-plugin-boundary-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  node-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Nothing outside the plug-in names telemetry, and the tree without it compiles
+        run: npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --no-config --require reflect-metadata --require ts-node/register --extension ts --timeout 600000 tests/architecture/telemetry-is-a-plugin.test.ts
+
+  python-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install the locked dependencies
+        working-directory: backend/python
+        run: requirements/install.sh dev
+      - name: Nothing outside the plug-in imports telemetry, and a build without it starts
+        working-directory: backend/python
+        run: python -m pytest tests/unit/plugins -p no:cacheprovider -q

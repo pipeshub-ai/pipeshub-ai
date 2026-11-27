@@ -28,8 +28,9 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core import org_context
-from app.core.envelope import INBOX_ERRORS, replay_window_seconds
+from app.core.envelope import replay_window_seconds
 from app.services.pg_runtime import RuntimeDb
 from app.services.redis.connection_provider_factory import uses_pg_state
 
@@ -104,7 +105,7 @@ class PgInbox:
         try:
             removed = await self.sweep()
         except Exception as e:
-            INBOX_ERRORS.inc("sweep")
+            platform_events.emit("message.inbox.failed", operation="sweep")
             logger.warning("consumer inbox sweep failed: %s", type(e).__name__)
             return
         if removed:

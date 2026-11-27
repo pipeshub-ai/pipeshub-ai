@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import (
@@ -20,7 +21,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
-from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -199,7 +199,7 @@ async def retry_pending_duplicate_reconciles(
                     logger.warning("duplicate_reconcile: could not drop the pending reconcile of %s", record_id, exc_info=True)
             if cleared:
                 logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile was dropped", record_id)
-                record_recovery_org_pass("duplicate_reconcile", "no_org_row")
+                platform_events.emit("recovery.org_pass.finished", job="duplicate_reconcile", outcome="no_org_row")
             continue
         with for_org(str(org_id), job="duplicate_reconcile"):
             try:

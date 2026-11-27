@@ -25,6 +25,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from tests.support.platform_event_capture import event_calls
 
 RECORDS = CollectionNames.RECORDS.value
 NOW = 1_800_000_000_000
@@ -325,25 +326,23 @@ class TestRetrySweep:
 
     @pytest.mark.parametrize("applied", [False, RuntimeError("write failed")])
     async def test_a_row_with_no_org_is_counted_as_dropped_only_once_its_flag_is_cleared(self, applied: object) -> None:
-        from unittest.mock import patch
 
         graph = FakeGraph()
         _pending(graph)
         graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
         graph.update_node_fields_if_match = AsyncMock(side_effect=[applied] if isinstance(applied, Exception) else None, return_value=applied)  # type: ignore[method-assign]
         reconciler, _ = _reconciler(graph)
-        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+        with event_calls("recovery.org_pass.finished", "job", "outcome", "count") as counted:
             await _sweep(graph, reconciler)
         counted.assert_not_called()
 
     async def test_a_row_with_no_org_whose_flag_was_cleared_is_counted(self) -> None:
-        from unittest.mock import patch
 
         graph = FakeGraph()
         _pending(graph)
         graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
         reconciler, _ = _reconciler(graph)
-        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+        with event_calls("recovery.org_pass.finished", "job", "outcome", "count") as counted:
             await _sweep(graph, reconciler)
         counted.assert_called_once_with("duplicate_reconcile", "no_org_row")
 

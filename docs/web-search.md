@@ -203,7 +203,7 @@ instructions still apply.
 
 ## Metrics
 
-`app/telemetry/modules/web_metrics.py`:
+`app/plugins/telemetry/modules/web_metrics.py`:
 
 - `pipeshub_web_search_requests_total{provider, outcome}`, `pipeshub_web_search_duration_seconds{provider}`
 - `pipeshub_web_fetch_requests_total{outcome}`, `pipeshub_web_fetch_duration_seconds{outcome}`

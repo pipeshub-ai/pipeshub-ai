@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional, override
 from fastapi import Request
 from neo4j.exceptions import ClientError, TransientError
 
+from app import platform_events
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
@@ -318,7 +319,6 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
 )
-from app.telemetry.backend import METRICS_BACKEND
 from app.utils import error_class
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
@@ -471,14 +471,6 @@ def _cypher_kh_date(v: str, source: str, ingest: str) -> str:
     return (f"CASE WHEN {v}.connectorName = 'KB' THEN coalesce({v}.{ingest}, 0) "
             f"ELSE coalesce({v}.{source}, {v}.{ingest}, 0) END")
 
-
-# Whether the App opens everything to whoever is gated in; `app` must be in scope.
-# A Knowledge Hub request whose cross-connector grants passed the bound of one list (`Neo4jProvider._kh_v3_cross`).
-_KH_CROSS_FALLBACKS = METRICS_BACKEND.counter(
-    "pipeshub_kh_cross_grant_fallbacks_total",
-    "Knowledge Hub requests past the bound of one list of cross-connector grants: probe (tested on each node) or cut (no user to probe for)",
-    ["outcome"],
-)
 
 _CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB')"
 
@@ -17058,7 +17050,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
 
 
-
     def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
         """Update file destinations with resolved folder IDs"""
         for destination in folder_analysis["file_destinations"].values():
@@ -17087,8 +17078,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             message += f". {skipped_files} file{'s' if skipped_files != 1 else ''} skipped (name already exists)"
 
         return message + "."
-
-
 
 
     async def update_indexing_status_for_record_ids(
@@ -20285,7 +20274,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
 
-
     def _create_typed_record_from_neo4j_simple(self, record_data: dict) -> Record | None:
         """
         Create base Record instance from Neo4j data (without type_doc).
@@ -21603,7 +21591,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_cross_probe(self, others: list[str], holders: list[list[str | None]], user_key: str | None) -> dict[str, Any]:
         """``$kh_x`` of a viewer past the bound: the holders that count on any other connector, and per connector the ones that count
         there only."""
-        _KH_CROSS_FALLBACKS.inc("probe")
+        platform_events.emit("knowledge_hub.cross_grants.bounded", outcome="probe")
         self.logger.warning(
             "kh: user %s holds more than %d grants in the other gated connectors; this request tests them on each node", user_key,
             self._KH_CROSS_MAX)
@@ -21616,7 +21604,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_cross_capped(self, ids: list[str], user_key: str | None) -> list[str]:
         """Past the bound with no user to read the holders of: the lowest ids, the same on every read. shortcut: a node reached only
         through the rest is not listed; every caller of the listing passes the user, so none takes this today."""
-        _KH_CROSS_FALLBACKS.inc("cut")
+        platform_events.emit("knowledge_hub.cross_grants.bounded", outcome="cut")
         self.logger.warning(
             "kh: more than %d grants in the other gated connectors and no user to test them for; nodes reached only through the rest"
             " are not listed", self._KH_CROSS_MAX)

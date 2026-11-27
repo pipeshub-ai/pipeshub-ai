@@ -73,7 +73,7 @@ class ExplodingSink:
 
 @pytest.fixture
 def sink() -> Iterator[RecordingSink]:
-    from app.telemetry.modules import security_metrics
+    from app.plugins.telemetry.modules import security_metrics
 
     recording = RecordingSink()
     security_signals.install(recording)
@@ -136,7 +136,7 @@ async def test_a_host_or_a_token_is_never_a_label(sink: RecordingSink) -> None:
 
 
 async def test_a_sink_that_throws_never_changes_a_decision() -> None:
-    from app.telemetry.modules import security_metrics
+    from app.plugins.telemetry.modules import security_metrics
 
     security_signals.install(ExplodingSink())
     try:
@@ -210,7 +210,9 @@ async def test_a_gateways_metrics_route_counts_a_refused_scraper(sink: Recording
 def test_the_gateways_count_a_refused_token_and_nothing_else(
     sink: RecordingSink, reason: str | None, counted: list[tuple[str, str]]
 ) -> None:
-    from app.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
+    from app.plugins.telemetry.modules.harness_gateway_metrics import (
+        BackendGatewayMetrics,
+    )
 
     BackendGatewayMetrics().request(GatewayRequest("model", "chat_completions", "refused", 0.01, reason=reason))
     assert sink.tokens == counted
@@ -259,8 +261,8 @@ def test_every_refusal_reason_is_a_known_label_so_a_new_reason_is_counted_by_nam
 
 
 def test_the_metrics_modules_install_the_sink_and_the_forged_series_start_at_zero() -> None:
-    from app.telemetry.backend import METRICS_BACKEND
-    from app.telemetry.modules import egress_metrics, security_metrics  # noqa: F401 - what the egress proxy loads
+    from app.plugins.telemetry.backend import METRICS_BACKEND
+    from app.plugins.telemetry.modules import egress_metrics, security_metrics  # noqa: F401 - what the egress proxy loads
 
     security_metrics.install()
     security_signals.token_rejected("gateway_token", "token_signature")

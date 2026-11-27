@@ -13,11 +13,11 @@ import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core.org_context import current_org_id, peek
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.stamp import MAX_DEPTH
-from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _SERVED: ContextVar[list[str] | None] = ContextVar("kg_hierarchy_served", default=None)      # the connectors a read was answered for: what a difference demotes
 SAMPLE_WALK = "/* pipeshub:kg.hier_sample_limits */ SELECT set_config('statement_timeout', '10s', true)"
-HIERARCHY = METRICS_BACKEND.counter("pipeshub_kg_hierarchy_total", "Descendant and level reads, by who answered and why the walk did", ["what", "answer"])
 
 
 class Fallback(Exception):
@@ -152,8 +151,6 @@ APP_MEMBERS = f"""/* pipeshub:kg.hier_app_members */ SELECT c.sk FROM unnest($2:
             WHERE g.kind = 2 AND g.app_sk = $3 AND NOT g.deleted)
     OR EXISTS (SELECT 1 FROM (SELECT e.from_coll, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= c.id AND e.from_id <= c.id
                ORDER BY e.from_id) e WHERE e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $4)"""
-
-
 
 
 def _unheld_up(x: str) -> str:
@@ -398,7 +395,7 @@ async def answer(provider: Any, what: str, transaction: str | None, fn: Callable
     snapshot = bool(transaction) and bool(getattr(provider._txns.get(transaction), "snapshot", False))
     ctx = peek()
     if (transaction and not snapshot) or ctx is None or ctx.kind == "system" or not kg_read.enabled():
-        HIERARCHY.inc(what, "off")
+        platform_events.emit("knowledge_graph.hierarchy.answered", query=what, answer="off")
         return None
     apps: list[str] = []
 
@@ -415,13 +412,13 @@ async def answer(provider: Any, what: str, transaction: str | None, fn: Callable
         else:
             out = await provider._db.run(profiled, isolation="repeatable_read", custom_plan=True)
     except Fallback as e:
-        HIERARCHY.inc(what, e.reason)
+        platform_events.emit("knowledge_graph.hierarchy.answered", query=what, answer=e.reason)
         return None
     except Exception:
         logger.warning("kg %s failed; the walk answers", what, exc_info=True)
-        HIERARCHY.inc(what, "error")
+        platform_events.emit("knowledge_graph.hierarchy.answered", query=what, answer="error")
         return None
-    HIERARCHY.inc(what, "kg")
+    platform_events.emit("knowledge_graph.hierarchy.answered", query=what, answer="kg")
     if walk is not None:
         async def differs(tx: Tx) -> bool:
             await tx.fetchval(SAMPLE_WALK)

@@ -4,6 +4,7 @@ import {
   HEADER_REQUEST_ID,
   HEADER_MCP_RELAY,
 } from "../context/request-context";
+import { outboundCarrierHeaderNames } from '../context/outbound-carriers';
 import { checkUpstreamUrl, isUpstreamRefusal } from '../http/upstream-call';
 
 export interface ICommand<T> {
@@ -89,6 +90,8 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'client-name',
       // Opts a record read into the stored-version checks (a deleted or disabled connector is refused).
       'x-record-content-open',
+      // Headers a registered outbound context carrier added just above.
+      ...outboundCarrierHeaderNames(),
     ]);
     // Normalize to lowercase keys so case-variants (e.g. content-type from
     // Express + Content-Type from the caller) collapse to one entry. fetch

@@ -48,12 +48,9 @@ from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.permissions.metrics import (
-    SCOPE_PREFILTER_CAPPED,
-    SCOPE_PREFILTER_DROPPED,
-)
 from app.services.permissions.scope_fields import (
     PATH_IDS_FIELD,
     SCOPE_FENCE_FIELD,
@@ -1463,9 +1460,9 @@ class RedisVectorService(IVectorDBService):
             kept = self._exact_scope(req, found, count=False)
             if len(kept) >= req.limit or len(found) < asked or asked >= MAX_SCOPE_CANDIDATES:
                 if len(kept) != len(found):      # counted once, on the answer that is returned, not on every widening
-                    SCOPE_PREFILTER_DROPPED.inc("redis", value=len(found) - len(kept))
+                    platform_events.emit("permission.scope_prefilter.dropped", store="redis", count=len(found) - len(kept))
                 if len(kept) < req.limit and len(found) >= asked:      # the candidates ran into the cap, not out: an answer that may be short
-                    SCOPE_PREFILTER_CAPPED.inc("redis")
+                    platform_events.emit("permission.scope_prefilter.capped", store="redis")
                     logger.warning("scoped Redis search asked for %d candidates, %d passed the exact rule, %d wanted: the answer may be short",
                                    asked, len(kept), req.limit)
                 return kept[: req.limit]
@@ -1587,7 +1584,7 @@ class RedisVectorService(IVectorDBService):
         node = sx.admits(req.scope_filter)
         kept = [r for r in results if sx.evaluate(node, r.payload)]
         if count and len(kept) != len(results):
-            SCOPE_PREFILTER_DROPPED.inc("redis", value=len(results) - len(kept))
+            platform_events.emit("permission.scope_prefilter.dropped", store="redis", count=len(results) - len(kept))
         return kept if req.with_payload else [replace(r, payload={}) for r in kept]
 
     async def _scope_query(self, idx: str, flt: ScopeFilter) -> str:

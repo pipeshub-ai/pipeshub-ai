@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app import platform_events
 from app.config.constants.arangodb import EventTypes
 from app.core.envelope import max_age_seconds
 from app.exceptions.indexing_exceptions import ProcessingError
@@ -45,7 +46,6 @@ from app.services.paid_cache.repurge import (
     now_s,
     publish_event,
 )
-from app.telemetry.backend import METRICS_BACKEND
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:
@@ -89,31 +89,6 @@ PHASE_HOP = "hop"
 
 APPENDED, CLOSED, BUSY, FULL, CLAIMED = "APPENDED", "CLOSED", "BUSY", "FULL", "CLAIMED"
 SEAL_OK, SEAL_DONE, SEAL_HANDBACK, SEAL_LOST_ABSENT, SEAL_LOST_EPOCH = "OK", "DONE", "HANDBACK", "LOST_ABSENT", "LOST_EPOCH"
-
-MESSAGES = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_messages_total", "Re-purge messages published, by kind", ["kind"],
-)
-FALLBACK = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_fallback_total",
-    "Deleted records whose later hops went per record instead of into a window", ["reason"],
-)
-WINDOW_LOST = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_window_lost_total", "Windows whose ids were gone or replaced when their seal ran", ["reason"],
-)
-SEAL_REPAIRED = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_seal_repaired_total", "Overdue seals published again", ["kind"],
-)
-INVALID_IDS = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_invalid_ids_total", "Ids a window or page dropped because no result can be stored under them", ["where"],
-)
-FAILED_IDS = METRICS_BACKEND.counter(
-    "pipeshub_paid_repurge_failed_ids_total", "Ids whose purge still failed after the tail attempts", ["kind"],
-)
-WINDOW_IDS = METRICS_BACKEND.histogram(
-    "pipeshub_paid_repurge_window_ids", "Ids per sealed window", ["kind"],
-    (1, 5, 25, 100, 500, 2_000, 10_000, 50_000, 250_000),
-)
-PAGES = METRICS_BACKEND.counter("pipeshub_paid_repurge_pages_total", "Pages published by seals", ["kind"])
 
 
 #: A fallback is counted every time (``pipeshub_paid_repurge_fallback_total``); its WARNING is logged at most this often per
@@ -514,7 +489,7 @@ def seal_payload(org_id: str, window: int, epoch: str, *, due_s: float, handback
 
 async def _publish_batch(producer: Any, org_id: str, payload: dict[str, Any], key: str, loop: Any, kind: str) -> None:  # noqa: ANN401
     await publish_event(producer, payload, key, loop, event_type=EventTypes.PURGE_PAID_RESULTS_BATCH.value)
-    MESSAGES.inc(kind)
+    platform_events.emit("paid_result.repurge.message_published", kind=kind)
 
 
 def page_hop_payload(
@@ -547,22 +522,22 @@ async def coalesce_successor(
     if rid is None:
         return False                    # an org hop has no record: nothing to place, nothing to count
     if not isinstance(rid, str) or not valid_record_id(rid):
-        FALLBACK.inc("invalid_id")
+        platform_events.emit("paid_result.repurge.fell_back", reason="invalid_id")
         return False
     if store is None:
-        FALLBACK.inc("no_store")
+        platform_events.emit("paid_result.repurge.fell_back", reason="no_store")
         return False
     carried = payload.get("horizonS")
     if isinstance(carried, int | float) and not isinstance(carried, bool) and carried > repurge_horizon_s():
         # This record's chain was started under a longer horizon than the live one (a budget was lowered since): a page chain
         # would end at the live horizon from its seal, so the record keeps the chain that carries its own.
-        FALLBACK.inc("carried_horizon")
+        platform_events.emit("paid_result.repurge.fell_back", reason="carried_horizon")
         return False
     token, window, now_ms = claim_token(org_id, payload), window_of(now), int(now * 1000)
     try:
         opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
     except Exception as exc:
-        FALLBACK.inc("error")
+        platform_events.emit("paid_result.repurge.fell_back", reason="error")
         _warn_limited("unavailable", "Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
         return False
     if opened.state == CLAIMED and opened.epoch:
@@ -575,17 +550,17 @@ async def coalesce_successor(
         try:
             if not await store.mark_published(org_id, window, token, opened.epoch, int(due * 1000), int(now_s() * 1000)):
                 # The claim lapsed (or was taken) while the seal was being published: the window is not this deleter's to open.
-                FALLBACK.inc("claim_lost")
+                platform_events.emit("paid_result.repurge.fell_back", reason="claim_lost")
                 return False
             opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
         except Exception as exc:
-            FALLBACK.inc("error")
+            platform_events.emit("paid_result.repurge.fell_back", reason="error")
             _warn_limited("unavailable", "Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
             return False
         await _repair(producer, org_id, store, loop, now)
     if opened.state == APPENDED:
         return True
-    FALLBACK.inc(opened.state.lower())
+    platform_events.emit("paid_result.repurge.fell_back", reason=opened.state.lower())
     return False
 
 
@@ -604,7 +579,7 @@ async def _repair(producer: Any, org_id: str, store: WindowStore, loop: Any, now
             await _publish_batch(
                 producer, org_id, seal_payload(org_id, window, epoch, due_s=now), f"{org_id}:{window}", loop, "seal",
             )
-            SEAL_REPAIRED.inc("seal")
+            platform_events.emit("paid_result.repurge.seal_repaired", kind="seal")
     except Exception as exc:
         _warn_limited("repair", "Re-purge seal repair failed (%s); the next window's first record retries it", type(exc).__name__)
 
@@ -629,7 +604,7 @@ def _ids_of(payload: dict[str, Any]) -> list[str]:
         raise BatchPayloadError("purgePaidResultsBatch carries no usable recordIds")
     good = [i for i in dict.fromkeys(ids) if valid_record_id(i)]
     if len(good) != len(ids):
-        INVALID_IDS.inc("page")
+        platform_events.emit("paid_result.repurge.ids_rejected", stage="page")
     return good
 
 
@@ -656,11 +631,11 @@ async def handle_seal(
             again = seal_payload(org_id, window, epoch, due_s=now + HANDBACK_S, handbacks=handbacks + 1)
             await _publish_batch(producer, org_id, again, f"{org_id}:{window}", loop, "seal")
             return
-        WINDOW_LOST.inc("handback_exhausted")
+        platform_events.emit("paid_result.repurge.window_lost", reason="handback_exhausted")
         log.error("Re-purge window %s of an org stayed claimed past its life; %d ids keep only their first hop", window, read.seen)
         return
     if read.state in (SEAL_LOST_ABSENT, SEAL_LOST_EPOCH):
-        WINDOW_LOST.inc("absent" if read.state == SEAL_LOST_ABSENT else "epoch")
+        platform_events.emit("paid_result.repurge.window_lost", reason="absent" if read.state == SEAL_LOST_ABSENT else "epoch")
         log.error(
             "Re-purge window %s of an org was lost or replaced before its seal ran (%s); %d ids keep only their first hop",
             window, read.state, read.seen,
@@ -669,22 +644,22 @@ async def handle_seal(
     if read.expected > len(read.ids):
         # The window accepted more ids than its list holds (Redis evicted or lost part of it): counted, and the ids that
         # remain are still paged. The ones lost keep only their first hop.
-        WINDOW_LOST.inc("ids")
+        platform_events.emit("paid_result.repurge.window_lost", reason="ids")
         log.error(
             "Re-purge window %s of an org lost part of its id list: %d accepted, %d left; the rest keep only their first hop",
             window, read.expected, len(read.ids),
         )
     valid = [i for i in dict.fromkeys(read.ids) if valid_record_id(i)]
     if len(valid) != len(read.ids):
-        INVALID_IDS.inc("seal")
-    WINDOW_IDS.observe("window", value=float(len(valid)))
+        platform_events.emit("paid_result.repurge.ids_rejected", stage="seal")
+    platform_events.emit("paid_result.repurge.window_sealed", kind="window", id_count=float(len(valid)))
     size = page_size()
     pages = [valid[i:i + size] for i in range(0, len(valid), size)]
     for index, ids in enumerate(pages):
         spread = math.floor(index * SPREAD_S / len(pages))
         hop = page_hop_payload(org_id, window, index, ids, now=now, spread_s=spread)
         await _publish_batch(producer, org_id, hop, f"{org_id}:{window}:{index}", loop, "page_hop")
-    PAGES.inc("page", value=float(len(pages)))
+    platform_events.emit("paid_result.repurge.pages_published", kind="page", count=float(len(pages)))
     await store.mark_done(org_id, window, epoch)
 
 
@@ -714,7 +689,7 @@ async def handle_page_hop(
     if tail:
         if failed:
             if attempt >= MAX_TAIL_ATTEMPTS:
-                FAILED_IDS.inc("tail")
+                platform_events.emit("paid_result.repurge.ids_failed", kind="tail")
                 # Terminal, so it dead-letters at once with the failed ids in its body (replayable), not after a redelivery budget.
                 raise ProcessingError(
                     f"{len(failed)} paid-result purges still failing after {attempt} tail attempts",
@@ -733,7 +708,7 @@ async def handle_page_hop(
     await publish_event(
         producer, following, hop_key(org_id, following), loop, event_type=EventTypes.PURGE_PAID_RESULTS_BATCH.value,
     )
-    MESSAGES.inc("page_hop")
+    platform_events.emit("paid_result.repurge.message_published", kind="page_hop")
 
 
 async def _purge_all(

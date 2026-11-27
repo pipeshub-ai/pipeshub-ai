@@ -11,7 +11,7 @@
  */
 import { Logger } from '../services/logger.service';
 import { jsonDiff } from './json-compare';
-import { docstoreMetrics } from './metrics';
+import { emitPlatformEvent } from '../platform-events';
 
 export const shadowEnabled = (): boolean =>
   (process.env.DOC_STORE ?? '').trim().toLowerCase() === 'shadow';
@@ -301,7 +301,7 @@ async function shadowRead(
   cfg: ShadowConfig,
 ): Promise<void> {
   const count = (result: string): void => {
-    docstoreMetrics.shadowReads.inc({ repo, result });
+    emitPlatformEvent('docstore.shadow_read.compared', { repo, result });
   };
   const onPg = async (): Promise<unknown> => {
     const impl = pg();

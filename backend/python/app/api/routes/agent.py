@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app import platform_events
 from app.agents.agent_environment import AgentEnvironmentRefused, agent_environment
 from app.agents.agent_gates import (
     GATED_AGENT_NEEDS_HARNESS,
@@ -172,15 +173,13 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
-from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
     keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
+from app.utils.email_domain import domain_from_email
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.logging_fields import log_event
 from app.utils.stage_timer import StageTimer
@@ -400,7 +399,7 @@ def _route_failure(request: Request, e: BaseException, action: str, *, writes_bo
     ``_parse_request_body``). Every schema rejection is counted: one of a field we compute is our drift."""
     rejection = error_class.chain_link(e, SchemaValidationError)
     if rejection is not None:
-        record_schema_rejection(rejection.collection)
+        platform_events.emit("graph.write.rejected", collection=rejection.collection)
         refused = writes_body and rejection.collection in _CALLER_DOCUMENTS
     else:
         refused = error_class.classify_error(e) == "bad_request"
@@ -2799,7 +2798,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         except SchemaValidationError as e:
             # The body carried a value the template schema refuses: the caller's mistake, and retrying cannot help.
             # Only the field path goes back; the collection and schema detail stay out of the answer.
-            record_schema_rejection(e.collection)
+            platform_events.emit("graph.write.rejected", collection=e.collection)
             err = e.original_error
             path = ".".join(str(p) for p in err.path) if err is not None and getattr(err, "path", None) else ""
             rejected = HTTPException(status_code=400, detail=f"Invalid agent template: {path}" if path else "Invalid agent template")
@@ -5531,14 +5530,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 status_code=409, detail=f"runId '{chat_query.runId}' is already active",
             )
 
-        record_event("agent_run", {
-            "orgId": user_context.get("orgId"),
-            "userId": user_context.get("userId"),
-            "email": user_context.get("email"),
-            "domain": user_context.get("domain"),
-            "has_tools": bool(chat_query.tools),
-            "streaming": getattr(request.state, "chat_streaming", True),
-        })
+        platform_events.emit(
+            "agent.run.started",
+            org_id=user_context.get("orgId"),
+            user_id=user_context.get("userId"),
+            user_email=user_context.get("email"),
+            email_domain=user_context.get("domain"),
+            has_tools=bool(chat_query.tools),
+            streaming=getattr(request.state, "chat_streaming", True),
+        )
 
         # `chat_query.tools` is a FILTER over the agent's configured toolsets
         # (see the `None` "use every configured toolset" branch further

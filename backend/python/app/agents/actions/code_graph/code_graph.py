@@ -38,6 +38,7 @@ import re
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app import platform_events
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.arangodb import CollectionNames
@@ -47,7 +48,6 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.telemetry.modules import code_graph_metrics
 
 from .diff_impact import impact_of_diff_impl
 from .history import DEFAULT_HISTORY_LIMIT, history_impl
@@ -236,7 +236,7 @@ def _counted(method: Callable[..., Awaitable[tuple[bool, str]]]) -> Callable[...
             ok, output = await method(self, *args, **kwargs)
             return ok, output
         finally:
-            code_graph_metrics.record_tool_call(method.__name__, ok=ok)
+            platform_events.emit("code_graph.tool.called", tool=method.__name__, ok=ok)
     return counted
 
 

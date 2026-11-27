@@ -14,6 +14,7 @@ import asyncpg
 import pytest
 
 from app.core.db import DbConfig, KernelDB
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import bootstrap, counts, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -266,7 +267,7 @@ async def test_a_verify_that_does_not_finish_in_its_intervals_is_logged_and_rais
     monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)
     monkeypatch.setattr(net, "OVERDUE_INTERVALS", 0)
     raised: list[float] = []
-    monkeypatch.setattr(net, "OVERDUE", type("G", (), {"set": staticmethod(lambda *a, value: raised.append(value))})())
+    monkeypatch.setattr(kg_metrics.NET_OVERDUE, "set", type("G", (), {"set": staticmethod(lambda *a, value: raised.append(value))})().set)
     states: dict = {}
     with caplog.at_level("ERROR"):
         for _ in range(3):
@@ -279,7 +280,7 @@ async def test_a_complete_verify_sets_the_last_verified_gauge(pg_db, no_jitter, 
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
     sets: list[tuple] = []
-    monkeypatch.setattr(net, "LAST_VERIFIED", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append((labels, value)))})())
+    monkeypatch.setattr(kg_metrics.NET_LAST_VERIFIED, "set", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append((labels, value)))})().set)
     before = time.time()
     assert await net.verify_due(pg_db, org, {}) == 1
     assert [labels for labels, _ in sets] == [(org, "drv")] and before <= sets[0][1] <= time.time()
@@ -853,7 +854,7 @@ async def test_a_change_drained_during_the_principals_check_restarts_the_scan(pg
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
     sets: list = []
-    monkeypatch.setattr(net, "LAST_VERIFIED", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append(labels))})())
+    monkeypatch.setattr(kg_metrics.NET_LAST_VERIFIED, "set", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append(labels))})().set)
     real = net._principals
 
     async def drain_meanwhile(db, o) -> bool:

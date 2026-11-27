@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,6 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
 from app.services.vector_db.models import VectorPoint
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.embedding_config import skip_bootstrap
+from tests.support.platform_event_capture import event_calls
 
 ORG = "org-1"
 LOGGER = "entity-outcome-test"
@@ -120,9 +121,9 @@ class TestOutcome:
     async def test_outcomes_are_counted_in_metrics(self) -> None:
         db = _DB()
         db.fail_upserts = True
-        with patch("app.modules.transformers.entity_vectorstore.entity_index_metrics") as metrics:
+        with event_calls("entity_index.entities.written", "operation", "outcome", "count") as record_writes:
             await _store(db).upsert_entities_batch([_topic("a"), _topic("b", name="")])
-        calls = {(c.args[0], c.args[1]): c.args[2] for c in metrics.record_writes.call_args_list}
+        calls = {(c.args[0], c.args[1]): c.args[2] for c in record_writes.call_args_list}
         assert calls[("upsert", "failed")] == 1 and calls[("upsert", "skipped")] == 1
 
     async def test_empty_input_is_an_empty_outcome(self) -> None:

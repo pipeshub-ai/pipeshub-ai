@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 from uuid import UUID, uuid4, uuid5
 
+from app import platform_events
 from app.agents.agent_loop.skills.graph_store import erase_skill_author
 from app.api.middlewares.caller_role import fetch_own_identity
 from app.config.constants.arangodb import (
@@ -56,7 +57,6 @@ from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache.repurge import schedule_org_repurge
-from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -194,7 +194,7 @@ class EntityEventService(BaseEventService):
                     f"Entity event {event_type} rejected by schema validation (collection={e.collection})",
                     extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
                 )
-                record_schema_rejection(e.collection)
+                platform_events.emit("graph.write.rejected", collection=e.collection)
             return True
 
     async def _handle_sync_event(self,event_type: str, value: dict) -> bool:

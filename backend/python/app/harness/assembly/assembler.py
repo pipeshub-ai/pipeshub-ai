@@ -139,6 +139,7 @@ from app.harness.labels import (
     inherited_label,
 )
 from app.harness.mcp_hub.settings import hub_enabled as mcp_hub_enabled
+from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.presentation import PipesHubPresenter
 from app.harness.quarantine import bind_summarizer
 from app.harness.reconcile import build_reconcile_hooks
@@ -162,7 +163,6 @@ from app.services.featureflag.platform_settings import (
     is_scheduled_runs_on,
 )
 from app.services.rate_budget import priority_for_run_kind, rate_priority_for_class
-from app.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.run_model_scope import hold_run_model_scope
 from harness_core import bindings
 from harness_core.activity import BoundedCommandActivity
@@ -1478,7 +1478,7 @@ def _shape(
             ReadScope(run.org_id, run.actor_id or "", run.run_id),
             cacheable_reads(effects, catalog.provenance()),
             log=log,
-            metrics=READ_CACHE_METRICS,
+            metrics=read_cache_metrics(),
             executor="loop",
         ),
     )

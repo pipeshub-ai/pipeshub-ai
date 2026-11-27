@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.kg import trash as kg_trash
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -33,7 +34,7 @@ FOLDER = "application/vnd.folder"
 @pytest.fixture
 def tally(monkeypatch: pytest.MonkeyPatch) -> Tally:
     t = Tally()
-    monkeypatch.setattr(kg_hier, "HIERARCHY", t)
+    monkeypatch.setattr(kg_metrics.HIERARCHY, "inc", t.inc)
     return t
 
 

@@ -84,7 +84,7 @@ import {
   type OrgHarnessReader,
   runHistoryByReferenceEnabled,
 } from './config';
-import { storePreparedGauge } from './adapters/telemetry/store-preparation-metrics';
+import { storePreparedGauge } from './adapters/observability/store-preparation-metrics';
 import type { OrgCapabilityRepair } from './application/org-capability-repair';
 import {
   storeUnreachable,
@@ -186,7 +186,7 @@ import { AuditLinkWatch } from './application/audit-link-watch';
 import {
   prometheusAdmissionQuotaMetrics,
   prometheusAuditLinkMetrics,
-} from './adapters/telemetry/org-contention-metrics';
+} from './adapters/observability/org-contention-metrics';
 import { AuditAnchorSink } from './ports/audit';
 import type { AgentNameReader, AgentSummaryReader } from './ports/agent-names';
 import {

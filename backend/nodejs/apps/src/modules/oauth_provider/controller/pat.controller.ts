@@ -6,12 +6,11 @@ import { CreatePatRequest, UpdatePatKnowledgeLimitBody } from '../types/oauth.ty
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { currentOrgContext } from '../../../libs/context/orgContext';
 import { knowledgeLimitSize } from '../types/knowledge_limit';
+import { emitPlatformEvent } from '../../../libs/platform-events'
 import {
-  clientTags,
-  domainFromEmail,
-  recordEvent,
-  recordServiceActivity,
-} from '../../../libs/services/telemetry/telemetry-impl'
+  emailDomain,
+  requestClient,
+} from '../../../libs/utils/request-client.utils'
 
 @injectable()
 export class PatController {
@@ -48,18 +47,14 @@ export class PatController {
       // Activation signal: a token is the first step of every programmatic
       // path (MCP clients, SDKs). Scopes are counted, not listed.
       const email = req.user?.email as string | undefined
-      recordEvent('pat_created', {
+      emitPlatformEvent('personal_access_token.created', {
         orgId,
         userId,
-        domain: domainFromEmail(email),
-        scope_count: token.scopes.length,
+        emailDomain: emailDomain(email),
+        scopeCount: token.scopes.length,
         // The lifetime the token was actually minted with.
-        expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
-        ...clientTags(req.headers),
-      })
-      recordServiceActivity('pat_created', {
-        org: orgId,
-        domain: domainFromEmail(email),
+        expiryDays: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
+        ...requestClient(req.headers),
       })
 
       res.status(201).json({
@@ -136,13 +131,13 @@ export class PatController {
         knowledgeLimit,
       );
       // A record of who changed a token's reach. Items are counted, never named.
-      recordEvent('pat_access_changed', {
+      emitPlatformEvent('personal_access_token.knowledge_limit.changed', {
         orgId,
         userId,
-        domain: domainFromEmail(req.user?.email as string | undefined),
+        emailDomain: emailDomain(req.user?.email as string | undefined),
         limited: knowledgeLimit !== null,
-        item_count: knowledgeLimitSize(knowledgeLimit),
-        ...clientTags(req.headers),
+        itemCount: knowledgeLimitSize(knowledgeLimit),
+        ...requestClient(req.headers),
       });
       res.json({ token });
     } catch (error) {

@@ -67,11 +67,11 @@ from app.edition_services import (  # noqa: E402 - like the imports around it, a
     register_extra_toolsets,
 )
 from app.health.health import Health
+from app.plugins import load_plugins
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.route_template import route_template
@@ -223,10 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
-    try:
-        await telemetry.bind(app_container.config_service(), logger).start()
-    except Exception as e:
-        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+    await plugin_host.start(config_service=app_container.config_service(), logger=logger)
 
     # Get the already-resolved graph_provider from container (set during initialization)
     # This avoids coroutine reuse error
@@ -539,8 +536,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"Error stopping MCP runners: {type(e).__name__}")
 
-    if telemetry.pusher is not None:
-        await telemetry.pusher.stop()
+    await plugin_host.stop()
 
     stop_cleanup_task()
 
@@ -683,7 +679,9 @@ app.add_middleware(AuthenticateRequests)
 
 # Trace context and the request line — outside auth, so both see every request.
 install_request_logging(app)
-telemetry = setup_telemetry(app, service_name="query_service")
+# Plug-ins (app.plugins_manifest) add their request middleware here; started and stopped in lifespan.
+plugin_host = load_plugins("query_service")
+plugin_host.install(app)
 
 
 @app.get("/health")

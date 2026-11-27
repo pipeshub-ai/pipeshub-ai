@@ -5,7 +5,7 @@ import, or a dotted path whose first segment is one of the repo's top-level name
 the root or under `src/`, or an outermost package (the highest folder of an `__init__.py` chain, so
 `app` of `backend/python/app/`). Such an import is unresolved, never an outside library, so no external
 ref is written for it (`app.api.routes:toolsets._keep_stored_secrets`). A module deeper down
-(`telemetry/logging.py`) is not a top-level name, so `import logging` stays the standard library's.
+(`audit/logging.py`) is not a top-level name, so `import logging` stays the standard library's.
 """
 from __future__ import annotations
 

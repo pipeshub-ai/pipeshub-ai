@@ -9,6 +9,7 @@ import pytest
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.blocks import Block, BlocksContainer, BlockType
 from app.modules.indexing import named_entity_persist_retry as retry
+from tests.support.platform_event_capture import event_calls
 
 LOG = logging.getLogger("test")
 
@@ -232,6 +233,6 @@ async def test_a_retry_with_no_org_is_dropped_so_it_does_not_fill_the_page() -> 
 async def test_a_missing_org_retry_that_could_not_be_cleared_is_not_counted_as_dropped(clear) -> None:
     graph = _graph([{"recordId": "r1", "orgId": None, "attempts": 1, "dueAt": 100}])
     graph.clear_named_entity_persist_retry = clear
-    with patch.object(retry, "record_recovery_org_pass") as counted:
+    with event_calls("recovery.org_pass.finished", "job", "outcome", "count") as counted:
         await _drain(graph, MagicMock())
     counted.assert_not_called()

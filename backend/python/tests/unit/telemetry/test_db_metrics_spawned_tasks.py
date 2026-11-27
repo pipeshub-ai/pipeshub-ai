@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.telemetry.modules import db_metrics
+from app.utils import store_timing
 from tests.unit.telemetry.test_db_metrics import _count, hist  # noqa: F401  (fixture)
 
 
@@ -24,7 +24,7 @@ class Store:
 
 def test_spawned_long_lived_task_is_still_timed(hist) -> None:  # noqa: F811
     async def run() -> None:
-        s = db_metrics.instrument_store(Store(), "kv")
+        s = store_timing.announce_store_calls(Store(), "kv")
         await s.subscribe()
         await s.task
     asyncio.run(run())
@@ -44,8 +44,8 @@ def test_call_into_a_different_store_is_timed(hist) -> None:  # noqa: F811
             return key
 
     async def run() -> None:
-        kv = db_metrics.instrument_store(Kv(), "kv")
-        await db_metrics.instrument_store(Graph(kv), "graph").get_document("k")
+        kv = store_timing.announce_store_calls(Kv(), "kv")
+        await store_timing.announce_store_calls(Graph(kv), "graph").get_document("k")
     asyncio.run(run())
     assert _count(hist, "get_document") == 1
     assert _count(hist, "get_key") == 1

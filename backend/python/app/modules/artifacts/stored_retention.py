@@ -31,10 +31,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.modules.transformers.stored_write import retired_list
-from app.telemetry.modules.record_storage_metrics import record_retention
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -121,7 +121,7 @@ class StoredRecordRetention:
                         await self._retire_entries(vrid, org_id, report)
             except Exception as exc:
                 report.failed += 1
-                record_retention("stored_record", "failed")
+                platform_events.emit("record.retention.swept", kind="stored_record", outcome="failed")
                 self.logger.warning(
                     "Stored-record retention: %s not finished; next pass retries: %s: %s",
                     vrid, type(exc).__name__, exc,
@@ -153,7 +153,7 @@ class StoredRecordRetention:
                     await self._collect_strays(vrid, org_id, report)
             except Exception as exc:
                 report.failed += 1
-                record_retention("stored_record", "failed")
+                platform_events.emit("record.retention.swept", kind="stored_record", outcome="failed")
                 self.logger.warning(
                     "Stored-record stray pass: %s not finished; next cycle retries: %s: %s",
                     vrid, type(exc).__name__, exc,
@@ -169,7 +169,7 @@ class StoredRecordRetention:
         verdict = await self._membership()
         if not verdict.ok:
             report.paused = True
-            record_retention("stored_record", "paused_membership")
+            platform_events.emit("record.retention.swept", kind="stored_record", outcome="paused_membership")
             return True
         return False
 
@@ -179,7 +179,7 @@ class StoredRecordRetention:
         if vrid and org_id:
             return vrid, str(org_id)
         report.skipped_no_org += 1
-        record_retention("stored_record", "skipped_no_org")
+        platform_events.emit("record.retention.swept", kind="stored_record", outcome="skipped_no_org")
         self.logger.warning("Stored-record retention: mapping %r has no organisation and is skipped", vrid)
         return None
 
@@ -198,7 +198,7 @@ class StoredRecordRetention:
             return
         if self._is_fingerprint(mapping):
             report.fingerprints += 1
-            record_retention("stored_record", "skipped_fingerprint")
+            platform_events.emit("record.retention.swept", kind="stored_record", outcome="skipped_fingerprint")
             return
         now = self._now_ms()
         mapped = mapping.get("documentId")
@@ -222,7 +222,7 @@ class StoredRecordRetention:
                 outcome = await self.blob._retire_document(org_id, document)
                 if outcome == "unavailable":
                     report.held_no_fence += 1
-                    record_retention("stored_record", "held_no_fence")
+                    platform_events.emit("record.retention.swept", kind="stored_record", outcome="held_no_fence")
                 elif outcome == "gone":
                     changed = True
                     continue
@@ -241,7 +241,7 @@ class StoredRecordRetention:
                 continue
             await self.blob.purge_document(org_id, document)
             report.purged += 1
-            record_retention("stored_record", "purged")
+            platform_events.emit("record.retention.swept", kind="stored_record", outcome="purged")
             changed = True
         if changed:
             # No bump: a sweep never makes a writer retry. A refusal means a switch landed; the next pass redoes it.
@@ -263,7 +263,7 @@ class StoredRecordRetention:
         # entry. One that does not (an older release, mid-rollout) would list a copy a writer has just
         # made and not yet switched to: nothing is purged from its answer.
         if any("retiredAt" not in d for d in candidates):
-            record_retention("stored_record", "held_no_age_filter")
+            platform_events.emit("record.retention.swept", kind="stored_record", outcome="held_no_age_filter")
             return
         for document in candidates:
             if document.get("documentName") != f"record_{vrid}":
@@ -277,5 +277,5 @@ class StoredRecordRetention:
                 continue
             await self.blob.purge_document(org_id, document_id)
             report.strays_purged += 1
-            record_retention("stored_record", "stray_purged")
+            platform_events.emit("record.retention.swept", kind="stored_record", outcome="stray_purged")
             await asyncio.sleep(0)

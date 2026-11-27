@@ -91,6 +91,9 @@ import { testControlPlane } from '../../control-plane/support/in-memory'
 import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin'
+import { loadPlugins, resetPlugins } from '../../../../src/libs/plugins'
+import { onPlatformEvent } from '../../../../src/libs/platform-events'
 import { inRequestOrg } from '../../../helpers/request-org-context'
 
 /** The opt-out (ADR-OPS-06 as amended 2026-11-20): the switch is on by default, so off is said. */
@@ -1634,6 +1637,8 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('getMetricsCollection', () => {
+    useTelemetryPlugin()
+
     it('should return empty object when no config exists', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getMetricsCollection(kvs)
@@ -3474,7 +3479,68 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
+  describe('Data Collection setting without a collector', () => {
+    const stored = JSON.stringify({ enableMetricCollection: 'true', pushIntervalMs: '5000' })
+    const read = async (): Promise<{ body: any; kvs: any }> => {
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(stored) })
+      const res = createMockResponse()
+      await getMetricsCollection(kvs)(createMockRequest(), res, createMockNext())
+      expect(res.status.calledWith(200)).to.be.true
+      return { body: res.json.firstCall.args[0], kvs }
+    }
+    beforeEach(() => {
+      resetPlugins()
+      mockEncService.decrypt.throws(new Error('stored as plain JSON'))
+    })
+    afterEach(() => resetPlugins())
+
+    it('reports that nothing is collected when the build has no data-collection plug-in', async () => {
+      await loadPlugins([])
+      const { body, kvs } = await read()
+      expect(body).to.deep.equal({ enableMetricCollection: 'false', pushIntervalMs: '5000' })
+      expect(kvs.set.called, 'the stored setting is left as it was').to.be.false
+    })
+
+    it('reports that nothing is collected when collection is switched off for the deployment', async () => {
+      await loadPlugins([
+        { name: 'off', register: (ctx) => ctx.provideCapability('data-collection', { isActive: () => false }) },
+      ])
+      expect((await read()).body.enableMetricCollection).to.equal('false')
+    })
+
+    it('reports the stored setting when a plug-in can collect', async () => {
+      await loadPlugins([
+        { name: 'on', register: (ctx) => ctx.provideCapability('data-collection', { isActive: () => true }) },
+      ])
+      expect((await read()).body).to.deep.equal({ enableMetricCollection: 'true', pushIntervalMs: '5000' })
+    })
+
+    it('announces a change of the setting before storing it, and works with nobody listening', async () => {
+      await loadPlugins([])
+      const order: string[] = []
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(stored),
+        set: sinon.stub().callsFake(async () => { order.push('stored') }),
+      })
+      const stop = onPlatformEvent('org.data_collection_setting.changed', (e) => {
+        order.push(`announced ${String(e.orgId)} ${String(e.enabled)}`)
+      })
+      const req = createMockRequest({ body: { enableMetricCollection: 'false' }, user: { orgId: 'org-9', userId: 'u' } })
+      const res = createMockResponse()
+      await toggleMetricsCollection(kvs)(req, res, createMockNext())
+      stop()
+      expect(order).to.deep.equal(['announced org-9 false', 'stored'])
+      expect(res.status.calledWith(200)).to.be.true
+
+      const quiet = createMockResponse()
+      await toggleMetricsCollection(kvs)(req, quiet, createMockNext())
+      expect(quiet.status.calledWith(200)).to.be.true
+    })
+  })
+
   describe('getMetricsCollection (additional)', () => {
+    useTelemetryPlugin()
+
     it('should return stored config', async () => {
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true, pushIntervalMs: 5000 })),

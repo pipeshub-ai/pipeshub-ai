@@ -218,7 +218,7 @@ export { skillInstallationId } from './application/capability-plan';
 export {
   countShadowMismatch,
   prometheusShadowMismatches,
-} from './adapters/telemetry/shadow-metrics';
+} from './adapters/metrics/shadow-metrics';
 export type {
   LayerRead,
   LayerWrite,

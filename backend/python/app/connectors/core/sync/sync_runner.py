@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app import platform_events
 from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
@@ -43,7 +44,6 @@ from app.core.org_context import for_org, spawn_detached
 from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.rate_budget import RatePriority, budget_scope
-from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -864,7 +864,7 @@ async def run_sync_task(
                 hint="every write to this connector's app document fails: re-run the schema migration or fix the document",
             )
             name = getattr(getattr(connector, "connector_name", None), "value", None)
-            record_service_activity("connector_service", "sync_start_not_recorded", connector=name if isinstance(name, str) else "unknown", status="failed")
+            platform_events.emit("connector.sync.start_not_recorded", connector=name if isinstance(name, str) else "unknown")
             connector.last_sync_summary = {"stopReason": "start_not_recorded"}
             start_failed = True
             raise not_recorded

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.platform_event_capture import event_calls
+
 
 def _request(body: dict | None = None, *, json_error: bool = False) -> MagicMock:
     request = MagicMock()
@@ -37,7 +39,7 @@ async def _call(request, registry=None, frames=()):
     stream_factory = MagicMock(return_value=_gen(*frames))
     with (
         patch("app.api.routes.chatbot._generate_chat_stream_via_agent_loop", new=stream_factory),
-        patch("app.api.routes.chatbot.record_event") as record_event,
+        event_calls("chat.session.started") as record_event,
     ):
         response = await askAI(
             request,
@@ -102,9 +104,8 @@ class TestAskAINonStreaming:
             _request(), frames=('event: complete\ndata: {"answer": "a"}\n\n',),
         )
 
-        name, payload = record_event.call_args.args
-        assert name == "chat_session_started"
-        assert payload["streaming"] is False
+        record_event.assert_called_once()
+        assert record_event.call_args.kwargs["streaming"] is False
 
     async def test_invalid_json_is_a_400(self):
         with pytest.raises(HTTPException) as exc:

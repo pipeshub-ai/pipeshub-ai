@@ -1,6 +1,5 @@
 """Projection of a record's property values: what is written, for which records, and what is not."""
 
-from unittest.mock import patch
 
 import pytest
 
@@ -29,6 +28,7 @@ from app.modules.record_metadata.projection import (
     union_of,
 )
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
+from tests.support.platform_event_capture import event_calls
 
 from .projection_world import (
     FakeConfig,
@@ -162,7 +162,7 @@ async def test_only_union_values_are_projected_and_a_misfit_is_dropped_with_a_me
     graph.records[doc["_key"]] = doc
     meta = _meta(team="payments", count=2**53, blurb="free text")
 
-    with patch.object(proj, "record_property_value_dropped") as dropped:
+    with event_calls("record.property_value.dropped") as dropped:
         result = await project(graph, reg, cache, doc["_key"], provided=meta)
 
     assert result.status == WRITTEN

@@ -1,0 +1,188 @@
+import { expect } from 'chai';
+import {
+  NoopBackend,
+  PrometheusBackend,
+} from '../../../src/plugins/telemetry/metrics-backend';
+
+describe('telemetry metrics-backend (PrometheusBackend)', () => {
+  let backend: PrometheusBackend;
+
+  beforeEach(() => {
+    backend = new PrometheusBackend();
+  });
+
+  describe('createCounter', () => {
+    it('should increment with labels and default value 1', async () => {
+      const counter = backend.createCounter({
+        name: 'test_counter_total',
+        help: 'test',
+        labelNames: ['kind'],
+      });
+
+      counter.inc({ kind: 'a' });
+      counter.inc({ kind: 'a' }, 2);
+
+      const text = await backend.serialize();
+      expect(text).to.include('test_counter_total{kind="a"} 3');
+    });
+
+    it('should increment without labels', async () => {
+      const counter = backend.createCounter({
+        name: 'test_plain_total',
+        help: 'test',
+        labelNames: [],
+      });
+
+      counter.inc();
+      counter.inc(undefined, 4);
+
+      const text = await backend.serialize();
+      expect(text).to.include('test_plain_total 5');
+    });
+
+    // SEC-D-13: an alert on increase misses a counter's first event unless the series already exists at 0.
+    it('keeps its zero series whenever the registry is read, also after a reset', async () => {
+      const counter = backend.createCounter({
+        name: 'test_zero_total',
+        help: 'test',
+        labelNames: ['kind'],
+        zeroSeries: [{ kind: 'forged' }],
+      });
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 0');
+
+      counter.inc({ kind: 'forged' }, 2);
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 2');
+
+      backend.reset();
+      expect(await backend.serialize()).to.include('test_zero_total{kind="forged"} 0');
+    });
+  });
+
+  describe('createGauge', () => {
+    it('should set values per label set', async () => {
+      const gauge = backend.createGauge({
+        name: 'test_gauge',
+        help: 'test',
+        labelNames: ['org'],
+      });
+
+      gauge.set({ org: 'o1' }, 7);
+      gauge.set({ org: 'o2' }, 0);
+
+      const text = await backend.serialize();
+      expect(text).to.include('test_gauge{org="o1"} 7');
+      expect(text).to.include('test_gauge{org="o2"} 0');
+    });
+
+    it('should drop all series on reset (stale series must not survive a refresh)', async () => {
+      const gauge = backend.createGauge({
+        name: 'test_reset_gauge',
+        help: 'test',
+        labelNames: ['org'],
+      });
+
+      gauge.set({ org: 'stale' }, 1);
+      gauge.reset();
+      gauge.set({ org: 'fresh' }, 2);
+
+      const text = await backend.serialize();
+      expect(text).to.not.include('org="stale"');
+      expect(text).to.include('test_reset_gauge{org="fresh"} 2');
+    });
+  });
+
+  describe('createHistogram', () => {
+    it('should observe values into the configured buckets', async () => {
+      const histogram = backend.createHistogram({
+        name: 'test_duration_seconds',
+        help: 'test',
+        labelNames: ['route'],
+        buckets: [0.1, 1, 10],
+      });
+
+      histogram.observe({ route: '/x' }, 0.05);
+      histogram.observe({ route: '/x' }, 5);
+
+      const text = await backend.serialize();
+      expect(text).to.include(
+        'test_duration_seconds_bucket{le="0.1",route="/x"} 1',
+      );
+      expect(text).to.include(
+        'test_duration_seconds_bucket{le="10",route="/x"} 2',
+      );
+      expect(text).to.include('test_duration_seconds_count{route="/x"} 2');
+      expect(text).to.include('test_duration_seconds_sum{route="/x"} 5.05');
+    });
+  });
+
+  describe('reset', () => {
+    it('should drop all series so the next push starts from an empty registry', async () => {
+      const counter = backend.createCounter({
+        name: 'test_reset_total',
+        help: 'test',
+        labelNames: ['k'],
+      });
+      const histogram = backend.createHistogram({
+        name: 'test_reset_seconds',
+        help: 'test',
+        labelNames: ['k'],
+        buckets: [1],
+      });
+      counter.inc({ k: 'a' });
+      histogram.observe({ k: 'a' }, 0.5);
+
+      backend.reset();
+
+      const text = await backend.serialize();
+      expect(text).to.not.include('test_reset_total{');
+      expect(text).to.not.include('test_reset_seconds_count{');
+
+      counter.inc({ k: 'a' });
+      expect(await backend.serialize()).to.include('test_reset_total{k="a"} 1');
+    });
+  });
+
+  describe('serialize', () => {
+    it('should use an isolated registry per backend instance', async () => {
+      const other = new PrometheusBackend();
+      const counter = backend.createCounter({
+        name: 'test_isolated_total',
+        help: 'test',
+        labelNames: [],
+      });
+      counter.inc();
+
+      expect(await backend.serialize()).to.include('test_isolated_total 1');
+      expect(await other.serialize()).to.not.include('test_isolated_total');
+    });
+  });
+
+  describe('snapshot', () => {
+    it('should list counter and gauge series with their labels and leave histograms out', async () => {
+      const backend = new PrometheusBackend();
+      backend
+        .createCounter({ name: 'snap_total', help: 'test', labelNames: ['a'] })
+        .inc({ a: 'x' }, 3);
+      backend
+        .createGauge({ name: 'snap_gauge', help: 'test', labelNames: ['b'] })
+        .set({ b: 7 }, 2);
+      backend
+        .createHistogram({
+          name: 'snap_seconds',
+          help: 'test',
+          labelNames: [],
+          buckets: [1],
+        })
+        .observe({}, 0.5);
+
+      expect(await backend.snapshot()).to.deep.equal([
+        { name: 'snap_total', type: 'counter', labels: { a: 'x' }, value: 3 },
+        { name: 'snap_gauge', type: 'gauge', labels: { b: '7' }, value: 2 },
+      ]);
+    });
+
+    it('should be empty for the no-op backend', async () => {
+      expect(await new NoopBackend().snapshot()).to.deep.equal([]);
+    });
+  });
+});

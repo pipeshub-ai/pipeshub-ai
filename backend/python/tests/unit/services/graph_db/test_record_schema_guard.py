@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+from app.plugins.telemetry.modules import graph_schema_guard_metrics
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
@@ -174,7 +175,7 @@ class TestQuietPoint:
         server.running = [{"id": "1", "state": "running"}]
         monkeypatch.setattr(guard_module, "REWIDEN_TIMEOUT_S", 0.3)
         monkeypatch.setattr(guard_module, "QUIET_POLL_S", 0.05)
-        before = _counter(guard_module.REWIDEN_CONTENDED_TOTAL)
+        before = _counter(graph_schema_guard_metrics.REWIDEN_CONTENDED_TOTAL)
         released = {"n": 0}
 
         class Counting(FreeLock):
@@ -189,7 +190,7 @@ class TestQuietPoint:
             assert await guard.ensure_wide("test") is False
 
         assert server.puts == [], "nothing was sent"
-        assert _counter(guard_module.REWIDEN_CONTENDED_TOTAL) == before + guard_module.FORCE_AFTER_SKIPS
+        assert _counter(graph_schema_guard_metrics.REWIDEN_CONTENDED_TOTAL) == before + guard_module.FORCE_AFTER_SKIPS
         assert released["n"] == guard_module.FORCE_AFTER_SKIPS, "nothing is in flight, so the lock is free again"
 
     async def test_after_a_few_skips_it_is_sent_anyway_so_an_always_open_transaction_cannot_starve_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -222,18 +223,18 @@ class TestQuietPoint:
 
     async def test_with_no_open_transaction_it_is_issued_at_once_and_not_contended(self) -> None:
         server = FakeServer(live=0)
-        before = _counter(guard_module.REWIDEN_CONTENDED_TOTAL)
+        before = _counter(graph_schema_guard_metrics.REWIDEN_CONTENDED_TOTAL)
 
         await _guard(server).ensure_wide("test")
 
-        assert _counter(guard_module.REWIDEN_CONTENDED_TOTAL) == before
+        assert _counter(graph_schema_guard_metrics.REWIDEN_CONTENDED_TOTAL) == before
 
     async def test_a_widening_is_counted(self) -> None:
-        before = _counter(guard_module.REWIDEN_TOTAL)
+        before = _counter(graph_schema_guard_metrics.REWIDEN_TOTAL)
 
         await _guard(FakeServer(live=0)).ensure_wide("1620")
 
-        assert _counter(guard_module.REWIDEN_TOTAL) == before + 1
+        assert _counter(graph_schema_guard_metrics.REWIDEN_TOTAL) == before + 1
 
 
 def _counter(handle: Any) -> float:  # noqa: ANN401

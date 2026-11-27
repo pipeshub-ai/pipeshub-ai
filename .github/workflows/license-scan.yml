@@ -1,0 +1,105 @@
+name: License scan
+
+# Lists the licence of every package the Node backend, the Python backend and
+# the frontend link, and fails on AGPL, GPL, SSPL or BUSL among them
+# (scripts/check_licenses.py). A service that runs as its own container is not
+# a linked dependency and is out of scope. A reviewed exception is an entry in
+# .github/license-exceptions.json with a reason and an expiry date.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/python/pyproject.toml'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'scripts/check_licenses.py'
+      - '.github/license-exceptions.json'
+      - '.github/workflows/license-scan.yml'
+  schedule:
+    # Weekly: an exception expires, or a transitive dependency changes licence, without any pull request.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # Pinned: a new release of a scanner must not change what a pull request is judged by.
+  LICENSE_CHECKER: license-checker-rseidelsohn@4.4.2
+  PIP_LICENSES: pip-licenses==5.0.0
+
+jobs:
+  license-scan:
+    name: Dependency licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      # Runtime dependencies only: what ships. Install scripts are not run; the scan reads package metadata.
+      - name: List Node backend licences
+        working-directory: backend/nodejs/apps
+        run: |
+          npm ci --omit=dev --ignore-scripts
+          npx --yes "$LICENSE_CHECKER" --production --excludePrivatePackages --json --out "$RUNNER_TEMP/licenses-backend-node.json"
+
+      - name: List frontend licences
+        working-directory: frontend
+        run: |
+          npm ci --omit=dev --ignore-scripts
+          npx --yes "$LICENSE_CHECKER" --production --excludePrivatePackages --json --out "$RUNNER_TEMP/licenses-frontend.json"
+
+      # In an environment of its own, so that only what the backend installs is listed. The scanner goes in after
+      # it and leaves itself and its own dependencies out of the listing.
+      - name: List Python backend licences
+        working-directory: backend/python
+        run: |
+          uv venv "$RUNNER_TEMP/license-venv"
+          uv pip install --python "$RUNNER_TEMP/license-venv/bin/python" -e .
+          uv pip install --python "$RUNNER_TEMP/license-venv/bin/python" "$PIP_LICENSES"
+          "$RUNNER_TEMP/license-venv/bin/pip-licenses" --from=mixed --format=json \
+            --ignore-packages ai-service \
+            --output-file "$RUNNER_TEMP/licenses-backend-python.json"
+
+      - name: Check against the deny-list
+        # Named, so that it runs with pipefail and the check's status survives the tee.
+        shell: bash
+        run: |
+          python3 scripts/check_licenses.py \
+            --npm "backend-node=$RUNNER_TEMP/licenses-backend-node.json" \
+            --npm "frontend=$RUNNER_TEMP/licenses-frontend.json" \
+            --pip "backend-python=$RUNNER_TEMP/licenses-backend-python.json" \
+            --exceptions .github/license-exceptions.json | tee "$RUNNER_TEMP/license-report.txt"
+
+      - name: Upload the listings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependency-licenses
+          path: |
+            ${{ runner.temp }}/licenses-*.json
+            ${{ runner.temp }}/license-report.txt
+          if-no-files-found: warn

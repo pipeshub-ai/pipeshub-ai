@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 
+from tests.support.platform_event_capture import replace_event_listener
 from app import indexing_main as m
 from app.modules.artifacts import retention as retention_module
 from app.modules.artifacts.retention import RevisionRetentionSweep
@@ -96,8 +97,7 @@ async def test_measure_slow_delete_tick_at_shipped_settings() -> None:
 async def test_metric_outcomes_over_http(monkeypatch) -> None:
     """deleted / gone / changed / failed, each counted once, over the real store and HTTP."""
     counts: Counter = Counter()
-    monkeypatch.setattr(retention_module, "record_retention",
-                        lambda kind, outcome, n=1: counts.__setitem__((kind, outcome), counts[(kind, outcome)] + n))
+    replace_event_listener(monkeypatch, "record.retention.swept", lambda kind, outcome, n=1: counts.__setitem__((kind, outcome), counts[(kind, outcome)] + n), "kind", "outcome", "count")
     stamps: dict[str, str | None] = {}
 
     async def listing(request: web.Request) -> web.Response:

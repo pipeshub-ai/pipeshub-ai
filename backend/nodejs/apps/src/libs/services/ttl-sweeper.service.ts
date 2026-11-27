@@ -1,7 +1,7 @@
 import { Logger } from './logger.service';
 import { spawnDetached, system } from '../context/orgContext';
 import { Tx, withJobsUow } from '../db';
-import { docstoreMetrics } from '../repositories/metrics';
+import { emitPlatformEvent } from '../platform-events';
 import { AGENT_CALL_EVENT_RETENTION_DAYS } from '../repositories/agent-call-event/types';
 import { retentionCutoff } from '../../modules/notification/utils/notification-api.utils';
 import { trimActivitiesPage } from '../repositories/activity/pg';
@@ -199,9 +199,12 @@ export class TtlSweeper {
     try {
       removed[name] = await run();
       if (removed[name])
-        docstoreMetrics.ttlSwept.inc({ target: name }, removed[name]);
+        emitPlatformEvent('docstore.ttl.swept', {
+          target: name,
+          removed: removed[name],
+        });
     } catch (error) {
-      docstoreMetrics.ttlSweepFailed.inc({ target: name });
+      emitPlatformEvent('docstore.ttl.sweep_failed', { target: name });
       this.logger.error('TTL sweep failed', {
         target: name,
         error: error instanceof Error ? error.message : String(error),

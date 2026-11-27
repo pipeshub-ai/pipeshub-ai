@@ -1,11 +1,13 @@
 import asyncio
 import json
+import time
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from aiokafka import AIOKafkaProducer  # type: ignore
 
 from app.core.envelope import sign_message
+from app.services.messaging import broker_events
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
@@ -123,6 +125,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         message: dict[str, Any],
         key: str | None,
     ) -> bool:
+        started = time.perf_counter()
         try:
             if self.producer is None:
                 await self.initialize()
@@ -142,10 +145,12 @@ class KafkaMessagingProducer(IMessagingProducer):
                 record_metadata.partition,
                 record_metadata.offset
             )
+            broker_events.published("kafka", topic, message, ok=True, started=started)
 
             return True
 
         except Exception as e:
+            broker_events.published("kafka", topic, message, ok=False, started=started)
             self.logger.error(f"❌ Failed to send message to Kafka: {str(e)}")
             raise
 
@@ -172,6 +177,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         topic: str,
         messages: list[tuple[str | None, dict[str, Any]]],
     ) -> list[bool]:
+        started = time.perf_counter()
         if self.producer is None:
             await self.initialize()
 
@@ -212,6 +218,9 @@ class KafkaMessagingProducer(IMessagingProducer):
                 first_error = first_error or result
             else:
                 acked.append(True)
+
+        for (_key, message), ok in zip(messages, acked, strict=True):
+            broker_events.published("kafka", topic, message, ok=ok, started=started)
 
         failed = len(acked) - sum(acked)
         if failed:

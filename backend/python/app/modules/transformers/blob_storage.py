@@ -18,6 +18,7 @@ import msgspec
 import zstandard as zstd
 from yarl import URL
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -60,11 +61,7 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
-from app.telemetry.modules.record_storage_metrics import (
-    record_reader_relookup,
-    record_retire_mark,
-    record_store_switch,
-)
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
@@ -736,6 +733,7 @@ def get_shared_session() -> aiohttp.ClientSession:
             _shared_sessions.pop(stale_loop, None)
 
     session = aiohttp.ClientSession(
+        **aiohttp_tracing("storage"),
         connector=aiohttp.TCPConnector(
             limit=download_connection_limit(),
             # Well inside Node's keep-alive window; see
@@ -1681,17 +1679,17 @@ class BlobStorage(Transformer):
             try:
                 fresh = await self.get_document_id_by_virtual_record_id(virtual_record_id)
             except Exception as e:
-                record_reader_relookup("lookup_failed", "path_not_found")
+                platform_events.emit("record.reader.relooked_up", outcome="lookup_failed", trigger="path_not_found")
                 raise StorageLookupUnavailableError(
                     f"Could not look up the stored document of vrid {virtual_record_id}: {e}"
                 ) from e
             fresh_id = (fresh or {}).get("record_doc_id")
             if not fresh_id:
-                record_reader_relookup("no_mapping", "path_not_found")
+                platform_events.emit("record.reader.relooked_up", outcome="no_mapping", trigger="path_not_found")
             elif fresh_id == document_id:
-                record_reader_relookup("unchanged", "path_not_found")
+                platform_events.emit("record.reader.relooked_up", outcome="unchanged", trigger="path_not_found")
             else:
-                record_reader_relookup("served", "path_not_found")
+                platform_events.emit("record.reader.relooked_up", outcome="served", trigger="path_not_found")
                 raw_path = await self._get_current_document_path(org_id, fresh_id, strict=True)
         return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
@@ -1874,7 +1872,7 @@ class BlobStorage(Transformer):
         ``failed`` or ``unavailable`` (no retire route: there is no write fence).
         """
         outcome = await self._retire_document_outcome(org_id, document_id)
-        record_retire_mark(outcome)
+        platform_events.emit("record.retire_mark.set", outcome=outcome)
         return outcome
 
     async def _retire_document_outcome(self, org_id: str, document_id: str) -> str:
@@ -1942,7 +1940,7 @@ class BlobStorage(Transformer):
         """What a switch of the mapping to *document_id* writes, as a compare-and-set's updates."""
         retired, overflow = with_retired(node, replaced, document_id, now)
         if overflow:
-            record_store_switch("switch", "retired_overflow", overflow)
+            platform_events.emit("record.store.switched", layout="switch", outcome="retired_overflow", count=overflow)
         fields: dict[str, Any] = {
             "documentId": document_id,
             "record_doc_id": document_id,
@@ -2052,7 +2050,7 @@ class BlobStorage(Transformer):
                     if self._node_document(fresh) != d:
                         # A switch landed and its sweep purged this row; look again with the new document.
                         if attempt == 2:
-                            record_store_switch(COW, "superseded")
+                            platform_events.emit("record.store.switched", layout=COW, outcome="superseded")
                             raise RunSuperseded("the mapped document changed under the write")
                         continue
                     # The mapped document is gone: no row to take tags from, so the writer's own, as on a first write.
@@ -2080,10 +2078,10 @@ class BlobStorage(Transformer):
             if d:
                 await self._retire_document(org_id, d)
             if boottime() - started > WRITER_DEADLINE_SECONDS:
-                record_store_switch(COW, "deadline")
+                platform_events.emit("record.store.switched", layout=COW, outcome="deadline")
                 raise RunSuperseded("the write took longer than its deadline")
             if not await self._record_still_exists(record_id):
-                record_store_switch(COW, "record_gone")
+                platform_events.emit("record.store.switched", layout=COW, outcome="record_gone")
                 raise RunSuperseded("the record was deleted before the switch")
 
             fields = self._switch_fields(
@@ -2091,10 +2089,10 @@ class BlobStorage(Transformer):
                 run=stored_write.run, replaced=d, now=get_epoch_timestamp_in_ms(),
             )
             if await self._switch_mapping(org_id, virtual_record_id, node, fields):
-                record_store_switch(COW, "switched")
+                platform_events.emit("record.store.switched", layout=COW, outcome="switched")
                 return document_id, stored_dict, actual_storage_path
-            record_store_switch(COW, "conflict")
-        record_store_switch(COW, "superseded")
+            platform_events.emit("record.store.switched", layout=COW, outcome="conflict")
+        platform_events.emit("record.store.switched", layout=COW, outcome="superseded")
         raise RunSuperseded("the mapping moved under the write twice")
 
     async def _put_buffer_with_retry(
@@ -2126,7 +2124,7 @@ class BlobStorage(Transformer):
         """A document this write created is named by the switch only within the writer deadline: past
         it the stray pass may already have purged it (``stored_retention``)."""
         if boottime() - created_at > WRITER_DEADLINE_SECONDS:
-            record_store_switch(IN_PLACE, "deadline")
+            platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="deadline")
             raise RunSuperseded("the write took longer than its deadline")
 
     async def _store_in_place(
@@ -2173,14 +2171,14 @@ class BlobStorage(Transformer):
                     run=run, replaced=None, now=get_epoch_timestamp_in_ms(),
                 )
                 if await self._switch_mapping(org_id, virtual_record_id, node, fields):
-                    record_store_switch(IN_PLACE, "switched")
+                    platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="switched")
                     return document_id, record_dict, storage_path
-                record_store_switch(IN_PLACE, "conflict")
+                platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="conflict")
                 continue
 
             seq = node.get("switchSeq")
             if is_none_run(node.get("storedRun")) and not node.get("storedMeta"):
-                record_store_switch(IN_PLACE, "invalidation_skipped")
+                platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="invalidation_skipped")
             else:
                 now = get_epoch_timestamp_in_ms()
                 invalidation: dict[str, Any] = {
@@ -2190,16 +2188,16 @@ class BlobStorage(Transformer):
                 if stored_rev is not _KEEP_STORED_REV:
                     invalidation["storedRev"] = stored_rev
                 if not await self._switch_mapping(org_id, virtual_record_id, node, invalidation):
-                    record_store_switch(IN_PLACE, "conflict")
+                    platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="conflict")
                     continue
-                record_store_switch(IN_PLACE, "invalidated")
+                platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="invalidated")
                 seq = (seq or 0) + 1
                 if org_id and not _names_org(node):
                     # The invalidation named the org; the final switch must not expect it absent.
                     node = {**node, "orgId": org_id}
             break
         else:
-            record_store_switch(IN_PLACE, "busy")
+            platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="busy")
             raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} kept moving")
 
         if d is None:
@@ -2258,7 +2256,7 @@ class BlobStorage(Transformer):
         if replacement_started is not None:
             self._check_creation_deadline(replacement_started)
         if recheck_record and not await self._record_still_exists(record_id):
-            record_store_switch(IN_PLACE, "record_gone")
+            platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="record_gone")
             raise RunSuperseded("the record was deleted before the switch")
         latest = dict(node)
         latest["switchSeq"] = seq
@@ -2267,11 +2265,11 @@ class BlobStorage(Transformer):
             run=run, replaced=d, now=get_epoch_timestamp_in_ms(),
         )
         if await self._switch_mapping(org_id, virtual_record_id, node, fields, expect_seq=seq):
-            record_store_switch(IN_PLACE, "switched")
+            platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="switched")
             return target, stored_dict, actual_storage_path
         # A copy-on-write switch landed meanwhile (a flag went on during this write). When the
         # content went into d it was d's content before d was marked; a replacement is a stray.
-        record_store_switch(IN_PLACE, "superseded")
+        platform_events.emit("record.store.switched", layout=IN_PLACE, outcome="superseded")
         raise RunSuperseded("the mapping moved during the in-place write")
 
     async def rewrite_semantic_metadata(
@@ -2388,10 +2386,10 @@ class BlobStorage(Transformer):
                 _ = await sidecar.write(token_path, run, new)
             await self._retire_document(org_id, d)
             if boottime() - started > WRITER_DEADLINE_SECONDS:
-                record_store_switch(COW, "deadline")
+                platform_events.emit("record.store.switched", layout=COW, outcome="deadline")
                 raise StoredWriteBusy("the metadata write took longer than its deadline")
             if not await self._record_still_exists(record_id):
-                record_store_switch(COW, "record_gone")
+                platform_events.emit("record.store.switched", layout=COW, outcome="record_gone")
                 raise StoredWriteBusy("the record was deleted before the switch")
 
             fields = self._switch_fields(
@@ -2402,11 +2400,11 @@ class BlobStorage(Transformer):
             if await self._switch_mapping(
                 org_id, virtual_record_id, node, fields, expect_also={"storedRun": run, "storedMeta": stored_meta},
             ):
-                record_store_switch(COW, "switched")
+                platform_events.emit("record.store.switched", layout=COW, outcome="switched")
                 return written
             # A sink or another metadata writer switched first. Its document and this sidecar are
             # strays; the caller's retry runs the job again against the new mapping.
-            record_store_switch(COW, "conflict")
+            platform_events.emit("record.store.switched", layout=COW, outcome="conflict")
             raise StoredWriteBusy(f"the mapping of vrid {virtual_record_id} moved during the metadata write")
         raise AssertionError("unreachable")
 
@@ -3533,9 +3531,9 @@ class BlobStorage(Transformer):
                         head_only=head_only, sizing=None,
                     )
                 except Exception:
-                    record_reader_relookup("failed", trigger)
+                    platform_events.emit("record.reader.relooked_up", outcome="failed", trigger=trigger)
                     raise
-                record_reader_relookup("served", trigger)
+                platform_events.emit("record.reader.relooked_up", outcome="served", trigger=trigger)
                 return record
         except StorageDocumentNotFoundError:
             self.logger.warning(
@@ -3568,14 +3566,14 @@ class BlobStorage(Transformer):
                 "Re-lookup of virtual_record_id %s after a failed read failed: %s",
                 virtual_record_id, str(e),
             )
-            record_reader_relookup("lookup_failed", trigger)
+            platform_events.emit("record.reader.relooked_up", outcome="lookup_failed", trigger=trigger)
             return None
         fresh_id = (fresh or {}).get("record_doc_id")
         if not fresh_id:
-            record_reader_relookup("no_mapping", trigger)
+            platform_events.emit("record.reader.relooked_up", outcome="no_mapping", trigger=trigger)
             return None
         if fresh_id == failed_document_id:
-            record_reader_relookup("unchanged", trigger)
+            platform_events.emit("record.reader.relooked_up", outcome="unchanged", trigger=trigger)
             return None
         return fresh
 

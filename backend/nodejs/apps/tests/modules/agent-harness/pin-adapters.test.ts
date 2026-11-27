@@ -6,13 +6,14 @@
 import { expect } from 'chai';
 import { HeadCachedRolloutSettings } from '../../../src/modules/agent-harness/adapters/configuration/head-cached-rollout-settings';
 import { policySnapshotLoader } from '../../../src/modules/agent-harness/adapters/control-plane/policy-snapshot-loader';
-import { prometheusPinShadowMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/pin-shadow-metrics';
+import { prometheusPinShadowMetrics } from '../../../src/modules/agent-harness/adapters/observability/pin-shadow-metrics';
 import type { PolicyLayer } from '../../../src/modules/agent-harness/contracts/generated/core/policy/policy-layer';
 import { configuredFamilies, configuredModels } from '../../../src/modules/agent-harness/domain/configured-llms';
 import type { HarnessRolloutSettings } from '../../../src/modules/agent-harness/domain/rollout';
 import { MongoHeadRevisions } from '../../../src/modules/control-plane';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import { InMemoryHeadRevisions } from '../control-plane/support/head-revisions-contract';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const ORG = 'org-adapters';
 const layer = (kind: PolicyLayer['scope']['kind'], maxTurns: number): PolicyLayer => ({
@@ -23,6 +24,8 @@ const layer = (kind: PolicyLayer['scope']['kind'], maxTurns: number): PolicyLaye
 const LABS: HarnessRolloutSettings = { infrastructureReady: true, killSwitch: false, orgEnabled: true, modelFamilies: null };
 
 describe('CPD-5 pin adapters', () => {
+  useTelemetryPlugin();
+
   it('the loader keeps the subject’s scopes of the org’s layers and folds the Labs switches', async () => {
     const heads = new InMemoryHeadRevisions();
     heads.commit(ORG);

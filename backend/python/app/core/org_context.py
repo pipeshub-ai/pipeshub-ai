@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from app.telemetry.backend import METRICS_BACKEND
+from app import platform_events
 from app.utils.logging_fields import log_once
 from app.utils.request_context import (
     RequestContext,
@@ -239,11 +239,6 @@ def spawn_in_request(coro: Coroutine[Any, Any, Any], *, name: str | None = None)
 # and lets it through, with a warning that the mode is on.
 
 _logger = logging.getLogger(__name__)
-VIOLATIONS = METRICS_BACKEND.counter(
-    "pipeshub_org_context_violations_total",
-    "Org-scoped accesses with no ambient org (missing) or a different one (mismatch)",
-    ["kind", "site"],
-)
 SYSTEM_ORG_ID = "system"
 
 
@@ -261,7 +256,7 @@ enforcing = validate_mode
 
 
 # Frames that wrap every store call; naming one as the caller would hide which code made the call.
-_WRAPPER_FILES = ("/app/telemetry/modules/db_metrics.py",)
+_WRAPPER_FILES = ("/app/utils/store_timing.py",)
 
 
 def _caller(depth: int) -> str:
@@ -291,7 +286,7 @@ def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], 
         kind = "system_token" if ctx.org_id == SYSTEM_ORG_ID else "mismatch"
     if kind is None:
         return explicit_org_id or (ctx.org_id if ctx else None)
-    VIOLATIONS.inc(kind, site)
+    platform_events.emit("org_context.violated", kind=kind, site=site)
     if enforcing():
         raise MissingOrgContext(f"{site}: no org context") if kind == "missing" else OrgMismatch(
             f"{site}: explicit org differs from the ambient org"

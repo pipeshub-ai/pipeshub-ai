@@ -15,6 +15,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.utils.model_call_events import note_usage
 
 _CONCURRENCY_LIMIT = 5
 _BATCH_SIZE = 32
@@ -86,8 +87,10 @@ class JinaMultimodalProvider(IMultimodalEmbeddingProvider):
                     # "data" key, and the batch would return nothing at all
                     # for its valid images instead of one error per index.
                     resp.raise_for_status()
+                    body = resp.json()
+                    note_usage(body)
                     valid_results = map_embedding_response(
-                        resp.json().get("data", []), [index for index, _ in valid],
+                        body.get("data", []), [index for index, _ in valid],
                     )
                     return valid_results + invalid_results
                 except Exception as e:

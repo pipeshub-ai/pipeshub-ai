@@ -14,7 +14,7 @@ on:
       - 'backend/python/app/config/**'
       - 'backend/python/app/utils/**'
       - 'backend/python/app/exceptions/**'
-      - 'backend/python/app/telemetry/**'
+      - 'backend/python/app/plugins/telemetry/**'
       - 'backend/python/app/edition.py'
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/resource_governor/**'

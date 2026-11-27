@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 
+from app.plugins.telemetry.modules import permissions_metrics
 from app.services.vector_db.const.const import (
     PAYLOAD_KEYWORD_INDEXES,
     SCOPE_INTEGER_INDEXES,
@@ -220,10 +221,9 @@ class TestRedisPreFilterIsExact(TestRedisScopeFilter):
 
     @pytest.fixture
     def dropped(self, monkeypatch):  # noqa: ANN201
-        from app.services.vector_db.redis import redis_vector
 
         rec = _Recorder()
-        monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", rec)
+        monkeypatch.setattr(permissions_metrics.SCOPE_PREFILTER_DROPPED, "inc", rec.inc)
         return rec
 
     async def _put(self, loaded, name: str, dense: list[float] | None = None, **fields) -> None:

@@ -20,6 +20,7 @@ from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.stored_write import COW
 from app.modules.transformers.transformer import TransformContext
 from app.services.featureflag.platform_settings import ArtifactSettings
+from tests.support.platform_event_capture import event_calls
 from tests.unit.modules.record_metadata.projection_world import (
     FakeGraph,
     add_ticket,
@@ -140,7 +141,7 @@ async def test_flag_off_does_nothing(projected: AsyncMock, monkeypatch: pytest.M
 async def test_projection_failure_never_fails_indexing(projected: AsyncMock) -> None:
     projected.side_effect = RuntimeError("graph down")
     orch = _sink()
-    with patch.object(sink_module, "record_property_projection") as counted:
+    with event_calls("record.properties.projected", "outcome") as counted:
         await orch.index(TransformContext(record=_record()))
     orch._update_indexing_status.assert_awaited_once()
     counted.assert_called_once_with("error")

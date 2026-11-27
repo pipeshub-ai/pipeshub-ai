@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
+from app.utils import http_client_events
+
 # --- 1. The Generic Client (Reusable Library Code) ---
 
 class GenericOAuth2Client:
@@ -157,7 +159,9 @@ class GenericOAuth2Client:
             data["client_secret"] = self.client_secret or ""
 
         try:
-            response = requests.post(self.token_endpoint, data=data, headers=headers)
+            with http_client_events.request("oauth_token_endpoint", "POST", library="requests") as call:
+                response = requests.post(self.token_endpoint, data=data, headers=headers)
+                call.status = response.status_code
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as e:

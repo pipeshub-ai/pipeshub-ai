@@ -2252,7 +2252,7 @@ Python `harness_core/contracts/`, `app/harness/contracts/`.
 ## OBS Observability and logging
 
 Built (OTel off by default); owner PF. Covers `backend/python/harness_core/telemetry/`, `backend/python/app/harness/telemetry.py`,
-`backend/python/harness_core/logs.py`, Node `application/harness-tracing.ts`, `application/harness-log.ts`, `adapters/telemetry/`.
+`backend/python/harness_core/logs.py`, Node `application/harness-tracing.ts`, `application/harness-log.ts`, `adapters/observability/`.
 
 **Behaviours.**
 1. B1 With `HARNESS_OTEL=true`, Node records the admission span; the worker and gateway record `invoke_agent`, sandbox acquire, `execute_tool` and chat spans (GenAI conventions); off means no OpenTelemetry import.

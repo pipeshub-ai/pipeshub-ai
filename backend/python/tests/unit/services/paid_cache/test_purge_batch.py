@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.services.paid_cache import store as store_module
 from app.services.paid_cache.cache import PaidResultCache
 from app.services.paid_cache.store import (
@@ -18,7 +19,6 @@ from app.services.paid_cache.store import (
     NodePaidResultStore,
     PaidResultStoreError,
 )
-from app.telemetry.backend import METRICS_BACKEND
 from tests.support.fake_paid_result_storage import FakePaidResultStorage
 
 if TYPE_CHECKING:

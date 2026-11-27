@@ -1,4 +1,4 @@
-"""Unit tests for app.telemetry.middleware — the ASGI metrics middleware."""
+"""Unit tests for app.plugins.telemetry.middleware — the ASGI metrics middleware."""
 
 import asyncio
 from types import SimpleNamespace
@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from app.telemetry.middleware import MetricsMiddleware
+from app.plugins.telemetry.middleware import MetricsMiddleware
 from app.utils.route_template import route_template
 
 
@@ -132,8 +132,8 @@ class TestDispatch:
             await send({"type": "http.response.body", "body": b"{}"})
 
         with (
-            patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
-            patch("app.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
+            patch("app.plugins.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
+            patch("app.plugins.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
         ):
             sent = await self._call(request.scope, app)
 
@@ -159,8 +159,8 @@ class TestDispatch:
             await send({"type": "http.response.body", "body": b"done"})
 
         with (
-            patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
-            patch("app.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
+            patch("app.plugins.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
+            patch("app.plugins.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
         ):
             call = asyncio.ensure_future(self._call(request.scope, app))
             await started.wait()
@@ -182,8 +182,8 @@ class TestDispatch:
         app = AsyncMock(side_effect=RuntimeError("kaboom"))
 
         with (
-            patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
-            patch("app.telemetry.middleware.HTTP_REQUEST_DURATION"),
+            patch("app.plugins.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
+            patch("app.plugins.telemetry.middleware.HTTP_REQUEST_DURATION"),
         ):
             with pytest.raises(RuntimeError):
                 await self._call(request.scope, app)

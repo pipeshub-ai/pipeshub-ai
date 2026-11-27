@@ -32,6 +32,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.services.artifact_registry.versioning import resolve_storage_version
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import mint_service_token
 
 from .models import (
@@ -250,7 +251,7 @@ class ConnectorBackedContentStrategy:
         try:
             if session is not None:
                 return await _do_fetch(session)
-            async with aiohttp.ClientSession() as http:
+            async with aiohttp.ClientSession(**aiohttp_tracing("record_content")) as http:
                 return await _do_fetch(http)
         except (RecordAccessDeniedError, RecordContentUnavailableError, RecordTooLargeError):
             raise

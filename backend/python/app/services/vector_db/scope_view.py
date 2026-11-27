@@ -11,9 +11,9 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core.org_context import for_org
 from app.services.permissions.currency import app_is_current
-from app.services.permissions.metrics import SERVING_UNREADABLE_ROWS
 from app.services.permissions.pending import PendingUnreadable, parse
 from app.services.permissions.rewrite_lease import REWRITE_LEASE_KEY, read_lease
 from app.services.permissions.structure_generation import (
@@ -172,7 +172,7 @@ async def org_view(graph_provider: IGraphDBProvider, org_id: str, vector_db: IVe
         if unreadable is not None:
             try:
                 n = await unreadable(org_id)
-                SERVING_UNREADABLE_ROWS.set("pgvector", org_id, value=n)
+                platform_events.emit("permission.unreadable_group_rows.counted", store="pgvector", org_id=org_id, count=n)
                 if n:
                     view.notes.append(f"unreadable_group_rows: {n} pgvector group row(s) hold a trusted stamp with a NULL list, which can hide their points in a served search; index them again")
             except Exception as exc:

@@ -1,10 +1,10 @@
-"""Unit tests for app.telemetry.pusher — the metrics push loop."""
+"""Unit tests for app.plugins.telemetry.pusher — the metrics push loop."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.telemetry.event_buffer import event_buffer
-from app.telemetry.pusher import (
+from app.plugins.telemetry.event_buffer import event_buffer
+from app.plugins.telemetry.pusher import (
     METRICS_CONFIG_KEY,
     REQUIRED_CONFIG_FIELDS,
     MetricsPusher,
@@ -166,7 +166,7 @@ class TestConfigDeferral:
         pusher._ship_events = AsyncMock()
 
         with (
-            patch("app.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
+            patch("app.plugins.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
             patch(
                 "asyncio.sleep",
                 AsyncMock(side_effect=[None, asyncio.CancelledError]),
@@ -192,7 +192,7 @@ class TestConfigDeferral:
         pusher._ship_events = AsyncMock()
 
         with (
-            patch("app.telemetry.pusher.set_metric_collection_enabled"),
+            patch("app.plugins.telemetry.pusher.set_metric_collection_enabled"),
             patch(
                 "asyncio.sleep",
                 AsyncMock(side_effect=[None, asyncio.CancelledError]),
@@ -214,7 +214,7 @@ class TestRunLoop:
         pusher._ship_events = AsyncMock()
 
         with (
-            patch("app.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
+            patch("app.plugins.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
             patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError)),
         ):
             try:
@@ -232,7 +232,7 @@ class TestRunLoop:
         pusher._ship_events = AsyncMock()
 
         with (
-            patch("app.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
+            patch("app.plugins.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
             patch("asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError)),
         ):
             try:
@@ -306,7 +306,7 @@ class TestPush:
         pusher = make_pusher()
 
         with (
-            patch("app.telemetry.pusher.METRICS_BACKEND") as backend_mock,
+            patch("app.plugins.telemetry.pusher.METRICS_BACKEND") as backend_mock,
             patch("aiohttp.ClientSession", mock_session_returning(413, "too large")),
         ):
             backend_mock.serialize.return_value = 'x{a="b"} 1.0\n'
@@ -319,7 +319,7 @@ class TestPush:
         pusher = make_pusher()
 
         with (
-            patch("app.telemetry.pusher.METRICS_BACKEND") as backend_mock,
+            patch("app.plugins.telemetry.pusher.METRICS_BACKEND") as backend_mock,
             patch("aiohttp.ClientSession", mock_session_returning(500, "boom")),
         ):
             backend_mock.serialize.return_value = 'x{a="b"} 1.0\n'

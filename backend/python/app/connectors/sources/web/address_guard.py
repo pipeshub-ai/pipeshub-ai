@@ -22,6 +22,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
 from aiohttp.resolver import DefaultResolver
 
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.url_fetcher import (
     FetchError,
     IPAddress,
@@ -186,7 +187,7 @@ def guarded_session_kwargs(*, allow_private: bool = False, public_https_only: bo
 
 def create_guarded_session(*, allow_private: bool = False, **kwargs: object) -> aiohttp.ClientSession:
     """An aiohttp session built with ``guarded_session_kwargs``."""
-    return aiohttp.ClientSession(**guarded_session_kwargs(allow_private=allow_private), **kwargs)  # type: ignore[arg-type]
+    return aiohttp.ClientSession(**aiohttp_tracing("public_web"), **guarded_session_kwargs(allow_private=allow_private), **kwargs)  # type: ignore[arg-type]
 
 
 _PROXY_HEAD_LIMIT = 64 * 1024

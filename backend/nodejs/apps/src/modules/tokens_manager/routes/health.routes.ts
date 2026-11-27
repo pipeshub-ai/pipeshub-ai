@@ -48,7 +48,7 @@ const STORAGE_WARNING_TIMEOUT_MS = 2000;
 const SERVICE_HEALTH_TIMEOUT_MS = 8000;
 
 // The memory report reads every vector collection's configuration and Qdrant's
-// telemetry, which took about 12s on a loaded instance. Not a probe target.
+// own usage report, which took about 12s on a loaded instance. Not a probe target.
 const VECTOR_MEMORY_TIMEOUT_MS = 20000;
 
 // The graph and vector stores are probed through the connector service. When

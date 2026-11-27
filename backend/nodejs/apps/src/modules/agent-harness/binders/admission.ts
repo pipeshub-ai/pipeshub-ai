@@ -3,7 +3,7 @@ import type { AdmissionQuotaCapsSource } from '../ports/admission-quota-caps';
 import type { RunPlacement } from '../ports/run-placement';
 import { HttpEngineAvailability } from '../adapters/http/http-engine-availability';
 import { HttpInlineClaimHint } from '../adapters/http/inline-claim-hint';
-import { harnessTracerFromEnv } from '../adapters/telemetry/otlp-http-tracer';
+import { harnessTracerFromEnv } from '../adapters/observability/otlp-http-tracer';
 import { ActorReadmission } from '../application/actor-readmission';
 import { HarnessCapabilityService } from '../application/capability-service';
 import { CodingEngineService } from '../application/coding-engine-service';

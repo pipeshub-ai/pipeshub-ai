@@ -72,6 +72,12 @@ class IMultimodalEmbeddingProvider(ABC):
         return True
 
     @property
+    def announces_model_calls(self) -> bool:
+        """True when the provider sends images through an embeddings client that already announces its calls
+        (``app.utils.model_call_events``), so the caller does not announce them a second time."""
+        return False
+
+    @property
     @abstractmethod
     def provider_name(self) -> str:
         """Short identifier for logging/metrics (e.g. 'cohere', 'gemini')."""

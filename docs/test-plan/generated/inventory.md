@@ -3693,7 +3693,7 @@ Globs in the component map that match nothing. A test glob here names a planned 
 
 ### OBS Observability and logging
 
-- `backend/nodejs/apps/tests/libs/services/telemetry/process-metrics.test.ts` unit (2)
+- `backend/nodejs/apps/tests/libs/services/process-metrics.test.ts` unit (2)
 - `backend/nodejs/apps/tests/modules/agent-harness/claim-refusal-logging.http.test.ts` component (2)
 - `backend/nodejs/apps/tests/modules/agent-harness/dur3-chat-metrics.test.ts` unit (5)
 - `backend/nodejs/apps/tests/modules/agent-harness/harness-log.test.ts` unit (18)

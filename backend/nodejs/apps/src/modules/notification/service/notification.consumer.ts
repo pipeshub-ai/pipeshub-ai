@@ -15,9 +15,6 @@ import {
   isPlatformAudience,
 } from './platform-alert.handler';
 
-// Defined beside the delivery that counts it; exported here as before.
-export { notificationEventRefused } from './notification.delivery';
-
 @injectable()
 export class NotificationConsumer {
   constructor(

@@ -40,7 +40,7 @@ export interface LocalMetrics {
 }
 
 export interface HarnessLocalMetricsOptions {
-  /** Node's metrics registry, serialized (`metricsBackend.serialize`). */
+  /** Node's metrics registry, serialized (`opsMetrics.serialize`). */
   registry: () => Promise<string>;
   /** The run store's state; absent, no `run_store` scrape. */
   runs?: RunStateReader;

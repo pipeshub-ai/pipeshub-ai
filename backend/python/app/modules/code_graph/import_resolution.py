@@ -34,7 +34,7 @@ _TS_SOURCE_FOR_EMITTED = {
 }
 
 # `import logging` is the standard library even when the repo has a
-# `telemetry/logging.py`; only a module at a source root could shadow it.
+# `audit/logging.py`; only a module at a source root could shadow it.
 _STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ()))
 
 # tsconfig/vite path aliases for the source root. A scoped package is
@@ -133,8 +133,8 @@ class ImportResolution:
             return None
         # Absolute imports are rooted at a source dir (src/, backend/…), so match
         # on the tail of known paths -- but only where the first segment is a
-        # top-level package. `telemetry/logging.py` inside the `app` package is
-        # `app.telemetry.logging`, never `logging`.
+        # top-level package. `audit/logging.py` inside the `app` package is
+        # `app.audit.logging`, never `logging`.
         for table, suffix in ((self._modules_by_suffix, f"/{rel}.py"),
                               (self._packages_by_suffix, f"/{rel}/__init__.py")):
             matches = [

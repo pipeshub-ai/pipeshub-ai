@@ -13,7 +13,7 @@ import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
 import { MongoSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/mongo';
 import { PgSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/pg';
-import { docstoreMetrics } from '../../src/libs/repositories/metrics';
+import { onPlatformEvent } from '../../src/libs/platform-events';
 import { shadowWrap, shadowInFlight } from '../../src/libs/repositories/shadow';
 import Citation from '../../src/modules/enterprise_search/schema/citation.schema';
 import EnterpriseSemanticSearch from '../../src/modules/enterprise_search/schema/search.schema';
@@ -27,7 +27,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     this.timeout(120_000);
     const dbName = `pipeshub_shadow_${randomUUID().slice(0, 8)}`;
     const counts: Record<string, number> = {};
-    const real = docstoreMetrics.shadowReads.inc.bind(docstoreMetrics.shadowReads);
+    let stopCounting = (): void => undefined;
     const saved = { s: process.env.DOC_STORE_SHADOW_SAMPLE, t: process.env.DOC_STORE_SHADOW_SETTLE_MS };
     // read when the wrapper is built, which is when the contract is registered, before any hook runs
     process.env.DOC_STORE_SHADOW_SAMPLE = '1';
@@ -36,7 +36,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     let stack: PgStack;
 
     before(async () => {
-      (docstoreMetrics.shadowReads as any).inc = (l: { result: string }) => { counts[l.result] = (counts[l.result] ?? 0) + 1; };
+      stopCounting = onPlatformEvent('docstore.shadow_read.compared', (l) => { counts[l.result] = (counts[l.result] ?? 0) + 1; });
       mongo = new MongoService({ uri: process.env.MONGO_IT_URI as string, db: dbName });
       await mongo.initialize();
       await EnterpriseSemanticSearch.createCollection();
@@ -44,7 +44,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       stack = await startPgStack(bin, 'shadow_contract');
     });
     after(async () => {
-      (docstoreMetrics.shadowReads as any).inc = real;
+      stopCounting();
       if (saved.s === undefined) delete process.env.DOC_STORE_SHADOW_SAMPLE; else process.env.DOC_STORE_SHADOW_SAMPLE = saved.s;
       if (saved.t === undefined) delete process.env.DOC_STORE_SHADOW_SETTLE_MS; else process.env.DOC_STORE_SHADOW_SETTLE_MS = saved.t;
       await stack?.stop();

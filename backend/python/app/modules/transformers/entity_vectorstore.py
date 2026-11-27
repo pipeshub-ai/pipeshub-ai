@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
@@ -104,7 +105,6 @@ from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
 )
-from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import INDEXING_SDK_RETRIES, embedding_config_hash
 from app.utils.embedding_model_name import same_embedding_model
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
@@ -1463,7 +1463,7 @@ class EntityVectorStore:
 
     def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
         for name in ("written", "membership_only", "unchanged", "skipped", "failed"):
-            entity_index_metrics.record_writes("upsert", name, getattr(outcome, name))
+            platform_events.emit("entity_index.entities.written", operation="upsert", outcome=name, count=getattr(outcome, name))
         if failed_keys:
             shown = ", ".join(failed_keys[:_LOGGED_FAILED_IDS])
             more = len(failed_keys) - _LOGGED_FAILED_IDS

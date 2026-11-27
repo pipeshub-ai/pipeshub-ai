@@ -34,6 +34,7 @@ from app.services.featureflag.platform_settings import (
     artifact_read_state,
     artifact_settings,
 )
+from tests.support.platform_event_capture import event_calls
 
 GENERATION = "gen-1"
 FLAGS = ("ENABLE_ARTIFACT_READ", "ENABLE_ARTIFACT_READ_SHADOW", "ENABLE_ARTIFACT_WRITE")
@@ -312,7 +313,7 @@ class TestRetireMark:
     async def test_outcomes(self, status: int, body: Any, json_error: bool, outcome: str) -> None:  # noqa: ANN401
         seen: list[str] = []
         with patch.object(blob_module, "get_shared_session", return_value=_post_session(status, body, json_error=json_error)), \
-                patch.object(blob_module, "record_retire_mark", seen.append):
+                event_calls("record.retire_mark.set", "outcome", to=seen.append):
             await self._blob()._retire_document("org-1", "a" * 24)
 
         assert seen == [outcome]
@@ -323,7 +324,7 @@ class TestRetireMark:
         session = _post_session(404, None, json_error=True)
         bs = self._blob()
         with patch.object(blob_module, "get_shared_session", return_value=session), \
-                patch.object(blob_module, "record_retire_mark", seen.append):
+                event_calls("record.retire_mark.set", "outcome", to=seen.append):
             await bs._retire_document("org-1", "a" * 24)
             await bs._retire_document("org-1", "b" * 24)
 

@@ -103,10 +103,7 @@ import {
   type SessionReplayAudit,
 } from '../session-replay-audit';
 import { orgLifecycle } from '../../../libs/org-lifecycle';
-import {
-  domainFromEmail,
-  recordEvent,
-} from '../../../libs/services/telemetry/telemetry-impl';
+import { emitPlatformEvent } from '../../../libs/platform-events';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
@@ -129,10 +126,9 @@ import {
 } from '../utils/authMethodGuard';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import {
-  recordAuthAttempt,
   refusalOutcome,
   signInMethod,
-} from '../../../libs/services/telemetry/telemetry-impl';
+} from '../../../libs/utils/auth-attempt.utils';
 import {
   executeConnectorCommand,
   handleBackendError,
@@ -2055,13 +2051,12 @@ export class UserAccountController {
       });
 
       const isFirstLogin = !user.hasLoggedIn;
-      recordEvent('login', {
+      emitPlatformEvent('user.signed_in', {
         orgId: user.orgId?.toString(),
         userId: user._id?.toString(),
         email: user.email,
-        domain: domainFromEmail(user.email),
-        first_login: isFirstLogin,
-        auth_method: method,
+        firstSignIn: isFirstLogin,
+        authMethod: method,
       });
 
       if (isFirstLogin) {
@@ -2334,9 +2329,15 @@ export class UserAccountController {
             sessionInfo,
           ),
       );
-      recordAuthAttempt(attempted, 'success');
+      emitPlatformEvent('auth.attempted', {
+        method: attempted,
+        outcome: 'success',
+      });
     } catch (error) {
-      recordAuthAttempt(attempted, refusalOutcome(error));
+      emitPlatformEvent('auth.attempted', {
+        method: attempted,
+        outcome: refusalOutcome(error),
+      });
       const method: unknown = (req.body as { method?: unknown } | undefined)
         ?.method;
       auditAuthRefusal('auth.sign_in', error, {
@@ -2395,11 +2396,10 @@ export class UserAccountController {
         authMethod: AuthMethodType.PASSWORD,
       });
 
-      recordEvent('signup', {
+      emitPlatformEvent('user.account_setup.completed', {
         orgId: orgId?.toString(),
         userId: userId?.toString(),
         email,
-        domain: domainFromEmail(email),
       });
 
       res.status(200).json(updatedUser);

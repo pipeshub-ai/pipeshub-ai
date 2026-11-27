@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
@@ -27,6 +28,7 @@ from app.services.messaging.backpressure import get_default_backpressure_coordin
 from app.utils.embedding_gate import BulkGate, get_bulk_gate
 from app.utils.embedding_retry import await_with_retry, call_with_retry
 from app.utils.logger import create_logger
+from app.utils.model_call_events import awaits_tokens, embedding_call, note_tokens
 from app.utils.precision_witness import get_precision_witness
 from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
@@ -37,6 +39,8 @@ logger = create_logger("embedding_server_client")
 
 _EMBEDDING_SERVER_API_KEY = "not-needed"
 _EMBEDDING_SERVER_SERVICE_NAME = "EmbeddingServer"
+# The provider name its calls are announced under (``llm.call.completed``): the one its model configuration has.
+_ANNOUNCED_PROVIDER = "default"
 
 
 def _embedding_server_base_url() -> str:
@@ -71,6 +75,9 @@ def _embedding_server_timeout() -> float:
 PRECISION_HEADER = "x-embedding-precision"
 PRECISION_FALLBACK_HEADER = "x-embedding-precision-fallback"
 _ANNOUNCEMENT_TTL_SECONDS = 30.0
+# ``"usage": {"prompt_tokens": N, ...}``, the last field of an embeddings response.
+_USAGE = re.compile(rb'"usage"\s*:\s*\{\s*"prompt_tokens"\s*:\s*(\d+)')
+_USAGE_TAIL_BYTES = 256
 # The precision headers of every response of the call being made; a list so tasks the call spawns share it.
 _responses: ContextVar[list[tuple[str | None, bool]] | None] = ContextVar("embedding_responses", default=None)
 
@@ -83,10 +90,22 @@ def _note_response(response: httpx.Response) -> None:
     seen = _responses.get()
     if seen is not None:
         seen.append((response.headers.get(PRECISION_HEADER), response.headers.get(PRECISION_FALLBACK_HEADER) == "1"))
+    if awaits_tokens():
+        _note_usage(response.read())
 
 
 async def _note_response_async(response: httpx.Response) -> None:
+    if response.is_success and awaits_tokens():
+        await response.aread()
     _note_response(response)
+
+
+def _note_usage(body: bytes) -> None:
+    """The token count an embeddings response ends with. The embeddings client keeps the vectors and drops ``usage``,
+    and the body is megabytes of vectors: only its tail is looked at, and it is not parsed a second time."""
+    found = _USAGE.search(body[-_USAGE_TAIL_BYTES:])
+    if found is not None:
+        note_tokens(int(found.group(1)))
 
 
 def _begin_attempt() -> None:
@@ -98,6 +117,9 @@ def _begin_attempt() -> None:
 
 class EmbeddingServerEmbeddings(Embeddings):
     """LangChain embeddings client for the local embedding server with retries."""
+
+    # Its four embed methods announce themselves, so the model factory does not wrap it.
+    announces_model_calls = True
 
     def __init__(
         self,
@@ -355,22 +377,24 @@ class EmbeddingServerEmbeddings(Embeddings):
         return self._documents_inner().embed_documents(texts)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return call_with_retry(
-            lambda: self._embed_documents_attempt(texts),
-            max_retries=self.max_retries,
-            operation="embed_documents",
-            service_name=_EMBEDDING_SERVER_SERVICE_NAME,
-            backpressure_coordinator=self._backpressure_coordinator,
-        )
+        with embedding_call(_ANNOUNCED_PROVIDER, self.model, len(texts)):
+            return call_with_retry(
+                lambda: self._embed_documents_attempt(texts),
+                max_retries=self.max_retries,
+                operation="embed_documents",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            )
 
     def embed_query(self, text: str) -> list[float]:
-        return call_with_retry(
-            lambda: self._query_inner.embed_query(text),
-            max_retries=self.max_retries,
-            operation="embed_query",
-            service_name=_EMBEDDING_SERVER_SERVICE_NAME,
-            backpressure_coordinator=self._backpressure_coordinator,
-        )
+        with embedding_call(_ANNOUNCED_PROVIDER, self.model, 1):
+            return call_with_retry(
+                lambda: self._query_inner.embed_query(text),
+                max_retries=self.max_retries,
+                operation="embed_query",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            )
 
     async def _aembed_noting_lost_connection(self, texts: list[str]) -> list[list[float]]:
         _begin_attempt()
@@ -383,13 +407,14 @@ class EmbeddingServerEmbeddings(Embeddings):
     # On a run's tool call the retries together are bounded by the call's remaining time (ERR-UX).
     async def aembed_documents(self, texts: list[str], *, single_attempt: bool = False) -> list[list[float]]:
         # single_attempt: the caller retries, so no backoff sleep here (it may hold a bulk permit).
-        vectors = await bounded_read("embedding", await_with_retry(
-            lambda: self._aembed_noting_lost_connection(texts),
-            max_retries=1 if single_attempt else self.max_retries,
-            operation="aembed_documents",
-            service_name=_EMBEDDING_SERVER_SERVICE_NAME,
-            backpressure_coordinator=self._backpressure_coordinator,
-        ))
+        with embedding_call(_ANNOUNCED_PROVIDER, self.model, len(texts)):
+            vectors = await bounded_read("embedding", await_with_retry(
+                lambda: self._aembed_noting_lost_connection(texts),
+                max_retries=1 if single_attempt else self.max_retries,
+                operation="aembed_documents",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            ))
         # Re-read only after a lost connection, never per batch. If the read fails
         # the flag stays set and the next batch tries again.
         if self._precision_stale and await self._read_precision_once():
@@ -397,13 +422,14 @@ class EmbeddingServerEmbeddings(Embeddings):
         return vectors
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await bounded_read("embedding", await_with_retry(
-            lambda: self._query_inner.aembed_query(text),
-            max_retries=self.max_retries,
-            operation="aembed_query",
-            service_name=_EMBEDDING_SERVER_SERVICE_NAME,
-            backpressure_coordinator=self._backpressure_coordinator,
-        ))
+        with embedding_call(_ANNOUNCED_PROVIDER, self.model, 1):
+            return await bounded_read("embedding", await_with_retry(
+                lambda: self._query_inner.aembed_query(text),
+                max_retries=self.max_retries,
+                operation="aembed_query",
+                service_name=_EMBEDDING_SERVER_SERVICE_NAME,
+                backpressure_coordinator=self._backpressure_coordinator,
+            ))
 
 
 async def list_embedding_server_models() -> list[object]:

@@ -8,14 +8,14 @@ import type { ApproverNoticeOutbox } from '../ports/approval-links';
 import type { Tx } from '../../../libs/repositories/uow';
 import { createMemoryStore } from '../../../libs/repositories/agent-harness/memory';
 import { createWorkerFeatureSightings } from '../../../libs/repositories/agent-harness/worker-feature-sightings';
-import { prometheusChatPathMetrics } from '../adapters/telemetry/chat-path-metrics';
+import { prometheusChatPathMetrics } from '../adapters/observability/chat-path-metrics';
 import { createRunState } from '../../../libs/repositories/agent-harness/run-state';
 import {
   HarnessLocalMetrics,
   LocalMetrics,
 } from '../application/harness-local-metrics';
-import { metricsBackend } from '../../../libs/services/telemetry/telemetry-impl';
-import { prometheusWorkerFeatureMetrics } from '../adapters/telemetry/worker-feature-metrics';
+import { opsMetrics } from '../../../libs/metrics';
+import { prometheusWorkerFeatureMetrics } from '../adapters/observability/worker-feature-metrics';
 import { HarnessCapabilityService } from '../application/capability-service';
 import {
   childEngineAuthority,
@@ -101,7 +101,7 @@ export const bindExecutionStore: HarnessBinder = ({
     // C9.04: the merged metrics route's own part: Node's harness families and the run store read at scrape time.
     container.bind<LocalMetrics>(AGENT_HARNESS_LOCAL_METRICS).toConstantValue(
       new HarnessLocalMetrics({
-        registry: () => metricsBackend.serialize(),
+        registry: () => opsMetrics.serialize(),
         runs: createRunState(),
         // Resolved at each scrape: the operator controls are bound by a later binder.
         controls: () =>

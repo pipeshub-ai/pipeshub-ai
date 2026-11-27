@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
-from app.telemetry import ops_exporter as ox
+from app.plugins.telemetry import ops_exporter as ox
 from tests.support.free_port import bind_on_free_port
 
 if TYPE_CHECKING:
@@ -109,7 +109,7 @@ def test_a_non_holders_bind_retry_fails_quietly_three_times(tmp_path: Path, capl
     port = holder._port
     other = ox.OpsExporter(service="indexing", run_dir=tmp_path, port=port, source=lambda: ({}, {}), bind=HOST)
     try:
-        with caplog.at_level(logging.DEBUG, logger="app.telemetry.ops_exporter"):
+        with caplog.at_level(logging.DEBUG, logger="app.plugins.telemetry.ops_exporter"):
             results = [other.try_bind() for _ in range(3)]
         assert results == [False, False, False]
         loud = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -132,7 +132,7 @@ def test_the_loop_of_a_non_holder_logs_nothing_above_debug(tmp_path: Path, caplo
 
     other.try_bind = counted  # type: ignore[method-assign]
     try:
-        with caplog.at_level(logging.DEBUG, logger="app.telemetry.ops_exporter"):
+        with caplog.at_level(logging.DEBUG, logger="app.plugins.telemetry.ops_exporter"):
             other.start()
             assert _wait_until(lambda: len(tries) >= 3, 10), "the loop did not retry the bind"
         other.stop()

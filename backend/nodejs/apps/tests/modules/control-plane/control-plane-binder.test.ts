@@ -11,8 +11,8 @@ import { ControlPlaneReviewedAgentAccess } from '../../../src/modules/agent-harn
 import { bindControlPlaneCapabilities } from '../../../src/modules/agent-harness/binders/control-plane-capabilities';
 import { AGENT_HARNESS_AGENT_ACCESS, CONTROL_PLANE_CAPABILITY_SYNC } from '../../../src/modules/agent-harness/binders/tokens';
 import { CapabilityMigration, prometheusShadowMismatches } from '../../../src/modules/control-plane';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
-import { prometheusPinShadowMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/pin-shadow-metrics';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { prometheusPinShadowMetrics } from '../../../src/modules/agent-harness/adapters/observability/pin-shadow-metrics';
 import { AGENT_HARNESS_POLICY_PINNING, bindControlPlanePin } from '../../../src/modules/agent-harness/binders/control-plane-pin';
 import type { HarnessBindingContext } from '../../../src/modules/agent-harness/binders/context';
 import sinon from 'sinon';
@@ -32,6 +32,7 @@ import { ORG_A } from './support/cp-objects';
 import { fakeCollections } from './support/fake-mongo-models';
 import { InMemoryBindingStore } from './support/in-memory-stores';
 import { testControlPlane } from './support/in-memory';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 /** Restores `name` after `run`; unset (`undefined`) deletes it for the duration. */
 function withEnv<T>(name: string, value: string | undefined, run: () => T): T {
@@ -67,6 +68,8 @@ function bind(env: string | undefined, appConfig: boolean, pinner = true, harnes
 }
 
 describe('CPD-7 control-plane binder', () => {
+  useTelemetryPlugin();
+
   it('binds the reviewed agent authority over the pinner\'s snapshots and, with the host configuration, the capability sync', () => {
     const container = bind(undefined, true);
     expect(container.get(AGENT_HARNESS_AGENT_ACCESS)).to.be.instanceOf(ControlPlaneReviewedAgentAccess);

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Final
 
 from redis.exceptions import NoScriptError
 
+from app import platform_events
 from app.services.messaging.lanes.assignment_policy import (
     BUSY_READING_MAX_AGE_MS,
     KEEP_CURRENT,
@@ -60,7 +61,6 @@ from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lan
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneHint
 from app.services.redis.config import ClientOptions
 from app.services.redis.loop_clients import LoopBoundClients
-from app.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -1098,7 +1098,7 @@ class AssignedRedisLaneRouter(RedisLaneRouter):
             reason = "timeout"
         else:
             reason = "error"
-        metrics.record_lane_assignment_fallback(reason)
+        platform_events.emit("indexing.lane_assignment.fell_back", reason=reason)
         now = time.monotonic()
         with self._warn_lock:
             last = self._warned_at.get(key)

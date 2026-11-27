@@ -7,8 +7,8 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { Container } from 'inversify';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
-import { prometheusResolvedTurnMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/resolved-turn-metrics';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { prometheusResolvedTurnMetrics } from '../../../src/modules/agent-harness/adapters/observability/resolved-turn-metrics';
 import { InMemoryConfigDocumentStore } from '../../../src/modules/agent-harness/adapters/in-memory-config-document-store';
 import { decodeAttemptToken } from '../../../src/modules/agent-harness/application/attempt-token-codec';
 import type { GatewayTokenAuthority } from '../../../src/modules/agent-harness/application/gateway-token-authority';
@@ -38,6 +38,7 @@ import { CONTROL_PLANE_ME_CAPABILITIES, type MeCapabilitiesSource } from '../../
 import { aSnapshot } from '../control-plane/support/resolution-fixtures';
 import { RESOLVED_TURN_VECTOR as VECTOR } from './support/resolved-turn-world';
 import { without } from './support/without';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 const ORG = 'org-1';
 const TURN = { orgId: ORG, actorId: 'user-1', agentKey: 'agent-a', chatMode: 'planExecute' };
@@ -67,6 +68,8 @@ const routed = () => ({
 });
 
 describe('CPD-10: the binders of the legacy header and /me/capabilities', () => {
+  useTelemetryPlugin();
+
   const saved = process.env.CONTROL_PLANE_PIN;
   afterEach(() => {
     if (saved === undefined) delete process.env.CONTROL_PLANE_PIN;

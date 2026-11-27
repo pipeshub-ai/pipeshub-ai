@@ -6,7 +6,7 @@ import pytest
 
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR
 from app.agents.actions.code_graph.code_graph import CodeGraph
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 from .conftest import CONN, ORG, USER, FakeGraphProvider
 

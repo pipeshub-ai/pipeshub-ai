@@ -27,11 +27,11 @@ import random
 import time
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core.org_context import for_org, spawn_detached
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
 from .currency import StampCurrency
-from .metrics import SHADOW_COMPARED, SHADOW_SECONDS, SHADOW_SKIPPED
 from .mode import AclFilterMode, scopes_or_legacy
 from .serving import stamp_filter
 
@@ -82,17 +82,17 @@ class ShadowComparator:
         if not returned:
             return
         if not user_key:
-            SHADOW_SKIPPED.inc("no_user")           # the viewer "" is nobody: resolving it would compare against a made-up user
+            platform_events.emit("permission.shadow.skipped", reason="no_user")           # the viewer "" is nobody: resolving it would compare against a made-up user
             return
         if self._rate < 1.0 and self._rng.random() >= self._rate:
-            SHADOW_SKIPPED.inc("sampled_out")
+            platform_events.emit("permission.shadow.skipped", reason="sampled_out")
             return
         if served:
             # the real result already went through the filter: a record a stamp hides is in neither side, so the loss would read as zero
-            SHADOW_SKIPPED.inc("served")
+            platform_events.emit("permission.shadow.skipped", reason="served")
             return
         if len(self._inflight) >= self._max_inflight:
-            SHADOW_SKIPPED.inc("busy")
+            platform_events.emit("permission.shadow.skipped", reason="busy")
             return
         try:
             task = spawn_detached(self.compare(org_id, user_key, set(returned), set(admitted), run_scoped, check), name="acl-shadow")
@@ -117,14 +117,14 @@ class ShadowComparator:
             with for_org(org_id, job="acl-shadow"):
                 scopes = await scopes_or_legacy(AclFilterMode.SHADOW, self._scopes, org_id, user_key)
                 if scopes is None:
-                    SHADOW_SKIPPED.inc("scopes_unavailable")
+                    platform_events.emit("permission.shadow.skipped", reason="scopes_unavailable")
                     return {}
                 if len(scopes.gated_apps) > self._max_apps:      # one batched read, but a filter over this many connectors is not what serving sends
-                    SHADOW_SKIPPED.inc("no_current_connector")
+                    platform_events.emit("permission.shadow.skipped", reason="no_current_connector")
                     return {}
                 served = await asyncio.wait_for(self._currency.served(scopes.gated_apps), self._timeout)
                 if not served:
-                    SHADOW_SKIPPED.inc("no_current_connector")
+                    platform_events.emit("permission.shadow.skipped", reason="no_current_connector")
                     return {}
                 flt = stamp_filter(scopes, served, defer=False)      # only what the stamps of the served connectors admit; the rest is left out, as recall loss
                 found = await asyncio.wait_for(run_scoped(flt), self._timeout)
@@ -135,27 +135,27 @@ class ShadowComparator:
                     ok |= unjudged & set(await asyncio.wait_for(check(unjudged), self._timeout))
             result = "done"
         except asyncio.CancelledError:
-            SHADOW_SKIPPED.inc("cancelled")
+            platform_events.emit("permission.shadow.skipped", reason="cancelled")
             raise
         except NotImplementedError:
-            SHADOW_SKIPPED.inc("unsupported")
+            platform_events.emit("permission.shadow.skipped", reason="unsupported")
             return {}
         except ScopeFilterTooLarge:
-            SHADOW_SKIPPED.inc("too_large")
+            platform_events.emit("permission.shadow.skipped", reason="too_large")
             return {}
         except TimeoutError:
-            SHADOW_SKIPPED.inc("timeout")
+            platform_events.emit("permission.shadow.skipped", reason="timeout")
             return {}
         except Exception as exc:
-            SHADOW_SKIPPED.inc("error")
+            platform_events.emit("permission.shadow.skipped", reason="error")
             _logger.warning("acl shadow comparison failed: %s", type(exc).__name__)
             return {}
         finally:
-            SHADOW_SECONDS.observe(result, value=time.perf_counter() - t0)
+            platform_events.emit("permission.shadow.completed", result=result, duration_seconds=time.perf_counter() - t0)
         counts = {"agree": len(ok), "over_admit": len(scoped - ok), "recall_loss": len(admitted & returned - scoped)}
         for outcome, n in counts.items():
             if n:
-                SHADOW_COMPARED.inc(outcome, value=n)
+                platform_events.emit("permission.shadow.compared", outcome=outcome, count=n)
         if counts["over_admit"] and self._may_log():
             _logger.error("acl_shadow over_admit org=%s user=%s count=%d agree=%d", org_id, user_key, counts["over_admit"], counts["agree"])
         return counts

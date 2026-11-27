@@ -53,6 +53,7 @@ from app.modules.transformers.blob_storage import (
 from app.modules.transformers.stored_write import write_id
 from app.modules.transformers.transformer import TransformContext
 from harness_core.testing.virtual_time import run_on_virtual_time
+from tests.support.platform_event_capture import replace_event_listener
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:
@@ -144,15 +145,15 @@ async def storage() -> AsyncIterator[FakeStorage]:
 @pytest.fixture
 def outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     seen: list[str] = []
-    monkeypatch.setattr(backend_module, "record_artifact_read", seen.append)
+    replace_event_listener(monkeypatch, "record.artifact.read", seen.append, "outcome")
     return seen
 
 
 @pytest.fixture
 def shadow_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None]]:
     seen: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        reader_module, "record_artifact_shadow_read", lambda outcome, reason=None: seen.append((outcome, reason)),
+    replace_event_listener(
+        monkeypatch, "record.artifact.shadow_read", lambda outcome, reason=None: seen.append((outcome, reason)), "outcome", "reason",
     )
     return seen
 

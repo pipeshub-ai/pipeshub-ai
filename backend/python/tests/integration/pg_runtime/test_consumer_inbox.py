@@ -13,6 +13,7 @@ from logging import getLogger
 import pytest
 
 from app.core import envelope, org_context
+from app.plugins.telemetry.modules import envelope_metrics
 from app.services.messaging.config import MessageBrokerType, RedisStreamsConfig
 from app.services.messaging.inbox import PgInbox, inbox_message_id, shared_inbox
 from app.services.messaging.interface.consumer import IMessagingConsumer
@@ -246,8 +247,8 @@ async def test_an_event_the_inbox_cannot_record_is_still_processed_and_acknowled
         return True
 
     await _start(broker, topic, handler)
-    before = envelope.INBOX_ERRORS._metric.labels("record")._value.get()
+    before = envelope_metrics.INBOX_ERRORS._metric.labels("record")._value.get()
     await _send(broker, topic, _signed_for(topic, org="not-an-org-id", i=9))   # refused by the table's org id check
     await until(lambda: calls == [9])
     await _settled(broker, topic)
-    assert envelope.INBOX_ERRORS._metric.labels("record")._value.get() > before
+    assert envelope_metrics.INBOX_ERRORS._metric.labels("record")._value.get() > before

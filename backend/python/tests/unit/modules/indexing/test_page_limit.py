@@ -19,6 +19,7 @@ from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
+from app.plugins.telemetry.modules import indexing_metrics
 from app.utils.user_errors import (
     MAX_INDEXED_PDF_PAGES,
     PDF_PAGE_LIMIT_NOTE,
@@ -408,7 +409,7 @@ async def test_an_unavailable_count_on_a_searchable_file_is_decided_by_the_inspe
         writes_before_inspection.append(dict(world.graph.record)),
         InspectedPdf(content, needs_ocr=False, repaired=False, page_count=900),
     )[1]
-    with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
+    with patch.object(indexing_metrics.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_called_once()
     inspect.assert_awaited_once()

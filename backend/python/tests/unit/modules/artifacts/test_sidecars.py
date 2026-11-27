@@ -21,6 +21,7 @@ from app.modules.artifacts.sidecars import (
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import canonical_json
 from app.modules.transformers.stored_write import write_id
+from tests.support.platform_event_capture import event_calls
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ async def storage() -> AsyncIterator[FakeStorage]:
 @pytest.fixture
 def outcomes() -> Iterator[list[str]]:
     seen: list[str] = []
-    with patch.object(sidecars_module, "record_artifact_write", seen.append):
+    with event_calls("record.artifact.written", "outcome", to=seen.append):
         yield seen
 
 

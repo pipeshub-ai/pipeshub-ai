@@ -5,26 +5,26 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 
-from app.edition import TELEMETRY_DEFAULT_ENABLED
-from app.telemetry.backend import NoopBackend
-from app.telemetry.event_buffer import event_buffer, record_event
-from app.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
-from app.telemetry.middleware import MetricsMiddleware
-from app.telemetry.pusher import MetricsPusher
-from app.telemetry.setup import setup_telemetry
+from app import plugins
+from app.edition import USAGE_DATA_DEFAULT_ENABLED
+from app.plugins.telemetry.backend import NoopBackend
+from app.plugins.telemetry.event_buffer import event_buffer, record_event
+from app.plugins.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
+from app.plugins.telemetry.middleware import MetricsMiddleware
+from app.plugins.telemetry.pusher import MetricsPusher
 
 
 class TestTelemetryEnabled:
     def test_unset_uses_edition_default(self, monkeypatch) -> None:
         monkeypatch.delenv(TELEMETRY_COLLECTION_FLAG, raising=False)
 
-        assert telemetry_enabled() is TELEMETRY_DEFAULT_ENABLED
+        assert telemetry_enabled() is USAGE_DATA_DEFAULT_ENABLED
 
     @pytest.mark.parametrize("value", ["", "   "])
     def test_empty_uses_edition_default(self, monkeypatch, value) -> None:
         monkeypatch.setenv(TELEMETRY_COLLECTION_FLAG, value)
 
-        assert telemetry_enabled() is TELEMETRY_DEFAULT_ENABLED
+        assert telemetry_enabled() is USAGE_DATA_DEFAULT_ENABLED
 
     @pytest.mark.parametrize("value", ["true", "TRUE", " True "])
     def test_true_enables(self, monkeypatch, value) -> None:
@@ -57,20 +57,23 @@ class TestNoopBackend:
 
 
 class TestDisabledWiring:
-    def test_setup_skips_middleware(self, monkeypatch) -> None:
+    def test_plugin_skips_middleware(self, monkeypatch) -> None:
         monkeypatch.setenv(TELEMETRY_COLLECTION_FLAG, "false")
         app = FastAPI()
 
-        pending = setup_telemetry(app, service_name="query_service")
+        host = plugins.load_plugins("query_service", ["app.plugins.telemetry"])
+        host.install(app)
+        host.close()
 
         assert MetricsMiddleware not in [m.cls for m in app.user_middleware]
-        assert pending.pusher is None
 
-    def test_setup_registers_middleware_when_enabled(self, monkeypatch) -> None:
+    def test_plugin_registers_middleware_when_enabled(self, monkeypatch) -> None:
         monkeypatch.setenv(TELEMETRY_COLLECTION_FLAG, "true")
         app = FastAPI()
 
-        setup_telemetry(app, service_name="query_service")
+        host = plugins.load_plugins("query_service", ["app.plugins.telemetry"])
+        host.install(app)
+        host.close()
 
         assert MetricsMiddleware in [m.cls for m in app.user_middleware]
 

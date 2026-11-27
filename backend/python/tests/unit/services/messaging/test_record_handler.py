@@ -48,6 +48,7 @@ from app.services.messaging.kafka.handlers.record import (
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import indexing_timing, user_errors
+from tests.support.platform_event_capture import event_calls
 from tests.support.record_handler import make_record_handler
 from tests.support.settle import settle
 from tests.unit.attempt_start import attempt_start_via
@@ -6922,7 +6923,7 @@ class TestRejectedTooLargeCounter:
         with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"), \
              patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF"}), \
              patch.object(record_module.MessageErrorClassifier, "classify_by_exception", return_value=kind), \
-             patch.object(record_module, "record_rejected_too_large", side_effect=counter_error) as counter:
+             event_calls("record.storage.rejected_too_large", "status", to=MagicMock(side_effect=counter_error)) as counter:
             handler.config_service.get_config = AsyncMock(
                 return_value={"connectors": {"endpoint": "http://localhost:8088"}}
             )

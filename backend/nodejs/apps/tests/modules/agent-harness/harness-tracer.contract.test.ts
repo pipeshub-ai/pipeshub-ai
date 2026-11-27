@@ -6,7 +6,7 @@
 import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import { expect } from 'chai';
-import { OtlpHttpTracer } from '../../../src/modules/agent-harness/adapters/telemetry/otlp-http-tracer';
+import { OtlpHttpTracer } from '../../../src/modules/agent-harness/adapters/observability/otlp-http-tracer';
 import {
   HarnessSpan,
   HarnessSpanAttribute,

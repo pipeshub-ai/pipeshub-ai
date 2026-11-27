@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 
+from tests.support.platform_event_capture import event_calls
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
@@ -2611,7 +2612,7 @@ class TestRefreshConnectorMetrics:
         gp.count_active_apps_by_type = lambda: IGraphDBProvider.count_active_apps_by_type(gp)
         logger = MagicMock()
 
-        with patch("app.connectors_main.set_connector_active") as mock_set, \
+        with event_calls("connector.inventory.counted", "active_by_type") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
@@ -2639,7 +2640,7 @@ class TestRefreshConnectorMetrics:
             after.append(peek())
             raise asyncio.CancelledError
 
-        with patch("app.connectors_main.set_connector_active") as mock_set, \
+        with event_calls("connector.inventory.counted", "active_by_type") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", side_effect=stop):
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.create_task(refresh_connector_metrics(gp, MagicMock(), interval_s=60), context=contextvars.Context())
@@ -2659,7 +2660,7 @@ class TestRefreshConnectorMetrics:
         sleeps = AsyncMock(side_effect=[None, asyncio.CancelledError])
 
         with caplog.at_level(logging.DEBUG, logger=logger.name), \
-             patch("app.connectors_main.set_connector_active") as mock_set, \
+             event_calls("connector.inventory.counted", "active_by_type") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", sleeps):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)

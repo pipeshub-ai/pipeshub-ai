@@ -14,6 +14,7 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.models.blocks import SemanticMetadata
 from app.modules.artifacts.store import (
     ArtifactRoutesUnavailable,
@@ -25,7 +26,6 @@ from app.modules.artifacts.store import (
 from app.modules.artifacts.writer import REV_PATTERN, canonical_json
 from app.modules.transformers.stored_write import write_id
 from app.services.featureflag.platform_settings import is_artifact_write_enabled
-from app.telemetry.modules.record_storage_metrics import record_artifact_write
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -95,7 +95,7 @@ class ArtifactSidecars:
         if not virtual_record_id or not rev or set_id is None or not await is_artifact_write_enabled(self.config_service):
             return False
         if not artifact_writes_available():
-            record_artifact_write("sidecar_unavailable")
+            platform_events.emit("record.artifact.written", outcome="sidecar_unavailable")
             return False
         try:
             if not REV_PATTERN.match(rev) or not _PATH.match(path):
@@ -104,7 +104,7 @@ class ArtifactSidecars:
             await self.store.put(plan.files[path], canonical_json(payload), _JSON)
         except (ArtifactRoutesUnavailable, SetPerWriteUnsupported):
             # No set of its own for this write: never file into the revision's shared set.
-            record_artifact_write("sidecar_unavailable")
+            platform_events.emit("record.artifact.written", outcome="sidecar_unavailable")
             return False
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -113,7 +113,7 @@ class ArtifactSidecars:
                 "Sidecar %s of virtual record %s (rev %s) not written: %s %s",
                 path, virtual_record_id, rev, type(exc).__name__, reason,
             )
-            record_artifact_write("sidecar_failed")
+            platform_events.emit("record.artifact.written", outcome="sidecar_failed")
             return False
-        record_artifact_write("sidecar_written")
+        platform_events.emit("record.artifact.written", outcome="sidecar_written")
         return True

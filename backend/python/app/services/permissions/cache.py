@@ -31,10 +31,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Protocol, cast
 
+from app import platform_events
 from app.core.org_context import spawn_detached
 from app.services.redis.generation import seeded_incr
 
-from .metrics import SCOPE_CACHE
 from .scopes import ViewerScopes
 
 if TYPE_CHECKING:
@@ -291,4 +291,4 @@ class ViewerScopeCache:
 
 
 def count(result: str) -> None:
-    SCOPE_CACHE.inc(result)
+    platform_events.emit("permission.viewer_scope_cache.read", result=result)

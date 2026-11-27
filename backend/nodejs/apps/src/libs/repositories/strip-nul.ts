@@ -1,4 +1,4 @@
-import { docstoreMetrics } from './metrics';
+import { emitPlatformEvent } from '../platform-events';
 
 /**
  * Removes U+0000 from every string and every object key in `value` (PostgreSQL rejects it in text and jsonb;
@@ -39,6 +39,11 @@ export function stripNul<T>(value: T, repo: string, field = ''): T {
     return v; // numbers, Dates, Buffers, class instances
   };
   const out = walk(value) as T;
-  if (n > 0) docstoreMetrics.nulStripped.inc({ repo, field }, n);
+  if (n > 0)
+    emitPlatformEvent('docstore.nul_characters.stripped', {
+      repo,
+      field,
+      count: n,
+    });
   return out;
 }

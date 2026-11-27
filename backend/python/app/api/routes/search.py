@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from app import platform_events
 from app.agents.actions.knowledge_graph.ops.outside_dates import (
     OUTSIDE_DATES_SEARCH_LIMIT,
     outside_dates_payload,
@@ -68,8 +69,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
+from app.utils.email_domain import domain_from_email
 from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
@@ -708,15 +708,16 @@ async def search(
                 logger.info(f"Custom status code: {custom_status_code}")
 
                 _su_email = request.state.user.get("email")
-                record_event("search_performed", {
-                    "orgId": request.state.user.get("orgId"),
-                    "userId": request.state.user.get("userId"),
-                    "email": _su_email,
-                    "domain": domain_from_email(_su_email),
-                    "status_code": custom_status_code,
-                    "num_queries": len(queries),
-                    "search_type": "timeline" if timeline else "search",
-                })
+                platform_events.emit(
+                    "search.performed",
+                    org_id=request.state.user.get("orgId"),
+                    user_id=request.state.user.get("userId"),
+                    user_email=_su_email,
+                    email_domain=domain_from_email(_su_email),
+                    status_code=custom_status_code,
+                    query_count=len(queries),
+                    search_type="timeline" if timeline else "search",
+                )
 
                 return JSONResponse(
                     status_code=custom_status_code, content=results, headers=_failed_search_headers(results),
@@ -1056,13 +1057,14 @@ async def retrieve(
                     rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
                 )
                 status_code = results.get("status_code", 500)
-                record_event("retrieve_performed", {
-                    "orgId": user.get("orgId"),
-                    "userId": user.get("userId"),
-                    "domain": domain_from_email(user.get("email")),
-                    "status_code": status_code,
-                    "num_queries": len(queries),
-                })
+                platform_events.emit(
+                    "retrieval.performed",
+                    org_id=user.get("orgId"),
+                    user_id=user.get("userId"),
+                    email_domain=domain_from_email(user.get("email")),
+                    status_code=status_code,
+                    query_count=len(queries),
+                )
                 if not results.get("searchResults"):
                     # Nothing matched, nothing accessible, nothing indexed yet: still an
                     # answer. A failure (index or permission check down, bad filter) is not.

@@ -2,7 +2,7 @@
 request allowed or refused.
 
 The deciding code calls ``token_rejected`` or ``egress_decided``; the process installs where the counts go
-(``install``: PipesHub's Prometheus registry, ``app.telemetry.modules.security_metrics``). Every label is mapped
+(``install``: PipesHub's Prometheus registry, ``app.plugins.telemetry.modules.security_metrics``). Every label is mapped
 onto a fixed set here, whatever the caller passes, so no token, id, host or caller text can become a series. A
 sink that raises never changes the decision that called it.
 """

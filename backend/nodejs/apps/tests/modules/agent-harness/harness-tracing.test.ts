@@ -19,7 +19,7 @@ import {
 import {
   harnessTracerFromEnv,
   OtlpHttpTracer,
-} from '../../../src/modules/agent-harness/adapters/telemetry/otlp-http-tracer';
+} from '../../../src/modules/agent-harness/adapters/observability/otlp-http-tracer';
 import { InvalidEnvFlagError } from '../../../src/libs/utils/env-flags';
 import { fixedRollout } from './support/rollout';
 import { grantingAccess } from './support/agent-definition';

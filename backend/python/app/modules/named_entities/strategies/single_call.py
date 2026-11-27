@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
+from app import platform_events
 from app.modules.named_entities.strategies.agent.prompt import STATIC_PREFIX
 from app.modules.named_entities.strategies.agent.tools import (
     ExtractionSession,
@@ -26,7 +27,6 @@ from app.services.llm_gateway.gateway import (
     get_llm_gateway,
     provider_key,
 )
-from app.telemetry.modules.named_entity_metrics import record_step_down
 from app.utils.llm import is_provider_unavailable
 
 if TYPE_CHECKING:
@@ -255,7 +255,7 @@ class SingleCallExtractionStrategy:
             if failed:
                 logger.info("Named-entity %s output failed where %s worked; starting at %s", failed[0], mode, mode)
                 _STEP_DOWN[key] = (mode, time.monotonic() + _STEP_DOWN_TTL_SECONDS)
-                record_step_down(mode)
+                platform_events.emit("named_entity.schema.stepped_down", mode=mode)
             return result
         raise error or ValueError("no structured result")
 

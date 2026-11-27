@@ -48,11 +48,11 @@ from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
+from app.plugins import load_plugins
 from app.services.resource_governor.probe import (
     effective_cpu_count,
     effective_cpu_source,
 )
-from app.telemetry.setup import setup_telemetry
 from app.utils.embedding_precision import (
     INT8,
     QUANTIZER_VERSION,
@@ -1411,10 +1411,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reaper = spawn_detached(model_manager.run_idle_reaper(), name="embedding-idle-reaper")
 
     if config_service is not None:
-        try:
-            await telemetry.bind(config_service, logger).start()
-        except Exception as exc:
-            logger.warning("Failed to start telemetry pusher: %s", exc)
+        await plugin_host.start(config_service=config_service, logger=logger)
 
     yield
 
@@ -1423,8 +1420,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reaper.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await reaper
-    if telemetry.pusher is not None:
-        await telemetry.pusher.stop()
+    await plugin_host.stop()
     if config_service is not None:
         try:
             await config_service.close()
@@ -1452,8 +1448,9 @@ app.add_middleware(BodyLimitMiddleware, limits={"/v1/embeddings": MAX_EMBEDDING_
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
 
-# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
-telemetry = setup_telemetry(app, service_name="embedding_service")
+# Plug-ins (app.plugins_manifest) add their request middleware here; started and stopped in lifespan.
+plugin_host = load_plugins("embedding_service")
+plugin_host.install(app)
 
 
 PRECISION_HEADER = "X-Embedding-Precision"

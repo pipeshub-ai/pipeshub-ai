@@ -1,6 +1,6 @@
 import { inDurableTransaction } from '../../../libs/repositories/agent-harness/durable-transaction';
-import { prometheusChatPathMetrics } from '../adapters/telemetry/chat-path-metrics';
-import { prometheusResolvedTurnMetrics } from '../adapters/telemetry/resolved-turn-metrics';
+import { prometheusChatPathMetrics } from '../adapters/observability/chat-path-metrics';
+import { prometheusResolvedTurnMetrics } from '../adapters/observability/resolved-turn-metrics';
 import {
   GatewayTokenStores,
   HarnessAuthorityStores,

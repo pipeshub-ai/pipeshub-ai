@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import drainer, flush
 from app.services.graph_db.postgres.kg.drainer import (
     drain_or_retry,
@@ -152,8 +153,8 @@ async def test_the_gauges_report_the_log_and_the_unreadable_rows(pg_db, monkeypa
         def clear(self) -> None:
             self.values.clear()
     lag_g, quarantined_g = Gauge(), Gauge()
-    monkeypatch.setattr(legacy, "LAG", lag_g)
-    monkeypatch.setattr(legacy, "QUARANTINED", quarantined_g)
+    monkeypatch.setattr(kg_metrics.LEGACY_LAG, "set", lag_g.set)
+    monkeypatch.setattr(kg_metrics.LEGACY_QUARANTINED, "set", quarantined_g.set)
     p, org = prov(pg_db), new_org()
     await world2(p, org)
     with ctx(org):

@@ -33,6 +33,7 @@ from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
 from app.harness.credential_roles import listener_auth
 from app.harness.placement import deployment_region
+from app.harness.plugin_metrics import broker_metrics, metrics_text
 from app.harness.sandbox import docker_broker, docker_policy
 from app.harness.sandbox.docker_broker import (
     VOLUME_PREFIX,
@@ -44,9 +45,8 @@ from app.harness.sandbox.egress_config import broker_egress_wiring
 from app.harness.sandbox.engine_images import EngineImageAvailability
 from app.harness.sandbox.images import mcp_runner_image, sandbox_image
 from app.harness.supply_chain.images import image_trust_from_env
+from app.plugins import load_plugins
 from app.sandbox.docker_proxy import ENV_BROKER_CALLER_TOKEN
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
 from harness_core.clock import SystemClock
 from harness_core.engines.controller import (
     EngineControllerConfig,
@@ -119,6 +119,9 @@ _DEFAULT_EGRESS_NETWORK = docker_policy.DEFAULT_EGRESS_NETWORK
 EX_CONFIG = 78
 
 _LOG = HarnessLog.named("app.sandbox_broker")
+
+# Before anything is built: the harness's metric ports and its /metrics route come from the plug-ins (app.harness.plugin_metrics).
+plugin_host = load_plugins("sandbox_broker")
 
 
 def allowed_images() -> frozenset[str]:
@@ -330,7 +333,7 @@ async def docker_backend(context: BrokerBackendContext) -> DockerSandboxBroker:
         workspace_quota_mb=workspace_quota_mb(),
         write_bound=write_bound(),
         max_sandboxes=max_sandboxes(),
-        metrics=BackendBrokerMetrics(),
+        metrics=broker_metrics(),
         withheld_runtimes=withheld,
         egress=await broker_egress_wiring(
             context.config_service, provider=provider, clock=clock, network_prefix=f"{VOLUME_PREFIX}-net-"
@@ -369,7 +372,7 @@ async def create_service(
             _LOG.warning("broker.reconcile_failed", errorType=type(exc).__name__)
     # SEC-C-10: the worker's credential on the broker's routes, the scraper's on /metrics, nothing else.
     auth = listener_auth(config_service, "sandbox-broker")
-    app = create_broker_app(broker, auth, region=deployment_region(), metrics=METRICS_BACKEND.serialize)
+    app = create_broker_app(broker, auth, region=deployment_region(), metrics=metrics_text())
     return BrokerService(broker, app)
 
 

@@ -61,10 +61,8 @@ import {
   JWT_BEARER_GRANT,
 } from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
-import {
-  clientTags,
-  recordEvent,
-} from '../../../libs/services/telemetry/telemetry-impl';
+import { emitPlatformEvent } from '../../../libs/platform-events';
+import { requestClient } from '../../../libs/utils/request-client.utils';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -494,10 +492,10 @@ export class OAuthProviderController {
 
       // A refresh renews a grant already counted, so only first issuance is recorded.
       if (tokenRequest.grant_type !== 'refresh_token') {
-        recordEvent('oauth_token_issued', {
-          grant_type: tokenRequest.grant_type,
-          client_id: clientId,
-          ...clientTags(req.headers),
+        emitPlatformEvent('oauth.token.issued', {
+          grantType: tokenRequest.grant_type,
+          clientId,
+          ...requestClient(req.headers),
         });
       }
     } catch (error) {

@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from app.web.chain import ChainFailed
 from app.web.errors import AccessDenied, Blocked, RateLimited
@@ -10,6 +10,7 @@ from app.web.tools.web_search import (
     WebSearchArgs,
     create_web_search_tool,
 )
+from tests.support.platform_event_capture import event_calls
 
 CALLER = CallerContext(org_id="org-1", user_id="user-1")
 
@@ -36,7 +37,7 @@ async def test_success_payload_carries_site_date_and_attempts() -> None:
     )
     fake = service(outcome)
     tool = create_web_search_tool(fake, CALLER)
-    with patch("app.web.tools.web_search.record_search") as record:
+    with event_calls("web.search.completed", "provider", "outcome", "duration_seconds") as record:
         payload = json.loads(await tool.ainvoke({"query": "q"}))
     assert payload == {
         "ok": True,

@@ -78,7 +78,7 @@ def org_for_filter(org_id: str | None = None, *, match_bound: bool = False) -> s
     never falls back to "every org". With ``match_bound`` an explicit org that differs from a bound
     one raises ``OrgMismatch``.
     """
-    from app.core import org_context  # deferred: the context module pulls in telemetry
+    from app.core import org_context  # deferred import
 
     if org_id is not None:
         if is_missing(org_id):

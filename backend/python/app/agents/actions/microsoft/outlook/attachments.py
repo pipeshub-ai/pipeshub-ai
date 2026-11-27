@@ -31,6 +31,7 @@ from app.agents.actions.util.attachment_upload import (
 from app.services.record_content.models import ResolvedRecordContent
 from app.sources.client.http.send_ambiguity import note_aiohttp_failure, note_status
 from app.sources.client.http.send_safe_aiohttp import send_safe_session
+from app.utils.http_client_events import aiohttp_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,7 @@ class OutlookAttachmentUploader:
         num_chunks = math.ceil(total_size / _UPLOAD_CHUNK_SIZE)
         last_response_data: dict = {}
 
-        async with send_safe_session() as session:
+        async with send_safe_session(**aiohttp_tracing("outlook")) as session:
             for i in range(num_chunks):
                 start = i * _UPLOAD_CHUNK_SIZE
                 end = min(start + _UPLOAD_CHUNK_SIZE, total_size)

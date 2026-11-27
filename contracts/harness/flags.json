@@ -885,7 +885,7 @@
           "backend/python/app/harness/telemetry.py"
         ],
         "node": [
-          "backend/nodejs/apps/src/modules/agent-harness/adapters/telemetry/otlp-http-tracer.ts"
+          "backend/nodejs/apps/src/modules/agent-harness/adapters/observability/otlp-http-tracer.ts"
         ]
       },
       "shipped": {

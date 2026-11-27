@@ -12,9 +12,10 @@ import {
   ChatSurface,
   ChatTurnOutcome,
 } from '../../../src/modules/agent-harness/ports/chat-path-metrics';
-import { prometheusChatPathMetrics } from '../../../src/modules/agent-harness/adapters/telemetry/chat-path-metrics';
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend';
+import { prometheusChatPathMetrics } from '../../../src/modules/agent-harness/adapters/observability/chat-path-metrics';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
 import { frameAGUI } from '../../../src/modules/enterprise_search/utils/agui';
+import { useTelemetryPlugin } from '../../helpers/telemetry-plugin';
 
 /**
  * DUR3 condition f: today's loop's turns are counted beside the durable
@@ -68,6 +69,8 @@ const serve = (surface: ChatSurface = 'agent') => {
 };
 
 describe('DUR3: chat path metrics', () => {
+  useTelemetryPlugin();
+
   describe('the outcome of a legacy turn (terminalOutcome)', () => {
     const cases: Array<[string, string, ChatTurnOutcome | null]> = [
       ['an answer', complete({ status: 'Complete', messages: [{ messageType: 'bot_response', content: 'Done.' }] }), 'answered'],

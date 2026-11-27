@@ -46,3 +46,35 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
     """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
     identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
     return {}
+
+
+def optional_plugin_packages() -> tuple[str, ...]:
+    """Every package a build may leave out, relative to ``backend/python``: each plug-in and whatever exists only
+    for one. The plug-in tests delete them all for the build with no plug-in, and let only them hold a client library."""
+    return ("app/plugins/telemetry",)
+
+
+def default_plugins() -> list[str]:
+    """What the checked-in ``app/plugins_manifest.py`` lists."""
+    return ["app.plugins.telemetry"]
+
+
+def extra_platform_events() -> dict[str, object]:
+    """Platform events this build's own modules announce besides ``app.platform_events.catalog``: name -> ``Event``.
+    ``tests/unit/platform_events/test_catalog.py`` checks every emit against both."""
+    return {}
+
+
+def extra_platform_event_fields() -> dict[str, str]:
+    """What the fields of those events mean, where ``catalog.FIELDS`` does not already say: field -> description."""
+    return {}
+
+
+# Catalogued events that no code in this tree announces.
+PLATFORM_EVENTS_NOT_EMITTED_HERE: frozenset[str] = frozenset()
+
+
+def allowed_usage_collection_mentions() -> dict[tuple[str, str], str]:
+    """Lines that still say "telemetry" in a tree built with no plug-in, besides the shared ones in
+    ``tests/unit/plugins/test_stripped_build.py``: (file, text on the line) -> why it stays."""
+    return {}

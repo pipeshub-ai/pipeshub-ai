@@ -38,9 +38,9 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app import platform_events
 from app.core.org_context import spawn_detached
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
-from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -56,22 +56,6 @@ LOCK_TTL_MS = 15_000
 # the schema would stay narrow for good.
 FORCE_AFTER_SKIPS = 3
 
-REWIDEN_TOTAL = METRICS_BACKEND.counter(
-    "pipeshub_record_schema_rewiden_total",
-    "Times this process widened a live collection schema; above 0 in steady state means an older image is running",
-    ["collection", "trigger"],
-)
-REWIDEN_CONTENDED_TOTAL = METRICS_BACKEND.counter(
-    "pipeshub_record_schema_rewiden_contended_total",
-    "Widenings not sent because a stream transaction was still open after the quiet-point wait; the poll tries again",
-    ["collection", "trigger"],
-)
-REWIDEN_WAIT_SECONDS = METRICS_BACKEND.histogram(
-    "pipeshub_record_schema_rewiden_wait_seconds",
-    "Time from sending the schema change to its answer or its client timeout",
-    ["collection", "trigger"],
-    (0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
-)
 
 # "does not match the record schema" but not "the file record schema" and the other record types' messages.
 _RECORD_SCHEMA_ERROR = re.compile(r"does not match the record schema")
@@ -286,7 +270,7 @@ class RecordSchemaGuard:
                     self._narrowed = False
                     return False
                 if contended:
-                    REWIDEN_CONTENDED_TOTAL.inc(self._collection, trigger)
+                    platform_events.emit("graph.schema.widening_deferred", collection=self._collection, trigger=trigger)
                     if self._skips < FORCE_AFTER_SKIPS:
                         # A schema change waits for every open stream transaction, so one sent now could outlast its 5 s timeout and the
                         # lease. Not sent: the refused write stays refused (transient) and the next try looks for a quiet point again.
@@ -334,8 +318,7 @@ class RecordSchemaGuard:
                     self._logger.warning("%s schema widening did not finish in %.0fs: %s", self._collection, REWIDEN_TIMEOUT_S, error)
                     applied = False
                 elapsed = time.monotonic() - started
-                REWIDEN_WAIT_SECONDS.observe(self._collection, trigger, value=elapsed)
-                REWIDEN_TOTAL.inc(self._collection, trigger)
+                platform_events.emit("graph.schema.widened", collection=self._collection, trigger=trigger, wait_seconds=elapsed)
                 self._logger.warning(
                     "widened the %s schema to generation %d (trigger=%s, %.2fs, applied=%s)",
                     self._collection, self.generation, trigger, elapsed, applied,

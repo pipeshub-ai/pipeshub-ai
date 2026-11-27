@@ -9,7 +9,7 @@ import {
   createAgentHarnessInternalRouter,
 } from './internal-routes';
 import { countTokenRefusals } from './internal-auth';
-import { recordTokenRejection } from '../adapters/telemetry/token-rejection-metrics';
+import { recordTokenRejection } from '../adapters/observability/token-rejection-metrics';
 import { HttpReadLimits, positiveIntegerSetting } from './read-limits';
 import { agentHarnessSwitchedOn } from '../config';
 

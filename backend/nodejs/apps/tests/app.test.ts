@@ -9,8 +9,9 @@ import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
 import { Logger } from '../src/libs/services/logger.service';
-import * as telemetryModule from '../src/libs/services/telemetry/telemetry.service';
-import * as metricsRefreshModule from '../src/modules/user_management/services/metrics.refresh.service';
+import * as telemetryModule from '../src/plugins/telemetry/telemetry.service';
+import { resetPlugins } from '../src/libs/plugins';
+import * as metricsRefreshModule from '../src/plugins/telemetry/metrics.refresh.service';
 import { KeyValueStoreService } from '../src/libs/services/keyValueStore.service';
 import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 import { MigrationService } from '../src/modules/configuration_manager/services/migration.service';
@@ -394,6 +395,8 @@ describe('Application', () => {
   let mockLogger: MockLogger;
 
   beforeEach(() => {
+    // Each case loads the build's plug-ins afresh, under its own environment.
+    resetPlugins();
     sandbox = sinon.createSandbox();
     mockLogger = createMockLogger();
     sandbox.stub(Logger, 'getInstance').returns(mockLogger as any);
@@ -405,6 +408,7 @@ describe('Application', () => {
 
   afterEach(() => {
     sandbox.restore();
+    resetPlugins();
   });
 
   // =========================================================================

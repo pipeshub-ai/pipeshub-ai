@@ -2,12 +2,15 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { PatController } from '../../../../src/modules/oauth_provider/controller/pat.controller'
-import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
-import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin'
+import { eventBuffer } from '../../../../src/plugins/telemetry/event-buffer'
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend'
 import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 describe('PatController', () => {
+  useTelemetryPlugin()
+
   let controller: PatController
   let mockPatService: any
   let mockScopeValidatorService: any

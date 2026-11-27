@@ -29,6 +29,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import mint_service_token
 from app.utils.storage_download import is_signed_url_reply
 
@@ -69,7 +70,7 @@ async def _session_or_default(
     if session is not None:
         yield session
         return
-    async with aiohttp.ClientSession() as new_session:
+    async with aiohttp.ClientSession(**aiohttp_tracing("record_content")) as new_session:
         yield new_session
 
 

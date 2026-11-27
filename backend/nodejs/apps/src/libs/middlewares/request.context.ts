@@ -5,7 +5,10 @@ import {
   runWithRequestContext,
   sanitizeRootId,
 } from "../context/request-context";
+import { runWithInboundContext } from "../context/inbound-readers";
+import type { CallerClient } from "../platform-events/events";
 import { Logger } from "../services/logger.service";
+import { classifyCaller } from "../utils/request-client.utils";
 
 /**
  * Interface for the request context object.
@@ -14,6 +17,8 @@ interface RequestContext {
   requestId: string;
   correlationId?: string;
   timestamp: number;
+  /** What kind of client sent the request, from its headers. */
+  client: CallerClient;
   headers: {
     userAgent: string;
     clientIp?: string;
@@ -72,6 +77,7 @@ const createRequestContext = (req: Request): RequestContext => {
     requestId: headers.requestId,
     correlationId: headers.correlationId,
     timestamp: Date.now(),
+    client: classifyCaller(req.headers),
     headers,
     meta: {
       path: req.path,
@@ -93,15 +99,20 @@ export const requestContextMiddleware = (
   res: Response,
   next: NextFunction
 ): void => {
-  req.context = createRequestContext(req);
-  res.setHeader('X-Request-Id', req.context.requestId);
+  const context = createRequestContext(req);
+  req.context = context;
+  res.setHeader('X-Request-Id', context.requestId);
   // Bind the id for the whole request so the Logger tags every line.
   const relay = req.headers[HEADER_MCP_RELAY];
-  runWithRequestContext(
-    {
-      rootId: req.context.requestId,
-      ...(typeof relay === 'string' ? { mcpRelay: relay } : {}),
-    },
-    () => next(),
+  // Whoever registered an inbound context reader sees the headers that arrived.
+  runWithInboundContext(req.headers, 'http', () =>
+    runWithRequestContext(
+      {
+        rootId: context.requestId,
+        client: context.client,
+        ...(typeof relay === 'string' ? { mcpRelay: relay } : {}),
+      },
+      () => next(),
+    ),
   );
 };

@@ -10,6 +10,7 @@ import { createMockLogger, MockLogger } from '../../helpers/mock-logger';
 import { stubGetRedisProvider } from '../../helpers/fake-redis-provider';
 import { IRedisConnectionProvider } from '../../../src/libs/services/redis/connectionProvider.interface';
 import { RedisBrokerConfig, StreamMessage } from '../../../src/libs/types/messaging.types';
+import { onPlatformEvent } from '../../../src/libs/platform-events';
 
 // ---------------------------------------------------------------------------
 // Mock Redis client, shared by every connection the module under test opens
@@ -314,6 +315,65 @@ describe('Redis Streams Service', () => {
         await producer.publish('topic', msg);
         expect(mockRedis.connect.called).to.be.true;
         expect(mockRedis.xadd.calledOnce).to.be.true;
+      });
+    });
+
+    describe('platform events', () => {
+      let published: any[];
+      let off: () => void;
+      beforeEach(async () => {
+        published = [];
+        off = onPlatformEvent('message.published', (payload) => {
+          published.push(payload);
+        });
+        await producer.connect();
+      });
+      afterEach(() => off());
+
+      it('announces a published message without its payload or key', async () => {
+        await producer.publish('sync-events', {
+          key: 'key-SEEDED',
+          value: { eventType: 'connector.sync', payload: { text: 'SEEDED-payload-text' } },
+        });
+        expect(published).to.have.length(1);
+        expect(Object.keys(published[0]).sort()).to.deep.equal(
+          ['broker', 'durationSeconds', 'messageType', 'outcome', 'topic'],
+        );
+        expect(published[0]).to.include({
+          broker: 'redis', topic: 'sync-events', messageType: 'connector.sync', outcome: 'success',
+        });
+        expect(JSON.stringify(published)).not.to.include('SEEDED');
+      });
+
+      it('announces failure when the stream write fails', async () => {
+        mockRedis.xadd.rejects(new Error('down'));
+        try {
+          await producer.publish('sync-events', { key: 'k', value: { eventType: 'e1' } });
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect(error).to.be.instanceOf(MessageBrokerError);
+        }
+        expect(published.map((p) => p.outcome)).to.deep.equal(['failure']);
+      });
+
+      it('announces each message of a batch, all as failed when the batch is reported failed', async () => {
+        const pipeline = { xadd: sinon.stub().returnsThis(), exec: sinon.stub().resolves([]) };
+        mockRedis.pipeline.returns(pipeline);
+        const batch = [
+          { key: 'a', value: { eventType: 'e1' } },
+          { key: 'b', value: { eventType: 'e2' } },
+        ];
+        await producer.publishBatch('t', batch);
+        pipeline.exec.resolves([[null, '1-0'], [new Error('no'), null]]);
+        try {
+          await producer.publishBatch('t', batch);
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect(error).to.be.instanceOf(MessageBrokerError);
+        }
+        expect(published.map((p) => [p.messageType, p.outcome])).to.deep.equal([
+          ['e1', 'success'], ['e2', 'success'], ['e1', 'failure'], ['e2', 'failure'],
+        ]);
       });
     });
 
@@ -734,6 +794,79 @@ describe('Redis Streams Service', () => {
         await drain(forged, handler);
         expect(handler.called).to.be.false;
         expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('announces an entry whose value or headers are not JSON as unparseable', async () => {
+        const consumed: any[] = [];
+        const off = onPlatformEvent('message.consumed', (payload) => {
+          consumed.push(payload);
+        });
+        try {
+          mockRedis.xautoclaim.onFirstCall().resolves([
+            '0-0',
+            [
+              [`${Date.now() - 3000}-0`, ['key', 'key-SEEDED', 'value', '{not json SEEDED']],
+              ['6-0', ['key', 'k', 'value', '{"eventType":"orgUpdated"}', 'headers', 'not json SEEDED']],
+            ],
+            [],
+          ]);
+          mockRedis.xreadgroup.callsFake(async () => {
+            consumer.running = false;
+            return null;
+          });
+          const handler = sinon.stub().resolves();
+          await consumer.consume(handler);
+          await consumer.consumeLoopPromise;
+
+          expect(handler.called).to.equal(false);
+          expect(consumed.map((c) => [c.broker, c.topic, c.messageType, c.outcome])).to.deep.equal([
+            ['redis', 'test-stream', 'unknown', 'unparseable'],
+            ['redis', 'test-stream', 'unknown', 'unparseable'],
+          ]);
+          expect(consumed[0].lagMs).to.be.within(3000, 60_000);
+          expect(JSON.stringify(consumed)).not.to.include('SEEDED');
+        } finally {
+          off();
+        }
+      });
+
+      it('announces each delivery with its outcome and the lag its entry id gives', async () => {
+        const consumed: any[] = [];
+        const off = onPlatformEvent('message.consumed', (payload) => {
+          consumed.push(payload);
+        });
+        try {
+          const ctx = makeOrgContext({ orgId: 'org_a', userId: 'u', kind: 'user', source: 'jwt' });
+          const good = sign(KEY, 'test-stream', { orgId: 'org_a' }, ctx, undefined, 'orgUpdated');
+          const forged: any = sign(KEY, 'test-stream', { orgId: 'org_a' }, ctx, undefined, 'orgUpdated');
+          forged.ctx.orgId = 'org_b';
+          const entry = (value: unknown, id: string) => [id, ['key', 'key-SEEDED', 'value', JSON.stringify(value)]];
+          mockRedis.xautoclaim.onFirstCall().resolves([
+            '0-0',
+            [entry(good, `${Date.now() - 3000}-0`), entry(forged, '5-0'), entry(good, `${Date.now()}-1`)],
+            [],
+          ]);
+          mockRedis.xreadgroup.callsFake(async () => {
+            consumer.running = false;
+            return null;
+          });
+          const handler = sinon.stub();
+          handler.onFirstCall().resolves();
+          handler.onSecondCall().rejects(new Error('handler failed'));
+          await consumer.consume(handler);
+          await consumer.consumeLoopPromise;
+
+          expect(consumed.map((c) => [c.broker, c.topic, c.messageType, c.outcome])).to.deep.equal([
+            ['redis', 'test-stream', 'orgUpdated', 'success'],
+            ['redis', 'test-stream', 'orgUpdated', 'rejected'],
+            ['redis', 'test-stream', 'orgUpdated', 'failure'],
+          ]);
+          expect(consumed[0].lagMs).to.be.within(3000, 60_000);
+          expect(consumed[0].durationSeconds).to.be.at.least(0);
+          expect(JSON.stringify(consumed)).not.to.include('SEEDED');
+        } finally {
+          off();
+        }
       });
 
       it('an event delivered twice (a reclaimed entry and a replayed copy) runs once and both are acked', async () => {

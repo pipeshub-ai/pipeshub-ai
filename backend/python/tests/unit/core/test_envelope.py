@@ -19,6 +19,7 @@ from app.core.envelope import (
 )
 from app.core.org_context import OrgContext
 from app.exceptions.non_retryable import NonRetryableError
+from app.plugins.telemetry.modules import envelope_metrics
 from app.utils import logging_fields
 from tests.support.undecodable_json import DEEP, LONG_INT
 
@@ -83,12 +84,12 @@ async def test_bad_signature_with_a_key_configured_is_rejected() -> None:
 
 
 async def test_v2_message_with_no_key_configured_is_processed_counted_and_logged(caplog) -> None:
-    before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
+    before = envelope_metrics.UNVERIFIED._metric.labels(TOPIC)._value.get()
     with caplog.at_level("WARNING"):
         opened = await _open(_msg(), keys=())
     assert (opened.ctx.org_id, opened.ctx.source) == ("org_b", "legacy-payload")
     assert opened.message["payload"] == {"orgId": "org_b", "recordId": "r1"} and "ctx" not in opened.message
-    assert envelope.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1
+    assert envelope_metrics.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1
     assert "no key configured" in caplog.text
 
 
@@ -238,10 +239,10 @@ async def test_an_unsigned_message_is_matched_by_its_event_id_and_one_without_an
 
 async def test_an_inbox_that_cannot_answer_lets_the_message_run_and_is_counted(configured_key) -> None:
     for op in ("seen", "record"):
-        before = envelope.INBOX_ERRORS._metric.labels(op)._value.get()
+        before = envelope_metrics.INBOX_ERRORS._metric.labels(op)._value.get()
         opened = await _consume(_Inbox(fail=op), _msg())
         assert opened.ctx.org_id == "org_b"
-        assert envelope.INBOX_ERRORS._metric.labels(op)._value.get() == before + 1
+        assert envelope_metrics.INBOX_ERRORS._metric.labels(op)._value.get() == before + 1
 
 
 def test_the_inbox_keeps_an_id_as_long_as_any_copy_could_still_be_accepted(monkeypatch) -> None:
@@ -253,11 +254,11 @@ def test_the_inbox_keeps_an_id_as_long_as_any_copy_could_still_be_accepted(monke
 
 
 async def test_n_minus_1_message_without_ctx_is_accepted_and_counted_before_the_flag() -> None:
-    before = envelope.CTX_MISSING._metric.labels(TOPIC)._value.get()
+    before = envelope_metrics.CTX_MISSING._metric.labels(TOPIC)._value.get()
     legacy = {"eventType": "x", "payload": {"orgId": "org_b"}, "requestId": "req-9"}
     opened = await _open(legacy)
     assert (opened.ctx.org_id, opened.ctx.source) == ("org_b", "legacy-payload")
-    assert envelope.CTX_MISSING._metric.labels(TOPIC)._value.get() == before + 1
+    assert envelope_metrics.CTX_MISSING._metric.labels(TOPIC)._value.get() == before + 1
     # no org anywhere: stays unbound, so current() fails closed
     assert (await _open({"eventType": "x", "payload": {}})).ctx is None
 
@@ -338,10 +339,10 @@ async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     old = _msg(issued_at=int(time.time()) - 901)
     monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
-    before = envelope.STALE._metric.labels(TOPIC)._value.get()
+    before = envelope_metrics.STALE._metric.labels(TOPIC)._value.get()
     with caplog.at_level("ERROR"):
         assert (await _open(old)).ctx.org_id == "org_b"  # shadow: counted and logged, accepted
-    assert envelope.STALE._metric.labels(TOPIC)._value.get() == before + 1 and "older than" in caplog.text
+    assert envelope_metrics.STALE._metric.labels(TOPIC)._value.get() == before + 1 and "older than" in caplog.text
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
     with pytest.raises(EnvelopeRejected, match="stale"):
         await _open(old)
@@ -358,8 +359,8 @@ async def test_a_dropped_stale_control_message_names_its_event_type_and_record(m
     """A stale message dropped in enforce mode is counted by reason and event type and says which record it was about."""
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
     old = _msg({"orgId": "org_b", "recordId": "rec-lost"}, issued_at=int(time.time()) - 901, event_type="purgePaidResults")
-    counter = envelope.REJECTED._metric.labels(TOPIC, "stale", "purgePaidResults")
-    by_type = envelope.STALE_BY_TYPE._metric.labels(TOPIC, "purgePaidResults")
+    counter = envelope_metrics.REJECTED._metric.labels(TOPIC, "stale", "purgePaidResults")
+    by_type = envelope_metrics.STALE_BY_TYPE._metric.labels(TOPIC, "purgePaidResults")
     before, before_type = counter._value.get(), by_type._value.get()
     with pytest.raises(EnvelopeRejected) as dropped:
         await _open(old)
@@ -371,7 +372,7 @@ async def test_a_dropped_stale_control_message_names_its_event_type_and_record(m
 
 async def test_a_dropped_future_message_names_its_event_type_and_record() -> None:
     future = _msg({"orgId": "org_b", "recordId": "rec-early"}, issued_at=int(time.time()) + 3600, event_type="purgePaidResults")
-    counter = envelope.REJECTED._metric.labels(TOPIC, "future", "purgePaidResults")
+    counter = envelope_metrics.REJECTED._metric.labels(TOPIC, "future", "purgePaidResults")
     before = counter._value.get()
     with pytest.raises(EnvelopeRejected) as dropped:
         await _open(future)
@@ -383,7 +384,7 @@ async def test_a_rejection_before_the_signature_verified_never_names_an_event_ty
     """The event type of a message that failed verification is the sender's claim: it is not a metric label or a log field."""
     forged = _msg(issued_at=int(time.time()) - 901, event_type="purgePaidResults")
     forged["eventType"] = "attacker-chosen"
-    counter = envelope.REJECTED._metric.labels(TOPIC, "bad_signature", "")
+    counter = envelope_metrics.REJECTED._metric.labels(TOPIC, "bad_signature", "")
     before = counter._value.get()
     with pytest.raises(EnvelopeRejected) as dropped:
         await _open(forged)
@@ -393,7 +394,7 @@ async def test_a_rejection_before_the_signature_verified_never_names_an_event_ty
 
 async def test_stripped_ctx_is_counted_as_stripped_while_signing_is_on(monkeypatch) -> None:
     legacy = {"eventType": "x", "payload": {"orgId": "org_b"}}
-    stripped, missing = envelope.STRIPPED._metric.labels(TOPIC), envelope.CTX_MISSING._metric.labels(TOPIC)
+    stripped, missing = envelope_metrics.STRIPPED._metric.labels(TOPIC), envelope_metrics.CTX_MISSING._metric.labels(TOPIC)
     monkeypatch.delenv("ENVELOPE_SIGN", raising=False)
     s0, m0 = stripped._value.get(), missing._value.get()
     await _open(legacy)  # producer flag off: plain v1
@@ -428,11 +429,11 @@ async def test_wire_org_ctx_key_is_dropped() -> None:
 async def test_no_key_while_signing_is_never_silent(monkeypatch, caplog) -> None:
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
-    before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
+    before = envelope_metrics.UNVERIFIED._metric.labels(TOPIC)._value.get()
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     with caplog.at_level("ERROR"):
         assert (await _open(_msg(), keys=())).ctx.source == "legacy-payload"
-    assert envelope.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1 and "key unavailable" in caplog.text
+    assert envelope_metrics.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1 and "key unavailable" in caplog.text
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
     with pytest.raises(EnvelopeRejected, match="no_key"):
         await _open(_msg(), keys=())
@@ -444,7 +445,7 @@ async def test_producer_without_a_key_is_counted_and_fails_closed_in_enforce(mon
     envelope.configure(None)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     flat = {"eventType": "T", "payload": {"orgId": "org_b"}}
-    counter = envelope.UNSIGNED._metric.labels(TOPIC, "no_key")
+    counter = envelope_metrics.UNSIGNED._metric.labels(TOPIC, "no_key")
     before = counter._value.get()
     with bind(CTX_B):
         monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
@@ -455,7 +456,7 @@ async def test_producer_without_a_key_is_counted_and_fails_closed_in_enforce(mon
         with pytest.raises(RuntimeError, match="no key"):
             envelope.sign_message(TOPIC, flat)
     assert "ctx" not in envelope.sign_message(TOPIC, flat)  # no org bound: counted, sent as v1 plus an event id
-    assert envelope.UNSIGNED._metric.labels(TOPIC, "no_org")._value.get() >= 1
+    assert envelope_metrics.UNSIGNED._metric.labels(TOPIC, "no_org")._value.get() >= 1
 
 
 class _Config:

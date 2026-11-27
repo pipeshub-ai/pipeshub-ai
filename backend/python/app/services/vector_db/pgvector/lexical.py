@@ -14,8 +14,8 @@ import math
 import time
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.db import ConnectionLost, DbError, DbTimeout
-from app.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
@@ -90,25 +90,25 @@ async def search(
     terms_of(sparse)             # validated before any statement
     started = time.monotonic()
     if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
-        telemetry.observe_leg("lexical", leg, started)
+        platform_events.emit("vector_search.leg.completed", tier="lexical", leg_size=leg, duration_seconds=time.monotonic() - started)
         return [], None
     try:
         rows, partial = await db.run(
             lambda tx: _run(tx, org, collection_id, sparse, scope, leg, t), timeout_ms=t.h_timeout_ms(leg), custom_plan=True)
         if partial:
-            telemetry.DEGRADED.inc("partial", "lexical", telemetry.leg_band(leg))
-        telemetry.observe_leg("lexical", leg, started)
+            platform_events.emit("vector_search.leg.degraded", reason="partial", tier="lexical", leg_size=leg)
+        platform_events.emit("vector_search.leg.completed", tier="lexical", leg_size=leg, duration_seconds=time.monotonic() - started)
         return rows, "partial" if partial else None
     except DbTimeout:
-        telemetry.TIMEOUT.inc("lexical", "lexical")
+        platform_events.emit("vector_search.leg.timed_out", leg="lexical", tier="lexical")
         logger.warning("lexical leg ran out of time; answering from the dense leg alone")
         reason = "timeout"
     except ConnectionLost:
-        telemetry.observe_leg("lexical", leg, started)
+        platform_events.emit("vector_search.leg.completed", tier="lexical", leg_size=leg, duration_seconds=time.monotonic() - started)
         raise                   # the database is out: the whole search answers unavailable rather than half of it
     except DbError:
         logger.error("lexical leg failed; answering from the dense leg alone", exc_info=True)
         reason = "error"
-    telemetry.DEGRADED.inc(reason, "lexical", telemetry.leg_band(leg))
-    telemetry.observe_leg("lexical", leg, started)
+    platform_events.emit("vector_search.leg.degraded", reason=reason, tier="lexical", leg_size=leg)
+    platform_events.emit("vector_search.leg.completed", tier="lexical", leg_size=leg, duration_seconds=time.monotonic() - started)
     return [], reason

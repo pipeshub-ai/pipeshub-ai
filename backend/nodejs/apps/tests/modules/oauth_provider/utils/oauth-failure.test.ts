@@ -117,7 +117,7 @@ describe('oauth-failure', () => {
       }
     })
 
-    // A failure after the answer went out (token's telemetry runs after res.json) is logged, never answered twice.
+    // A failure after the answer went out (token announces the grant after res.json) is logged, never answered twice.
     it('only logs when the answer was already sent', () => {
       const log = logger() as unknown as { error: sinon.SinonStub }
       const res = { headersSent: true, status: sinon.stub().returnsThis(), json: sinon.stub() }

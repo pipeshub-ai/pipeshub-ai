@@ -32,7 +32,7 @@ from app.api.middlewares.request_log import (
 )
 from app.core.org_context import OrgContext, set_request_context
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.telemetry.middleware import MetricsMiddleware
+from app.plugins.telemetry.middleware import MetricsMiddleware
 from app.utils import error_class
 from app.utils.logger import RedactingFormatter, log_record_fields
 from app.utils.request_context import get_context, set_context_org

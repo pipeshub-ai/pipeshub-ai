@@ -1,8 +1,8 @@
-"""Unit tests for app.telemetry.event_buffer."""
+"""Unit tests for app.plugins.telemetry.event_buffer."""
 
 import threading
 
-from app.telemetry.event_buffer import (
+from app.plugins.telemetry.event_buffer import (
     MAX_EVENTS,
     EventBuffer,
     event_buffer,

@@ -223,7 +223,7 @@ class TestSuccessPath:
     async def test_empty_answer_still_counts_as_an_answer_in_telemetry(self) -> None:
         """The user received something, sourceless. Leaving the fallback out
         would make the answers-with-sources ratio look better than it is."""
-        from app.telemetry.event_buffer import event_buffer
+        from app.plugins.telemetry.event_buffer import event_buffer
 
         event_buffer.drain()
         context = make_context()
@@ -537,7 +537,7 @@ class TestCancelledPath:
         assert result["answer"] == ""
 
     async def test_stopped_answer_with_text_counts_as_a_stopped_answer_in_telemetry(self) -> None:
-        from app.telemetry.event_buffer import event_buffer
+        from app.plugins.telemetry.event_buffer import event_buffer
 
         event_buffer.drain()
         context = make_context()
@@ -555,7 +555,7 @@ class TestCancelledPath:
         assert recorded[0]["props"]["citation_count"] == len(result["citations"])
 
     async def test_stop_before_any_text_is_not_counted_as_an_answer(self) -> None:
-        from app.telemetry.event_buffer import event_buffer
+        from app.plugins.telemetry.event_buffer import event_buffer
 
         event_buffer.drain()
         context = make_context()

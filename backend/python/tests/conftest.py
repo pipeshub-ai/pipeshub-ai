@@ -74,7 +74,7 @@ def _install_dotenv_filter() -> None:
 _install_dotenv_filter()
 
 # The suite exercises the real metrics backend whatever the edition default. Set before the first app import below:
-# the logger loads app.telemetry.backend, which picks the backend once, at import.
+# the logger loads app.plugins.telemetry.backend, which picks the backend once, at import.
 os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
 
 # Importing this configures the root logger (INFO, a stderr handler), as it does in every service. Imported
@@ -90,6 +90,14 @@ from tests.support.stress_marker import skip_stress_tests  # noqa: E402 - after 
 pytest_plugins = ("tests.support.sys_modules_guard",)
 # Before the optional-package probes below load onnxruntime, whose uploader is native and bypasses NetworkGuard.
 disable_vendor_telemetry()
+
+# The application announces platform events; the telemetry plug-in turns them into metrics. Listening for the whole
+# session, as a running service does, lets a test read the metric an action produced. Subscribed here once: the
+# service entry modules a test imports load the plug-ins too, and find these handlers already listening.
+from app import platform_events as _platform_events  # noqa: E402 - after the flag above, which the plug-in reads at import
+from app.plugins.telemetry import listeners as _telemetry_listeners  # noqa: E402
+
+_telemetry_listeners.subscribe(_platform_events.on)
 
 # Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
 # later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file

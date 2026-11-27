@@ -2,7 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { NotificationConsumer, notificationEventRefused } from '../../../../src/modules/notification/service/notification.consumer';
+import { onPlatformEvent } from '../../../../src/libs/platform-events';
+import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
@@ -315,7 +316,8 @@ describe('notification/service/notification.consumer', () => {
           sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
           const insertMany = sinon.stub().resolves([]);
           setNotificationRepository({ insertMany } as never);
-          const refused = sinon.spy(notificationEventRefused, 'inc');
+          const refused = sinon.spy();
+          const stopListening = onPlatformEvent('notification.event.refused', refused);
           const handler = sinon.stub().resolves();
           await consumer.consume(handler);
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
@@ -327,7 +329,9 @@ describe('notification/service/notification.consumer', () => {
           expect(mockLogger.warn.firstCall.args[1].error.message).to.equal('Notification event refused');
           expect(mockLogger.warn.firstCall.args[1]).to.not.have.property('messageValue');
           expect(handler.calledOnce).to.be.true;
-          expect(refused.calledOnceWithExactly({ reason: 'id_with_many_recipients' })).to.be.true;
+          stopListening();
+          expect(refused.calledOnce).to.be.true;
+          expect(refused.firstCall.args[0]).to.deep.equal({ reason: 'id_with_many_recipients' });
         });
 
         it('keeps the _id for one recipient', async () => {

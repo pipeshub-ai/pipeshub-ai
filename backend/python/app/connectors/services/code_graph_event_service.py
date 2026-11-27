@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import EventTypes
 from app.connectors.core.sync.task_manager import (
     SyncTaskManager,
     code_edge_build_task_manager,
 )
 from app.modules.code_graph import enabled as code_graph_switch
-from app.telemetry.modules import code_graph_metrics
 
 # Chained runs in a row before what is still owed is left to the reconciler: a pending
 # flag that never clears (a stale duplicate sync point did, B3) must not rebuild forever.
@@ -73,7 +73,7 @@ class CodeGraphEventService:
             record_group_id=record_group_id,
         )
         if lease is None:
-            code_graph_metrics.record_busy_request()
+            platform_events.emit("code_graph.build.request_deferred")
             self._logger.info(
                 "Code edge build busy for org=%s record_group=%s; the running build serves it",
                 org_id,

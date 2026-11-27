@@ -15,9 +15,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.services.vector_db.pgvector import dense
 from app.services.vector_db.pgvector.visibility import Scope
-from app.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
@@ -111,5 +111,5 @@ async def bit_recall(db: KernelDB, t: Tuning, org: str, collection_id: int, spac
 
     mean = await db.run(run, timeout_ms=60_000, custom_plan=True)       # per statement, and never above the org's own limit
     if mean is not None:
-        telemetry.QUANTIZATION_RECALL.observe("ok" if mean >= t.validate_floor else "below_floor", value=mean)
+        platform_events.emit("vector_search.quantization.validated", verdict="ok" if mean >= t.validate_floor else "below_floor", recall=mean)
     return mean

@@ -21,12 +21,16 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
+from app import platform_events
+from app.core import org_context
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.messaging import broker_events
 from app.services.messaging.error_classifier import is_record_deleted, is_source_refusal
 from app.utils.error_class import (
     OUR_BUGS,
@@ -48,6 +52,7 @@ __all__ = [
     "RecordTimeline",
     "begin_record",
     "current_timeline",
+    "describe_record",
     "end_record",
     "note",
     "record_stage",
@@ -114,13 +119,57 @@ def slow_step_seconds() -> float:
 
 
 class _StageStat:
-    __slots__ = ("count", "total", "max", "slow")
+    __slots__ = ("count", "total", "max", "slow", "failed")
 
     def __init__(self) -> None:
         self.count = 0
         self.total = 0.0
         self.max = 0.0
         self.slow = 0
+        self.failed = 0
+
+
+STAGE_COMPLETED = "indexing.stage.completed"
+# The stages a listener hears of, in the order a record passes them; a step that fits none is ``other``.
+STAGES = ("queued", "fetch", "parse", "extract", "embed", "store", "other")
+# The pipeline's own step names, by their first part: which of STAGES each belongs to.
+_STAGE_OF_STEP: dict[str, str] = {
+    "download": "fetch",
+    "extract": "extract",
+    "chunk": "extract",
+    "images": "extract",
+    "entities.extract": "extract",
+    "entities.resolve": "extract",
+    "embed": "embed",
+    "vector": "store",
+    "blob": "store",
+    "artifacts": "store",
+    "entities": "store",
+    "graph": "store",
+    "swap": "store",
+    "reconcile": "store",
+}
+UNKNOWN_CONNECTOR = "unknown"
+_MAX_CONNECTORS = 200
+_CONNECTOR_SHAPE = re.compile(r"[A-Za-z][A-Za-z0-9_ .-]{0,63}")
+_connectors: set[str] = set()
+
+
+def stage_of(step: str) -> str:
+    """Which of :data:`STAGES` a pipeline step (``vector.upsert``, ``entities.extract``) belongs to."""
+    return _STAGE_OF_STEP.get(step) or _STAGE_OF_STEP.get(step.split(".", 1)[0], "other")
+
+
+def connector_type(value: object) -> str:
+    """A message's ``connectorName`` as a value from a bounded set: a short name set by code, else ``unknown``."""
+    if not isinstance(value, str) or not value:
+        return UNKNOWN_CONNECTOR
+    if value in _connectors:
+        return value
+    if len(_connectors) >= _MAX_CONNECTORS or not _CONNECTOR_SHAPE.fullmatch(value):
+        return UNKNOWN_CONNECTOR
+    _connectors.add(value)
+    return value
 
 
 class RecordTimeline:
@@ -131,7 +180,10 @@ class RecordTimeline:
     can exceed the record's wall time — it is busy time, not elapsed time.
     """
 
-    __slots__ = ("record_id", "event_type", "tier", "started", "facts", "ended", "_marks", "_stages")
+    __slots__ = (
+        "record_id", "event_type", "tier", "started", "facts", "ended", "_marks", "_stages",
+        "connector", "broker", "topic", "lag_ms",
+    )
 
     def __init__(
         self,
@@ -145,6 +197,11 @@ class RecordTimeline:
         self.event_type = event_type
         self.tier = tier
         self.started = time.perf_counter() if started is None else started
+        # For the platform events only (``indexing.stage.completed``, ``message.consumed``); never on the log line.
+        self.connector: object = None
+        self.broker: str | None = None
+        self.topic = ""
+        self.lag_ms: int | None = None
         self.facts: dict[str, object] = {}
         self.ended = False
         self._marks: dict[str, float] = {}
@@ -169,7 +226,7 @@ class RecordTimeline:
     def has_mark(self, name: str) -> bool:
         return name in self._marks
 
-    def add(self, name: str, seconds: float, *, slow: bool = False) -> int:
+    def add(self, name: str, seconds: float, *, slow: bool = False, failed: bool = False) -> int:
         """Add one step's duration; returns how many slow steps the stage has had."""
         stat = self._stages.get(name)
         if stat is None:
@@ -180,7 +237,27 @@ class RecordTimeline:
             stat.max = seconds
         if slow:
             stat.slow += 1
+        if failed:
+            stat.failed += 1
         return stat.slow
+
+    def stage_facts(self, now: float | None = None) -> list[tuple[str, float, int, bool]]:
+        """``(stage, seconds, steps, ok)`` for each of :data:`STAGES` this record spent time in, in that order.
+
+        ``queued`` is the wait for an indexing slot and for a parse slot; ``parse`` the parse itself (ok once it
+        returned); the others add up the busy time of the pipeline steps that belong to them (ok when none raised)."""
+        phases = self.phases(now)
+        found: dict[str, list] = {}
+        queued = phases.get("wait_slot", 0.0) + (phases.get("parse_wait", 0.0) if "parse" in phases else 0.0)
+        found["queued"] = [queued, 1, ADMITTED in self._marks]
+        if "parse" in phases:
+            found["parse"] = [phases["parse"], 1, PARSED in self._marks]
+        for name, stat in self._stages.items():
+            entry = found.setdefault(stage_of(name), [0.0, 0, True])
+            entry[0] += stat.total
+            entry[1] += stat.count
+            entry[2] = entry[2] and not stat.failed
+        return [(name, *found[name]) for name in STAGES if name in found]
 
     def stage_totals(self) -> dict[str, tuple[int, float, float]]:
         return {
@@ -260,10 +337,28 @@ def begin_record(
     tier: str | None = None,
     *,
     started: float | None = None,
+    connector: object = None,
+    broker: str | None = None,
+    topic: str = "",
+    published_at_ms: object = None,
 ) -> tuple[RecordTimeline, Token]:
-    """Open a timeline and make it current for this task and the tasks it spawns."""
+    """Open a timeline and make it current for this task and the tasks it spawns.
+
+    ``connector``: the message's connector type, for the stage events. ``broker`` (kafka, redis), ``topic`` and the
+    broker's own timestamp of the message: given them, the end of the record is also announced as ``message.consumed``."""
     timeline = RecordTimeline(record_id, event_type, tier, started=started)
+    timeline.connector = connector
+    timeline.broker = broker
+    timeline.topic = topic
+    timeline.lag_ms = broker_events.lag_ms(published_at_ms)
     return timeline, _current.set(timeline)
+
+
+def describe_record(*, connector: object = None) -> None:
+    """What a consumer learned about the current record after it opened the timeline. No-op outside a record."""
+    timeline = _current.get()
+    if timeline is not None and connector is not None:
+        timeline.connector = connector
 
 
 def end_record(
@@ -283,7 +378,7 @@ def end_record(
         with contextlib.suppress(ValueError):
             _current.reset(token)
     try:
-        _write_end(timeline, outcome, logger or _logger)
+        _announce_end(timeline, _write_end(timeline, outcome, logger or _logger))
     except Exception:
         pass
     finally:
@@ -291,7 +386,41 @@ def end_record(
         timeline.facts.clear()
 
 
-def _write_end(timeline: RecordTimeline, internal: str, logger: logging.Logger) -> None:
+def _announce_end(timeline: RecordTimeline, settled: tuple[str, object, object]) -> None:
+    """The record's stages as ``indexing.stage.completed`` events and, for a timeline opened with its broker, the
+    delivery as ``message.consumed``. Nothing is built when nobody listens."""
+    outcome, disposition, record_id = settled
+    now = time.perf_counter()
+    if timeline.broker is not None:
+        broker_events.consumed(
+            timeline.broker,
+            timeline.topic,
+            timeline.event_type,
+            outcome=outcome if disposition == "ack" else str(disposition),
+            duration_seconds=now - timeline.started,
+            lag=timeline.lag_ms,
+        )
+    if not platform_events.has_listeners(STAGE_COMPLETED):
+        return
+    org = org_context.peek()
+    org_id = org.org_id if org is not None else None
+    connector = connector_type(timeline.connector)
+    record_id = str(record_id) if record_id else None
+    for name, seconds, steps, ok in timeline.stage_facts(now):
+        platform_events.emit(
+            "indexing.stage.completed",
+            stage=name,
+            connector=connector,
+            org_id=org_id,
+            record_id=record_id,
+            duration_seconds=seconds,
+            count=steps,
+            outcome="success" if ok else "failure",
+        )
+
+
+def _write_end(timeline: RecordTimeline, internal: str, logger: logging.Logger) -> tuple[str, object, object]:
+    """Writes the line; returns the record's ``(outcome, disposition, record id)`` as the line says them."""
     facts = dict(timeline.facts)
     exc = facts.pop("exc", None)
     exc = exc if isinstance(exc, BaseException) else None
@@ -322,10 +451,12 @@ def _write_end(timeline: RecordTimeline, internal: str, logger: logging.Logger) 
         "code": code if isinstance(code := getattr(exc, "code", None), str) else None,
         **facts,  # noted facts win, record_id and event_type included (a stage job's record)
     }
+    settled = (outcome, disposition, fields["record_id"])
     log_unit_end(
         logger, INDEX_END, exc, level=level, error_class=cls,
         include_error_text=exc is None or not quotes_content(exc), **fields,
     )
+    return settled
 
 
 def _error_class(exc: BaseException) -> str:
@@ -366,12 +497,13 @@ def record_stage(
     *,
     detail: str | None = None,
     logger: logging.Logger | None = None,
+    failed: bool = False,
 ) -> None:
-    """Add a measured step to the current record and warn if it was slow."""
+    """Add a measured step to the current record and warn if it was slow. ``failed``: the step raised."""
     threshold = slow_step_seconds()
     slow = seconds >= threshold
     timeline = _current.get()
-    slow_count = timeline.add(name, seconds, slow=slow) if timeline is not None else 1
+    slow_count = timeline.add(name, seconds, slow=slow, failed=failed) if timeline is not None else 1
     if not slow or not timing_enabled() or slow_count > _MAX_SLOW_WARNINGS_PER_STAGE:
         return
     with contextlib.suppress(Exception):
@@ -401,7 +533,9 @@ def stage(
     a long wait still shows where that wait was.
     """
     started = time.perf_counter()
+    failed = True
     try:
         yield
+        failed = False
     finally:
-        record_stage(name, time.perf_counter() - started, detail=detail, logger=logger)
+        record_stage(name, time.perf_counter() - started, detail=detail, logger=logger, failed=failed)

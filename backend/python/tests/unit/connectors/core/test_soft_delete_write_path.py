@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import (
     Connectors,
     DeleteSource,
@@ -354,7 +355,7 @@ class TestFlagOn:
         _with_store(proc, AsyncMock()).soft_delete_records = AsyncMock(
             return_value=_soft_result([("a", "va"), ("b", None)])
         )
-        with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
+        with flag(True), event_calls("record.soft_deleted", "source", "count") as counted:
             await proc.on_records_deleted_cascade(["a"], "kb1", delete_source=DeleteSource.USER)
         counted.assert_called_once_with("USER", 2)
 
@@ -388,7 +389,7 @@ class TestDeleteByExternalId:
         store = _with_store(proc, AsyncMock())
         store.get_record_by_external_id = AsyncMock(return_value=_stored("m1"))
         store.soft_delete_records = AsyncMock(return_value=_soft_result([("m1", "vm"), ("a1", "va")]))
-        with flag(True), patch(f"{MODULE}.record_soft_deleted") as counted:
+        with flag(True), event_calls("record.soft_deleted", "source", "count") as counted:
             await proc.delete_record_by_external_id("c1", "msg-1", "u1")
 
         call = store.soft_delete_records.await_args

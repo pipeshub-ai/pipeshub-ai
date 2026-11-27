@@ -102,6 +102,7 @@ from app.harness.labels import (
     inherited_label,
 )
 from app.harness.memories import recalled_event_for, source_free
+from app.harness.plugin_metrics import read_cache_metrics
 from app.harness.quarantine import bind_summarizer
 from app.harness.repositories import (
     REPOSITORY_FETCH,
@@ -143,7 +144,6 @@ from app.harness.write_identity.ports import write_identity_port
 from app.harness.write_identity.settings import use_write_identity
 from app.services.artifact_registry.models import Actor
 from app.services.featureflag.platform_settings import bind_pinned_stages
-from app.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.citations import WEB_CITATION_STYLE, WebCitationStyle
 from app.utils.run_model_scope import hold_run_model_scope
 from harness_core import bindings
@@ -1045,7 +1045,7 @@ class PipesHubEngineAssembler:
                 ReadScope(claim.org_id, claim.run.actor_id if claim.run is not None else "", claim.run_id),
                 cacheable_reads(served, rules),
                 log=log,
-                metrics=READ_CACHE_METRICS,
+                metrics=read_cache_metrics(),
                 executor="engine",
             ),
         )

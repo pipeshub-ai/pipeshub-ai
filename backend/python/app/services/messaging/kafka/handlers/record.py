@@ -12,6 +12,7 @@ import aiohttp  # type: ignore
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
+from app import platform_events
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -170,9 +171,9 @@ from app.services.vector_db.rebuild_state import (
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
-from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.error_class import log_failure, quotes_content
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.indexing_timing import current_timeline, note, stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
@@ -430,7 +431,7 @@ class RecordEventHandler(BaseEventService):
         try:
             return await replay_set.read_entries(await self._redis_client(), record_id, payload)
         except Exception as exc:
-            replay_set.REPLAY_SET_ERRORS.inc("read")
+            platform_events.emit("indexing.replay_set.failed", operation="read")
             self.logger.warning("Replay set not read for record %s: %s", record_id, type(exc).__name__)
             return None
 
@@ -2058,7 +2059,7 @@ class RecordEventHandler(BaseEventService):
             for key in _INTENT_PAYLOAD_KEYS:
                 payload.pop(key, None)
             stamped = None
-            refresh_intent.REFRESH_INTENT_EVENTS.inc("demoted")
+            platform_events.emit("record.refresh_intent.changed", change="demoted")
         superseded: tuple[str, ...] = ()
         if (
             paid_cache_run.refresh_requested(payload) and payload.get(refresh_intent.FROM_INTENT_KEY) is not True
@@ -2090,7 +2091,7 @@ class RecordEventHandler(BaseEventService):
                 record_id, CollectionNames.RECORDS.value, refresh_intent.intent_fields(intent_id, now_ms),
                 {refresh_intent.ID_FIELD: expected},
             ):
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("written")
+                platform_events.emit("record.refresh_intent.changed", change="written")
                 return intent_id
             latest = await graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
             if latest is None:
@@ -2139,7 +2140,7 @@ class RecordEventHandler(BaseEventService):
             # replica reads the record, so a worker whose marker store is its own (Redis unreachable) still leaves the fact where the
             # others see it. The cache markers are the same fact for events of requests the record never held.
             if run.seen and await refresh_intent.clear_intent(graph, record_id, run.seen, {refresh_intent.DONE_ID_FIELD: run.seen}):
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("cleared")
+                platform_events.emit("record.refresh_intent.changed", change="cleared")
             if run.refresh and run.intent_id and org_id:
                 cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
                 await cache.mark_refresh_done(str(org_id), record_id, run.intent_id)
@@ -2177,7 +2178,7 @@ class RecordEventHandler(BaseEventService):
                 topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(record_id),
             ),
         )
-        refresh_intent.REFRESH_INTENT_EVENTS.inc("followup")
+        platform_events.emit("record.refresh_intent.changed", change="followup")
 
     async def _begin_orphan_guard(self, record_id: str, record: dict) -> DeliveryGuard | None:
         """The delivery's existence guard: the delete markers seen now (the watermarks), the record's creation time, and a
@@ -2663,7 +2664,7 @@ class RecordEventHandler(BaseEventService):
                     f"The refresh completion marker of record {record_id} cannot be read", details={"record_id": record_id},
                 )
             if refresh_run is not None and state == "done":
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("deduped")
+                platform_events.emit("record.refresh_intent.changed", change="deduped")
                 # The refresh ran: a stored copy of its id (a clear that did not land) goes now, so the sweep does not send it
                 # again and it does not age out as a request that was never served.
                 await self._clear_intent(record_id, refresh_run.intent_id)
@@ -2792,7 +2793,7 @@ class RecordEventHandler(BaseEventService):
                     )
                 note(outcome="skipped", reason="replayed" if replayed else "already_indexed")
                 if replayed:
-                    replay_set.REPLAYS_ACKNOWLEDGED.inc("indexing")
+                    platform_events.emit("indexing.replay.acknowledged", service="indexing")
                     self.logger.debug(f"Replay of a delivery that already completed record {record_id}: acknowledged")
                 else:
                     self.logger.debug(f"Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
@@ -3415,7 +3416,7 @@ class RecordEventHandler(BaseEventService):
                     if (refusal := too_large_refusal(last_exception)) is not None:
                         # A metrics fault must not stop the record being marked FAILED.
                         with contextlib.suppress(Exception):
-                            record_rejected_too_large(refusal.status)
+                            platform_events.emit("record.storage.rejected_too_large", status=refusal.status)
                     try:
                         record = await self.__update_document_status(
                             record_id=record_id,
@@ -3632,7 +3633,7 @@ class RecordEventHandler(BaseEventService):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = bytearray()
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as session:
                     try:
                         async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:

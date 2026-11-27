@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import legacy
 
 if TYPE_CHECKING:
@@ -39,7 +40,7 @@ class Tx:
 
 async def test_publishing_one_org_leaves_the_series_of_the_others_and_zeroes_a_series_whose_records_are_gone(monkeypatch: pytest.MonkeyPatch) -> None:
     gauge = Gauge()
-    monkeypatch.setattr(legacy, "LEGACY", gauge)
+    monkeypatch.setattr(kg_metrics.LEGACY_LEGACY, "set", gauge.set)
     monkeypatch.setattr(legacy, "_published", {})
     row = [{"app_sk": 1, "legacy_reason": 3, "n": 5}]
     await legacy.publish(Tx(row), "org-a")                        # type: ignore[arg-type]

@@ -1,8 +1,8 @@
-"""Unit tests for app.telemetry.modules.http_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.http_metrics."""
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules import http_metrics
-from app.telemetry.modules.http_metrics import (
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules import http_metrics
+from app.plugins.telemetry.modules.http_metrics import (
     HTTP_REQUEST_DURATION,
     HTTP_REQUESTS,
     bound_route,

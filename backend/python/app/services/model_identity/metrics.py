@@ -1,8 +1,8 @@
 """Counters for identity forwarding.
 
 In-process and dependency free: the forwarding hook runs on every model request,
-so recording must never block, raise or import a metrics client. The telemetry
-exporter, or a test, reads ``snapshot()``.
+so recording must never block, raise or import a metrics client. An exporter, or
+a test, reads ``snapshot()``.
 """
 
 from __future__ import annotations

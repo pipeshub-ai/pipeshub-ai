@@ -38,6 +38,11 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
     def provider_name(self) -> str:
         return "voyage"
 
+    @property
+    def announces_model_calls(self) -> bool:
+        # Images go through the configured embeddings client, which the model factory wraps.
+        return True
+
     async def embed_images(self, image_base64s: list[str]) -> list[ImageEmbeddingResult]:
         batch_size = getattr(self.dense_embeddings, "batch_size", _DEFAULT_BATCH_SIZE)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)

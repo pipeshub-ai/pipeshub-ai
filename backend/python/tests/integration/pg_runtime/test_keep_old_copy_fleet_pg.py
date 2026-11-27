@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from app.modules.indexing import keep_old_copy
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.messaging import config as mconfig
 from app.services.messaging import membership
 from app.services.messaging.postgres.queue import PgQueue
@@ -27,7 +28,7 @@ async def world(runtime: object, monkeypatch: pytest.MonkeyPatch, uid: str) -> t
     monkeypatch.setattr(mconfig, "get_message_broker_type", lambda: mconfig.MessageBrokerType.POSTGRES)
     keep_old_copy._refusals_logged.clear()
     reasons: list[str] = []
-    monkeypatch.setattr(keep_old_copy.swap_refusals, "inc", lambda reason: reasons.append(reason))
+    monkeypatch.setattr(indexing_metrics.SWAP_REFUSALS, "inc", lambda reason: reasons.append(reason))
     queue = PgQueue(runtime)
     group = f"records-{uid}"
     monkeypatch.setattr(membership, "_registered", {group: {f"record-events-{uid}"}})

@@ -46,4 +46,7 @@ DECLARED_IN_BOTH = frozenset({"torch", "torchvision"})
 
 def test_integration_tests_do_not_pin_a_backend_dependency_again(integration: dict) -> None:
     backend = _manifest(BACKEND_MANIFEST)
-    assert _names(integration) & _names(backend) == DECLARED_IN_BOTH
+    # The backend lists itself to pull in its own extras ("ai-service[telemetry]"): that line pins nothing, and
+    # it is not a name the integration suites share with it.
+    itself = canonicalize_name(backend["project"]["name"])
+    assert _names(integration) & (_names(backend) - {itself}) == DECLARED_IN_BOTH

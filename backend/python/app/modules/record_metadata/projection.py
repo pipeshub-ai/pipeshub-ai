@@ -39,6 +39,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from app import platform_events
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -57,10 +58,6 @@ from app.modules.record_metadata.builtin import builtin_properties, ticket_metad
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.conditions import EQ, IS_NULL, NULL_OR_LE, Cond
-from app.telemetry.modules.record_storage_metrics import (
-    record_property_projection,
-    record_property_value_dropped,
-)
 
 PROJECTION_FLAG: Final = "RECORD_PROPERTY_PROJECTION"
 #: ``ctx.settings`` key: the ``RecordMetadata`` (or None for none) a caller that pushed a record's values hands to indexing.
@@ -301,7 +298,7 @@ def encode_values(union: ScopeUnion, metadata: RecordMetadata) -> dict[str, obje
             continue
         encoded = encode_value(ptype, held.value)
         if encoded is None:
-            record_property_value_dropped()
+            platform_events.emit("record.property_value.dropped")
             continue
         out[name] = encoded
     return out
@@ -535,5 +532,5 @@ async def project_properties(
 
 
 def _done(status: str, attempts: int, reason: str = "") -> Projection:
-    record_property_projection(f"{status}:{reason}" if reason and status == FAILED else status)
+    platform_events.emit("record.properties.projected", outcome=f"{status}:{reason}" if reason and status == FAILED else status)
     return Projection(status, attempts, reason)

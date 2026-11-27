@@ -37,6 +37,7 @@ from app.services.record_content import (
     ResolvedRecordContent,
 )
 from app.utils.error_class import is_stamped, log_failure
+from app.utils.http_client_events import aiohttp_tracing
 
 logger = logging.getLogger(__name__)
 _audit_logger = logging.getLogger("pipeshub.attachment_audit")
@@ -253,7 +254,7 @@ async def resolve_attachments(
                 logger.exception("Unexpected error resolving attachment ref=%r", ref)
                 return AttachmentFailure(ref=ref, error=f"Unexpected error: {exc}", error_type=type(exc).__name__)
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(**aiohttp_tracing("record_content")) as session:
         results = await asyncio.gather(
             *(_resolve_one(r, session) for r in unique_refs),
             return_exceptions=False,

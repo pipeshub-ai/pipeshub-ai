@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="re
 WORKER = textwrap.dedent(
     """
     import sys, time
-    from app.telemetry.ops_exporter import OpsExporter
+    from app.plugins.telemetry.ops_exporter import OpsExporter
     run, port, in_use, brakes = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
     def source():
         return {}, {
@@ -145,7 +145,7 @@ def _holds(port: int, pid: int) -> bool:
 
 
 def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
-    from app.telemetry import ops_exporter as ox
+    from app.plugins.telemetry import ops_exporter as ox
 
     start = ox._proc_start(os.getpid())
     sig = tmp_path / "signals"
@@ -179,7 +179,7 @@ def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
 OOM_WORKER = textwrap.dedent(
     """
     import sys, time
-    from app.telemetry.ops_exporter import OpsExporter
+    from app.plugins.telemetry.ops_exporter import OpsExporter
     run, port, oom = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
     def source():
         return {}, {"pipeshub_cgroup_oom_kills_total": [[["indexing"], oom]]}
@@ -213,7 +213,7 @@ def test_oom_kills_is_the_cgroup_value_with_several_real_processes_and_a_restart
 
 def test_gc_never_deletes_a_live_writers_file(tmp_path: Path, procs: list) -> None:
     """A real writer every 0.2 s and a holder-side scan in a tight loop with the real /proc start-time check."""
-    from app.telemetry import ops_exporter as ox
+    from app.plugins.telemetry import ops_exporter as ox
 
     port = free_port()
     writer = _spawn(procs, tmp_path, port, 1, 7)
@@ -331,7 +331,7 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
     once: a host stall passes the second time, a regression fails both."""
     import asyncio
 
-    from app.telemetry import ops_exporter as ox
+    from app.plugins.telemetry import ops_exporter as ox
 
     sig = tmp_path / "signals"
     sig.mkdir()

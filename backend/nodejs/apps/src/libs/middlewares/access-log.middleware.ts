@@ -3,9 +3,11 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from '../context/request-context';
+import { emitPlatformEvent } from '../platform-events';
 import { isShownId, Logger } from '../services/logger.service';
 import { accessLogLevel } from '../utils/api-path.utils';
 import { classifyRequestError, ErrorClass } from '../utils/error-class';
+import { classifyCaller, emailDomain } from '../utils/request-client.utils';
 
 const UNMATCHED = 'unmatched';
 
@@ -139,10 +141,34 @@ function logAccess(req: Request, res: Response, started: bigint): void {
   });
 }
 
+/** Announces `http.request.completed`, for whoever counts requests. */
+function announceCompleted(req: Request, res: Response, started: bigint): void {
+  const status = res.headersSent ? res.statusCode : undefined;
+  const user = (req as { user?: { orgId?: unknown; email?: unknown } }).user;
+  const orgId = getRequestContext()?.orgId ?? user?.orgId;
+  emitPlatformEvent('http.request.completed', {
+    method: req.method,
+    route: routeTemplate(req),
+    ...(status !== undefined ? { status } : {}),
+    durationSeconds: Number(process.hrtime.bigint() - started) / 1e9,
+    outcome: requestErrorClass(res, status) === undefined ? 'success' : 'failure',
+    ...(typeof orgId === 'string' && orgId !== '' ? { orgId } : {}),
+    emailDomain: emailDomain(
+      typeof user?.email === 'string' ? user.email : undefined,
+    ),
+    client:
+      getRequestContext()?.client ??
+      req.context?.client ??
+      classifyCaller(req.headers),
+  });
+}
+
 /**
  * One `http.request.end` line per request, written when the response closes
  * (finished, failed or aborted; for a stream, when it ends), with the request's
  * context as it stood then: the auth layer adds org and user to it in place.
+ * The same moment is announced as the `http.request.completed` platform event,
+ * for every request, including the paths that are too noisy to log.
  */
 export function accessLog(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -156,6 +182,12 @@ export function accessLog(): RequestHandler {
           logAccess(req, res, started);
         } catch (logFailure) {
           console.error('Logging the access line failed:', logFailure);
+        }
+        // Emitting never throws; building the payload is guarded like the line above.
+        try {
+          announceCompleted(req, res, started);
+        } catch (announceFailure) {
+          console.error('Announcing the request failed:', announceFailure);
         }
       };
       if (store !== undefined) runWithRequestContext(store, log);

@@ -4,7 +4,7 @@ import { forOrg } from '../../../libs/context/orgContext';
 import { withDeliveryRecorded } from '../../../libs/context/envelope';
 import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { ValidationError } from '../../../libs/errors/validation.error';
-import { metricsBackend } from '../../../libs/services/telemetry/telemetry-impl';
+import { emitPlatformEvent } from '../../../libs/platform-events';
 import { NotificationService } from './notification.service';
 import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
 import {
@@ -34,12 +34,6 @@ export function messageFacts(value: unknown): {
     ...(size !== undefined && { size_bytes: size }),
   };
 }
-
-export const notificationEventRefused = metricsBackend.createCounter({
-  name: 'notification_event_refused_total',
-  help: 'Notification events refused before any write, by reason',
-  labelNames: ['reason'],
-});
 
 /**
  * Stores one notification per recipient of *event* in its org and pushes each
@@ -71,7 +65,9 @@ export function deliverToOrg(
 
     // A supplied id names one stored row; copied to several recipients it would reach only the first. Refuse the whole event.
     if (event._id != null && recipientUserIds.length > 1) {
-      notificationEventRefused.inc({ reason: 'id_with_many_recipients' });
+      emitPlatformEvent('notification.event.refused', {
+        reason: 'id_with_many_recipients',
+      });
       throw new ValidationError('Notification event refused', [
         {
           field: '_id',

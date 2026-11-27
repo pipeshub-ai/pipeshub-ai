@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core import org_context
-from app.services.permissions import shadow as shadow_mod
+from app.plugins.telemetry.modules import permissions_metrics
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
 from app.services.permissions.scope_fields import (
@@ -50,9 +50,9 @@ class Counter:
 def _generation_and_metrics(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleMetrics]:
     set_resolved_generation(GEN)
     compared, skipped, seconds = Counter(), Counter(), Counter()
-    monkeypatch.setattr(shadow_mod, "SHADOW_COMPARED", compared)
-    monkeypatch.setattr(shadow_mod, "SHADOW_SKIPPED", skipped)
-    monkeypatch.setattr(shadow_mod, "SHADOW_SECONDS", seconds)
+    monkeypatch.setattr(permissions_metrics.SHADOW_COMPARED, "inc", compared.inc)
+    monkeypatch.setattr(permissions_metrics.SHADOW_SKIPPED, "inc", skipped.inc)
+    monkeypatch.setattr(permissions_metrics.SHADOW_SECONDS, "observe", seconds.observe)
     yield SimpleMetrics(compared, skipped, seconds)
     set_resolved_generation(None)
 

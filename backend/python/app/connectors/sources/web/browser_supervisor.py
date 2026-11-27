@@ -6,8 +6,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Generic, TypeVar
 
+from app import platform_events
 from app.services.base_client import CircuitBreaker
-from app.telemetry.modules import web_browser_metrics as metrics
 
 B = TypeVar("B")
 
@@ -126,7 +126,7 @@ class BrowserSupervisor(Generic[B]):
     async def ensure_ready(self) -> None:
         """Fail at once while relaunches keep failing; otherwise make sure a browser is up."""
         if self._breaker.is_open:
-            metrics.record_rejected_fetch("relaunch_failing")
+            platform_events.emit("web_browser.fetch.rejected", reason="relaunch_failing")
             raise BrowserUnavailableError("The headless browser is down and recent restarts failed")
         if self._browser is None:
             await self.recover(self.generation)
@@ -137,7 +137,7 @@ class BrowserSupervisor(Generic[B]):
             if self.generation != seen_generation and self._browser is not None:
                 return
             if self._breaker.is_open:
-                metrics.record_rejected_fetch("relaunch_failing")
+                platform_events.emit("web_browser.fetch.rejected", reason="relaunch_failing")
                 raise BrowserUnavailableError("The headless browser is down and recent restarts failed")
             await self._relaunch(REASON_CRASH)
 
@@ -190,7 +190,7 @@ class BrowserSupervisor(Generic[B]):
             self._browser = await asyncio.wait_for(self._launch(), timeout=_LAUNCH_TIMEOUT_SECONDS)
         except Exception as e:
             self._breaker.record_failure()
-            metrics.record_restart(reason, ok=False)
+            platform_events.emit("web_browser.restarted", reason=reason, ok=False)
             self._logger.error("❌ Headless browser restart failed (reason=%s): %s", reason, e)
             raise BrowserUnavailableError(f"The headless browser could not be restarted: {e}") from e
         self._breaker.record_success()
@@ -198,7 +198,7 @@ class BrowserSupervisor(Generic[B]):
         self._pages_served = 0
         self._timeouts_in_a_row = 0
         self._launched_at = time.monotonic()
-        metrics.record_restart(reason, ok=True)
+        platform_events.emit("web_browser.restarted", reason=reason, ok=True)
         self._logger.warning(
             "Headless browser restarted (reason=%s, generation=%d, previous uptime=%.0fs, pages served=%d)",
             reason, self.generation, uptime, pages,

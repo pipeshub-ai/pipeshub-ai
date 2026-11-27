@@ -11,6 +11,7 @@ import random
 import asyncpg
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres import kh_listing
 from app.services.graph_db.postgres.kg import counts
 from app.services.graph_db.postgres.kg import listing as kgl
@@ -108,7 +109,7 @@ async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_read
 
 async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_and_changes_nothing(pg_db, caplog, monkeypatch) -> None:
     results: list[str] = []
-    monkeypatch.setattr(counts.CHECKED, "inc", lambda *labels, value=1.0: results.extend(labels))
+    monkeypatch.setattr(kg_metrics.COUNTS_CHECKED, "inc", lambda *labels, value=1.0: results.extend(labels))
     p, org = prov(pg_db), new_org()
     await world2(p, org)
     await run(p, org, await everything2(p, org))

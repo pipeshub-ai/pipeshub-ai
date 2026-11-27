@@ -28,6 +28,11 @@ import { PgListener, listenUrl } from '../db/listen';
 import type { Tx } from '../db/uow';
 import { ConnectionLost, DbOverloaded, PoolTimeout } from '../db/errors';
 import { ServiceUnavailableError } from '../errors/http.errors';
+import {
+  announcePublished,
+  announceUnparseable,
+  consumeAnnounced,
+} from './broker-events';
 
 /**
  * The work queue behind `MESSAGE_BROKER=postgres`, on the same three tables the Python services use
@@ -172,6 +177,8 @@ export abstract class BasePgQueueProducerConnection implements IMessageProducer 
     messages: StreamMessage<T>[],
   ): Promise<void> {
     if (messages.length === 0) return;
+    const startedAt = process.hrtime.bigint();
+    const sent = messages.map((m) => m.value);
     try {
       // signed and stamped here, in the caller's request context
       const keys = messages.map((m) => m.key);
@@ -190,7 +197,9 @@ export abstract class BasePgQueueProducerConnection implements IMessageProducer 
         await tx.query(SQL.insert, [topic, keys, values, headers, groups]);
         await tx.query(SQL.notify, [topic]);
       });
+      announcePublished('postgres', topic, sent, true, startedAt);
     } catch (error) {
+      announcePublished('postgres', topic, sent, false, startedAt);
       throw new MessageBrokerError(
         'Failed to publish to the PostgreSQL queue',
         {
@@ -565,21 +574,35 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         await finish(SQL.dead, ['delivery attempts exhausted']);
         return;
       }
-      const message: StreamMessage<T> = {
-        key: r.msg_key ?? '',
-        value: JSON.parse(r.value) as T,
-      };
+      let parsed: T;
+      try {
+        parsed = JSON.parse(r.value) as T;
+      } catch (error) {
+        announceUnparseable({ broker: 'postgres', topic: r.topic });
+        throw error;
+      }
+      const message: StreamMessage<T> = { key: r.msg_key ?? '', value: parsed };
       value = message.value;
       if (r.headers)
         message.headers = JSON.parse(r.headers) as Record<string, string>;
       try {
-        await runWithRequestContext(contextFromEnvelope(message.value), () =>
-          runWithEnvelope(
-            r.topic,
-            message.value,
-            (value) => handler({ ...message, value }),
-            this.groupId,
-          ),
+        await consumeAnnounced(
+          {
+            broker: 'postgres',
+            topic: r.topic,
+            value: message.value,
+            // A handler that throws sends the row back until its attempts run out.
+            retried: () => r.attempts < max,
+          },
+          () =>
+            runWithRequestContext(contextFromEnvelope(message.value), () =>
+              runWithEnvelope(
+                r.topic,
+                message.value,
+                (value) => handler({ ...message, value }),
+                this.groupId,
+              ),
+            ),
         );
       } catch (error) {
         if (!(error instanceof EnvelopeRejected)) {

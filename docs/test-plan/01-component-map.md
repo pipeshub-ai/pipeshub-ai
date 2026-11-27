@@ -512,7 +512,7 @@ sequenceDiagram
 - **Responsibilities:** OTel spans (GenAI conventions, no content by default), path-labelled metrics, structured lifecycle logs with redaction, Opik tracing behind a port.
 - **Interfaces and ports:** `HarnessTracer`; `HARNESS_OTEL`; pipeshub_agent_* metrics; `harness-log`.
 - **Depends on:** none. **Used by:** none.
-- **Files:** `backend/python/harness_core/telemetry/**`, `backend/python/app/harness/telemetry.py`, `backend/python/harness_core/logs.py`, `backend/nodejs/apps/src/modules/agent-harness/application/harness-tracing.ts`, `backend/nodejs/apps/src/modules/agent-harness/application/harness-log.ts`, `backend/nodejs/apps/src/modules/agent-harness/adapters/telemetry/**`.
+- **Files:** `backend/python/harness_core/telemetry/**`, `backend/python/app/harness/telemetry.py`, `backend/python/harness_core/logs.py`, `backend/nodejs/apps/src/modules/agent-harness/application/harness-tracing.ts`, `backend/nodejs/apps/src/modules/agent-harness/application/harness-log.ts`, `backend/nodejs/apps/src/modules/agent-harness/adapters/observability/**`.
 
 #### DEP — Deployment, migrations and upgrade
 

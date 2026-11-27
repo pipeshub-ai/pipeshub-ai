@@ -26,10 +26,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.db import ConnectionLost, DbError, DbTimeout, LockTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
-from app.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
@@ -265,11 +265,11 @@ async def admit(tx: Tx, slot: str, slots: int, wait_ms: int) -> None:
     deadline = t0 + wait_ms / 1000
     while True:
         if await tx.fetchval(_ADMIT, slots, random.randrange(slots), _SLOT_BASE[slot]) is not None:
-            telemetry.ADMISSION_WAIT.observe(slot, value=time.monotonic() - t0)
+            platform_events.emit("vector_search.admission.waited", slot=slot, wait_seconds=time.monotonic() - t0)
             return
         if time.monotonic() >= deadline:
-            telemetry.ADMISSION_WAIT.observe(slot, value=time.monotonic() - t0)
-            telemetry.ADMISSION_REJECTED.inc(slot)
+            platform_events.emit("vector_search.admission.waited", slot=slot, wait_seconds=time.monotonic() - t0)
+            platform_events.emit("vector_search.admission.rejected", slot=slot)
             raise Rejected(f"no {slot} admission slot became free within {wait_ms} ms")
         await asyncio.sleep(random.uniform(0.002, 0.005))
 
@@ -323,7 +323,7 @@ class Sizer:
             except DbError:
                 if leaf is None or count is None:
                     raise
-                telemetry.TIMEOUT.inc("sizing", "stale")
+                platform_events.emit("vector_search.leg.timed_out", leg="sizing", tier="stale")
         return Sizing(count[1], count[2], leaf[1], leaf[2], count[3], count[4])
 
     async def _shared_measure(self, q: Query, lkey: tuple, ckey: tuple, now: float) -> tuple[tuple, tuple]:
@@ -360,7 +360,7 @@ class Sizer:
             # which reads each of them. Remembered as capped, so the index serves the filter and the next queries of the minute do not
             # pay for the same count again (each one used to, and then took the degraded path). The leaf, unread, keeps what is known, and
             # the count's deadline: an expired one would send the next query back to the count.
-            telemetry.TIMEOUT.inc("sizing", "assumed")
+            platform_events.emit("vector_search.leg.timed_out", leg="sizing", tier="assumed")
             old = self._leaves.get(lkey)
             leaf = self._leaves[lkey] = (now + self._t.estimate_ttl_s, *(old[1:] if old else (False, 0)))
             known = leaf if leaf[2] > 0 else None
@@ -429,7 +429,6 @@ async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool
     """The dense leg. Never returns a silent shortfall: a leg that could not run in its tier (no slot, a timeout, a sizing that
     could not be read) is answered by the bounded exact path, flagged on the leg (``degraded``) and counted; only when that fails too
     is it empty, which is counted as well. A database that cannot be reached (``ConnectionLost``) raises."""
-    band = telemetry.leg_band(q.leg)
     started = time.monotonic()
     narrow = False
     try:
@@ -439,40 +438,40 @@ async def search(db: KernelDB, sizer: Sizer, q: Query, t: Tuning, *, bq_ok: bool
     except DbError:
         sz = Sizing(0, False, False, 0, t.tombstone_hash_max + 1)
         plan = Plan(Tier.E0, 0, t.degraded_timeout_ms, None, "unknown")
-        telemetry.TIER.inc(plan.tier.value, band)
-        leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=False, band=band)
-        telemetry.observe_leg("degraded", q.leg, started)
+        platform_events.emit("vector_search.leg.served", tier=plan.tier.value, leg_size=q.leg)
+        leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=False)
+        platform_events.emit("vector_search.leg.completed", tier="degraded", leg_size=q.leg, duration_seconds=time.monotonic() - started)
         return leg, sz
     plan = choose(sz, q.leg, t, bq_ok=bq_ok)
     q = dataclasses.replace(q, anti=sz.tombstones > t.tombstone_hash_max)
-    telemetry.TIER.inc(plan.tier.value, band)
+    platform_events.emit("vector_search.leg.served", tier=plan.tier.value, leg_size=q.leg)
     narrow = sz.n_hat <= t.n_e0 and not sz.capped
     try:
         rows = await db.run(lambda tx: _run(tx, q, plan, t), timeout_ms=plan.timeout_ms, custom_plan=True)
         if sz.assumed and len(rows) < q.leg:
             # An index answer short of the leg means few rows pass the filter: the count was slow for another reason (many admitted
             # groups holding few points). The exact path by groups reads just those candidates.
-            leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True, band=band)
+            leg = await _degrade(db, q, t, plan, sz, "sizing", narrow=True)
             if leg.degraded == "overload":
                 leg = Leg(rows, plan, "overload")       # the exact read could not run: the index's rows stand, flagged
-            telemetry.observe_leg("degraded", q.leg, started)
+            platform_events.emit("vector_search.leg.completed", tier="degraded", leg_size=q.leg, duration_seconds=time.monotonic() - started)
             return leg, sz
-        telemetry.observe_leg(plan.tier.value, q.leg, started)
+        platform_events.emit("vector_search.leg.completed", tier=plan.tier.value, leg_size=q.leg, duration_seconds=time.monotonic() - started)
         return Leg(rows, plan, plan.flag), sz
     except Rejected:
         reason = "admission"
     except DbTimeout:
         reason = "timeout"
-        telemetry.TIMEOUT.inc("dense", plan.tier.value)
-    leg = await _degrade(db, q, t, plan, sz, reason, narrow=narrow, band=band)
-    telemetry.observe_leg("degraded", q.leg, started)
+        platform_events.emit("vector_search.leg.timed_out", leg="dense", tier=plan.tier.value)
+    leg = await _degrade(db, q, t, plan, sz, reason, narrow=narrow)
+    platform_events.emit("vector_search.leg.completed", tier="degraded", leg_size=q.leg, duration_seconds=time.monotonic() - started)
     return leg, sz
 
 
-async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, reason: str, *, narrow: bool, band: str) -> Leg:
+async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, reason: str, *, narrow: bool) -> Leg:
     """Exact over at most ``degraded_rows`` of the newest candidates, without a slot and inside its own short budget. The work is
     capped well below an exact tier's, so a rejection sheds load instead of repeating it."""
-    telemetry.DEGRADED.inc(reason, plan.tier.value, band)
+    platform_events.emit("vector_search.leg.degraded", reason=reason, tier=plan.tier.value, leg_size=q.leg)
     logger.warning("dense leg degraded (%s) in tier %s: answering from at most %d of the newest candidates", reason, plan.tier.value, t.degraded_rows)
     try:
         rows = await db.run(lambda tx: _bounded(tx, q, t, narrow=narrow), timeout_ms=t.degraded_timeout_ms, custom_plan=True)
@@ -480,8 +479,8 @@ async def _degrade(db: KernelDB, q: Query, t: Tuning, plan: Plan, sz: Sizing, re
     except ConnectionLost:
         raise
     except DbError:
-        telemetry.DEGRADED.inc("overload", plan.tier.value, band)
-        telemetry.EMPTY_LEG.inc(plan.tier.value)
+        platform_events.emit("vector_search.leg.degraded", reason="overload", tier=plan.tier.value, leg_size=q.leg)
+        platform_events.emit("vector_search.leg.returned_empty", tier=plan.tier.value)
         return Leg([], plan, "overload")
 
 

@@ -97,6 +97,7 @@ from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 from app.utils.user_messages import action_failed
+from app.utils.http_client_events import aiohttp_tracing
 
 from .models import (
     LocalFsFileEvent,
@@ -1229,7 +1230,7 @@ class LocalFsConnector(BaseConnector):
             if storage_token is None:
                 storage_token = await self._storage_token()
             if session is None:
-                async with aiohttp.ClientSession(timeout=timeout) as owned_session:
+                async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as owned_session:
                     await self._execute_storage_delete_request(
                         owned_session, storage_url, storage_token, document_id,
                     )
@@ -1867,7 +1868,7 @@ class LocalFsConnector(BaseConnector):
 
         timeout = LOCAL_FS_STORAGE_HTTP_TIMEOUT
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as session:
                 async with session.get(
                     buffer_url,
                     headers={"Authorization": f"Bearer {storage_token}"},
@@ -1941,7 +1942,7 @@ class LocalFsConnector(BaseConnector):
         }
         timeout = aiohttp.ClientTimeout(total=LOCAL_FS_CONTENT_HTTP_TIMEOUT_SECONDS)
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as session:
                 async with session.post(
                     f"{base_url}{LOCAL_FS_CONTENT_ROUTE}",
                     json=payload,
@@ -2454,7 +2455,7 @@ class LocalFsConnector(BaseConnector):
                 self.config_service, "localfs", self.connector_id, self.logger
             )
             timeout = aiohttp.ClientTimeout(total=LOCAL_FS_PULL_HTTP_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=timeout) as session:
                 while True:
                     try:
                         batch = await self._pull_with_retry(

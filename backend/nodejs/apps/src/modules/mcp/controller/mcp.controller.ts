@@ -21,12 +21,15 @@ import {
 } from '../../../libs/middlewares/mcp-relay';
 import { sendMcpError } from '../middlewares/mcp-guard.middleware';
 import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
+import { emitPlatformEvent } from '../../../libs/platform-events';
+import type {
+  McpCaller,
+  PlatformEvents,
+} from '../../../libs/platform-events/events';
 import {
-  clientTags,
-  domainFromEmail,
-  recordEvent,
-  recordServiceActivity,
-} from '../../../libs/services/telemetry/telemetry-impl';
+  emailDomain,
+  requestClient,
+} from '../../../libs/utils/request-client.utils';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
@@ -72,10 +75,10 @@ const oauthScopesModule =
  * request carries one JSON-RPC message; `initialize` is a client connecting,
  * `tools/call` is it doing work. Only names are recorded, never arguments.
  */
-/** What every MCP event carries. The address itself is never included: the
- *  domain says which organisation without naming a person, and the user id
- *  already identifies them where that is needed. */
-function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
+/** Who is calling, for the MCP platform events. The address itself is never
+ *  included: the domain says which organisation without naming a person, and
+ *  the user id already identifies them where that is needed. */
+function mcpCaller(req: AuthenticatedUserRequest): McpCaller {
   const user = req.user ?? {};
   const email = typeof user.email === 'string' ? user.email : undefined;
   const clientId =
@@ -88,8 +91,8 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
   return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
-    domain: domainFromEmail(email),
-    auth_type: authType,
+    emailDomain: emailDomain(email),
+    authType,
     // Which client and which of our channels: for a stateless transport,
     // every request has to say it, not only initialize.
     // Service tokens are OAuth too, but their client id is an internal
@@ -97,42 +100,42 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     ...(authType === 'oauth' &&
     clientId &&
     !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
-      ? { oauth_client_id: clientId }
+      ? { oauthClientId: clientId }
       : {}),
-    ...clientTags(req.headers),
+    ...requestClient(req.headers),
   };
 }
 
-/** Props for `mcp_connected`, or undefined when this request is not an
- *  initialize. Recording is left to the caller, which has to wait for the
+/** What `mcp.client.connected` carries, or undefined when this request is not
+ *  an initialize. Announcing is left to the caller, which has to wait for the
  *  handshake to actually succeed. */
 function mcpConnectedProps(
   req: AuthenticatedUserRequest,
-): Record<string, unknown> | undefined {
+): PlatformEvents['mcp.client.connected'] | undefined {
   const body = req.body as
     { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'initialize') return undefined;
   const clientInfo = (body.params?.clientInfo ?? {}) as Record<string, unknown>;
   return {
-    ...mcpEventBase(req),
-    client_name:
+    ...mcpCaller(req),
+    clientName:
       typeof clientInfo.name === 'string' ? clientInfo.name : undefined,
-    client_version:
+    clientVersion:
       typeof clientInfo.version === 'string' ? clientInfo.version : undefined,
   };
 }
 
-/** Props for `mcp_tool_called`, or undefined when this request is not a
- *  tools/call. Recorded once the transport has served the request, so a
+/** What `mcp.tool.called` carries, or undefined when this request is not a
+ *  tools/call. Announced once the transport has served the request, so a
  *  request the server could not handle at all is not counted as a call. */
 function mcpToolCallProps(
   req: AuthenticatedUserRequest,
-): Record<string, unknown> | undefined {
+): PlatformEvents['mcp.tool.called'] | undefined {
   const body = req.body as
     { method?: unknown; params?: Record<string, unknown> } | undefined;
   if (body?.method !== 'tools/call') return undefined;
   return {
-    ...mcpEventBase(req),
+    ...mcpCaller(req),
     tool: typeof body.params?.name === 'string' ? body.params.name : undefined,
   };
 }
@@ -269,17 +272,6 @@ function auditToolCall(
     client_id: user?.oauthClientId,
     argument_names: call.argumentNames,
     event_name: 'mcp.tool_call.end',
-  });
-}
-
-/** The Grafana counter for the same step: org and domain only. */
-function recordActivityFromProps(
-  activityName: string,
-  props: Record<string, unknown>,
-): void {
-  recordServiceActivity(activityName, {
-    org: typeof props.orgId === 'string' ? props.orgId : undefined,
-    domain: typeof props.domain === 'string' ? props.domain : undefined,
   });
 }
 
@@ -493,15 +485,13 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         res.statusCode < 400 &&
         mcpServer.server.getClientVersion()
       ) {
-        recordEvent('mcp_connected', connectedProps);
-        recordActivityFromProps('mcp_connected', connectedProps);
+        emitPlatformEvent('mcp.client.connected', connectedProps);
       }
       // The transport answers JSON-RPC errors (unknown tool, tool failure)
       // inside a 200 body, so this counts "served", not "succeeded"; a
       // transport failure throws above and is not counted.
       if (toolCallProps && res.statusCode < 400) {
-        recordEvent('mcp_tool_called', toolCallProps);
-        recordActivityFromProps('mcp_tool_called', toolCallProps);
+        emitPlatformEvent('mcp.tool.called', toolCallProps);
       }
 
       const body = req.body as { method?: unknown } | undefined;

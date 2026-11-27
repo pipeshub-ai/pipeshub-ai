@@ -14,10 +14,10 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import bind
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
-from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
@@ -30,7 +30,6 @@ STAMP_PAGE = 2000            # records per stamping page
 STAMP_PAGES = 20             # stamping pages (2,000 records each) per connector and pass; the next pass goes on from where this one stopped
 BATCHES = 20                 # copy batches per connector and pass: a larger connector is copied over several passes, and the other orgs get their turn in between
 CONNECTORS_AT_ONCE = 4       # connectors of an org whose turns run at the same time, each in units of its own under its own lock: one's stamping runs beside another's copy
-PROMOTED = METRICS_BACKEND.counter("pipeshub_kg_bootstrap_total", "Connectors the worker took to enforce, or left on the walk, by outcome", ["outcome"])
 
 # The connectors of the org that are not enforced at this code's epoch with a verified copy.
 CANDIDATES = """/* pipeshub:kg.bootstrap_candidates */ SELECT a.id FROM graph.nodes a
@@ -116,10 +115,10 @@ async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], flo
             cursors.pop((org, app), None)
         if more is not None:
             due[(org, app)] = 0.0
-            PROMOTED.inc("filling")
+            platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="filling")
             return 1
         if mode == "enforce":
-            PROMOTED.inc("filled")
+            platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="filled")
             due.pop((org, app), None)
             return 1
         out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, drain_rounds=DRAIN_ROUNDS, stop=stop, stamp_pages=STAMP_PAGES, stamp_page=STAMP_PAGE, stamp_after=_STAMP_AFTER.get((org, app)), enforce=True)
@@ -127,7 +126,7 @@ async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], flo
         if not out.flipped:
             if out.reason == "unfinished":
                 due[(org, app)] = 0.0                             # it resumes from its cursor: nothing to wait for
-                PROMOTED.inc("copying")
+                platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="copying")
                 return 1
             if out.reason == "differs":
                 n = _DIFFERED[(org, app)] = _DIFFERED.get((org, app), 0) + 1
@@ -135,20 +134,20 @@ async def _turn(db: KernelDB, org: str, app: str, due: dict[tuple[str, str], flo
                 due[(org, app)] = time.monotonic() + wait
                 _STAMP_AFTER.pop((org, app), None)
                 _RECOPY.add((org, app))
-                PROMOTED.inc("differs")
+                platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="differs")
                 logger.warning("kg: connector %s differs from the graph (%d time(s) in a row) and stays on the walk; copied again in %.0f s: %s", app, n, wait,
                                out.result.summary() if out.result else "not verified")
             else:                                                 # changes still arriving, or the copy was cleared meanwhile: look again soon
                 due[(org, app)] = time.monotonic() + RETRY_S
-                PROMOTED.inc("waiting")
+                platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="waiting")
             return 0
-        PROMOTED.inc("enforce")
+        platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="enforce")
         due.pop((org, app), None)                              # a later demotion makes it a candidate again
         _STAMP_AFTER.pop((org, app), None)
         _DIFFERED.pop((org, app), None)
         return 1
     except Exception:
         due[(org, app)] = time.monotonic() + RETRY_S
-        PROMOTED.inc("error")
+        platform_events.emit("knowledge_graph.connector.bootstrapped", outcome="error")
         logger.exception("kg: connector %s could not be taken to enforce; it stays on the walk", app)
     return 0

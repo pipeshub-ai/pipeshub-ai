@@ -7,7 +7,7 @@ import {
   purgeBranchArtifacts,
 } from '../controller/compare.controller';
 import { NextFunction, Router, Response } from 'express';
-import { prometheusChatPathMetrics } from '../../agent-harness/adapters/telemetry/chat-path-metrics';
+import { prometheusChatPathMetrics } from '../../agent-harness/adapters/observability/chat-path-metrics';
 import { legacyTurnMetrics } from '../../agent-harness/transport/legacy-turn-metrics';
 import { scanAfterAuthentication } from '../../agent-harness/transport/pasted-secret-guard';
 import { agentEngineCheck } from '../../agent-harness/transport/model-account-routes';

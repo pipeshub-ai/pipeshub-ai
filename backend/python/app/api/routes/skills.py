@@ -108,7 +108,7 @@ from app.services.skills.package_importer import (
     PackageImportError,
     SkillPackageImporter,
 )
-from app.telemetry.identity import domain_from_email
+from app.utils.email_domain import domain_from_email
 from app.utils.user_lookup import get_user_or_503
 from harness_core.logs import HarnessLog
 from harness_core.skills import SkillRef

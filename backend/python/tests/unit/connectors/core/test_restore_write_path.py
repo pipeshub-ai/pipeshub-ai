@@ -26,6 +26,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.models.entities import FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from tests.support.platform_event_capture import event_calls
 
 MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor"
 
@@ -139,7 +140,7 @@ class TestRestoreTrashedRecords:
         rec = _stored("r1")
         proc.get_typed_records_by_ids = AsyncMock(return_value={"r1": rec})
         _with_store(proc, _Store([_trashed("r1")]))
-        with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()), patch(f"{MODULE}.record_restored"):
+        with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()), event_calls("record.restored", "source", "count"):
             await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}])
         proc.get_typed_records_by_ids.assert_awaited_once_with(["r1"])
         assert list(proc._publish_record_titles.await_args.args[0]) == [rec]
@@ -149,7 +150,7 @@ class TestRestoreTrashedRecords:
         store = _with_store(proc, _Store([_trashed("r1"), _trashed("folder-1", batch="b-2")]))
         store.parents = {"r1": "folder-1"}
         with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()), \
-                patch(f"{MODULE}.record_restored"):
+                event_calls("record.restored", "source", "count"):
             with pytest.raises(RestoreRefused) as refused:
                 await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}], require_live_parent=True)
             assert refused.value.code == 409
@@ -160,7 +161,7 @@ class TestRestoreTrashedRecords:
         proc = _processor()
         store = _with_store(proc, _Store([_trashed("r1"), _trashed("r2")]))
         with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()) as notify, \
-                patch(f"{MODULE}.record_restored") as counted:
+                event_calls("record.restored", "source", "count") as counted:
             restored = await proc.restore_trashed_records(
                 "c1", "b-1", [{"id": "r1", "set": {"indexingStatus": "NOT_STARTED"}}, {"id": "r2"}]
             )

@@ -16,7 +16,7 @@ import {
 } from './orgContext';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '../services/logger.service';
-import { metricsBackend } from '../services/telemetry/telemetry-impl';
+import { emitPlatformEvent } from '../platform-events';
 import {
   ENVELOPE_REQUEST_ID,
   sanitizeRootId,
@@ -77,20 +77,6 @@ export interface Inbox {
     fn: () => Promise<T>,
   ): Promise<T>;
 }
-
-/** pipeshub_consumer_inbox_errors_total{op}: inbox reads or writes that failed; the message ran as if new. */
-const inboxErrors = metricsBackend.createCounter({
-  name: 'pipeshub_consumer_inbox_errors_total',
-  help: 'Consumer inbox reads or writes that failed; the message was processed as if new (at-least-once)',
-  labelNames: ['op'],
-});
-
-/** pipeshub_consumer_inbox_skipped_total{consumer}: deliveries of an event the group had already finished. */
-const inboxSkipped = metricsBackend.createCounter({
-  name: 'pipeshub_consumer_inbox_skipped_total',
-  help: 'Redelivered or replayed broker messages acknowledged without running the handler again',
-  labelNames: ['consumer'],
-});
 
 /** pipeshub_envelope_unverified_total{topic}: ctx present but no key configured */
 export const envelopeUnverified = new Map<string, number>();
@@ -617,7 +603,7 @@ const deliveryStorage = new AsyncLocalStorage<Delivery>();
 
 /** Counts and logs (at most every 30 s) an inbox call that failed; the message runs as if new. */
 export function inboxFailed(op: string, consumer: string, e: unknown): void {
-  inboxErrors.inc({ op });
+  emitPlatformEvent('consumer.inbox.failed', { operation: op });
   logLoud(
     `inbox-${op}:${consumer}`,
     'consumer inbox call failed: the message is processed as if new',
@@ -626,7 +612,7 @@ export function inboxFailed(op: string, consumer: string, e: unknown): void {
 }
 
 function skipped(d: Delivery, topic: string): void {
-  inboxSkipped.inc({ consumer: d.consumer });
+  emitPlatformEvent('consumer.delivery.skipped', { consumer: d.consumer });
   Logger.getInstance().info(
     'broker message already processed by this consumer group: acknowledged without running it again',
     { component: 'Envelope', topic, consumer: d.consumer, eventId: d.eventId },

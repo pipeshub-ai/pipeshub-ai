@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # must precede all ML library imports
+from app import platform_events
 from app.api.middlewares.request_log import install_request_logging
 from app.api.validation_errors import input_free_422
 from app.capacity.apply import adopt_claim
@@ -95,6 +96,7 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.plugins import load_plugins
 from app.services.base_client import open_circuits
 from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.graph_db.common.record_visibility import (
@@ -149,9 +151,6 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.services.resource_governor.yield_signal import YieldSignal
-from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
-from app.telemetry.ops_exporter import exporter_from_env
-from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.indexing_workers import indexing_worker_count
@@ -925,7 +924,7 @@ async def recover_in_progress_records(
 
 def _org_pass_failed(logger: logging.Logger, job: str, org_id: str, exc: Exception) -> None:
     """One organisation's part of a pass failed: say so with its id, and let the later organisations run."""
-    record_recovery_org_pass(job, "failed")
+    platform_events.emit("recovery.org_pass.finished", job=job, outcome="failed")
     logger.warning("Recovery pass %s failed for organisation %s; the later organisations still run: %s: %s", job, org_id, type(exc).__name__, exc)
 
 
@@ -1744,7 +1743,7 @@ async def _republish_refresh_intents(
                 if await refresh_intent.clear_intent(
                     graph_provider, key, held[0], updates, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
                 ):
-                    refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
+                    platform_events.emit("record.refresh_intent.changed", change="expired")
                     logger.warning(
                         "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
                         key, fresh.get("indexingStatus"),
@@ -1789,7 +1788,7 @@ async def _republish_refresh_intents(
                 if await refresh_intent.clear_intent(
                     graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
                 ):
-                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
+                    platform_events.emit("record.refresh_intent.changed", change="connector_off")
                     logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
         except Exception as exc:
             logger.error("Failed to end the Force reindex of record %s for its connector: %s", key, exc)
@@ -1856,7 +1855,7 @@ async def _republish_refresh_intents(
                             {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
                         ))
                     raise
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
+                platform_events.emit("record.refresh_intent.changed", change="resent")
                 return True
         except Exception as exc:
             logger.error("Failed to re-send the Force reindex of record %s: %s", key, exc)
@@ -3273,10 +3272,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await configure_envelope(app_container.config_service())
 
-    try:
-        await telemetry.bind(app_container.config_service(), logger).start()
-    except Exception as e:
-        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+    await plugin_host.start(config_service=app_container.config_service(), logger=logger)
 
     graph_provider = getattr(app_container, '_graph_provider', None)
     if not graph_provider:
@@ -3316,9 +3312,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app_container.resource_governor = governor
     attach_parse_admission_config(app_container.config_service())
     governor_task = asyncio.create_task(governor.run())
-    ops_exporter = exporter_from_env(governor, "indexing")
-    if ops_exporter is not None:
-        ops_exporter.start()
+    platform_events.emit("resource_governor.started", service="indexing")
     # With several worker processes, each claims a cell index and publishes its stats, so that
     # whichever worker answers /health serves every cell's.
     await _start_cell(app, governor)
@@ -3445,17 +3439,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
-    if telemetry.pusher is not None:
-        try:
-            await telemetry.pusher.stop()
-        except asyncio.CancelledError:
-            # Let a genuine shutdown-timeout cancellation propagate instead
-            # of swallowing it here — otherwise the caller (ASGI server)
-            # can't tell shutdown didn't finish, and we'd still attempt the
-            # awaits below on a cancelled task.
-            raise
-        except Exception as e:
-            logger.warning(f"❌ Error stopping telemetry pusher: {e}")
+    await plugin_host.stop()  # a plug-in's failure is logged there; a shutdown-timeout cancellation propagates
 
     # Cancel background recovery if it's still running.
     recovery_task = getattr(app.state, "recovery_task", None)
@@ -3668,8 +3652,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
-    if ops_exporter is not None:
-        ops_exporter.stop()
+    platform_events.emit("resource_governor.stopped", service="indexing")
 
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
@@ -3714,8 +3697,9 @@ configure_app(app, "indexing")
 
 # Trace context and the request line.
 install_request_logging(app)
-# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
-telemetry = setup_telemetry(app, service_name="indexing_service")
+# Plug-ins (app.plugins_manifest) add their request middleware here; started and stopped in lifespan.
+plugin_host = load_plugins("indexing_service")
+plugin_host.install(app)
 
 
 @app.get("/health")

@@ -2,6 +2,7 @@
 import pytest
 
 from app.modules.indexing import keep_old_copy
+from app.plugins.telemetry.modules import indexing_metrics
 from app.services.graph_db.common.record_visibility import (
     aql_holds_vrid,
     cypher_holds_vrid,
@@ -73,7 +74,7 @@ async def test_the_postgres_broker_needs_the_operators_statement_and_no_older_cl
     from app.services.messaging.config import MessageBrokerType
 
     reasons: list[str] = []
-    monkeypatch.setattr(keep_old_copy.swap_refusals, "inc", lambda reason: reasons.append(reason))
+    monkeypatch.setattr(indexing_metrics.SWAP_REFUSALS, "inc", lambda reason: reasons.append(reason))
     monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
     monkeypatch.setattr("app.services.messaging.config.get_message_broker_type", lambda: MessageBrokerType.POSTGRES)
     monkeypatch.setattr("app.services.messaging.membership.groups_to_check", lambda: {"records_consumer_group": ["record-events"]})

@@ -18,8 +18,8 @@ from aiohttp.test_utils import TestServer
 
 from app.harness.engines.worker import GATEWAY_MOUNT, tool_gateway_api
 from app.harness.gateway.mcp import ToolGatewayApp
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.harness_gateway_metrics import (
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.harness_gateway_metrics import (
     BackendGatewayMetrics,
     BackendReadCacheMetrics,
 )

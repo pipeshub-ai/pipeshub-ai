@@ -1,12 +1,12 @@
 """Edition constants that must stay import-free.
 
-This is the only edition switch that ``app.telemetry`` may import: the metrics
-backend is chosen at import time, and ``app.edition_config`` pulls in routers
-that import telemetry, so importing it from there would cycle.
+Read by file path from ``backend/db``, and at import time by plug-ins that pick
+their behaviour before anything else loads; ``app.edition_config`` pulls in
+routers, so neither can import that.
 """
 
-# Used when TELEMETRY_COLLECTION_FLAG is unset.
-TELEMETRY_DEFAULT_ENABLED = True
+# Whether usage data collection is on when the deployment's flag is unset.
+USAGE_DATA_DEFAULT_ENABLED = True
 
 # The most characters of a tool call's arguments the chat transcript keeps; the live stream sends the
 # same preview as ``argsPreview``, which the chat shows as it is.

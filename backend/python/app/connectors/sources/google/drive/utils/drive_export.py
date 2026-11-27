@@ -26,6 +26,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     QUOTA_403_REASONS,
     drive_error_reasons,
 )
+from app.utils.http_client_events import aiohttp_tracing
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -217,7 +218,7 @@ async def _stream_authorized_get(
     # No total limit: a large export may take longer than any fixed bound while
     # still making progress, and a mid-stream timeout would truncate the file.
     timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=120)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(**aiohttp_tracing("google_drive"), timeout=timeout) as session:
         for _ in range(_MAX_REDIRECTS + 1):
             if not is_allowed_export_url(current):
                 logger.error(

@@ -30,7 +30,7 @@ import {
   policySnapshotLoader,
   type OrgLayers,
 } from '../adapters/control-plane/policy-snapshot-loader';
-import { prometheusPinShadowMetrics } from '../adapters/telemetry/pin-shadow-metrics';
+import { prometheusPinShadowMetrics } from '../adapters/observability/pin-shadow-metrics';
 import { ChildPinning } from '../application/admission/child-pinning';
 import { LegacyTurnHeader } from '../application/legacy-turn-header';
 import { LegacyTurnResolver } from '../application/legacy-turn-resolver';

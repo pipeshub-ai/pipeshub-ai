@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
+from app import platform_events
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -122,8 +123,6 @@ from app.services.messaging.record_titles import (
     clean_record_title,
 )
 from app.schema.node_validator import SchemaValidationError
-from app.telemetry.modules.schema_metrics import record_schema_rejection
-from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
 from app.utils.retry import retry_async
@@ -673,7 +672,7 @@ class DataSourceEntitiesProcessor:
             "Graph write rejected by schema validation (collection=%s)", error.collection,
             extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
         )
-        record_schema_rejection(error.collection)
+        platform_events.emit("graph.write.rejected", collection=error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
         """Whether a handler that logs a failure and goes on has to let this one
@@ -3197,7 +3196,7 @@ class DataSourceEntitiesProcessor:
                 # leaves is what the sweep sees if the index event is then lost.
                 record.md5_hash = None
             restored_from_trash = True
-            record_restored(DeleteSource.CONNECTOR.value, 1)
+            platform_events.emit("record.restored", source=DeleteSource.CONNECTOR.value, count=1)
             self.logger.info(
                 "Restoring %s (%s) from the trash: the source has it again", record.record_name, existing_record.id
             )
@@ -4490,7 +4489,7 @@ class DataSourceEntitiesProcessor:
             if set(restored) != set(ids):
                 # Raising rolls the whole batch back, so it is never half restored.
                 raise await self._restore_refusal(tx_store, connector_id, items, reclaim, ids, restored)
-        record_restored(DeleteSource(restore_source).value, len(restored))
+        platform_events.emit("record.restored", source=DeleteSource(restore_source).value, count=len(restored))
         await notify_kb_records_changed(connector_id, getattr(self, "org_id", None) or None)
         # The trash dropped the title points; write them back (after the commit).
         await self._publish_record_titles((await self.get_typed_records_by_ids(restored)).values())
@@ -5116,7 +5115,7 @@ class DataSourceEntitiesProcessor:
     ) -> list[str]:
         """After the trash transaction commits: count it, refresh the search caches, publish the vector cleanup."""
         source = DeleteSource(delete_source).value
-        record_soft_deleted(source, marked)
+        platform_events.emit("record.soft_deleted", source=source, count=marked)
         if marked:
             await notify_kb_records_changed(connector_id, org_id)
             await self._access_changed([connector_id], org_id)

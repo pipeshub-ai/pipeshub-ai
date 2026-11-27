@@ -30,6 +30,10 @@ export const corsOptions = (
     'Authorization',
     'x-session-token',
     'x-request-id',
+    // Sent by the SDKs to say which client is calling; a browser may
+    // only add them cross-origin when they are listed here.
+    'x-pipeshub-client',
+    'x-pipeshub-channel',
     'client-name',
     'x-record-content-open',
     'range',

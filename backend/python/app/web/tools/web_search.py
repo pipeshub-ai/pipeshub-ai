@@ -6,7 +6,7 @@ from collections.abc import Callable
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from app.telemetry.modules.web_metrics import record_search
+from app import platform_events
 from app.web.budget import Scope
 from app.web.chain import ChainFailed
 from app.web.errors import BudgetExhausted, WebError
@@ -50,7 +50,7 @@ class WebSearchArgs(BaseModel):
 
 def _record(attempts: tuple[Attempt, ...]) -> None:
     for attempt in attempts:
-        record_search(attempt.source, attempt.error_type or "ok", attempt.seconds)
+        platform_events.emit("web.search.completed", provider=attempt.source, outcome=attempt.error_type or "ok", duration_seconds=attempt.seconds)
 
 
 def _attempts(attempts: tuple[Attempt, ...]) -> list[dict[str, object]]:

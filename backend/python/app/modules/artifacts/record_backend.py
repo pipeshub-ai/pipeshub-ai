@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from app import platform_events
 from app.modules.artifacts.models import (
     ASSET_MEDIA_TYPE,
     MANIFEST_PATH,
@@ -38,7 +39,6 @@ from app.modules.transformers.blob_storage import (
 )
 from app.modules.transformers.stored_write import is_none_run, run_generation
 from app.services.featureflag.platform_settings import artifact_read_state
-from app.telemetry.modules.record_storage_metrics import record_artifact_read
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
@@ -156,9 +156,9 @@ class ArtifactRecordBackend:
             # Only the type: an aiohttp error can carry a signed URL.
             outcome, detail = "failed", type(exc).__name__
         else:
-            record_artifact_read("served")
+            platform_events.emit("record.artifact.read", outcome="served")
             return record
-        record_artifact_read(outcome)
+        platform_events.emit("record.artifact.read", outcome=outcome)
         logger.debug("Artifact set of %s not served: %s", virtual_record_id, detail)
         raise ArtifactUnavailable(outcome, detail)
 

@@ -29,8 +29,6 @@ from app.config.constants.neo4j import collection_to_label
 from app.config.constants.service import config_node_constants
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record, RecordType
-from app.modules.artifacts import reader as reader_module
-from app.modules.artifacts import record_backend as backend_module
 from app.modules.artifacts import store as store_module
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.artifacts.sidecars import ArtifactSidecars
@@ -54,6 +52,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.platform_event_capture import replace_event_listener
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -324,9 +323,9 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
         monkeypatch.setattr(membership, "read_entries_from_config", fresh)
         membership._READERS.clear()
-        monkeypatch.setattr(backend_module, "record_artifact_read", w.reads.append)
-        monkeypatch.setattr(reader_module, "record_artifact_read", w.reads.append)
-        monkeypatch.setattr(reader_module, "record_artifact_shadow_read", lambda *a: w.shadow.append(a))
+        replace_event_listener(monkeypatch, "record.artifact.read", w.reads.append, "outcome")
+        replace_event_listener(monkeypatch, "record.artifact.read", w.reads.append, "outcome")
+        replace_event_listener(monkeypatch, "record.artifact.shadow_read", lambda *a: w.shadow.append(a), "outcome", "reason")
         try:
             yield w
         finally:

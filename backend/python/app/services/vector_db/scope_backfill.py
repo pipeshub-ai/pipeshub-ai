@@ -42,9 +42,9 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
-from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.rewrite_lease import (
     REWRITE_LEASE_KEY,
@@ -322,7 +322,7 @@ class ScopeBackfill:
             raise      # another holder owns the connector and its checkpoint: this pass ends without writing either
         except Exception as exc:
             p.state, p.error = FAILED, type(exc).__name__
-            SCOPE_STAMP_FAILED.inc("backfill")
+            platform_events.emit("permission.scope_fields.failed", stage="backfill")
             self._log.warning("scope back-fill of %s stopped at %s: %s", app_id, p.after, p.error)
         await self._checkpoints.save(app_id, p, lease)
         if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
@@ -367,7 +367,7 @@ class ScopeBackfill:
         except (StaleMarkerNotWritten, LeaseLost):
             raise
         except Exception as exc:
-            SCOPE_STAMP_FAILED.inc("backfill")
+            platform_events.emit("permission.scope_fields.failed", stage="backfill")
             self._log.warning("scope fields of %s not written: %s", vrid, type(exc).__name__)
             await self._mark(org_id, app_id, vrid)
             return "stale"
@@ -387,7 +387,7 @@ class ScopeBackfill:
             if attempt + 1 < MARKER_ATTEMPTS:
                 await asyncio.sleep(delay)
                 delay *= 2
-        SCOPE_STAMP_FAILED.inc("marker")
+        platform_events.emit("permission.scope_fields.failed", stage="marker")
         self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, type(last).__name__)
         raise StaleMarkerNotWritten(vrid) from last
 

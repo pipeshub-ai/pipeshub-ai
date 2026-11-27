@@ -5,7 +5,7 @@ import type {
   NewAgentCall,
 } from '../repositories/agent-call-event';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
-import { clientTags } from '../services/telemetry/telemetry-impl';
+import { requestClient } from '../utils/request-client.utils';
 import { Logger } from '../services/logger.service';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
@@ -80,7 +80,7 @@ export function recordAgentCall(
       const mcpTool = base === MCP_BASE ? mcpToolName(req.body) : undefined;
       const statusCode = res.statusCode;
       const kind = tokenKindOf(user);
-      const { user_agent, channel } = clientTags(req.headers);
+      const { userAgent, channel } = requestClient(req.headers);
       const requestId = (req as { context?: { requestId?: string } }).context
         ?.requestId;
       const call: NewAgentCall = {
@@ -92,7 +92,7 @@ export function recordAgentCall(
           typeof user.oauthClientId === 'string' && {
             oauthClientId: user.oauthClientId,
           }),
-        ...(user_agent !== undefined && { userAgent: user_agent }),
+        ...(userAgent !== undefined && { userAgent }),
         ...(channel !== undefined && { channel }),
         method: req.method,
         route,

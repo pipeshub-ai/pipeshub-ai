@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.plugins.telemetry.modules import permissions_metrics
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.filters import (
     ScopeFilter,
@@ -224,7 +225,7 @@ def test_redis_drops_and_counts_what_the_exact_rule_refuses_and_keeps_the_rest(m
         def inc(self, *labels: str, value: float = 1.0) -> None:
             Rec.dropped += int(value)
 
-    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", Rec())
+    monkeypatch.setattr(permissions_metrics.SCOPE_PREFILTER_DROPPED, "inc", Rec().inc)
     ok = {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION}
     results = [SearchResult("ok", 1.0, ok), SearchResult("capital_connector", 1.0, {**ok, "connectorIds": ["C1"]}),
                SearchResult("new_connector", 1.0, {**ok, "connectorIds": ["c1", "cnew"]}), SearchResult("capital_group", 1.0, {**ok, "recordGroupIds": ["G1"]})]
@@ -308,7 +309,7 @@ async def test_redis_looks_further_when_the_exact_rule_drops_what_the_query_let_
         def inc(self, *labels: str, value: float = 1.0) -> None:
             Rec.dropped += int(value)
 
-    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_DROPPED", Rec())
+    monkeypatch.setattr(permissions_metrics.SCOPE_PREFILTER_DROPPED, "inc", Rec().inc)
     ok = {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION}
     ranked = [SearchResult("capital", 1.0, {**ok, "connectorIds": ["C1"]}), SearchResult("valid", 0.9, ok), SearchResult("valid2", 0.8, ok),
               SearchResult("valid3", 0.7, ok)]
@@ -476,7 +477,7 @@ async def test_a_search_that_runs_into_the_candidate_cap_with_too_few_valid_poin
         def inc(self, *labels: str, value: float = 1.0) -> None:
             Rec.capped += 1
 
-    monkeypatch.setattr(redis_vector, "SCOPE_PREFILTER_CAPPED", Rec())
+    monkeypatch.setattr(permissions_metrics.SCOPE_PREFILTER_CAPPED, "inc", Rec().inc)
     monkeypatch.setattr(redis_vector, "MAX_SCOPE_CANDIDATES", 4)
     bad = {"connectorIds": ["C1"], "scopeStamp": "container", "scopeFieldsVersion": VERSION, "scopeGeneration": GENERATION, "recordGroupIds": ["g1"]}
     ranked = [SearchResult(f"p{i}", 1.0 - i / 100, bad) for i in range(10)]            # all refused by the exact rule

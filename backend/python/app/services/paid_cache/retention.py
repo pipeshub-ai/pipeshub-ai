@@ -22,21 +22,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from app import platform_events
 from app.services.paid_cache.cache import ResultStore, writes_enabled
 from app.services.paid_cache.run import OPEN_PROTECTS_MS
 from app.services.paid_cache.store import MAX_FILES_PER_CALL, GuardUnsupported
-from app.telemetry.backend import METRICS_BACKEND
 
 #: Completed revisions whose objects are kept (the newest and one before it).
 KEEP_REVISIONS = 2
 GRACE_MS = 3600 * 1000
 _MANIFESTS = "manifests/"
-
-SWEEP_CHANGED = METRICS_BACKEND.counter(
-    "pipeshub_paid_sweep_changed_total",
-    "Objects a retention sweep left in place because they changed after it listed them",
-    [],
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +196,7 @@ async def sweep_record(
                 await store.delete_files(org_id, record_id, fallback)
                 sent += len(fallback)
     if changed:
-        SWEEP_CHANGED.inc(value=float(len(changed)))
+        platform_events.emit("paid_result.sweep.objects_changed", count=float(len(changed)))
     deleted = sent - len(changed)
     log.debug(
         "Paid-result sweep of record %s: %d deleted, %d changed since listed, %d kept",

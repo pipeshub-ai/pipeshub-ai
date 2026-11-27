@@ -16,12 +16,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
 from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -31,9 +31,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 AHEAD = 5000                    # log rows past the page that are checked against what the page projected
 PAGE = 25000                      # change-log keys per page: measured best (a page of 5,000 drained at less than half the rate of 25,000)
-DRAINED = METRICS_BACKEND.counter("pipeshub_kg_drained_rows_total", "Change-log rows projected by the drainer", ["where"])
-LAG = METRICS_BACKEND.counter("pipeshub_kg_drain_failed_total", "Drainer passes that failed and will be retried", ["where"])
-RETRY_LATER = METRICS_BACKEND.counter("pipeshub_kg_drain_retry_later_total", "Drainer passes whose projection gave up reaching connectors it had not locked (nothing written, retried)", ["where"])
 
 
 @dataclass
@@ -99,7 +96,7 @@ async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int |
             st.rows += n
             st.pages += 1
     st.seconds = time.perf_counter() - t0
-    DRAINED.inc("drain", value=st.rows)
+    platform_events.emit("knowledge_graph.changes.drained", stage="drain", count=st.rows)
     return st
 
 
@@ -181,10 +178,10 @@ async def drain_or_retry(db: KernelDB, org: str, *, page: int = PAGE, stop: asyn
     try:
         return (await drain_org(db, org, page=page, stop=stop)).rows
     except RuntimeError:
-        RETRY_LATER.inc("drain")
+        platform_events.emit("knowledge_graph.drain.deferred", stage="drain")
         logger.warning("kg drain gave up for an org (connectors it had not locked); the rows stay in the log, retrying later")
     except Exception:
-        LAG.inc("drain")
+        platform_events.emit("knowledge_graph.drain.failed", stage="drain")
         logger.exception("kg drain failed for an org; retrying")
     return 0
 

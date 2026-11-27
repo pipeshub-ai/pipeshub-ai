@@ -14,6 +14,7 @@ import pytest
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import SyncStartNotRecorded, run_sync_task
+from tests.support.platform_event_capture import event_calls
 
 
 def _graph_provider() -> AsyncMock:
@@ -77,7 +78,7 @@ class TestStartStatusWrite:
         coordinator.end = AsyncMock()
         connector = _connector(run_sync)
         with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), \
-                patch("app.connectors.core.sync.sync_runner.record_service_activity") as counted, \
+                event_calls("connector.sync.start_not_recorded") as counted, \
                 pytest.raises(SyncStartNotRecorded, match="could not be written") as raised:
             await run_sync_task(connector, "c1", gp, logging.getLogger("t"), lease=lease, coordinator=coordinator)
         run_sync.assert_not_awaited()
@@ -85,7 +86,7 @@ class TestStartStatusWrite:
         coordinator.end.assert_awaited_once_with(lease)      # the finalizer still releases the lease
         # Visible even when the store keeps refusing the app document: the store's error, a counter, and the summary the finalizer writes.
         assert str(raised.value.__cause__) == "rejected"
-        assert counted.call_args.args[:2] == ("connector_service", "sync_start_not_recorded")
+        counted.assert_called_once()
         assert connector.last_sync_summary == {"stopReason": "start_not_recorded"}      # the connector page shows it
 
     @pytest.mark.asyncio

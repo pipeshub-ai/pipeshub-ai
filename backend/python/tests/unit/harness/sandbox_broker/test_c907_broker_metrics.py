@@ -15,8 +15,8 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestServer
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
 from harness_core.sandbox.auth import StaticBearerAuth
 from harness_core.sandbox.metering import (
     NOOP_BROKER_METRICS,

@@ -12,13 +12,13 @@ PY = Path(__file__).resolve().parents[3]
 PROBE = textwrap.dedent(
     """
     import sys
-    from app.telemetry.backend import PrometheusBackend
-    from app.telemetry import flag
+    from app.plugins.telemetry.backend import PrometheusBackend
+    from app.plugins.telemetry import flag
     # A build whose recording waits for an admin's consent (its default follows the edition) gets it here.
     if hasattr(flag, "set_collection_consent"):
         flag.set_collection_consent(True)
     if sys.argv[1] == "on":
-        from app.telemetry import ops_exporter  # noqa: F401  (imported; a collector is registered below)
+        from app.plugins.telemetry import ops_exporter  # noqa: F401  (imported; a collector is registered below)
         import tempfile
         e = ops_exporter.OpsExporter(service="indexing", run_dir=tempfile.mkdtemp(), port=19299, source=lambda: ({}, {}))
         e.writer.write()

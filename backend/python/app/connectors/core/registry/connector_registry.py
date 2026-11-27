@@ -9,14 +9,14 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app import platform_events
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     PermissionModel,
     ProgressStatus,
 )
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
+from app.utils.email_domain import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
@@ -1609,22 +1609,24 @@ class ConnectorRegistry:
             org_id,
             selected_auth_type=selected_auth_type
         )
-        if instance is not None:
+        # The creator's address is read only to announce the connector: skipped when nothing listens.
+        if instance is not None and platform_events.has_listeners("connector.added"):
             email = None
             try:
                 graph_provider = await self._get_graph_provider()
                 user_doc = await graph_provider.get_document(created_by, CollectionNames.USERS.value)
                 email = (user_doc or {}).get("email")
             except Exception as e:
-                self.logger.debug(f"telemetry: could not resolve connector creator email: {e}")
-            record_event("connector_added", {
-                "orgId": org_id,
-                "userId": created_by,
-                "email": email,
-                "domain": domain_from_email(email),
-                "connector": connector_type,
-                "scope": scope,
-            })
+                self.logger.debug(f"connector.added: could not resolve the creator's email: {e}")
+            platform_events.emit(
+                "connector.added",
+                org_id=org_id,
+                user_id=created_by,
+                user_email=email,
+                email_domain=domain_from_email(email),
+                connector=connector_type,
+                scope=scope,
+            )
         return instance
 
     async def update_connector_instance(

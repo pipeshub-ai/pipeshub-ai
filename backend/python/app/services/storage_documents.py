@@ -26,6 +26,7 @@ from app.modules.transformers.blob_storage import (
     _upload_succeeded,
 )
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import generate_jwt
 
 if TYPE_CHECKING:
@@ -293,7 +294,7 @@ class StorageDocuments:
         size = os.path.getsize(file_path)
         tag_list: list[CustomMetadataEntry] = [{"key": k, "value": v} for k, v in tags.items()]
         try:
-            async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=_TIMEOUT) as session:
                 with open(file_path, "rb") as source:
                     form = aiohttp.FormData()
                     form.add_field("file", source, filename=f"{name}.{extension}", content_type=content_type)
@@ -344,7 +345,7 @@ class StorageDocuments:
         token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
         base = await self._storage_url()
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session, session.get(
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=aiohttp.ClientTimeout(total=15)) as session, session.get(
                 f"{base}/api/v1/document/internal/{document_id}", headers={"Authorization": f"Bearer {token}"},
             ) as resp:
                 if resp.status in (404, 410):
@@ -368,7 +369,7 @@ class StorageDocuments:
         base = await self._storage_url()
         params = {"verify": "1"} if verify else None
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session, session.get(
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=aiohttp.ClientTimeout(total=30)) as session, session.get(
                 f"{base}/api/v1/document/internal/{document_id}",
                 params=params,
                 headers={"Authorization": f"Bearer {token}"},
@@ -407,7 +408,7 @@ class StorageDocuments:
         token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
         base = await self._storage_url()
         route = f"{base}/api/v1/document/internal/{document_id}/download"
-        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=60))
+        session = aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=60))
         try:
             if info.storage_vendor == "local":
                 resp = await session.get(route, params={"ifMatch": etag}, headers={"Authorization": f"Bearer {token}", **range_header})
@@ -472,7 +473,7 @@ class StorageDocuments:
             return parsed
 
         ids = list(dict.fromkeys(document_ids))
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async with aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=aiohttp.ClientTimeout(total=30)) as session:
             tasks = [spawn_in_request(one(session, i)) for i in ids]
             try:
                 results = await asyncio.gather(*tasks)

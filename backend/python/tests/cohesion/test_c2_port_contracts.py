@@ -460,7 +460,7 @@ PORTS: dict[str, tuple[str, str]] = {
 
 EXEMPT: dict[str, str] = {
     "harness_core.telemetry.security_signals.SecuritySignalSink": (
-        "a counting sink with a no-op default, not a store (ADR-OPS-03): app.telemetry.modules.security_metrics is its "
+        "a counting sink with a no-op default, not a store (ADR-OPS-03): app.plugins.telemetry.modules.security_metrics is its "
         "Prometheus adapter; test_sec_d_13_security_signals.py drives the helpers through a recording fake, a sink "
         "that throws and the Prometheus adapter itself"
     ),

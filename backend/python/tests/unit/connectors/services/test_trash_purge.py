@@ -14,7 +14,7 @@ import copy
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -33,6 +33,7 @@ from app.core import org_context
 from app.exceptions.graph_db_exceptions import GraphLockUnavailableError
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import trash_purge_row
+from tests.support.platform_event_capture import event_calls, replace_event_listener
 
 DAY_MS = 24 * 60 * 60 * 1000
 ORG = "org-1"
@@ -660,7 +661,7 @@ class TestBookkeeping:
         graph, kv = _Graph(), _KV()
         graph.trash("young", days_ago=3)
         graph.trash("stuck", days_ago=40, purgeAttempts=5)
-        with patch.object(purge_module, "set_trash_backlog") as gauges:
+        with event_calls("trash.backlog.measured", "pending", "stuck", "oldest_pending_age_seconds") as gauges:
             assert await _purger(graph, kv).tick() == Outcome.FINISHED
         gauges.assert_called_once_with(1, 1, pytest.approx(3 * 24 * 3600, rel=1e-6))
 
@@ -702,7 +703,7 @@ class TestLoop:
         monkeypatch.setenv("SOFT_DELETE_PURGE_TICK_SECONDS", "60")
         monkeypatch.setenv("SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS", "0")
         runs = MagicMock()
-        monkeypatch.setattr(purge_module, "record_purge_run", runs)
+        replace_event_listener(monkeypatch, "trash.purge.finished", runs, "status", "duration_seconds")
 
         with pytest.raises(asyncio.CancelledError):
             await purge_module.run_trash_purge_loop(container, _Graph(), sleep=sleep)

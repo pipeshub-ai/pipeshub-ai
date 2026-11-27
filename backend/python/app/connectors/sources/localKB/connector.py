@@ -40,6 +40,7 @@ from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS
 from app.utils.jwt import generate_jwt
 from app.utils.storage_download import is_signed_url_reply
 from app.connectors.core.base.error.stream_errors import to_internal_service_error
+from app.utils.http_client_events import aiohttp_tracing
 
 if TYPE_CHECKING:
     from app.services.storage_documents import StorageDocumentInfo
@@ -166,7 +167,7 @@ class KnowledgeBaseConnector(BaseConnector):
             # Call storage service to get the signed URL
             download_endpoint = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/download"
 
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage")) as session:
                 async with session.get(
                     download_endpoint,
                     headers={"Authorization": f"Bearer {storage_token}"}

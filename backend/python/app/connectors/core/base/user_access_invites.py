@@ -19,6 +19,7 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import generate_jwt
 from app.utils.oauth_redirect import get_configured_frontend_base_url
 from app.utils.request_context import inject_request_headers
@@ -127,7 +128,7 @@ async def _send_email(
         "templateData": template_data,
     }
     headers = inject_request_headers({"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_MAIL_TIMEOUT_S)) as session, \
+    async with aiohttp.ClientSession(**aiohttp_tracing("internal_api"), timeout=aiohttp.ClientTimeout(total=_MAIL_TIMEOUT_S)) as session, \
             session.post(f"{node.rstrip('/')}{_MAIL_ROUTE}", json=body, headers=headers) as response:
         if response.status == _OK:
             return True

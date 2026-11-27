@@ -130,6 +130,7 @@ from app.models.permission import Permission
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.api_call import make_api_call
+from app.utils.http_client_events import aiohttp_tracing
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -4289,7 +4290,7 @@ class WebConnector(BaseConnector):
                 download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
 
                 # Not self.session: the storage service is internal, which the crawl's session refuses.
-                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+                session = aiohttp.ClientSession(**aiohttp_tracing("storage"), timeout=aiohttp.ClientTimeout(total=30))
                 try:
                     async with session.get(
                         download_endpoint,
@@ -5001,7 +5002,7 @@ class WebConnector(BaseConnector):
             form.add_field("documentPath", f"WebConnector/{self.connector_id}")
             form.add_field("isVersionedFile", "false")
 
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage")) as session:
                 async with session.post(
                     f"{storage_url}/api/v1/document/internal/upload",
                     data=form,
@@ -5051,7 +5052,7 @@ class WebConnector(BaseConnector):
                 content_type=mime_type,
             )
 
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage")) as session:
                 async with session.put(
                     f"{storage_url}/api/v1/document/internal/{storage_document_id}/buffer",
                     data=form,
@@ -5117,7 +5118,7 @@ class WebConnector(BaseConnector):
         try:
             storage_url = await self._get_storage_url()
             token = await self._get_storage_token()
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(**aiohttp_tracing("storage")) as session:
                 async with session.delete(
                     f"{storage_url}/api/v1/document/internal/{storage_document_id}",
                     headers={"Authorization": f"Bearer {token}"},

@@ -35,11 +35,8 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
-import {
-  normalizeOrgId,
-  setMetricCollectionEnabled,
-} from '../../../libs/services/telemetry/telemetry-impl';
-import { TelemetryService } from '../../../libs/services/telemetry/telemetry-runtime';
+import { emitPlatformEvent } from '../../../libs/platform-events';
+import { getCapability } from '../../../libs/plugins/capabilities';
 import { loadConfigurationManagerConfig } from '../config/config';
 import {
   readMembership,
@@ -2923,11 +2920,12 @@ export const toggleMetricsCollection =
       const enabled = !(
         enableMetricCollection === false || enableMetricCollection === 'false'
       );
-      setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
-
-      if (!enabled) {
-        await TelemetryService.current()?.flush();
-      }
+      // Announced before the new value is stored: whoever ships usage data
+      // sends the opt-out while it is still allowed to send.
+      emitPlatformEvent('org.data_collection_setting.changed', {
+        orgId: req.user?.orgId,
+        enabled,
+      });
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
         metricsCollection.enableMetricCollection = enableMetricCollection;
@@ -2949,7 +2947,17 @@ export const getMetricsCollection =
       const metricsCollection = await getMetricsCollectionConfig(
         keyValueStoreService,
       );
-      res.status(200).json(metricsCollection).end();
+      // A build or deployment that cannot collect says so, whatever was stored.
+      const canCollect =
+        getCapability('data-collection')?.isActive() === true;
+      res
+        .status(200)
+        .json(
+          canCollect
+            ? metricsCollection
+            : { ...metricsCollection, enableMetricCollection: 'false' },
+        )
+        .end();
     } catch (error: any) {
       next(error);
     }

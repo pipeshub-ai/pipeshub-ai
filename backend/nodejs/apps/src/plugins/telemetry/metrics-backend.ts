@@ -1,0 +1,173 @@
+import * as promClient from 'prom-client';
+import { isTelemetryEnabled } from './flag';
+
+export type MetricLabels = Record<string, string | number>;
+
+export interface CounterHandle {
+  inc(labels?: MetricLabels, value?: number): void;
+}
+
+export interface GaugeHandle {
+  set(labels: MetricLabels, value: number): void;
+  /** Drop all current series (used by current-state gauges before a refresh). */
+  reset(): void;
+}
+
+export interface HistogramHandle {
+  observe(labels: MetricLabels, value: number): void;
+}
+
+export interface MetricDefinition {
+  name: string;
+  help: string;
+  labelNames: string[];
+  /**
+   * Counter series that exist at 0 whenever the registry is read, also after a reset (consent switched off, a 413
+   * from the collector): a counter that first appears at 1 shows no increase, so its first event would not alert.
+   */
+  zeroSeries?: MetricLabels[];
+}
+
+export interface HistogramDefinition extends MetricDefinition {
+  buckets: number[];
+}
+
+/** A metrics registry capable of creating instruments and serializing them. */
+export interface MetricsBackend {
+  createCounter(def: MetricDefinition): CounterHandle;
+  createGauge(def: MetricDefinition): GaugeHandle;
+  createHistogram(def: HistogramDefinition): HistogramHandle;
+  /** Serialize all registered metrics in the backend's exposition format. */
+  serialize(): Promise<string>;
+  /** Every counter and gauge series with its current value. Histograms are left out. */
+  snapshot(): Promise<MetricSnapshotSample[]>;
+  /** Drop all recorded series. */
+  reset(): void;
+}
+
+export interface MetricSnapshotSample {
+  name: string;
+  type: 'counter' | 'gauge';
+  labels: Record<string, string>;
+  value: number;
+}
+
+/** prom-client implementation of {@link MetricsBackend}. */
+export class PrometheusBackend implements MetricsBackend {
+  private readonly registry = new promClient.Registry();
+
+  createCounter(def: MetricDefinition): CounterHandle {
+    const zeroSeries = def.zeroSeries ?? [];
+    const counter = new promClient.Counter({
+      name: def.name,
+      help: def.help,
+      labelNames: def.labelNames,
+      registers: [this.registry],
+      ...(zeroSeries.length > 0
+        ? {
+            collect(this: promClient.Counter) {
+              for (const labels of zeroSeries) this.inc(labels, 0);
+            },
+          }
+        : {}),
+    });
+    return {
+      inc: (labels, value) => {
+        if (labels) {
+          counter.inc(labels, value ?? 1);
+        } else {
+          counter.inc(value ?? 1);
+        }
+      },
+    };
+  }
+
+  createGauge(def: MetricDefinition): GaugeHandle {
+    const gauge = new promClient.Gauge({
+      name: def.name,
+      help: def.help,
+      labelNames: def.labelNames,
+      registers: [this.registry],
+    });
+    return {
+      set: (labels, value) => {
+        gauge.set(labels, value);
+      },
+      reset: () => {
+        gauge.reset();
+      },
+    };
+  }
+
+  createHistogram(def: HistogramDefinition): HistogramHandle {
+    const histogram = new promClient.Histogram({
+      name: def.name,
+      help: def.help,
+      labelNames: def.labelNames,
+      buckets: def.buckets,
+      registers: [this.registry],
+    });
+    return {
+      observe: (labels, value) => {
+        histogram.observe(labels, value);
+      },
+    };
+  }
+
+  serialize(): Promise<string> {
+    return this.registry.metrics();
+  }
+
+  async snapshot(): Promise<MetricSnapshotSample[]> {
+    const out: MetricSnapshotSample[] = [];
+    for (const metric of await this.registry.getMetricsAsJSON()) {
+      const type = String(metric.type);
+      if (type !== 'counter' && type !== 'gauge') continue;
+      for (const sample of metric.values) {
+        const labels: Record<string, string> = {};
+        for (const [key, value] of Object.entries(sample.labels)) {
+          labels[key] = String(value);
+        }
+        out.push({ name: metric.name, type, labels, value: sample.value });
+      }
+    }
+    return out;
+  }
+
+  reset(): void {
+    this.registry.resetMetrics();
+  }
+}
+
+/**
+ * Backend used when telemetry is switched off: instruments accept every call
+ * and record nothing, so call sites need no flag checks of their own.
+ */
+export class NoopBackend implements MetricsBackend {
+  createCounter(_def: MetricDefinition): CounterHandle {
+    return { inc: () => {} };
+  }
+
+  createGauge(_def: MetricDefinition): GaugeHandle {
+    return { set: () => {}, reset: () => {} };
+  }
+
+  createHistogram(_def: HistogramDefinition): HistogramHandle {
+    return { observe: () => {} };
+  }
+
+  serialize(): Promise<string> {
+    return Promise.resolve('');
+  }
+
+  snapshot(): Promise<MetricSnapshotSample[]> {
+    return Promise.resolve([]);
+  }
+
+  reset(): void {}
+}
+
+// Chosen at import because every metric module creates its instruments at import.
+export const metricsBackend: MetricsBackend = isTelemetryEnabled()
+  ? new PrometheusBackend()
+  : new NoopBackend();

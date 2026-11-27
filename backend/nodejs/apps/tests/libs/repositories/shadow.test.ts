@@ -5,23 +5,23 @@ import { join } from 'node:path';
 import { READ_METHODS, idsOf, isReadMethod, pathsOf, shadowEnabled, shadowInFlight, shadowWrap, type RunPg } from '../../../src/libs/repositories/shadow';
 import { Logger } from '../../../src/libs/services/logger.service';
 import { docStore, pickStore } from '../../../src/libs/repositories/store-select';
-import { docstoreMetrics } from '../../../src/libs/repositories/metrics';
+import { onPlatformEvent } from '../../../src/libs/platform-events';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const counts: Record<string, number> = {};
-const realInc = docstoreMetrics.shadowReads.inc.bind(docstoreMetrics.shadowReads);
+let stopCounting = (): void => undefined;
 
 describe('shadow reads (DOC_STORE=shadow)', () => {
   const saved = { DOC_STORE: process.env.DOC_STORE, S: process.env.DOC_STORE_SHADOW_SAMPLE, T: process.env.DOC_STORE_SHADOW_SETTLE_MS, O: process.env.DOC_STORE_SHADOW_TIMEOUT_MS, M: process.env.DOC_STORE_SHADOW_MAX_IN_FLIGHT };
   const put = (k: string, v: string | undefined): void => { if (v === undefined) delete process.env[k]; else process.env[k] = v };
   before(() => {
-    (docstoreMetrics.shadowReads as any).inc = (l: { repo: string; result: string }) => { counts[`${l.repo}:${l.result}`] = (counts[`${l.repo}:${l.result}`] ?? 0) + 1; };
+    stopCounting = onPlatformEvent('docstore.shadow_read.compared', (l) => { counts[`${l.repo}:${l.result}`] = (counts[`${l.repo}:${l.result}`] ?? 0) + 1; });
     process.env.DOC_STORE_SHADOW_SAMPLE = '1';
     process.env.DOC_STORE_SHADOW_SETTLE_MS = '20';
     process.env.DOC_STORE_SHADOW_TIMEOUT_MS = '200';
   });
   after(() => {
-    (docstoreMetrics.shadowReads as any).inc = realInc;
+    stopCounting();
     put('DOC_STORE', saved.DOC_STORE); put('DOC_STORE_SHADOW_SAMPLE', saved.S); put('DOC_STORE_SHADOW_SETTLE_MS', saved.T); put('DOC_STORE_SHADOW_TIMEOUT_MS', saved.O); put('DOC_STORE_SHADOW_MAX_IN_FLIGHT', saved.M);
   });
   beforeEach(() => { for (const k of Object.keys(counts)) delete counts[k]; });

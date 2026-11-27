@@ -18,12 +18,13 @@ import socket
 import time
 import uuid
 from collections import Counter
+from contextvars import ContextVar
 from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
+from app import platform_events
 from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
 from app.core.envelope import (
-    INBOX_ERRORS,
     DuplicateEnvelope,
     EnvelopeRejected,
     Inbox,
@@ -42,7 +43,7 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
-from app.services.messaging import record_budget
+from app.services.messaging import broker_events, record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -172,6 +173,36 @@ def _queue_write(reason: str) -> "Iterator[None]":
     except Exception:
         timing.note(disposition="retry", reason=reason)
         raise
+
+
+# How the delivery being settled in this task ended, for its ``message.consumed`` event. Set where the queue write is asked for.
+_settled: ContextVar["list[str] | None"] = ContextVar("pg_delivery_settled", default=None)
+
+
+def _note_settled(how: str) -> None:
+    box = _settled.get()
+    if box is not None:
+        box[0] = how
+
+
+def _announce_consumed(d: Delivery, outcome: str, started: float) -> None:
+    """One delivery ended. The message type and the lag are read from the body (its ``eventType``, and the ``timestamp`` its
+    producer stamped, when it has one) only when somebody listens."""
+    if not platform_events.has_listeners("message.consumed"):
+        return
+    try:
+        raw = decode_message(d.value)
+    except ValueError:
+        raw = None
+    body = raw if isinstance(raw, dict) else {}
+    broker_events.consumed(
+        "postgres",
+        d.topic,
+        body.get("eventType"),
+        outcome=outcome,
+        duration_seconds=time.perf_counter() - started,
+        lag=broker_events.lag_ms(body.get("timestamp")),
+    )
 
 
 class _ExpectedOutcome(str):
@@ -495,6 +526,17 @@ class PgMessagingConsumer(IMessagingConsumer):
             self._opened.pop((d.topic, d.message_id, d.attempts), None)
 
     async def _settle_timed(self, d: Delivery) -> None:
+        """Settle ``d`` and announce the delivery as ``message.consumed``, however it ended."""
+        settled = ["retry"]  # left claimed (a lost claim, a shutdown) unless a queue write below says otherwise
+        token = _settled.set(settled)
+        started = time.perf_counter()
+        try:
+            await self._settle_record(d)
+        finally:
+            _settled.reset(token)
+            _announce_consumed(d, settled[0], started)
+
+    async def _settle_record(self, d: Delivery) -> None:
         if not self.indexing:
             await self._decide(d, {})
             return
@@ -591,6 +633,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 return "ok"
             # A newer claim of the row (this one expired) is not this delivery's to settle.
             if acked:
+                _note_settled("success")
                 timing.note(disposition="ack")
             else:
                 timing.note(disposition="retry", reason="claim_lost")
@@ -633,7 +676,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             return await self.inbox.record_and_ack(group, ctx, self.queue, group, d)
         except Exception as e:
-            INBOX_ERRORS.inc("record")
+            platform_events.emit("message.inbox.failed", operation="record")
             if log_once(f"inbox-ack:{group}", 30):    # the counter carries the exact count
                 self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
             return await self.queue.ack(group, d)
@@ -644,6 +687,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if seen is not None:
             seen["parsed"] = parsed
         timing.note(record_id=parsed.payload.get("recordId"), event_type=parsed.eventType)
+        timing.describe_record(connector=parsed.payload.get("connectorName"))
 
     def _count_handback(self, key: tuple[str, int]) -> int:
         """One more hand-back of this message, and how many it has had. The table is bounded: the oldest entries go first."""
@@ -725,6 +769,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         was admitted by a stored admission alone keeps the value it has (an admission must never turn into a fresh signature).
         ``reissued``: that value, already signed again by the caller (``_reissued``).
         """
+        _note_settled("retry")
         mode = self._opened.get((d.topic, d.message_id, d.attempts))
         kwargs: dict[str, Any] = {}
         raw: Any = None
@@ -810,6 +855,7 @@ class PgMessagingConsumer(IMessagingConsumer):
     async def _abandon(
         self, d: Delivery, parsed: StreamMessage | None, reason: str, *, claim_first: bool = False
     ) -> None:
+        _note_settled("dead_letter")
         if claim_first:
             if not await self.queue.dead(self.config.group_id, d, reason):
                 self._handback_log["claim_lost"] = self._handback_log.get("claim_lost", 0) + 1

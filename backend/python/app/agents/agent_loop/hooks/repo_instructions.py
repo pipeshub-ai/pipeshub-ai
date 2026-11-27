@@ -54,6 +54,7 @@ from app.services.record_content.models import (
 )
 from app.services.record_content.resolver import RecordContentResolver
 from app.utils import error_class
+from app.utils.http_client_events import aiohttp_tracing
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import (
@@ -312,7 +313,7 @@ async def _fetch_contents(
         if text is not None:
             file_cache[record_id] = text
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(**aiohttp_tracing("record_content")) as session:
         await asyncio.gather(*(_store(r, session) for r in record_ids))
 
 

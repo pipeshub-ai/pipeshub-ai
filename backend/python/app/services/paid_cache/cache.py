@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from time import time as wall_clock
 from typing import Any, Generic, TypeVar
 
+from app import platform_events
 from app.core.org_context import spawn_in_request
 from app.services.paid_cache import locks as lock_limits
 from app.services.paid_cache.bump import (
@@ -42,7 +43,7 @@ from app.services.paid_cache.locks import (
     refresh_done_name,
     refresh_name,
 )
-from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
+from app.services.paid_cache.orphan import RecordGone, current_guard
 from app.services.paid_cache.run import RunScope, current_run
 from app.services.paid_cache.store import (
     PAID_RESULT_ROUTES,
@@ -53,7 +54,6 @@ from app.services.paid_cache.store import (
     PurgeCutoffNoMarker,
     VersionedBytes,
 )
-from app.telemetry.backend import METRICS_BACKEND
 
 T = TypeVar("T")
 
@@ -76,12 +76,6 @@ REFRESH_PURGE_EXPECTED_S = 300.0
 REFRESH_PURGE_MAX_AGE_S = 2 * REFRESH_PURGE_EXPECTED_S
 #: Kept for callers: the holder's lease, not this, bounds the wait.
 DEFAULT_WAIT_S = MAX_WAIT_S
-
-PAID_CACHE_TOTAL = METRICS_BACKEND.counter(
-    "pipeshub_paid_cache_total",
-    "Paid-result cache lookups and stores by kind and outcome",
-    ["kind", "outcome"],
-)
 
 
 def enabled() -> bool:
@@ -636,7 +630,7 @@ class PaidResultCache:
         ``orphan``). No guard (a call outside a delivery or a parse request) means no check."""
         guard = current_guard(key.org_id, key.record_id)
         if guard is not None and await guard.check(await self._backend_or_none()):
-            STOPPED.inc(site)
+            platform_events.emit("paid_result.work.stopped", site=site)
             raise RecordGone(key.record_id, f"its {key.kind} is not {'paid for' if site == 'call' else 'stored'}")
 
     async def read_markers(self, org_id: str, record_id: str) -> tuple[str | None, str | None] | None:
@@ -656,7 +650,7 @@ class PaidResultCache:
         """The check of a stage boundary outside the cache (before the embeddings, before the vector and blob writes)."""
         guard = current_guard(org_id, record_id)
         if guard is not None and await guard.check(await self._backend_or_none()):
-            STOPPED.inc(site)
+            platform_events.emit("paid_result.work.stopped", site=site)
             raise RecordGone(record_id)
 
     async def _deleted(self, org_id: str, record_id: str) -> bool:
@@ -965,7 +959,7 @@ class PaidResultCache:
         return False, None, None
 
     def _count(self, key: CacheKey, outcome: str) -> None:
-        PAID_CACHE_TOTAL.inc(key.kind, outcome)
+        platform_events.emit("paid_result.cache.accessed", kind=key.kind, outcome=outcome)
 
     def _storage_error(self, key: CacheKey, op: str, exc: BaseException) -> None:
         self._count(key, "error")
@@ -1098,7 +1092,7 @@ class NullPaidResultCache:
         """No markers without a cache, but the graph still decides for a run that has a guard."""
         guard = current_guard(org_id, record_id)
         if guard is not None and await guard.check(None):
-            STOPPED.inc(site)
+            platform_events.emit("paid_result.work.stopped", site=site)
             raise RecordGone(record_id)
 
     async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:

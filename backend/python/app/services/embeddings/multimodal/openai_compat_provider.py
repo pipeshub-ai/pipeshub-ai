@@ -36,6 +36,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.utils.model_call_events import note_usage
 from app.utils.model_egress import guarded_async_client
 
 _CONCURRENCY_LIMIT = 5
@@ -146,7 +147,9 @@ class OpenAICompatMultimodalProvider(IMultimodalEmbeddingProvider):
             },
         )
         resp.raise_for_status()
-        return resp.json().get("data", [])
+        body = resp.json()
+        note_usage(body)
+        return body.get("data", [])
 
     async def _embed_via_messages(
         self,
@@ -174,7 +177,9 @@ class OpenAICompatMultimodalProvider(IMultimodalEmbeddingProvider):
                 },
             )
             resp.raise_for_status()
-            return map_embedding_response(resp.json().get("data", []), [index])[0]
+            body = resp.json()
+            note_usage(body)
+            return map_embedding_response(body.get("data", []), [index])[0]
         except Exception as vllm_err:
             return ImageEmbeddingResult(index=index, error=describe_request_error(vllm_err))
 
