@@ -363,10 +363,10 @@ async def stamp_keys(tx: Tx, org: str, keys: set[Key], st: StampStats | None = N
         st.diffs += [f"s|{r['id']}" for r in changed] + [f"r13|{r['id']}" for r in r13_changed if r not in changed]
         st.diffs += [f"sc|{by_sk[x[0]]}" for x in set_scopes] + [f"sc|{by_sk[x]}" for x in drop_scopes]
     else:
-        if changed:
-            st.written += await w.stamps_set(changed)
-        if r13_changed:
-            await w.r13_set([(r["sk"], r["coll"], r["id"], r["kind"], r["r13"]) for r in r13_changed])
+        if changed or r13_changed:
+            want = {r["sk"] for r in changed} | {r["sk"] for r in r13_changed}
+            await w.stamps_set([r for r in rows if r["sk"] in want])
+            st.written += len(changed)
         if set_scopes:
             await w.scopes_set(set_scopes)
         if drop_scopes:

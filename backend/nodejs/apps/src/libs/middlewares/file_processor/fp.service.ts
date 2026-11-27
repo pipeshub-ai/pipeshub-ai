@@ -1,5 +1,5 @@
 import multer from 'multer';
-import { createMulter } from '../../utils/multer.utils';
+import { createMulter, isUploadLimit } from '../../utils/multer.utils';
 import {
   CustomMulterFile,
   FileProcessorConfiguration,
@@ -9,6 +9,7 @@ import {
 import {
   BadRequestError,
   HttpError,
+  LargePayloadError,
   NotImplementedError,
 } from '../../errors/http.errors';
 import { NextFunction, RequestHandler, Request, Response } from 'express';
@@ -92,7 +93,7 @@ function createCappedMemoryStorage(
         if (requestBytes > maxRequestBytes) {
           // Whole-request budget blown → abort (multer fails the request).
           fail(
-            new BadRequestError(
+            new LargePayloadError(
               `This upload is larger than the ${Math.round(
                 maxRequestBytes / (1024 * 1024),
               )} MB total limit. Upload fewer files at a time.`,
@@ -228,7 +229,6 @@ export class FileProcessorService implements IFileUploadService {
   uploadErrorMessage(
     err: { code?: string; message?: string } | null | undefined,
   ): string {
-    if (err instanceof HttpError) return err.message;
     const mb = Math.round(this.configuration.maxFileSize / (1024 * 1024));
     switch (err?.code) {
       case 'LIMIT_FILE_SIZE':
@@ -330,10 +330,23 @@ export class FileProcessorService implements IFileUploadService {
         : this.multerUpload.single(fieldName);
 
       // Use the selected upload handler with proper error handling and continuation
-      uploadHandler(req, res, (err: any) => {
+      uploadHandler(req, res, (err: unknown) => {
         if (err) {
-          logger.error('upload middleware failed with error: ', err.message);
-          return next(new BadRequestError(this.uploadErrorMessage(err)));
+          const refusal = err as { code?: string; message?: string };
+          // The error middleware logs the refusal once; a 4xx is not an error of ours.
+          logger.debug('Upload refused', {
+            code: refusal.code,
+            message: refusal.message,
+          });
+          const Refusal = isUploadLimit(refusal.code)
+            ? LargePayloadError
+            : BadRequestError;
+          // The meter's own 413 (or our storage's) is already the answer.
+          return next(
+            err instanceof HttpError
+              ? err
+              : new Refusal(this.uploadErrorMessage(refusal)),
+          );
         }
 
         // Now check if files were actually uploaded

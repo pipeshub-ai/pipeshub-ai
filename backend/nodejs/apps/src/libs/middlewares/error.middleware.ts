@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import { Logger } from '../services/logger.service';
-import { BaseError, ErrorMetadata } from '../errors/base.error';
+import { BaseError, ErrorMetadata, withCause } from '../errors/base.error';
 import {
   REASON_CODE_PATTERN,
   unansweredCallError,
@@ -23,6 +24,7 @@ import {
   routeTemplate,
 } from './access-log.middleware';
 import { INVALID_PATH_SEGMENT_MESSAGE } from './safe-path-params.middleware';
+import { isMultipartParseError, isUploadLimit } from '../utils/multer.utils';
 
 /**
  * What a reader is told when the failure is in PipesHub's own plumbing (a
@@ -91,6 +93,29 @@ function malformedPathError(error: Error): HttpError | null {
     : null;
 }
 
+const UPLOAD_TOO_LARGE_MESSAGE =
+  "The upload is too large: a file, or the number of files or fields, is over this route's limit.";
+const UPLOAD_UNREADABLE_MESSAGE =
+  'The upload could not be read. Send it as multipart/form-data with the expected file field.';
+
+/**
+ * Maps a multer or busboy refusal of a multipart body to 413 (past a size or
+ * count limit) or 400 (sent wrong). Their messages can quote a field name or
+ * the Content-Type header, so fixed sentences replace them.
+ */
+function multipartError(error: Error): HttpError | null {
+  if (error instanceof multer.MulterError) {
+    const refusal = isUploadLimit(error.code)
+      ? new LargePayloadError(UPLOAD_TOO_LARGE_MESSAGE)
+      : new BadRequestError(UPLOAD_UNREADABLE_MESSAGE);
+    // multer's code (a fixed enum, never client text) tells the log which limit; the cause is not sent.
+    return withCause(refusal, { code: error.code });
+  }
+  return isMultipartParseError(error)
+    ? new BadRequestError(UPLOAD_UNREADABLE_MESSAGE)
+    : null;
+}
+
 const omitAccessNotices = (
   metadata: ErrorMetadata | undefined,
 ): ErrorMetadata | undefined => {
@@ -155,6 +180,7 @@ export class ErrorMiddleware {
             ? error
             : (bodyParserError(error) ??
               malformedPathError(error) ??
+              multipartError(error) ??
               unansweredCallError(error));
         // Logged even when the response has started (a stream that failed
         // midway): controllers no longer log what they pass on.

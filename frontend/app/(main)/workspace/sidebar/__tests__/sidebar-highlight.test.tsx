@@ -63,6 +63,8 @@ describe('WorkspaceSidebar — one selected row', () => {
     pathname = '/workspace/users/';
     renderSidebar();
     const hrefs = [...document.querySelectorAll('a')]
+      // A sidebar card's button leads to a page but is not a row of the rail, so it is never the selected row.
+      .filter((a) => !a.closest('[data-testid$="-sidebar-card"]'))
       .map((a) => a.getAttribute('href')!)
       .filter((href) => href.startsWith('/workspace/'));
     expect(hrefs.length).toBeGreaterThan(15);

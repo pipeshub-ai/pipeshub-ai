@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Badge, Box, Flex, Text } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -32,6 +32,8 @@ import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { workspaceNavExtras } from '@/config';
 import { mergeWorkspaceNav, type NavItem } from './workspace-nav';
 import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+import { ENTERPRISE_OVERVIEW_ROUTE } from '@/lib/constants/enterprise';
+import { EnterpriseSidebarEntry } from './enterprise-sidebar-entry';
 import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
 import { useSupportDialogStore } from '@/app/(main)/support/store';
 
@@ -56,13 +58,6 @@ const PEOPLE_SUB_ITEMS = [
   { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users' },
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];
-
-const GROUPS_NAV_ITEM: NavItem = {
-  icon: 'group',
-  labelKey: 'workspace.sidebar.nav.groups',
-  route: '/workspace/groups',
-  adminOnly: true,
-};
 
 /** "Security": admin screens that decide who may sign in and what may happen to the org's data. */
 const BUILT_IN_SECURITY_ITEMS: NavItem[] = [
@@ -105,12 +100,18 @@ const PERSONAL_ITEMS = mergeWorkspaceNav('personal', BUILT_IN_PERSONAL_ITEMS, wo
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 
-/** Marks an Enterprise Edition page. Hidden from the link's name, so it still reads "Groups". */
-const ENTERPRISE_LOCK = (
-  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-    <MaterialIcon name="lock" size={14} color="var(--slate-11)" />
-  </span>
-);
+/**
+ * Marks an Enterprise Edition page: a tag that says there is more to see, where a lock would say
+ * "no access". Hidden from the link's name, so it still reads "Groups"; the page itself explains.
+ */
+function EnterpriseNavTag() {
+  const { t } = useTranslation();
+  return (
+    <Badge aria-hidden="true" size="1" variant="soft" radius="full" style={{ flexShrink: 0 }}>
+      {t('common.enterprise.short')}
+    </Badge>
+  );
+}
 
 // ========================================
 // Component
@@ -119,8 +120,8 @@ const ENTERPRISE_LOCK = (
 /**
  * Workspace sidebar — settings navigation with a collapsible "People" section and a "Security" section.
  *
- * Uses `SidebarBase` shell (no header, no footer); at phone width it is the drawer the
- * app's menu button opens.
+ * Uses `SidebarBase` shell, with the Enterprise Edition entry as its footer for admins; at phone
+ * width it is the drawer the app's menu button opens.
  * Active item determined from current pathname.
  */
 export default function WorkspaceSidebar() {
@@ -176,7 +177,7 @@ export default function WorkspaceSidebar() {
     ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
     ...PERSONAL_ITEMS.filter(isNavItemVisible).map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
-    GROUPS_NAV_ITEM.route,
+    ...Object.values(ENTERPRISE_FEATURES).map((item) => item.route),
     '/workspace/actions',
   ];
 
@@ -198,7 +199,7 @@ export default function WorkspaceSidebar() {
   const visiblePeopleItems = PEOPLE_SUB_ITEMS;
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
-  /** The Enterprise Edition pages listed in one part of the sidebar, each locked. */
+  /** The Enterprise Edition pages listed in one part of the sidebar, each tagged. */
   const renderEnterpriseItems = (section: EnterpriseSection) =>
     showEnterprise &&
     Object.values(ENTERPRISE_FEATURES)
@@ -210,26 +211,32 @@ export default function WorkspaceSidebar() {
           label={t(item.labelKey)}
           href={`${item.route}/`}
           isActive={isActive(item.route)}
-          rightSlot={ENTERPRISE_LOCK}
+          rightSlot={<EnterpriseNavTag />}
         />
       ));
   const hasEnterpriseSecurityItems = showEnterprise && Object.values(ENTERPRISE_FEATURES).some((item) => item.section === 'security');
 
+  // On mobile any link tap closes the drawer, even to the page already shown.
+  const closeDrawerOnLinkTap = (e: MouseEvent) => {
+    if (isMobile && (e.target as HTMLElement).closest('a')) closeMobileSidebar();
+  };
+
   return (
     <SidebarBase
       header={isMobile ? <WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} /> : undefined}
+      footer={
+        showEnterprise ? (
+          <Box onClick={closeDrawerOnLinkTap}>
+            <EnterpriseSidebarEntry isActive={isActive(ENTERPRISE_OVERVIEW_ROUTE)} />
+          </Box>
+        ) : undefined
+      }
+      footerHeight="auto"
       isMobile={isMobile}
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobileSidebar}
     >
-      {/* On mobile any link tap closes the drawer, even to the page already shown. */}
-      <Flex
-        direction="column"
-        gap="4"
-        onClick={(e) => {
-          if (isMobile && (e.target as HTMLElement).closest('a')) closeMobileSidebar();
-        }}
-      >
+      <Flex direction="column" gap="4" onClick={closeDrawerOnLinkTap}>
         {/* ── Back to app ── */}
         <WorkspaceSidebarItem
           icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
@@ -270,15 +277,6 @@ export default function WorkspaceSidebar() {
             </CollapsibleSection>
           )}
 
-          {showEnterprise && (
-            <WorkspaceSidebarItem
-              icon={<MaterialIcon name={GROUPS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-              label={t(GROUPS_NAV_ITEM.labelKey)}
-              href={`${GROUPS_NAV_ITEM.route}/`}
-              isActive={isActive(GROUPS_NAV_ITEM.route)}
-              rightSlot={ENTERPRISE_LOCK}
-            />
-          )}
           {renderEnterpriseItems('overview')}
         </Flex>
 
@@ -359,7 +357,7 @@ export default function WorkspaceSidebar() {
           ))}
         </Flex>
 
-        {/* This sidebar has no footer, so the workspace menu's help items are not reachable from here. */}
+        {/* The workspace menu, with its help items, is not reachable from this sidebar, so they are listed here. */}
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.help')} />
           <WorkspaceSidebarItem

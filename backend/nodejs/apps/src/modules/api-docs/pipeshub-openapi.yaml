@@ -24,6 +24,8 @@ info:
 
     **OAuth scopes.** On an operation whose `security` names `oauth2` scopes, an OAuth access token holding none of them gets `403 HTTP_FORBIDDEN` ("Insufficient scope. Required: ...") right after authentication. Session tokens are never scope-checked.
 
+    **Uploads.** A `multipart/form-data` upload past one of its route's limits (a file too large, too many files, form fields or parts, or the whole request over its byte cap) is answered `413 HTTP_PAYLOAD_TOO_LARGE`, and one that cannot be read (cut short, without a boundary, or a file under a part name the route does not expect) `400 HTTP_BAD_REQUEST`. Both are refused while the body is read, before the route's handler runs. The agent-harness workspace upload (`POST .../workspace/files` on a conversation or agent conversation) keeps its own mapping: a file too large or too many files is `413` with code `WORKSPACE_TOO_LARGE`, and every other refused limit (form fields or parts) is `400 HTTP_BAD_REQUEST`.
+
     **No such route.** A method and path that no route handles get Express's own `404` page, `text/html`, reading `Cannot <METHOD> <path>`. Such pairs are not listed as operations.
 
     **Relayed failures.** A route that calls another PipesHub service answers that service's failure with the service's status. A `4xx` keeps its status, the service's own message and, when the service sent one, `error.reasonCode`; a `4xx` about the gateway's own request or its hop to the service (`405`, `406`, `407`, `411`, `414`, `417`, `421`, `426`, `431`) is a `500`, and a `408` (the gateway's call timed out) is a `504`. A `5xx` is a `502 HTTP_BAD_GATEWAY` with a generic sentence, while the service's own words stay in its log under the same request id. A `501 HTTP_NOT_IMPLEMENTED` stays `501`, and a `503` or `504` (a `408` included) is transient and keeps the service's `Retry-After`. Of the `5xx` answered `502`, only a `502` from the service carries `error.reasonCode`; a `503` or `504` (and a `408`) carry it too. An error answer that is not JSON (a proxy's HTML page, a plain-text error) goes through the same status mapping; where the mapping keeps the service's words, the message is the status text, or the standard reason phrase. The local-repositories routes (`/local-repos`) are the exception: a `4xx` whose body is a JSON object is passed on with its status and body unchanged, so quota details reach the client. An operation lists these codes only where it is known to answer them (see `UpstreamFailure`).
@@ -30460,6 +30462,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    UploadTooLarge:
+      description: >-
+        The upload is past one of this route's limits (`HTTP_PAYLOAD_TOO_LARGE`): a file over the size
+        limit, more files than allowed, too many form fields or parts, or the whole request over its byte
+        cap. Refused while the body is read, before the handler runs (see Uploads in the introduction).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     InsufficientScope:
       description: >-
         The bearer token is an OAuth access token without the scope this route requires
@@ -31343,6 +31354,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpenAIModelError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
   /openai/files/{fileId}:
     get:
       tags:
@@ -38506,9 +38519,8 @@ paths:
             - A multipart form with no file part (`File upload required but no files were received`)
             - Declared file type not allowed (`Invalid file type. Allowed types: ...`)
             - File bytes are not a PNG, JPEG, WebP or GIF image (`Profile photo must be a PNG, JPEG, WebP or GIF image`)
-            - File exceeds the 1 MB limit (`This file is larger than the 1 MB limit...`)
-            - The file is sent under a field name other than `file`, or more than one file is sent
-              (`The files weren't sent the way this page expects...` or `You can upload up to 1 files at a time...`)
+            - The file is sent under a field name other than `file`
+              (`The files weren't sent the way this page expects...`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -38523,9 +38535,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: |
-            The image is still larger than 100 KB after JPEG compression down to quality 10
-            (`HTTP_PAYLOAD_TOO_LARGE`). The message says `File too large , limit:1MB` although the
-            limit that was exceeded is the 100 KB one.
+            The file is over the 1 MB limit (`This file is larger than the 1 MB limit...`), more than one
+            file is sent (`You can upload up to 1 files at a time...`), or the image is still larger than
+            100 KB after JPEG compression down to quality 10 (`HTTP_PAYLOAD_TOO_LARGE`). For the last one the
+            message says `File too large , limit:1MB` although the limit that was exceeded is the 100 KB one.
           content:
             application/json:
               schema:
@@ -39066,10 +39079,8 @@ paths:
 
             - No body, or a body that is not multipart (`No files available for processing`)
             - A form with no file part (`File upload required but no files were received`)
-            - The file under another field name, or more than one file (`The files weren't sent the way
-              this page expects...`, `You can upload up to 1 files at a time...`)
+            - The file under another field name (`The files weren't sent the way this page expects...`)
             - A declared type that is not allowed (`Invalid file type. Allowed types: ...`)
-            - A file over 5 MB (`This file is larger than the 5 MB limit...`)
             - A spreadsheet that cannot be parsed (`Could not read the file. Upload a valid CSV or Excel file.`)
             - No cell containing `@`, including an empty file (`No email addresses found in the file`)
             - More than 1000 addresses (`File exceeds the 1000-user limit`)
@@ -39082,6 +39093,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -42652,10 +42665,9 @@ paths:
             Invalid request. Possible reasons:
 
             - No file provided: a multipart body without a `file` part, or a body that is not multipart at all
-            - The file is sent under a field other than `file`, or more than one file is sent
+            - The file is sent under a field other than `file`
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
             - File bytes are not a PNG, JPEG, WebP, GIF, or SVG image (`Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image`)
-            - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
 
             The upload is checked before the admin check, so a non-admin also gets this 400 for a bad upload.
@@ -42665,6 +42677,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -44131,6 +44145,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '500':
@@ -46406,6 +46422,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -46461,6 +46479,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -47996,7 +48016,7 @@ paths:
             - JSON body: `recordName` is not a string, or the body is not an object (`VALIDATION_ERROR`)
             - `recordName` contains HTML, an inline event handler or a format specifier such as `%s`
             - Multipart `recordName` is only whitespace (`Record name cannot be empty`)
-            - More than one file, or a file sent under a field name other than `file`
+            - A file sent under a field name other than `file`
             - `recordId` holds a character that cannot stand in a URL path segment
               (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`)
 
@@ -48005,6 +48025,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, invalid, expired, or revoked authentication
           content:
@@ -49458,9 +49480,8 @@ paths:
             - `kbId` not a UUID, `folderId` empty, `recordName`/`recordType`/`origin` empty, or a
               `files_metadata` entry without a string `file_path` or a numeric `last_modified`
               (`VALIDATION_ERROR`)
-            - No `files` part (`No files available for processing`), files sent under another
-              field name (`The files weren't sent the way this page expects. ...`), more than
-              1000 files, or more than 1 GB in total (`HTTP_BAD_REQUEST`)
+            - No `files` part (`No files available for processing`), or files sent under another
+              field name (`The files weren't sent the way this page expects. ...`) (`HTTP_BAD_REQUEST`)
             - `files_metadata` is not JSON (`Invalid files_metadata format. Expected JSON array.`)
               or has another length than the files (`Metadata count mismatch: ...`)
             - `recordName` holds a format specifier, or any field holds HTML (the HTML check runs
@@ -49473,6 +49494,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -52252,7 +52275,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no files, or an unsupported MIME type (`HTTP_BAD_REQUEST`). Size and count limits are not answered here but with `500`.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no files, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`).
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -52261,6 +52284,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -52288,9 +52313,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            `INTERNAL_ERROR`. The upload parser's own refusals land here
-            although they are caller mistakes: a file over 5 MiB, more than
-            10 files, or a file under any part name other than `files`.
+            `INTERNAL_ERROR`.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -52344,7 +52367,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -58175,6 +58200,8 @@ paths:
                   - $ref: '#/components/schemas/SpeechMissingAudioError'
                   - $ref: '#/components/schemas/SpeechProxyError'
                   - $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized — valid bearer token required.
           content:
@@ -60774,7 +60801,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: |
-            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up. Multer's own rejections are not a 400: see 500.
+            Invalid `conversationId` (`VALIDATION_ERROR`), no file part, a file under a part name other than `files`, or an unsupported MIME type (`HTTP_BAD_REQUEST`). The `agentKey` is not looked up.
 
             An image that is not a valid JPEG, PNG or WebP (`<name> is not a valid JPEG, PNG or WebP
             image`), or one over 50 megapixels (`<name> is too large to attach: images can be at most 50
@@ -60783,6 +60810,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '422':
           description: |
             A PDF that could not be read within the upload's 50-second budget, or
@@ -60810,7 +60839,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Gateway fallback when the upstream call does not return a status (implementation default). Also returned (`INTERNAL_ERROR`) for every Multer rejection, which is not mapped to a 400: more than 10 files, a file over 5 MiB, or a file part not named `files`.
+            Gateway fallback when the upstream call does not return a status (implementation default).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -60872,7 +60901,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
-          description: Invalid `conversationId`, no files, an unsupported type, or a file too large.
+          description: Invalid `conversationId`, no files, a file under a part name other than `files`, or an unsupported type.
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: The scoped token is missing, invalid, expired or not for `conversation:create`.
 
@@ -76119,6 +76150,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing, malformed or expired bearer token
           content:
@@ -95282,6 +95315,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Unauthorized
           content:
@@ -95836,11 +95871,13 @@ paths:
                     type: string
                     format: email
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:
@@ -95920,11 +95957,13 @@ paths:
                       - failed
                       - no_smtp
         '400':
-          description: Validation error, an unsupported file type, or attachments over the size limits
+          description: Validation error, or an unsupported file type
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/UploadTooLarge'
         '401':
           description: Missing or invalid token
           content:

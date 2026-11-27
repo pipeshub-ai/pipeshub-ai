@@ -4,6 +4,7 @@ import net from 'net'
 import { once } from 'events'
 import { AddressInfo } from 'net'
 import express from 'express'
+import multer from 'multer'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { envGuard } from '../../helpers/env-guard'
@@ -354,6 +355,94 @@ describe('ErrorMiddleware', () => {
 
       expect(res.status.calledWith(500)).to.be.true
     })
+  })
+
+  describe('multer and busboy refusals of a multipart body', () => {
+    const TOO_LARGE = "The upload is too large: a file, or the number of files or fields, is over this route's limit."
+    const UNREADABLE = 'The upload could not be read. Send it as multipart/form-data with the expected file field.'
+
+    function answer(error: Error): { status: number; body: any } {
+      const res = createMockResponse()
+      handler(error, createMockRequest({ method: 'POST' }), res, createMockNext())
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+    }
+
+    for (const code of [
+      'LIMIT_FILE_SIZE',
+      'LIMIT_FILE_COUNT',
+      'LIMIT_PART_COUNT',
+      'LIMIT_FIELD_KEY',
+      'LIMIT_FIELD_VALUE',
+      'LIMIT_FIELD_COUNT',
+    ] as const) {
+      it(`answers multer's ${code} with 413 and a fixed sentence`, () => {
+        const { status, body } = answer(new multer.MulterError(code, 'secretfieldxyz'))
+        expect(status).to.equal(413)
+        expect(body.error).to.include({ code: 'HTTP_PAYLOAD_TOO_LARGE', message: TOO_LARGE })
+        expect(JSON.stringify(body)).to.not.include('secretfieldxyz')
+      })
+    }
+
+    // multer 2.5's other codes, LIMIT_UNEXPECTED_FILE (a file under another part name) included, are the upload sent wrong.
+    for (const code of [
+      'LIMIT_UNEXPECTED_FILE',
+      'MISSING_FIELD_NAME',
+      'INVALID_FIELD_NAME',
+      'LIMIT_FIELD_NESTING',
+      'LIMIT_FIELD_ARRAY_INDEX',
+      'STREAM_DESTROYED',
+    ]) {
+      it(`answers multer's ${code} with 400 and a fixed sentence`, () => {
+        const { status, body } = answer(new multer.MulterError(code as multer.ErrorCode, 'secretfieldxyz'))
+        expect(status).to.equal(400)
+        expect(body.error).to.include({ code: 'HTTP_BAD_REQUEST', message: UNREADABLE })
+        expect(JSON.stringify(body)).to.not.include('secretfieldxyz')
+      })
+    }
+
+    for (const message of [
+      'Unexpected end of form',
+      'Unexpected end of file',
+      'Malformed part header',
+      'Multipart: Boundary not found',
+      'Malformed urlencoded form',
+      'Malformed content type',
+      'Missing Content-Type',
+      'Unsupported content type: multipart/mixed; secret=SECRET123',
+    ]) {
+      it(`answers busboy's "${message}" with 400 and does not echo it`, () => {
+        const { status, body } = answer(new Error(message))
+        expect(status).to.equal(400)
+        expect(body.error).to.include({ code: 'HTTP_BAD_REQUEST', message: UNREADABLE })
+        expect(JSON.stringify(body)).to.not.include('SECRET123')
+      })
+    }
+
+    it('logs a refusal once at warn as bad_request, without the library error', () => {
+      const error = new multer.MulterError('LIMIT_FILE_SIZE')
+
+      answer(error)
+
+      expect(loggerErrorStub.called).to.be.false
+      expect(loggerWarnStub.calledOnce).to.be.true
+      const fields = loggerWarnStub.firstCall.args[1]
+      expect(fields).to.include({ status: 413, error_class: 'bad_request', error_type: 'LargePayloadError' })
+      expect(fields.error).to.not.equal(error)
+    })
+
+    for (const [label, error] of [
+      ['a plain error', new Error('boom')],
+      ['a message that only starts like busboy\'s', new Error('Unexpected end of form data from the cache')],
+      ['a message that only mentions a content type', new Error('Bad content type from the provider')],
+      ['an error with no message', Object.assign(new Error(), { message: undefined })],
+    ] as const) {
+      it(`keeps ${label} on the 500 path`, () => {
+        const { status, body } = answer(error as Error)
+        expect(status).to.equal(500)
+        expect(body.error.code).to.equal('INTERNAL_ERROR')
+        expect(loggerErrorStub.calledOnce).to.be.true
+      })
+    }
   })
 
   describe('BaseError handling', () => {

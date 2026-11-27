@@ -40,7 +40,7 @@ test.describe('Workspace Sidebar Navigation', () => {
     await expect(page).toHaveURL(/\/workspace\/groups\//);
     await expect(
       page.getByRole('heading', {
-        name: /Group permissions are available in the Enterprise Edition/i,
+        name: /Group permissions are available in Enterprise Edition/i,
       })
     ).toBeVisible({ timeout: 10_000 });
   });
