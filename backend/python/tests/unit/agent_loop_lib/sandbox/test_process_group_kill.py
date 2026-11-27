@@ -25,12 +25,14 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if not os.path.isdir("/proc/self"):  # no procfs (macOS): kill(0) is all we can know
+        return True
     # A zombie still answers signal 0; it is gone for this purpose.
     try:
         with open(f"/proc/{pid}/stat") as fh:
             return fh.read().split(")")[-1].split()[0] != "Z"
-    except OSError:
-        return True
+    except (FileNotFoundError, ProcessLookupError):  # reaped between the kill(0) and the read
+        return False
 
 
 async def _eventually(predicate, timeout_s: float) -> bool:

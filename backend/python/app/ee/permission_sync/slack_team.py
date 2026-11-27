@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from app.config.constants.arangodb import Connectors
-from app.connectors.sources.slack.common.rate_limit import Tier
+from app.connectors.sources.slack.common.rate_limits import Tier
 from app.models.entities import AppRole, AppUser, AppUserGroup
 from app.models.permission import EntityType, Permission, PermissionType
 

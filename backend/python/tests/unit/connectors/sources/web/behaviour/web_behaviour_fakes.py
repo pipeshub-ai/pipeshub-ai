@@ -615,7 +615,7 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         self.team_app_edges.append(connector_id)
 
-    async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace:
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> SimpleNamespace:
         return SimpleNamespace(id=user_id, email="owner@example.com", source_user_id=user_id,
                                org_id=self.org_id, full_name="Owner", is_active=True, title=None)
 
