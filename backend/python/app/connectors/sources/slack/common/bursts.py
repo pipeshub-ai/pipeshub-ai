@@ -13,6 +13,7 @@ those names are looked up and the records found are deleted.
 from __future__ import annotations
 
 import hashlib
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.models.entities import MessageRecord, RecordType
@@ -147,13 +148,16 @@ class SlackRegroupMixin:
         without the file and link records under them. The stored record stays as it is. Only
         a record with an unsaved message after its end is looked up; a failed lookup holds
         it back too."""
-        unsaved_ms = [_ts_ms(ts) for ts in unsaved]
+        # Slack ts carry microseconds: "after the record's end" compares them exactly, since
+        # messages in the same millisecond would look equal. The stored span is in ms.
+        unsaved_at = [(Decimal(ts), _ts_ms(ts)) for ts in unsaved]
         held: list[str] = []
         for record, _ in records:
             if not isinstance(record, MessageRecord) or not record.end_ts:
                 continue
-            end = _ts_ms(record.end_ts)
-            if not any(ms > end for ms in unsaved_ms):
+            end = Decimal(record.end_ts)
+            tail_ms = [ms for exact, ms in unsaved_at if exact > end]
+            if not tail_ms:
                 continue
             try:
                 stored = await self.data_entities_processor.get_record_by_external_id(
@@ -164,7 +168,7 @@ class SlackRegroupMixin:
                     or stored.record_type != RecordType.MESSAGE
                     or stored.external_record_group_id != external_record_group_id
                     or not stored.source_updated_at
-                    or not any(end < ms <= stored.source_updated_at for ms in unsaved_ms)
+                    or not any(ms <= stored.source_updated_at for ms in tail_ms)
                 ):
                     continue
                 await self._note_kept_record(stored)

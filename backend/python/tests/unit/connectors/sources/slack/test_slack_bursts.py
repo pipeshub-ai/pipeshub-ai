@@ -138,3 +138,26 @@ async def test_a_failed_lookup_or_delete_during_a_full_sync_makes_it_unlink_noth
         connector._full_sync_read_failed = False
         await connector._delete_regrouped_records(["150.0"], CH)
         assert connector._full_sync_read_failed is full_sync  # a failed delete
+
+
+async def test_a_shorter_burst_ending_in_the_same_millisecond_as_an_unsaved_tail_is_held_back() -> None:
+    """Stored A+B+C+D; the re-read saved C and D nowhere and proposes A+B, which ends in the
+    same millisecond as C and D. Their microseconds still put them after B."""
+    first, b_end = "1700000000.000100", "1700000000.000200"
+    stored = message_record(channel_burst_id(CH, first), first, "1700000000.000400")
+    stored.id = "burst-key"
+    shorter = message_record(channel_burst_id(CH, first), first, b_end)
+    connector = _Connector({stored.external_record_id: stored})
+    connector._full_sync_read_failed = False
+    connector.data_entities_processor.full_sync_running = MagicMock(return_value=False)
+
+    kept = await connector._hold_back_overwrites(
+        [(shorter, [])], CH, {"1700000000.000300", "1700000000.000400"},
+    )
+
+    assert kept == []
+    connector.data_entities_processor.get_record_by_external_id.assert_awaited_once()
+
+    # Nothing unsaved after B's end in that millisecond: the shorter burst is written.
+    kept = await connector._hold_back_overwrites([(shorter, [])], CH, {"1700000000.000150"})
+    assert kept == [(shorter, [])]
