@@ -1940,8 +1940,8 @@ describe('the reader check: who may see an answer', () => {
       const told = await Promise.all(
         CASES.map(async ([, make, opts]) => {
           const row = make()
-          const { _id, ...rest } = (await read(BOB, row, world([row], opts))).row
-          return rest
+          const { row: seen } = await read(BOB, row, world([row], opts))
+          return Object.fromEntries(Object.entries(seen).filter(([k]) => k !== '_id'))
         }),
       )
       for (const row of told) expect(row).to.deep.equal(told[0])

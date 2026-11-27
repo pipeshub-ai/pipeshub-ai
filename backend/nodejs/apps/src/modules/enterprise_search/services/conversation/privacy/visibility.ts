@@ -898,7 +898,7 @@ const stoppedFor = (ids: unknown): readonly string[] | undefined => {
   if (ids === undefined || ids === null) return [];
   if (!Array.isArray(ids)) return undefined;
   const out = (ids as unknown[]).map(idOf);
-  return out.every((id) => id !== undefined) ? (out as string[]) : undefined;
+  return out.every((id) => id !== undefined) ? out : undefined;
 };
 
 /** Whether what was stopped for someone leaves `viewer` out: them, or anyone at all for the one standing for every member. */
@@ -2022,7 +2022,13 @@ class Judge {
    */
   copyShows(copy: ReaderRow): boolean {
     if (this.reader.member !== true || copy.removedAt != null) return false;
-    if (leavesOut(isPlain(copy.sharedFrom) ? copy.sharedFrom.notTo : undefined, this.reader)) return false;
+    if (
+      leavesOut(
+        isPlain(copy.sharedFrom) ? copy.sharedFrom.notTo : undefined,
+        this.reader,
+      )
+    )
+      return false;
     const on = copyCountedOn(copy);
     if (!on) return false;
     if (on.length === 0) return true;
@@ -4366,7 +4372,16 @@ export async function widenOK(
             agentKeys,
             grantedTo(audience),
           )
-        : await walkInChat(decider, deps, top, ver, here, room, agentKeys, session);
+        : await walkInChat(
+            decider,
+            deps,
+            top,
+            ver,
+            here,
+            room,
+            agentKeys,
+            session,
+          );
   }
   if (decided?.ok === false) return decided;
   const result: WidenResult = decided ?? { ok: true };
@@ -4438,9 +4453,10 @@ export async function whyNotWidenable(
     member: true,
     identity: ON_BEHALF_OF_READER,
   };
-  const agentKeys = [idOf(row.respondingAgentKey), idOf(session?.agentKey)].filter(
-    (k): k is string => k !== undefined,
-  );
+  const agentKeys = [
+    idOf(row.respondingAgentKey),
+    idOf(session?.agentKey),
+  ].filter((k): k is string => k !== undefined);
   const judge = new Judge(reader, deps, {
     session,
     timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
@@ -4454,21 +4470,36 @@ export async function whyNotWidenable(
   }
   const start = judge.rows.get(idOf(row._id) ?? '') ?? row;
   let first = true;
-  for (const { row: behind, ver: at, own } of versionsBehind(judge, start, ver).versions.values()) {
+  for (const { row: behind, ver: at, own } of versionsBehind(
+    judge,
+    start,
+    ver,
+  ).versions.values()) {
     const outcome = judge.directOf(behind, at, own);
     const { state } = versionAt(behind, at, own);
     const sharedWithThem =
-      !first && consentAt(behind, at)?.scope === 'people' && consentCovers(behind, at, reader);
+      !first &&
+      consentAt(behind, at)?.scope === 'people' &&
+      consentCovers(behind, at, reader);
     first = false;
     if (outcome !== 'pass' && sharedWithThem) {
       const by = idOf(behind.requestedBy);
-      return { ok: false, code: 'SHARE_BUILT_ON_SHARED', ...(by !== undefined && { by }) };
+      return {
+        ok: false,
+        code: 'SHARE_BUILT_ON_SHARED',
+        ...(by !== undefined && { by }),
+      };
     }
     // A question or a note never carries a label (it is a person's words): it is no answer from before the checks, and
     // the asker can read it. The share passes one that every reader of the room reads; with any other in the way and
     // nothing else, the reason is what this can't tell (below).
     if (!isLabelledType(behind)) continue;
-    if (state === 'missing' || state === 'legacy' || state === 'unknown_version') return UNLABELLED;
+    if (
+      state === 'missing' ||
+      state === 'legacy' ||
+      state === 'unknown_version'
+    )
+      return UNLABELLED;
     if (state !== 'ok' || outcome === 'unchecked') return NOT_CHECKED;
     if (outcome !== 'pass') return CANNOT_OPEN;
   }
@@ -5624,7 +5655,9 @@ interface QuotedAnswer {
 
 const replyAgentOf = (row: Plain): string | undefined => {
   const reply = row.replyTo;
-  return isPlain(reply) && typeof reply.agentKey === 'string' && reply.agentKey !== ''
+  return isPlain(reply) &&
+    typeof reply.agentKey === 'string' &&
+    reply.agentKey !== ''
     ? reply.agentKey
     : undefined;
 };
@@ -5676,7 +5709,8 @@ async function replyVerdicts(
     const target = replyTargetOf(row);
     const agent = replyAgentOf(row);
     const quoted = target === undefined ? undefined : targets.get(target);
-    if (target === undefined || agent === undefined || quoted === undefined) continue;
+    if (target === undefined || agent === undefined || quoted === undefined)
+      continue;
     if (idOf(quoted.sessionId) !== here) agentOf.set(target, agent);
   }
   const uses = new Map<string, boolean | undefined>();

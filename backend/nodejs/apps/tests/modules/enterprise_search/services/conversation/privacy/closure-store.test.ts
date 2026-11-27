@@ -291,10 +291,7 @@ describe('closures kept beside the rows', () => {
   })
 
   describe('rows read for a page name no chat: the closures a read makes of them still know theirs', () => {
-    const paged = (row: Row): Row => {
-      const { sessionId: _chat, ...rest } = row
-      return rest as Row
-    }
+    const paged = (row: Row): Row => Object.fromEntries(Object.entries(row).filter(([k]) => k !== 'sessionId')) as Row
     const shareWith = (row: Row, scope: 'people' | 'everyone', to: string): void => {
       row.consent = { by: DANA, at: new Date(), ver: row.labelVer, scope }
       if (scope === 'people') row.consentTo = [{ userId: to, memberSince: memberSinceOf(session, to) }]

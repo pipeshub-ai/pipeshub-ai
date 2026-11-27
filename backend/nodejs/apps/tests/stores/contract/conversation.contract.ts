@@ -721,7 +721,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const org = fx.newId(), dana = fx.newId(), bob = fx.newId(), carol = fx.newId(), erin = fx.newId();
       const { ref, ver } = await answerOf(org, dana);
       const v = ver ?? 'legacy';
-      const { memberSince: _none, ...undated } = ask(erin, v);
+      const undated = { by: erin, at: new Date(), ver: v, state: 'open' as const };
       for (const request of [ask(bob, v), ask(carol, v), undated]) await repo.addShareRequest(ref, ver, request, null);
       const close = (who: string, notSince: string | null) => repo.closeShareRequests(ref, { ver: v, state: 'void', by: [who], notSince });
       expect(await close(bob, `direct:${bob}`), 'the membership it was made in').to.deep.equal([]);
