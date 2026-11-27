@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { Badge, Button, Flex, Text } from '@radix-ui/themes';
 import { useFeatureFlagsStore, selectAgentHarnessPaused, selectScheduledRunsEnabled } from '@/lib/store/feature-flags-store';
 import { SchedulesApi } from '@/app/(main)/workspace/schedules/api';
-import { isSystemStatus, firingReasonKey } from '@/app/(main)/workspace/schedules/copy';
+import { isSystemStatus, firingReasonKey, ranOnce } from '@/app/(main)/workspace/schedules/copy';
+import { onceWords } from '@/app/(main)/workspace/schedules/schedule-words';
 import { formatDateTime } from '@/app/(main)/workspace/harness-ui/format';
 import { CreateScheduleDialog } from '@/app/(main)/workspace/schedules/components/create-schedule-dialog';
 import { WebhookSecretDialog, type WebhookCredential } from '@/app/(main)/workspace/schedules/components/webhook-secret-dialog';
@@ -62,12 +63,16 @@ export function AgentSchedules({ readOnly = false }: { readOnly?: boolean }) {
   };
 
   const when = (schedule: Schedule): string => {
+    if (ranOnce(schedule)) return t('schedules.ranOnce');
     if (schedule.status !== 'active') {
       return isSystemStatus(schedule.status, schedule.statusReason)
         ? t(schedule.status === 'disabled' ? 'schedules.disabledBecause' : 'schedules.pausedBecause', {
             reason: t(firingReasonKey(schedule.statusReason)),
           })
         : t(`${K}.pausedByYou`);
+    }
+    if (schedule.trigger.kind === 'once') {
+      return onceWords(t, schedule.trigger.at, schedule.trigger.timeZone, i18n.language);
     }
     if (schedule.trigger.kind !== 'cron') {
       return t(schedule.trigger.kind === 'webhook' ? 'schedules.trigger.webhook' : 'schedules.trigger.connector');

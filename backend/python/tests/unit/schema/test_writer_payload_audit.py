@@ -689,6 +689,9 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     # hard_delete_agent: only the matchLock flag, set and removed in the same statement to lock the MCP servers and tools it
     # may delete; no caller payload, nothing kept (the statement otherwise deletes)
     'hard_delete_agent',
+    # reap_stale_external_app_relations: sets each flagged user-app edge's isExternalUser to the value it already holds (true), only to take
+    # the edge's write lock before the grants are read, then deletes the stale edges and the people they stranded; no caller payload
+    'reap_stale_external_app_relations',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
     'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',

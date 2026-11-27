@@ -84,6 +84,12 @@ class ToolContext:
     # The text of the model response that made the call (a terminal tool
     # answers with it when its own answer is empty).
     turn_text: str = ""
+    # The approval a person gave this call, when it was asked: a tool whose host re-checks the decision in the run's
+    # journal (ADR-SCH-01 D3) names it, since an edited call (AP-06) no longer hashes to its interaction.
+    interaction_id: str | None = None
+    # The digest of the arguments the model called with, which that interaction is keyed on: an approved edit runs
+    # other arguments under the same identity.
+    args_digest: str | None = None
 
 
 @dataclass(frozen=True)

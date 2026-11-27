@@ -16,6 +16,7 @@ Focuses on:
 - on_new_app_users error path
 """
 
+import logging
 import uuid
 from typing import Never
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -4973,19 +4974,32 @@ class TestResolvePrincipal:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_existing_person(self):
+        """The grant writer takes the person through the upsert (its lock, held to the commit), which finds it and changes nothing."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email.return_value = None
         tx_store.get_person_by_email = AsyncMock(
             return_value=Person(id="person-9", email="out@x.io")
         )
-        tx_store.upsert_person_by_email = AsyncMock()
+        tx_store.upsert_person_by_email = AsyncMock(return_value="person-9")
 
         assert await proc._resolve_principal("out@x.io", tx_store) == (
             "person-9", CollectionNames.PEOPLE.value
         )
-        tx_store.upsert_person_by_email.assert_not_awaited()
+        tx_store.upsert_person_by_email.assert_awaited_once()
+        assert tx_store.upsert_person_by_email.await_args.args[0].email == "out@x.io"
         tx_store.get_person_by_email.assert_awaited_once_with("out@x.io", proc.org_id, raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_an_existing_person_found_without_create_is_only_read(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_email.return_value = None
+        tx_store.get_person_by_email = AsyncMock(return_value=Person(id="person-9", email="out@x.io"))
+        tx_store.upsert_person_by_email = AsyncMock()
+
+        assert await proc._resolve_principal("out@x.io", tx_store, create_if_missing=False) == ("person-9", CollectionNames.PEOPLE.value)
+        tx_store.upsert_person_by_email.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_surviving_id_not_local_uuid(self):
@@ -9646,3 +9660,49 @@ class TestMovesAgainstTheTransactionCache:
 
         survivors = {rid: row.external_record_id for rid, row in graph.rows.items()}
         assert survivors == {"X": "log.2", "Y": "log.1"}
+
+
+def _store(*, transient: bool, tx_store: object) -> MagicMock:
+    """A data store that reports its failures as transient (a lost race) or not, as the decorator and the boundary read them."""
+    from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    store = MagicMock(spec=DataStoreProvider)
+    store.is_transient_error = MagicMock(return_value=transient)
+    store.transaction = MagicMock(return_value=_make_ctx(tx_store))
+    return store
+
+
+class TestReapExternalAppUsersBoundary:
+    """The reaper is cleanup: a race lost to concurrent writers on its last attempt reaps nothing, returns 0 and logs one warning (no driver text, no
+    error record), so the sync that called it carries on. Any other failure still raises and logs as before."""
+
+    @staticmethod
+    def _proc(error: Exception, *, transient: bool) -> tuple[DataSourceEntitiesProcessor, AsyncMock]:
+        proc = _make_processor()
+        proc.logger = logging.getLogger("reap-boundary-test")
+        tx_store = _make_tx_store()
+        tx_store.reap_stale_external_app_relations = AsyncMock(side_effect=error)
+        proc.data_store_provider = _store(transient=transient, tx_store=tx_store)
+        return proc, tx_store.reap_stale_external_app_relations
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_outlasts_the_retries_reaps_nothing_with_one_warning(self, monkeypatch, caplog) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc, reap = self._proc(RuntimeError("Query failed: [1200] write-write conflict on key secret-key"), transient=True)
+        with caplog.at_level(logging.WARNING):
+            assert await proc.reap_external_app_users("conn-1") == 0
+        assert reap.await_count > 1      # retried first
+        ours = [r for r in caplog.records if r.name == "reap-boundary-test"]
+        assert [r.levelno for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert [r.levelno for r in ours] == [logging.WARNING] * reap.await_count      # one per attempt: the retries' warnings, then the skip
+        assert "secret-key" not in ours[-1].getMessage() and "not reaped" in ours[-1].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_still_raises_and_logs_an_error(self, monkeypatch, caplog) -> None:
+        from app.connectors.core.base.data_store import graph_data_store
+        monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0)
+        proc, reap = self._proc(RuntimeError("db down"), transient=False)
+        with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="db down"):
+            await proc.reap_external_app_users("conn-1")
+        assert reap.await_count == 1
+        assert [r.levelno for r in caplog.records if r.name == "reap-boundary-test"] == [logging.ERROR]
