@@ -204,6 +204,8 @@ def graph() -> Graph:
 def _registry(graph: Graph) -> ConnectorRegistry:
     container = MagicMock()
     container.logger = MagicMock(return_value=LOG)
+    # No licence key reads as licensed, so a personal create takes no cap lock.
+    container.config_service.return_value.get_config = AsyncMock(return_value=None)
     registry = ConnectorRegistry(container)
     registry._graph_provider = graph  # type: ignore[assignment]
     registry._connectors["Drive"] = {"appGroup": "Google Workspace", "supportedAuthTypes": ["OAUTH", "NONE"], "config": {}}

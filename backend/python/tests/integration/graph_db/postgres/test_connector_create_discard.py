@@ -36,6 +36,8 @@ USER = "u"
 def _registry(w: World) -> ConnectorRegistry:
     container = MagicMock()
     container.logger = MagicMock(return_value=logging.getLogger("pg-create-discard"))
+    # No licence key reads as licensed, so a personal create takes no cap lock.
+    container.config_service.return_value.get_config = AsyncMock(return_value=None)
     registry = ConnectorRegistry(container)
     registry._graph_provider = w.p
     registry._connectors["Drive"] = {"appGroup": "Google Workspace", "supportedAuthTypes": ["OAUTH"], "config": {}}
