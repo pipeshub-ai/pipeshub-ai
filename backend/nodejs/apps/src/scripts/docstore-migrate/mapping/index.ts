@@ -38,11 +38,43 @@ export function withEditionHeldFields(
 }
 
 /**
+ * The mappings an edition replaces (`EDITION_DOCSTORE_COVERAGE.replaced`) taken out of the generic copy, returned as collections
+ * outside it with the table they live in (a carrier of the edition then carries them; until one does they are held). A name no
+ * mapping copies is refused: it would replace nothing.
+ */
+export function withoutReplaced(
+  mappings: CollectionMapping[],
+  replaced: EditionDocstoreCoverage['replaced'],
+): { kept: CollectionMapping[]; outside: HeldCollection[] } {
+  const unknown = replaced.filter(
+    (r) => !mappings.some((m) => m.collection === r.collection),
+  );
+  if (unknown.length)
+    throw new Error(
+      `edition replaces collections no mapping copies: ${unknown.map((r) => r.collection).join(', ')}`,
+    );
+  const names = new Set(replaced.map((r) => r.collection));
+  return {
+    kept: mappings.filter((m) => !names.has(m.collection)),
+    outside: replaced.map(({ collection, reason }) => ({
+      collection,
+      reason,
+      tables: [mappings.find((m) => m.collection === collection)!.table],
+    })),
+  };
+}
+
+const replaced = withoutReplaced(
+  [...IDENTITY_MAPPINGS, ...CONVERSATION_MAPPINGS, ...CONTENT_MAPPINGS],
+  EDITION_DOCSTORE_COVERAGE.replaced,
+);
+
+/**
  * Every collection the application stores, parents before children (the order of the copy): identity, then conversation, then
  * content, OAuth and platform data. Foreign keys inside a schema need the parent row to be there first.
  */
 export const MAPPINGS: CollectionMapping[] = withEditionHeldFields(
-  [...IDENTITY_MAPPINGS, ...CONVERSATION_MAPPINGS, ...CONTENT_MAPPINGS],
+  replaced.kept,
   EDITION_DOCSTORE_COVERAGE.heldFields,
 );
 
@@ -65,6 +97,7 @@ export const IGNORED: IgnoredCollection[] = [
  */
 export const OUTSIDE_GENERIC: HeldCollection[] = [
   ...HARNESS_HELD,
+  ...replaced.outside,
   ...EDITION_DOCSTORE_COVERAGE.held.map((h) => ({
     ...h,
     tables: [...h.tables],

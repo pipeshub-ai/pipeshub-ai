@@ -329,7 +329,9 @@ export async function reverseFollow(
       }
       if (Date.now() - lastSweep >= sweepMs) {
         lastSweep = Date.now();
-        due.add('userCredentials');
+        // the credentials are written back whole on each sweep (reverse-special), unless an edition replaced their mapping
+        if (MAPPINGS.some((m) => m.collection === 'userCredentials'))
+          due.add('userCredentials');
         await flushDue();
         await sweepOrgs(rt);
         if (o.carried !== false) await sweepCarried();

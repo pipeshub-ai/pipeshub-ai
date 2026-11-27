@@ -62,7 +62,8 @@ export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
  * `carriers` map what would otherwise stay held: each is a docstore-migrate `Carrier` (scripts/docstore-migrate/carry/types.ts)
  * that copies, follows, verifies, rolls back and resets its collections and fields, so a held collection or field it carries
  * (this build's or the edition's) is no longer held. Typed `unknown` so this file stays import-free; the migrator checks each
- * one's shape, and what it may carry, when it loads.
+ * one's shape, and what it may carry, when it loads. `replaced` names collections this build maps whose documents the edition stores in
+ * another shape: the generic copy leaves them alone, and they are held until one of the edition's carriers carries them.
  */
 export interface EditionDocstoreCoverage {
   held: ReadonlyArray<{
@@ -81,6 +82,7 @@ export interface EditionDocstoreCoverage {
     reason: string;
   }>;
   carriers: readonly unknown[];
+  replaced: ReadonlyArray<{ collection: string; reason: string }>;
 }
 
 export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
@@ -88,6 +90,7 @@ export const EDITION_DOCSTORE_COVERAGE: EditionDocstoreCoverage = {
   ignored: [],
   heldFields: [],
   carriers: [],
+  replaced: [],
 };
 
 /**

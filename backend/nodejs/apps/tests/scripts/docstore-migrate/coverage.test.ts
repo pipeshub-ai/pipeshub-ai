@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import mongoose from 'mongoose';
-import { CARRIED, HELD, IGNORED, MAPPINGS, OUTSIDE_GENERIC, fieldCarrier, splitOutside, withEditionHeldFields } from '../../../src/scripts/docstore-migrate/mapping';
+import { CARRIED, HELD, IGNORED, MAPPINGS, OUTSIDE_GENERIC, fieldCarrier, splitOutside, withEditionHeldFields, withoutReplaced } from '../../../src/scripts/docstore-migrate/mapping';
 import { BUILT_IN_CARRIERS, CARRIERS, EDITION_CARRIERS, asCarrier, carrierProblems } from '../../../src/scripts/docstore-migrate/carry';
 import type { Carrier } from '../../../src/scripts/docstore-migrate/carry/types';
 import { HARNESS_HELD } from '../../../src/scripts/docstore-migrate/mapping/harness';
@@ -186,6 +186,17 @@ describe('docstore-migrate: coverage without a database (R45-MIGR)', () => {
     expect(joined!.held!.map((h) => h.path)).to.include.members([...(users.held ?? []).map((h) => h.path), 'qaEditionField']);
     expect(withEditionHeldFields([users], [])[0]).to.equal(users);
     expect(() => withEditionHeldFields([users], [{ collection: 'qaNoMapping', path: 'x', reason: 'r' }])).to.throw('qaNoMapping.x');
+  });
+
+  it("an edition's replaced collection leaves the generic copy and is held with its table until a carrier carries it; a name no mapping copies is refused (mutation)", () => {
+    const creds = MAPPINGS.find((m) => m.collection === 'userCredentials')!;
+    const users = MAPPINGS.find((m) => m.collection === 'users')!;
+    const r = withoutReplaced([users, creds], [{ collection: 'userCredentials', reason: 'stored in another shape for the test' }]);
+    expect(r.kept).to.deep.equal([users]);
+    expect(r.outside).to.deep.equal([{ collection: 'userCredentials', reason: 'stored in another shape for the test', tables: ['identity.user_credentials'] }]);
+    expect(splitOutside([]).held.map((h) => h.collection)).to.not.include('userCredentials');            // this build replaces nothing
+    expect(withoutReplaced([users, creds], [])).to.deep.equal({ kept: [users, creds], outside: [] });
+    expect(() => withoutReplaced([users], [{ collection: 'qaNoMapping', reason: 'r' }])).to.throw('qaNoMapping');
   });
 
   it('every mapping names a repository', () => {
