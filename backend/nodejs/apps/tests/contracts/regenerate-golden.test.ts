@@ -8,8 +8,12 @@ import { FakeAIBackend, settle } from '../modules/enterprise_search/controller/c
 import { appConfig } from '../modules/enterprise_search/controller/streaming-flows'
 import { GOLDEN_DIR, SCENARIOS, compareOrWrite, normalize, readUpstream } from './support/golden'
 import { DURABLE_SCENARIOS, liveSteps, normalizeFrames, parseSse, project, readJournal } from './support/durable'
+import type { AguiFrame } from '../../src/modules/agent-harness/projection/frames'
+import { StreamRelay } from '../../src/modules/enterprise_search/utils/relay-events'
 import { registerUpstreams } from '../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../src/modules/tokens_manager/config/config'
+import { behindGuard, realGuards } from '../modules/enterprise_search/helpers/guarded-chat'
+import { turnDeps } from '../modules/enterprise_search/helpers/turn-deps'
 
 /**
  * LAT2 GP-1, GP-2: what the browser receives from the legacy regenerate
@@ -21,7 +25,14 @@ const RUN_ID = '7a1c0e52-5b1d-4c3e-9f0a-2d4e6b8c0f11'
 
 const regenerateFlow = (agent: boolean, chatMode: string | undefined): Flow => ({
   name: agent ? 'regenerateAgentAnswers' : 'regenerateAnswers',
-  handler: (c) => (agent ? c.regenerateAgentAnswers(appConfig) : c.regenerateAnswers(appConfig)) as never,
+  // As the route builds it: the conversation guard first, then the handler with the turn handlers' dependencies.
+  handler: (c) =>
+    behindGuard(
+      realGuards(),
+      'regenerate',
+      (agent ? c.regenerateAgentAnswers(appConfig, turnDeps()) : c.regenerateAnswers(appConfig, turnDeps())) as never,
+      agent ? 'agent' : 'chat',
+    ) as never,
   prepare: (store) => {
     const { session, botId } = seedConversation(store, agent)
     return {
@@ -42,6 +53,21 @@ const askerReadsAll = (ai: FakeAIBackend): void => {
     status: 200,
     body: { accessible: call.body['recordIds'] ?? [], accessibleUrls: [], unmatchedUrls: call.body['webUrls'] ?? [] },
   }))
+}
+
+/**
+ * The legacy route's relay sends a state snapshot's progress fields only, and the final snapshot without the answer it
+ * carried (`StreamRelay`); the durable projection sends the whole snapshot. So the durable snapshots are compared as
+ * that relay sends them, and every other frame as it is.
+ */
+const snapshotsAsTheLegacyRelaySendsThem = (frames: AguiFrame[]): AguiFrame[] => {
+  const relay = new StreamRelay()
+  return frames.map((frame) => {
+    if (frame.type !== 'STATE_SNAPSHOT') return frame
+    const sent = relay.relay('STATE_SNAPSHOT', JSON.stringify(frame))
+    expect(sent, 'the relay sends a state snapshot').to.not.equal('')
+    return JSON.parse(sent.slice(sent.indexOf('data: ') + 'data: '.length)) as AguiFrame
+  })
 }
 
 const regenerated = SCENARIOS.filter((s) => DURABLE_SCENARIOS.includes(s.name)).map((s) => ({
@@ -66,7 +92,9 @@ describe('contract: the legacy regenerate routes’ frames, and the durable rege
 
       const legacy = parseSse(fs.readFileSync(path.join(GOLDEN_DIR, 'regenerate', `${scenario.name}.sse`), 'utf8')).map((f) => f.frame)
       const journal = readJournal(scenario.name)
-      const [durableFirst, ...durable] = normalizeFrames(project(journal, liveSteps(journal)).map((f) => f.frame))
+      const [durableFirst, ...durable] = normalizeFrames(
+        snapshotsAsTheLegacyRelaySendsThem(project(journal, liveSteps(journal)).map((f) => f.frame)),
+      )
       const [legacyFirst, ...rest] = normalizeFrames(legacy)
       // The one intended difference: legacy regenerate opens with a bare greeting; a durable turn's first
       // frame names its conversation (and, for the owner, its run, which normalization drops).
