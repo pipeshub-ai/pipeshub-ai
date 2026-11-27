@@ -165,7 +165,7 @@ function EnterprisePlan() {
       <Flex align="center" gap="4" wrap="wrap" style={{ marginTop: 'auto', paddingTop: 'var(--space-1)' }}>
         <TalkWithUs />
         <RadixLink href={`#${COMPARE_ID}`} size="2" weight="medium" className="touch-hit">
-          {t(`${OVERVIEW}.plans.enterprise.seeAll`, { count: ENTERPRISE_OVERVIEW_ITEMS.length })}
+          {t(`${OVERVIEW}.plans.enterprise.seeAll`)}
         </RadixLink>
       </Flex>
     </PlanCard>

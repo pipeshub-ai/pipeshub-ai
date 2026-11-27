@@ -2076,7 +2076,7 @@
       "title": "Gruppen",
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
-      "enterpriseMessage": "Zugriff pro Gruppe vergeben statt für jeden Benutzer einzeln.",
+      "enterpriseMessage": "Gruppenbasierte Zugriffskontrolle: einer ganzen Gruppe auf einmal Zugriff geben.",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -2181,7 +2181,7 @@
       },
       "usage": {
         "heading": "Nutzung & Abrechnung ist in der Enterprise Edition verfügbar",
-        "message": "Verfolgen Sie KI-Ausgaben nach Benutzer, Agent, Connector und Modell. Verwalten Sie Guthaben, Rechnungen und Ausgabenwarnungen.",
+        "message": "KI-Ausgaben sehen und steuern. Nach Benutzer, Agent, Connector und Modell verfolgen, festlegen, wie viel jeder Benutzer ausgeben darf, und Guthaben und Rechnungen verwalten.",
         "benefits": {
           "breakdown": "KI-Ausgaben nach Benutzer, Agent, Connector und Modell",
           "billing": "Guthaben und Rechnungen an einem Ort",
@@ -2237,7 +2237,7 @@
             "name": "Enterprise Edition",
             "summary": "Für größere Organisationen. Preis auf Anfrage.",
             "lead": "Alles aus Community, dazu:",
-            "seeAll": "Alle {{count}} Funktionen ansehen"
+            "seeAll": "Alle Funktionen ansehen"
           }
         },
         "compare": {
@@ -2286,7 +2286,7 @@
           },
           "groups": {
             "name": "Gruppenberechtigungen",
-            "description": "Zugriff pro Gruppe vergeben statt für jeden Benutzer einzeln."
+            "description": "Gruppenbasierte Zugriffskontrolle: einer ganzen Gruppe auf einmal Zugriff geben."
           },
           "toolApprovals": {
             "name": "Richtlinien für Tool-Freigaben",
@@ -2297,7 +2297,7 @@
             "description": "Ein Dienstkonto handelt als ein bestimmter Benutzer (delegierter Zugriff). Jeder Versuch wird protokolliert."
           },
           "peoplesOwnApps": {
-            "name": "Von Benutzern verbundene Apps",
+            "name": "Kontrolle über Benutzer-Apps",
             "description": "OAuth-Apps, Aktionen und MCP-Server prüfen und entfernen, die Benutzer verbinden."
           },
           "sso": {
@@ -2310,7 +2310,7 @@
           },
           "usage": {
             "name": "Nutzung & Abrechnung",
-            "description": "KI-Ausgaben nach Benutzer, Agent, Connector und Modell verfolgen, mit Guthaben und Ausgabenwarnungen."
+            "description": "Transparenz und Kontrolle über KI-Ausgaben: nach Benutzer, Agent, Connector und Modell verfolgen und festlegen, wie viel jeder Benutzer ausgeben darf."
           },
           "indexingPriority": {
             "name": "Indexierungspriorität",

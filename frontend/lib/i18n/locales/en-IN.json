@@ -2076,7 +2076,7 @@
       "title": "Groups",
       "subtitle": "Create and manage groups to control access and permissions",
       "enterpriseTitle": "Group permissions are available in Enterprise Edition",
-      "enterpriseMessage": "Grant access by group instead of user by user.",
+      "enterpriseMessage": "Group-based access control: grant access to a whole group at once.",
       "createGroup": "Create group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -2181,7 +2181,7 @@
       },
       "usage": {
         "heading": "Usage & billing is available in Enterprise Edition",
-        "message": "Track AI spend by user, agent, connector and model. Manage credits, invoices and spending alerts.",
+        "message": "See and control AI spend. Track it by user, agent, connector and model, set how much each user can spend, and manage credits and invoices.",
         "benefits": {
           "breakdown": "AI spend by user, agent, connector and model",
           "billing": "Credits and invoices in one place",
@@ -2237,7 +2237,7 @@
             "name": "Enterprise Edition",
             "summary": "For larger organizations. Pricing on request.",
             "lead": "Everything in Community, plus:",
-            "seeAll": "See all {{count}} features"
+            "seeAll": "See all features"
           }
         },
         "compare": {
@@ -2286,7 +2286,7 @@
           },
           "groups": {
             "name": "Group permissions",
-            "description": "Grant access by group instead of user by user."
+            "description": "Group-based access control: grant access to a whole group at once."
           },
           "toolApprovals": {
             "name": "Tool approval policies",
@@ -2297,7 +2297,7 @@
             "description": "Let a service account act as a named user (delegated access). Every attempt is logged."
           },
           "peoplesOwnApps": {
-            "name": "User-connected apps",
+            "name": "Governance over user apps",
             "description": "Review and remove the OAuth apps, actions and MCP servers users connect."
           },
           "sso": {
@@ -2310,7 +2310,7 @@
           },
           "usage": {
             "name": "Usage & billing",
-            "description": "Track AI spend by user, agent, connector and model, with credits and spending alerts."
+            "description": "Visibility and control over AI spend: track it by user, agent, connector and model, and set how much each user can spend."
           },
           "indexingPriority": {
             "name": "Indexing priority",

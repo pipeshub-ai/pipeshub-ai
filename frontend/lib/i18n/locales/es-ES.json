@@ -2122,7 +2122,7 @@
       "title": "Grupos",
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
       "enterpriseTitle": "Los permisos de grupo están disponibles en Enterprise Edition",
-      "enterpriseMessage": "Conceda acceso por grupos en lugar de usuario por usuario.",
+      "enterpriseMessage": "Control de acceso basado en grupos: conceda acceso a todo un grupo a la vez.",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -2227,7 +2227,7 @@
       },
       "usage": {
         "heading": "Uso y facturación está disponible en Enterprise Edition",
-        "message": "Siga el gasto en IA por usuario, agente, conector y modelo. Gestione créditos, facturas y alertas de gasto.",
+        "message": "Vea y controle el gasto en IA. Sígalo por usuario, agente, conector y modelo, fije cuánto puede gastar cada usuario y gestione créditos y facturas.",
         "benefits": {
           "breakdown": "Gasto en IA por usuario, agente, conector y modelo",
           "billing": "Créditos y facturas en un solo lugar",
@@ -2283,7 +2283,7 @@
             "name": "Enterprise Edition",
             "summary": "Para organizaciones grandes. Precio a consultar.",
             "lead": "Todo lo de Community, y además:",
-            "seeAll": "Ver las {{count}} funciones"
+            "seeAll": "Ver todas las funciones"
           }
         },
         "compare": {
@@ -2332,7 +2332,7 @@
           },
           "groups": {
             "name": "Permisos de grupo",
-            "description": "Conceda acceso por grupos en lugar de usuario por usuario."
+            "description": "Control de acceso basado en grupos: conceda acceso a todo un grupo a la vez."
           },
           "toolApprovals": {
             "name": "Políticas de aprobación de herramientas",
@@ -2343,7 +2343,7 @@
             "description": "Una cuenta de servicio actúa como un usuario concreto (acceso delegado). Cada intento queda registrado."
           },
           "peoplesOwnApps": {
-            "name": "Apps conectadas por usuarios",
+            "name": "Gobernanza de las apps de usuarios",
             "description": "Revise y quite las apps OAuth, acciones y servidores MCP que conectan los usuarios."
           },
           "sso": {
@@ -2356,7 +2356,7 @@
           },
           "usage": {
             "name": "Uso y facturación",
-            "description": "Siga el gasto en IA por usuario, agente, conector y modelo, con créditos y alertas de gasto."
+            "description": "Visibilidad y control del gasto en IA: sígalo por usuario, agente, conector y modelo, y fije cuánto puede gastar cada usuario."
           },
           "indexingPriority": {
             "name": "Prioridad de indexación",

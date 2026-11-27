@@ -2143,7 +2143,7 @@
       "title": "用户组",
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
-      "enterpriseMessage": "按用户组授予访问权限，无需逐个用户设置。",
+      "enterpriseMessage": "基于用户组的访问控制：一次为整个用户组授予访问权限。",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -2248,7 +2248,7 @@
       },
       "usage": {
         "heading": "用量和账单功能仅在企业版中提供",
-        "message": "按用户、智能体、连接器和模型跟踪 AI 支出。管理额度、发票和支出提醒。",
+        "message": "查看并控制 AI 支出。按用户、智能体、连接器和模型跟踪，设置每个用户可用的额度，并管理额度和发票。",
         "benefits": {
           "breakdown": "按用户、智能体、连接器和模型统计 AI 支出",
           "billing": "额度和发票集中在一处",
@@ -2304,7 +2304,7 @@
             "name": "企业版",
             "summary": "适合规模较大的组织。价格请咨询。",
             "lead": "包含社区版的全部功能，另外还有：",
-            "seeAll": "查看全部 {{count}} 项功能"
+            "seeAll": "查看全部功能"
           }
         },
         "compare": {
@@ -2353,7 +2353,7 @@
           },
           "groups": {
             "name": "用户组权限",
-            "description": "按用户组授予访问权限，无需逐个用户设置。"
+            "description": "基于用户组的访问控制：一次为整个用户组授予访问权限。"
           },
           "toolApprovals": {
             "name": "工具审批策略",
@@ -2364,7 +2364,7 @@
             "description": "让服务账号以指定用户的身份操作（委派访问），每次尝试都有记录。"
           },
           "peoplesOwnApps": {
-            "name": "用户连接的应用",
+            "name": "用户应用治理",
             "description": "审查并移除用户连接的 OAuth 应用、操作和 MCP 服务器。"
           },
           "sso": {
@@ -2377,7 +2377,7 @@
           },
           "usage": {
             "name": "用量和账单",
-            "description": "按用户、智能体、连接器和模型跟踪 AI 支出，含额度和支出提醒。"
+            "description": "AI 支出的可见性与控制：按用户、智能体、连接器和模型跟踪，并设置每个用户可用的额度。"
           },
           "indexingPriority": {
             "name": "索引优先级",

@@ -2280,7 +2280,7 @@
       "title": "Skupiny",
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
-      "enterpriseMessage": "Udělujte přístup podle skupin, ne po jednotlivých uživatelích.",
+      "enterpriseMessage": "Řízení přístupu podle skupin: přístup celé skupině najednou.",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -2385,7 +2385,7 @@
       },
       "usage": {
         "heading": "Využití a fakturace jsou k dispozici v edici Enterprise",
-        "message": "Sledujte útratu za AI podle uživatele, agenta, konektoru a modelu. Spravujte kredity, faktury a upozornění na útratu.",
+        "message": "Sledujte a řiďte útratu za AI. Sledujte ji podle uživatele, agenta, konektoru a modelu, určete, kolik může každý uživatel utratit, a spravujte kredity a faktury.",
         "benefits": {
           "breakdown": "Útrata za AI podle uživatele, agenta, konektoru a modelu",
           "billing": "Kredity a faktury na jednom místě",
@@ -2441,7 +2441,7 @@
             "name": "Edice Enterprise",
             "summary": "Pro větší organizace. Cena na vyžádání.",
             "lead": "Vše z edice Community a navíc:",
-            "seeAll": "Zobrazit všech {{count}} funkcí"
+            "seeAll": "Zobrazit všechny funkce"
           }
         },
         "compare": {
@@ -2490,7 +2490,7 @@
           },
           "groups": {
             "name": "Oprávnění skupin",
-            "description": "Udělujte přístup podle skupin, ne po jednotlivých uživatelích."
+            "description": "Řízení přístupu podle skupin: přístup celé skupině najednou."
           },
           "toolApprovals": {
             "name": "Zásady schvalování nástrojů",
@@ -2501,7 +2501,7 @@
             "description": "Servisní účet jedná jako konkrétní uživatel (delegovaný přístup). Každý pokus se zaznamená."
           },
           "peoplesOwnApps": {
-            "name": "Aplikace připojené uživateli",
+            "name": "Správa uživatelských aplikací",
             "description": "Kontrolujte a odebírejte aplikace OAuth, akce a servery MCP, které uživatelé připojí."
           },
           "sso": {
@@ -2514,7 +2514,7 @@
           },
           "usage": {
             "name": "Využití a fakturace",
-            "description": "Sledujte útratu za AI podle uživatele, agenta, konektoru a modelu, s kredity a upozorněními na útratu."
+            "description": "Přehled a kontrola nad útratou za AI: sledujte ji podle uživatele, agenta, konektoru a modelu a určete, kolik může každý uživatel utratit."
           },
           "indexingPriority": {
             "name": "Priorita indexování",

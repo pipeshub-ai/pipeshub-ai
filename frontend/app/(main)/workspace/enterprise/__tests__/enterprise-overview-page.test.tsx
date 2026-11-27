@@ -133,7 +133,7 @@ describe('EnterpriseOverviewPage', () => {
     expect(contact.getAttribute('target')).toBe('_blank');
     expect(contact.getAttribute('rel')).toBe('noopener noreferrer');
 
-    const seeAll = within(card).getByRole('link', { name: fill(OVERVIEW.plans.enterprise.seeAll, { count: ITEMS.length }) });
+    const seeAll = within(card).getByRole('link', { name: OVERVIEW.plans.enterprise.seeAll });
     const target = seeAll.getAttribute('href')!.slice(1);
     expect(document.getElementById(target)).toBe(screen.getByRole('region', { name: OVERVIEW.compare.title }));
   });

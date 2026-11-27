@@ -2143,7 +2143,7 @@
       "title": "그룹",
       "subtitle": "그룹을 생성하고 관리하여 접근 및 권한을 제어합니다",
       "enterpriseTitle": "그룹 권한은 Enterprise Edition에서 사용할 수 있습니다",
-      "enterpriseMessage": "사용자별이 아니라 그룹별로 접근 권한을 부여합니다.",
+      "enterpriseMessage": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다.",
       "createGroup": "그룹 생성",
       "searchPlaceholder": "검색...",
       "emptyTitle": "아직 생성된 그룹이 없습니다",
@@ -2248,7 +2248,7 @@
       },
       "usage": {
         "heading": "사용량 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사용자, 에이전트, 커넥터, 모델별 AI 지출을 추적하세요. 크레딧, 청구서, 지출 알림을 관리합니다.",
+        "message": "AI 지출을 확인하고 제어하세요. 사용자, 에이전트, 커넥터, 모델별로 추적하고, 사용자마다 쓸 수 있는 금액을 정하고, 크레딧과 청구서를 관리합니다.",
         "benefits": {
           "breakdown": "사용자, 에이전트, 커넥터, 모델별 AI 지출",
           "billing": "크레딧과 청구서를 한곳에서",
@@ -2304,7 +2304,7 @@
             "name": "Enterprise Edition",
             "summary": "규모가 큰 조직용. 가격은 문의해 주세요.",
             "lead": "Community의 모든 기능에 더해:",
-            "seeAll": "기능 {{count}}개 모두 보기"
+            "seeAll": "모든 기능 보기"
           }
         },
         "compare": {
@@ -2353,7 +2353,7 @@
           },
           "groups": {
             "name": "그룹 권한",
-            "description": "사용자별이 아니라 그룹별로 접근 권한을 부여합니다."
+            "description": "그룹 기반 접근 제어: 그룹 전체에 한 번에 접근 권한을 부여합니다."
           },
           "toolApprovals": {
             "name": "도구 승인 정책",
@@ -2364,7 +2364,7 @@
             "description": "서비스 계정이 특정 사용자로 작업합니다(위임된 액세스). 모든 시도가 기록됩니다."
           },
           "peoplesOwnApps": {
-            "name": "사용자가 연결한 앱",
+            "name": "사용자 앱 거버넌스",
             "description": "사용자가 연결한 OAuth 앱, 작업, MCP 서버를 검토하고 제거합니다."
           },
           "sso": {
@@ -2377,7 +2377,7 @@
           },
           "usage": {
             "name": "사용량 및 결제",
-            "description": "사용자, 에이전트, 커넥터, 모델별 AI 지출을 크레딧 및 지출 알림과 함께 추적합니다."
+            "description": "AI 지출의 가시성과 제어: 사용자, 에이전트, 커넥터, 모델별로 추적하고 사용자마다 쓸 수 있는 금액을 정합니다."
           },
           "indexingPriority": {
             "name": "인덱싱 우선순위",
