@@ -404,14 +404,15 @@ async def hide_names_the_viewer_cannot_open(
 
 async def with_current_limits(graph_provider: IGraphDBProvider, knowledge: Sequence[object]) -> None:
     """Set, in place, each source's ``accessLimit`` to its connector's as it is now. A published version (and so an export
-    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A failed read
-    raises, rather than reading as no limit."""
+    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A connector that
+    is gone is weighed as limited to its creator. A failed read raises, rather than reading as no limit."""
     for k in knowledge or []:
         if isinstance(k, dict) and k.get("connectorId"):
             app = await graph_provider.get_document(
                 str(k["connectorId"]), CollectionNames.APPS.value, raise_on_error=True,
-            ) or {}
-            k["accessLimit"] = app.get("accessLimit")
+            )
+            # A connector that is gone is weighed as limited, so its name becomes its id, as live get_agent names it.
+            k["accessLimit"] = app.get("accessLimit") if app else AccessLimit.CREATOR.value
 
 
 async def hide_limited_names(

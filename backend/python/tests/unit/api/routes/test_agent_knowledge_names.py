@@ -143,6 +143,21 @@ def test_a_chat_turn_weighs_each_source_by_its_limit_now_not_the_one_it_carries(
     assert _names(_chat_turn_knowledge(graph, monkeypatch, viewer)) == _expected(admitted)
 
 
+@pytest.mark.parametrize("viewer", ["bob", "alice"])
+def test_a_connector_deleted_since_publish_is_named_by_its_id(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str,
+) -> None:
+    """The published version still names the source; the connector is gone, so the turn shows its id, as live
+    get_agent names a source it cannot resolve."""
+    frozen = {**graph.nodes[AGENTS]["shared"], "knowledge": [{**_entry(k), "accessLimit": None} for k in SOURCES]}
+
+    async def published(*_a: object, **_k: object) -> dict[str, Any]:
+        return copy.deepcopy(frozen)
+    monkeypatch.setattr(graph, "get_agent", published)
+    del graph.nodes["apps"]["open"]
+    assert _names(_chat_turn_knowledge(graph, monkeypatch, viewer))["open"] == "open"
+
+
 @pytest.mark.asyncio
 async def test_a_limit_that_cannot_be_read_is_weighed_as_limited_to_the_creator() -> None:
     graph = AsyncMock()
