@@ -151,6 +151,12 @@ class KhBrowseMixin(PgBase):
             # a node held whole is decided by the classes of the rows it reads (its arrows add their children's: ``cover_children``); a wider one by every class of the connector
             only = None if rows is None else sorted({r["class_id"] for r in [*rows, *([] if at_app else [start]), *ancestors] if r["class_id"] is not None})
             sets = await class_sets(tx, org, app_sk, held, only) if served and by_class else None
+            if sets is None and rows is None and served and by_class:
+                # a connector with more classes than a page evaluates: those of the children the page reads (any other child is undecided, ``_browse_undecided``)
+                c = kgl.Params(list(p.values))
+                c.values[2] = COUNT_CAP + 1
+                kids = await tx.fetchval(kgl.browse_classes_sql(where, links_param), *c.values)
+                sets = await class_sets(tx, org, app_sk, held, sorted({*kids, *(r["class_id"] for r in [*([] if at_app else [start]), *ancestors] if r["class_id"] is not None)}))
             gs = set(granted)
             ok, left = self._kh_class_split(rows or [], sets, gs)
             # the children the classes do not decide are asked here only when they are few; otherwise (kg does not serve the connector, or it is mid-sync) they are asked a page at a time
@@ -399,7 +405,8 @@ class KhBrowseMixin(PgBase):
         branches = kgl.after(sort_field, order, direction, after, q) if after is not None else None
         unv = sorted(sets["unvouched"])
         sql = kgl.browse_once_sql(sort_field, order, direction, where, branches, links, (q.add(unv), q.add(sets["app_sk"]), q.add(UNDECIDED_MAX + 1)),
-                                  (q.add(sorted(sets["plain"])), q.add(sorted(sets["own"])), q.add(sorted(gset)), q.add(unv), q.add(sets["app_sk"]), q.add(COUNT_CAP + 1)))
+                                  (q.add(sorted(sets["plain"])), q.add(sorted(sets["own"])), q.add(sorted(gset)), q.add(unv), q.add(sets["app_sk"]), q.add(COUNT_CAP + 1)),
+                                  known=None if sets["known"] is None else q.add(sorted(sets["known"])))
 
         got = list(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
         und = list(got[0]["undecided"])
@@ -447,7 +454,8 @@ class KhBrowseMixin(PgBase):
             if pre is None:
                 u = kgl.Params(list(p.values))
                 u.values[2] = UNDECIDED_MAX + 1
-                sql = kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links)
+                sql = kgl.browse_undecided_sql(where, u.add(sorted(sets["unvouched"])), u.add(sets["app_sk"]), links,
+                                               None if sets["known"] is None else u.add(sorted(sets["known"])))
                 left = list(await self._kq(lambda tx, s=sql, v=tuple(u.values): tx.fetch(s, *v), transaction))
             else:
                 left = pre[0]
