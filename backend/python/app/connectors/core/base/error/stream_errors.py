@@ -11,6 +11,7 @@ it correctly, and no new response fields or handlers are needed.
 """
 
 import asyncio
+import math
 import socket
 import ssl
 
@@ -31,6 +32,11 @@ _RECONNECT = (
 _FORBIDDEN = (
     "Access to this item was denied by {connector}. The account PipesHub uses "
     "may not have permission to read it."
+)
+# The same refusal on a route that reads no item (turning a connector on, listing filter options).
+_ACCOUNT_FORBIDDEN = (
+    "Access was denied by {connector}. The account PipesHub uses for this connector "
+    "may not have the permissions it needs."
 )
 _NOT_FOUND = "This item no longer exists in {connector}. It may have been deleted or moved."
 _NOT_DOWNLOADABLE = "This item cannot be downloaded from {connector} in its current format."
@@ -399,8 +405,14 @@ def _response_header(exc: BaseException, name: str) -> str | None:
 
 
 def _extract_retry_after(exc: BaseException) -> str | None:
-    """Read a Retry-After header off an SDK exception's response, if present."""
-    return sanitize_retry_after(_response_header(exc, "Retry-After"))
+    """Read a Retry-After header off an SDK exception's response, else the seconds an ``ApiCallError`` parsed from one."""
+    header = _response_header(exc, "Retry-After")
+    if header is not None:
+        return sanitize_retry_after(header)
+    seconds = getattr(exc, "retry_after_seconds", None)
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 0 < seconds < math.inf:
+        return None
+    return sanitize_retry_after(math.ceil(seconds))
 
 
 # Transport-level failures, matched without importing every HTTP client.
@@ -443,3 +455,37 @@ def _is_rate_limit_403(exc: BaseException) -> bool:
         return False
     reasons = {d.get("reason") for d in details if isinstance(d, dict)}
     return bool(reasons & _RATE_LIMIT_403_REASONS)
+
+
+# Mapped answers about the connection as a whole, which any route that calls the source can relay (403 is reworded).
+# 404 and 422 are worded about one item ("no longer exists", "cannot be downloaded"), so they fit only a stream.
+_CONNECTION_STATUSES = frozenset({
+    HttpStatusCode.CONFLICT.value,
+    HttpStatusCode.TOO_MANY_REQUESTS.value,
+    HttpStatusCode.BAD_GATEWAY.value,
+    HttpStatusCode.GATEWAY_TIMEOUT.value,
+})
+_OUTAGE_STATUSES = frozenset({
+    HttpStatusCode.TOO_MANY_REQUESTS.value,
+    HttpStatusCode.BAD_GATEWAY.value,
+    HttpStatusCode.GATEWAY_TIMEOUT.value,
+})
+
+
+def connection_failure(exc: BaseException | None, *, connector: str | None = None) -> HTTPException | None:
+    """to_stream_error for a route that calls the source but streams no item; None when the answer is not one of those."""
+    if exc is None or isinstance(exc, HTTPException):
+        return None
+    mapped = to_stream_error(exc, connector=connector)
+    if mapped.status_code == HttpStatusCode.FORBIDDEN.value:
+        account_forbidden = _ACCOUNT_FORBIDDEN.format(connector=connector or _DEFAULT_CONNECTOR)
+        return HTTPException(mapped.status_code, account_forbidden, headers=mapped.headers)
+    return mapped if mapped.status_code in _CONNECTION_STATUSES else None
+
+
+def outage_status_for(error: BaseException) -> HTTPException | None:
+    """A connector's own words raised from an outage: its text, the outage's status and headers."""
+    mapped = connection_failure(error.__cause__)
+    if mapped is None or mapped.status_code not in _OUTAGE_STATUSES:
+        return None
+    return HTTPException(mapped.status_code, str(error), headers=mapped.headers)

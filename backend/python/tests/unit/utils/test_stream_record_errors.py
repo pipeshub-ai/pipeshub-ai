@@ -17,11 +17,13 @@ from fastapi.testclient import TestClient
 
 from app.connectors.core.base.error.stream_errors import (
     SOURCE_REFUSAL_HEADER,
+    connection_failure,
     connector_not_ready,
     extract_source_status,
     map_source_status,
     not_downloadable,
     not_found_at_source,
+    outage_status_for,
     raise_for_stream_fetch,
     to_internal_service_error,
     to_stream_error,
@@ -537,6 +539,26 @@ class TestRetryAfterIsSanitized:
         assert mapped.status_code == 429
         assert not mapped.headers or "Retry-After" not in mapped.headers
 
+    @pytest.mark.parametrize(("seconds", "expected"), [(30.0, "30"), (0.2, "1"), (29.01, "30"), (7, "7")])
+    def test_api_call_error_seconds_are_relayed_as_whole_seconds_rounded_up(self, seconds, expected) -> None:
+        from app.utils.api_call import ApiCallError
+
+        mapped = to_stream_error(ApiCallError("429", status_code=429, retry_after_seconds=seconds), connector="X")
+        assert (mapped.status_code, mapped.headers["Retry-After"]) == (429, expected)
+
+    @pytest.mark.parametrize("seconds", [None, 0.0, -5.0, float("nan"), float("inf"), True, "30"])
+    def test_api_call_error_seconds_that_are_not_a_positive_number_are_dropped(self, seconds) -> None:
+        from app.utils.api_call import ApiCallError
+
+        mapped = to_stream_error(ApiCallError("429", status_code=429, retry_after_seconds=seconds), connector="X")
+        assert mapped.status_code == 429
+        assert "Retry-After" not in mapped.headers
+
+    def test_a_raw_header_keeps_its_validation_over_parsed_seconds(self) -> None:
+        exc = self._exc({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+        exc.retry_after_seconds = 30.0
+        assert "Retry-After" not in (to_stream_error(exc, connector="X").headers or {})
+
 
 class TestRaiseForStreamFetchOrdering:
     """An error status outranks a `success` flag.
@@ -561,3 +583,90 @@ class TestRaiseForStreamFetchOrdering:
     def test_statusless_failure_stays_unclassified(self) -> None:
         with pytest.raises(RuntimeError):
             raise_for_stream_fetch(success=False, has_payload=False, connector="Linear")
+
+
+def _httpx_status(status: int, headers: dict[str, str] | None = None) -> Exception:
+    import httpx
+
+    request = httpx.Request("GET", "https://vendor.example/api")
+    response = httpx.Response(status, headers=headers or {}, request=request)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
+
+
+class TestConnectionFailure:
+    """The stream mapping for a route that calls the source but reads no item (toggle, filter options)."""
+
+    def test_nothing_to_map(self) -> None:
+        assert connection_failure(None) is None
+
+    def test_an_answer_already_chosen_is_left_to_the_caller(self) -> None:
+        assert connection_failure(HTTPException(409, "x")) is None
+
+    @pytest.mark.parametrize(
+        ("source_status", "expected"),
+        [(401, 409), (429, 429), (500, 502), (503, 502), (408, 504), (504, 504)],
+    )
+    def test_connection_level_answers_are_kept(self, source_status: int, expected: int) -> None:
+        assert connection_failure(_httpx_status(source_status), connector="Acme").status_code == expected
+
+    @pytest.mark.parametrize("source_status", [404, 410, 400, 422])
+    def test_item_worded_answers_are_dropped(self, source_status: int) -> None:
+        """"This item no longer exists" / "cannot be downloaded" are wrong where no item was asked for."""
+        assert connection_failure(_httpx_status(source_status), connector="Acme") is None
+
+    def test_unclassified_error_is_dropped(self) -> None:
+        assert connection_failure(RuntimeError("token=sk-secret"), connector="Acme") is None
+
+    def test_403_is_about_the_account_not_an_item(self) -> None:
+        mapped = connection_failure(_httpx_status(403), connector="Acme Wiki")
+        assert mapped is not None and mapped.status_code == 403
+        assert mapped.detail == (
+            "Access was denied by Acme Wiki. The account PipesHub uses for this connector "
+            "may not have the permissions it needs."
+        )
+        assert mapped.headers == {SOURCE_REFUSAL_HEADER: "1"}
+
+    def test_rate_limited_403_is_still_429(self) -> None:
+        mapped = connection_failure(_httpx_status(403, {"X-RateLimit-Remaining": "0"}), connector="GitHub")
+        assert mapped is not None and mapped.status_code == 429
+
+    def test_a_message_written_for_people_is_kept(self) -> None:
+        from app.sources.client.http.address_guard import AddressNotAllowedError
+
+        mapped = connection_failure(AddressNotAllowedError("Could not find a server named 'x'."))
+        assert mapped is not None and (mapped.status_code, mapped.detail) == (409, "Could not find a server named 'x'.")
+
+
+class TestOutageStatusFor:
+    """A connector's own sentence, raised from an outage, keeps its words and takes the outage's status."""
+
+    @staticmethod
+    def _wrapped(cause: BaseException | None) -> Exception:
+        error = RuntimeError("Couldn't reach Confluence at https://acme.example. Check the site URL.")
+        error.__cause__ = cause
+        return error
+
+    def test_rate_limit_keeps_the_words_and_retry_after(self) -> None:
+        mapped = outage_status_for(self._wrapped(_httpx_status(429, {"Retry-After": "12"})))
+        assert mapped is not None
+        assert (mapped.status_code, mapped.detail) == (
+            429, "Couldn't reach Confluence at https://acme.example. Check the site URL."
+        )
+        assert mapped.headers["Retry-After"] == "12"
+
+    @pytest.mark.parametrize(("cause", "expected"), [(503, 502), (504, 504)])
+    def test_outage_status(self, cause: int, expected: int) -> None:
+        mapped = outage_status_for(self._wrapped(_httpx_status(cause)))
+        assert mapped is not None and mapped.status_code == expected
+
+    @pytest.mark.parametrize("cause", [401, 403, 404])
+    def test_a_refusal_is_not_an_outage(self, cause: int) -> None:
+        assert outage_status_for(self._wrapped(_httpx_status(cause))) is None
+
+    def test_no_cause(self) -> None:
+        assert outage_status_for(self._wrapped(None)) is None
+
+    def test_only_the_explicit_cause_counts(self) -> None:
+        error = self._wrapped(None)
+        error.__context__ = _httpx_status(503)
+        assert outage_status_for(error) is None

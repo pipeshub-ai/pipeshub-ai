@@ -129,7 +129,13 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.services.rate_budget import account_scope
-from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
+from app.connectors.core.base.error.stream_errors import (
+    connection_failure,
+    not_downloadable,
+    outage_status_for,
+    to_internal_service_error,
+    to_stream_error,
+)
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthStateError,
@@ -1678,17 +1684,24 @@ async def stream_record_internal(
             )
 
         connector_registry: ConnectorRegistry = request.app.state.connector_registry
-        connector_obj = await _get_streaming_connector(
-            container=container,
-            connector_id=connector_id,
-            connector_instance=connector_instance,
-            connector_registry=connector_registry,
-            graph_provider=graph_provider,
-            user_id=token_user_id or "",
-            org_id=effective_org_id,
-            is_admin=True,
-            logger=logger,
-        )
+        try:
+            connector_obj = await _get_streaming_connector(
+                container=container,
+                connector_id=connector_id,
+                connector_instance=connector_instance,
+                connector_registry=connector_registry,
+                graph_provider=graph_provider,
+                user_id=token_user_id or "",
+                org_id=effective_org_id,
+                is_admin=True,
+                logger=logger,
+            )
+        except HTTPException as e:
+            # A connector that cannot start refuses every record, not this one: the indexer fails a 403 for good
+            # but retries a 409 (as for a reconnect), so restoring the account's access recovers the record.
+            if e.status_code != HttpStatusCode.FORBIDDEN.value:
+                raise
+            raise HTTPException(HttpStatusCode.CONFLICT.value, e.detail, headers=e.headers) from e
 
         with streaming_for_indexing(), account_scope(getattr(connector_obj, "rate_budget", None)):
             return await _invoke_connector_stream(
@@ -8331,6 +8344,16 @@ async def get_filter_field_options(
                 search=search,
                 cursor=cursor,
             )
+        except HTTPException:
+            raise
+        except Exception as e:
+            mapped = (isinstance(e, ConnectorInitError) and outage_status_for(e)) or connection_failure(
+                e, connector=connector.display_name
+            )
+            if mapped is None:
+                raise
+            _log_mapped_failure(logger, "connector.filter_options_failed", e, mapped, connector_id=connector_id)
+            raise mapped from e
         finally:
             if scope_paths:
                 with contextlib.suppress(AttributeError):
@@ -8348,7 +8371,7 @@ async def get_filter_field_options(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting filter field options for {filter_key}: {e}", exc_info=True)
+        log_failure(logger, "connector.filter_options_failed", e, connector_id=connector_id, filter_key=filter_key)
 
         # Raise as HTTP 500 for proper error tracking and monitoring
         raise HTTPException(
@@ -8662,6 +8685,29 @@ async def _ensure_connector_initialized(
         )
 
 
+def _raise_setup_failure(
+    error: Exception, connector: BaseConnector, logger: logging.Logger, connector_id: str
+) -> None:
+    """Raise the answer for a connector that failed to start, or return when it has none (a bug)."""
+    if isinstance(error, ConnectorInitError):
+        message = str(error)  # user-written message
+        answer = outage_status_for(error) or HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=message)
+        _log_mapped_failure(logger, "connector.init_failed", error, answer, connector_id=connector_id)
+        raise answer from error
+    mapped = connection_failure(error, connector=connector.display_name)
+    if mapped is not None:
+        _log_mapped_failure(logger, "connector.init_failed", error, mapped, connector_id=connector_id)
+        raise mapped from error
+
+
+def _log_mapped_failure(
+    logger: logging.Logger, event: str, error: BaseException, answer: HTTPException, **fields: object
+) -> None:
+    """The failure line for a mapped answer, classed as answered: a 403 the source marked as its rate limit is a 429."""
+    rate_limited = answer.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+    log_failure(logger, event, error, error_class="rate_limited" if rate_limited else None, **fields)
+
+
 async def _build_and_store_connector(
     container: ConnectorAppContainer,
     connector_id: str,
@@ -8754,21 +8800,11 @@ async def _build_and_store_connector(
         logger.info(f"Calling init() for connector {connector_id}")
         try:
             is_initialized = await connector.init()
-        except ConnectorInitError as init_error:
-            # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
-            # ambiguity). Show it to the user instead of the generic message.
-            error_msg = str(init_error)  # user-written message
-            log_failure(logger, "connector.init_failed", init_error, connector_id=connector_id)
-            with contextlib.suppress(Exception):
-                await dispose_connector(connector)
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=error_msg
-            ) from init_error
-        except Exception:
+        except Exception as init_error:
             # A half-initialised connector can own open clients (e.g. an HTTP session).
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
+            _raise_setup_failure(init_error, connector, logger, connector_id)
             raise
 
         if not is_initialized:
@@ -8796,24 +8832,16 @@ async def _build_and_store_connector(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
                 )
-        except ConnectorInitError as init_error:
-            error_msg = str(init_error)  # user-written message
-            logger.error(f"❌ {error_msg}")
-            with contextlib.suppress(Exception):
-                await dispose_connector(connector)
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=error_msg
-            ) from init_error
         except HTTPException:
             raise
         except Exception as test_error:
-            logger.error(
-                "❌ Connection test failed for connector %s", connector_id, exc_info=True
-            )
             # Cleanup on failure
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
+            _raise_setup_failure(test_error, connector, logger, connector_id)
+            logger.error(
+                "❌ Connection test failed for connector %s", connector_id, exc_info=True
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=action_failed("connect to this connector")
