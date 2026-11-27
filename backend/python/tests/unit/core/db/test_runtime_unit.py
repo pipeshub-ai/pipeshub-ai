@@ -34,7 +34,7 @@ from app.core.db import (
 )
 from app.core.db import capabilities as caps
 from app.core.db.pool import PooledConnection
-from app.core.db.uow import Tx
+from app.core.db.uow import OrgLimits, Tx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -71,6 +71,21 @@ def test_config_validates_and_derives_from_the_pooler() -> None:
     for bad in ({"service": "Bad Name; drop"}, {"dsn": ""}, {"pooler": "pgpool"}):
         with pytest.raises(DbConfigError):
             DbConfig(**{"service": "query", "dsn": "x", **bad})
+
+
+async def test_a_kernel_db_gets_the_editions_org_limits_hook_unless_the_caller_names_one(monkeypatch) -> None:
+    from app import edition
+
+    async def edition_hook(org: str) -> OrgLimits:
+        return OrgLimits(statement_timeout_ms=100)
+
+    async def own(org: str) -> None:
+        return None
+
+    monkeypatch.setattr(edition, "db_org_limits", lambda: edition_hook)
+    assert await _db()._limits("o") == OrgLimits(statement_timeout_ms=100)
+    named = KernelDB(DbConfig(service="query", dsn="postgresql://x@h/db"), org_limits=own)
+    assert await named._limits("o") is None
 
 
 def test_pooled_connection_sends_no_client_reset() -> None:
