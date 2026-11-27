@@ -3,7 +3,7 @@ import type {
   StoredSandboxSnapshot,
 } from '../../../../modules/agent-harness/ports/sandbox-snapshots';
 import type { Tx } from '../../uow';
-import { jobsUnit, rowRegion } from '../pg-documents/pg';
+import { jobsUnitAcrossOrgs, rowRegion } from '../pg-documents/pg';
 import { orgOrJobsUnit } from '../pg-documents/org-or-jobs';
 
 interface SnapshotRow {
@@ -60,12 +60,16 @@ export class PgSandboxSnapshotIndex implements SandboxSnapshotIndex<Tx> {
   }
 
   orgs(): Promise<string[]> {
-    return jobsUnit('sandbox-snapshots', { write: false }, async (k) => {
-      const { rows } = await k.query<{ org_id: string }>(
-        `/* pipeshub:harness.sandbox_snapshots_orgs */ SELECT DISTINCT org_id FROM harness.sandbox_snapshots`,
-      );
-      return rows.map((row) => row.org_id);
-    });
+    return jobsUnitAcrossOrgs(
+      'sandbox-snapshots',
+      { write: false },
+      async (k) => {
+        const { rows } = await k.query<{ org_id: string }>(
+          `/* pipeshub:harness.sandbox_snapshots_orgs */ SELECT DISTINCT org_id FROM harness.sandbox_snapshots`,
+        );
+        return rows.map((row) => row.org_id);
+      },
+    );
   }
 
   takenBefore(

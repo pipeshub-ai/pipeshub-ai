@@ -41,7 +41,7 @@ import {
   UNSEALED_RUN_INPUT,
 } from '../../../../modules/agent-harness/application/run-input-seal';
 import { PgHeadRevisions } from '../../../../modules/control-plane';
-import { jobsUnit, type PgKernelTx } from '../pg-documents/pg';
+import { jobsUnitAcrossOrgs, type PgKernelTx } from '../pg-documents/pg';
 import { PgJournalStore } from '../journal/pg';
 import {
   after,
@@ -301,7 +301,7 @@ export class PgChildRunStore implements ChildRunStore {
 
   /** Cross-org (the sweeper's): as the jobs role, every org's children whose parent ended or is gone. */
   orphanedChildren(limit: number): Promise<HarnessRun[]> {
-    return jobsUnit(
+    return jobsUnitAcrossOrgs(
       'agent-harness.orphaned-children',
       { write: false },
       async (k) =>

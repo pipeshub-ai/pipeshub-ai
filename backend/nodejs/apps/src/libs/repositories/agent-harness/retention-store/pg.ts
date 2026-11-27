@@ -1,6 +1,6 @@
 import { TERMINAL_RUN_STATUSES } from '../../../../modules/agent-harness/domain/execution';
 import type { RetentionStore } from '../../../../modules/agent-harness/ports/session-retention';
-import { jobsUnit } from '../pg-documents/pg';
+import { jobsUnit, jobsUnitAcrossOrgs } from '../pg-documents/pg';
 import { PgTime, pgServerTime } from '../time/pg';
 
 const REASON = 'harness retention';
@@ -20,7 +20,7 @@ export class PgRetentionStore implements RetentionStore {
   }
 
   collectPayloads(before: number, limit: number): Promise<number> {
-    return jobsUnit(REASON, { write: true }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: true }, async (k) => {
       const { rowCount } = await k.query(
         `/* pipeshub:harness.retention_collect_payloads */ DELETE FROM harness.journal_payloads p
           WHERE (p.org_id, p.id) IN (
@@ -37,7 +37,7 @@ export class PgRetentionStore implements RetentionStore {
   }
 
   expireCommandReceipts(before: number, limit: number): Promise<number> {
-    return jobsUnit(REASON, { write: true }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: true }, async (k) => {
       const { rowCount } = await k.query(
         `/* pipeshub:harness.retention_command_receipts */ DELETE FROM harness.command_receipts c
           WHERE (c.org_id, c.run_id, c.command_id) IN (
@@ -52,7 +52,7 @@ export class PgRetentionStore implements RetentionStore {
   }
 
   expireAdmissionReceipts(before: number, limit: number): Promise<number> {
-    return jobsUnit(REASON, { write: true }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: true }, async (k) => {
       const { rowCount } = await k.query(
         `/* pipeshub:harness.retention_admission_receipts */ DELETE FROM harness.admission_receipts a
           WHERE (a.org_id, a.scope_key) IN (
@@ -65,7 +65,7 @@ export class PgRetentionStore implements RetentionStore {
   }
 
   harnessOrgs(): Promise<string[]> {
-    return jobsUnit(REASON, { write: false }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: false }, async (k) => {
       const { rows } = await k.query<{ org_id: string }>(
         `/* pipeshub:harness.retention_harness_orgs */ SELECT DISTINCT org_id FROM harness.data_keys ORDER BY org_id`,
       );

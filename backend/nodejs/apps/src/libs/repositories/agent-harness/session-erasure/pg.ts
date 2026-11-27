@@ -19,6 +19,7 @@ import {
   decodeDoc,
   docParam,
   jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -146,7 +147,7 @@ export class PgErasureJobStore implements ErasureJobStore<Tx> {
   }
 
   claimDue(holder: string, leaseMs: number): Promise<ErasureJob | null> {
-    return jobsUnit(REASON, { write: true }, async (k) => {
+    return jobsUnitAcrossOrgs(REASON, { write: true }, async (k) => {
       const now = await this.time.now(k);
       const { rows } = await k.query<{ doc: unknown }>(
         `/* pipeshub:harness.session_erasures_claim */ WITH due AS (

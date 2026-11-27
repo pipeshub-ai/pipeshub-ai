@@ -29,7 +29,7 @@ import {
 import {
   decodeDoc,
   docParam,
-  jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../../agent-harness/pg-documents/pg';
@@ -240,7 +240,7 @@ export class PgBindingStore implements BindingStore {
     limit: number,
     claimant?: RefreshClaimant,
   ): Promise<Binding[]> {
-    return jobsUnit(
+    return jobsUnitAcrossOrgs(
       'control-plane-binding-refresh',
       { write: false },
       async (k) => {

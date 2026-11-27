@@ -12,6 +12,7 @@ import {
   decodeDoc,
   docParam,
   jobsUnit,
+  jobsUnitAcrossOrgs,
   rowRegion,
   type PgKernelTx,
 } from '../pg-documents/pg';
@@ -28,7 +29,9 @@ const unit = <T>(
   opts: { write: boolean },
   fn: (k: PgKernelTx) => Promise<T>,
 ): Promise<T> =>
-  tx !== undefined ? inUnit(tx, opts, fn) : jobsUnit(REASON, opts, fn);
+  tx !== undefined
+    ? inUnit(tx, opts, fn)
+    : jobsUnitAcrossOrgs(REASON, opts, fn);
 
 const toItem = (doc: BackfillItem): BackfillItem => ({
   digest: doc.digest,
