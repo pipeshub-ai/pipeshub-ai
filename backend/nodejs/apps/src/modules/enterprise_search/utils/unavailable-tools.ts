@@ -40,6 +40,7 @@ const toolOf = (raw: unknown): IUnavailableTool | null => {
     ...(authMode !== undefined && { authMode }),
     sharedCredential: item.sharedCredential === true,
     userCanConnect: item.userCanConnect === true,
+    ...(item.needed === true && { needed: true }),
   };
 };
 

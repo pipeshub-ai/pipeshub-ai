@@ -700,15 +700,14 @@ describe('es_controller streaming answers', () => {
 
           release()
           await run.res.ended
+          expect(run.ai.streamCalls, 'no second run before the failure is saved').to.have.length(1)
           await clock.tickAsync(1000)
-          await second.done
+          await settle()
 
-          // Only now does it see the saved failure, which is no longer an answer it can regenerate.
-          expect(second.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([
-            'Can only regenerate the last message in the conversation',
-          ])
-          expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+          // Only now does it see the saved failure, which it redoes in its place, as Try again does.
           expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+          expect(second.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+          expect(run.ai.streamCalls, 'the second run started on the saved failure').to.have.length(2)
         })
       }
 

@@ -1,4 +1,4 @@
-import { Server as HttpServer } from 'http';
+import { IncomingMessage, Server as HttpServer } from 'http';
 import { DefaultEventsMap, Server, ServerOptions, Socket } from 'socket.io';
 import { createAdapter, createShardedAdapter } from '@socket.io/redis-adapter';
 import type { Cluster } from 'ioredis';
@@ -85,6 +85,22 @@ export class NotificationService {
       ...(usesInProcessCache() ? {} : { adapter: this.redisAdapter() }),
     });
 
+    // engine.io turns these away before Socket.IO sees a connection (a session id another process holds, a bad
+    // transport or handshake), so they are logged nowhere else. The request's headers, cookies and session id stay out.
+    this.io.engine.on(
+      'connection_error',
+      (err: { req: IncomingMessage; code: number; message: string }) => {
+        const url = new URL(err.req.url ?? '', 'http://socket');
+        this.logger.warn('socket.engine.connection_error', {
+          code: err.code,
+          message: err.message,
+          transport: url.searchParams.get('transport'),
+          upgrade: err.req.headers.upgrade?.toLowerCase() === 'websocket',
+          userAgent: err.req.headers['user-agent']?.slice(0, 200),
+        });
+      },
+    );
+
     this.io.use(async (socket: CustomSocket, next) => {
       try {
         const extractedToken = this.extractToken(socket.handshake.auth.token);
@@ -157,6 +173,12 @@ export class NotificationService {
       this.logger.debug('User connected', {
         target_user_id: userId,
         org_id: orgId,
+      });
+
+      // Whichever replica sends force_logout, the socket that gets it is closed here, so nothing more reaches it.
+      // Listeners run before the packet is written, so the close waits a microtask.
+      socket.onAnyOutgoing((event: string) => {
+        if (event === 'force_logout') queueMicrotask(() => socket.disconnect(true));
       });
 
       if (userId) {
@@ -282,7 +304,11 @@ export class NotificationService {
    */
   emitForceLogout(
     userId: string,
-    reason: 'role_changed' | 'missing_role' | 'invalid_token' = 'role_changed',
+    reason:
+      | 'role_changed'
+      | 'missing_role'
+      | 'invalid_token'
+      | 'signed_out' = 'role_changed',
   ): boolean {
     if (!this.io || !userId) {
       return false;

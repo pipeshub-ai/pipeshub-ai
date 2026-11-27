@@ -17,6 +17,10 @@ export class AppSessionRequiredError extends DomainHttpError {
   }
 }
 
+/** Whether the call comes from the app's own interactive session, and not from a tool's `/mcp` request made with it. */
+export const fromTheApp = (req: AuthenticatedUserRequest): boolean =>
+  isAppSession(req.user) && req.headers[HEADER_MCP_RELAY] === undefined;
+
 /**
  * Admits only the app's own interactive session: refuses OAuth clients and personal access tokens, the tokens
  * handed to runs, tokens minted any other way, and calls an /mcp request makes for a tool. For routes that need the
@@ -31,7 +35,7 @@ export function requireAppSession(
     next(new UnauthorizedError('Authentication required'));
     return;
   }
-  if (!isAppSession(req.user) || req.headers[HEADER_MCP_RELAY] !== undefined) {
+  if (!fromTheApp(req)) {
     next(new AppSessionRequiredError());
     return;
   }

@@ -461,6 +461,15 @@ describe('Enterprise Search Utils', () => {
       expect(JSON.stringify(message)).not.to.include('s3cret')
     })
 
+    it('keeps the mark of a tool the answer called (its stub), and only a true one', () => {
+      const gmail = { kind: 'toolset', instanceId: 'i-gmail', displayName: 'Gmail', problem: 'not_authenticated', sharedCredential: false, userCanConnect: true }
+      const message = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: 'Your mail is not connected.', unavailableTools: [{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-2', needed: 'yes' }] },
+      } as any)
+      expect(message.unavailableTools).to.deep.equal([{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-2' }])
+    })
+
     it('stores no unavailableTools when the run had none', () => {
       const message = buildAIResponseMessage({ statusCode: 200, data: { answer: 'Hi', unavailableTools: [] } } as any)
       expect(message).to.not.have.property('unavailableTools')

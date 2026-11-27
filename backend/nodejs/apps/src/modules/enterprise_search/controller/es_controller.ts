@@ -146,6 +146,7 @@ import {
   guardedProjectOf,
   kindFilterOf,
   listFilterOf,
+  readSessionOf,
   sharedListFilterOf,
   type ConversationRequestContext,
 } from '../services/conversation/http/conversation-context';
@@ -766,18 +767,13 @@ const readerOfRequest = (req: AuthenticatedUserRequest): Reader => ({
   identity: callerIdentityOf(req),
 });
 
-/** The chat a guarded request reads, as the reader check needs it: who owns it and who it is shared with. */
+/** The chat a guarded request reads, as the reader check needs it: who owns it and who it is shared with (`readSessionOf`). */
 const readerSessionOf = (
   req: AuthenticatedUserRequest,
   fallback: { _id: string; orgId: string; userId?: string },
 ): ReaderSession => {
-  let granted: { _id?: unknown } | undefined;
-  try {
-    granted = conversationContextOf(req).grant?.session;
-  } catch {
-    // A route with no conversation guard (a list) has no grant: the chat as the handler read it.
-    granted = undefined;
-  }
+  // A route with no conversation guard (a list) has no grant: the chat as the handler read it.
+  const granted = readSessionOf(req);
   return granted && idOfValue(granted._id) === fallback._id
     ? granted
     : fallback;
@@ -2748,7 +2744,12 @@ async function regenerateAnswersInternal(
     };
     // The newest answer and its question, however many rows came after them. An ask_user_question
     // turn ends with `tool_call` rows saved after its answer, so the answer is not always the newest row.
-    const [lastBot] = await rowsOf({ messageType: 'bot_response' }, -1, 1);
+    // A failed run's row stands in its answer's place: Try again redoes it there, and the new answer replaces it.
+    const [lastBot] = await rowsOf(
+      { messageType: { $in: ['bot_response', 'error'] } },
+      -1,
+      1,
+    );
     if (!lastBot || lastBot._id?.toString() !== messageId) {
       throw new BadRequestError(
         'Can only regenerate the last message in the conversation',
@@ -2851,6 +2852,7 @@ async function regenerateAnswersInternal(
             {
               ...(messageId !== undefined && { freshIds: [messageId] }),
               identity: callerIdentityOf(req),
+              session: readSessionOf(req),
             },
           );
         }
@@ -3022,7 +3024,8 @@ async function regenerateAnswersInternal(
           member: true,
           identity: callerIdentityOf(req),
         },
-        existingConversation as unknown as ReaderSession,
+        readSessionOf(req) ??
+          (existingConversation as unknown as ReaderSession),
         await historyForModel(
           appConfig,
           viewerOf(userId, orgId),
@@ -3032,6 +3035,7 @@ async function regenerateAnswersInternal(
         {
           appConfig,
           known: accessMemo,
+          ownerId: String(existingConversation.userId),
           ...(typeof existingConversation.agentKey === 'string' &&
             existingConversation.agentKey !== '' && {
               usableAgents: [existingConversation.agentKey],
@@ -3430,6 +3434,7 @@ async function regenerateAnswersInternal(
               known: accessMemo,
               freshIds: [messageId],
               identity: callerIdentityOf(req),
+              session: readSessionOf(req),
             },
           );
 
@@ -3578,7 +3583,13 @@ async function regenerateAnswersInternal(
           turnRun,
           () => gate.settle('failed'),
           frame,
-          { appConfig, userId, orgId, identity: callerIdentityOf(req) },
+          {
+            appConfig,
+            userId,
+            orgId,
+            identity: callerIdentityOf(req),
+            session: readSessionOf(req),
+          },
         );
       } catch (dbError: unknown) {
         if (dbError instanceof LeaseLostError) {
@@ -3636,7 +3647,13 @@ async function regenerateAnswersInternal(
         run,
         () => gate.settle(outcome),
         frame,
-        { appConfig, userId, orgId, identity: callerIdentityOf(req) },
+        {
+          appConfig,
+          userId,
+          orgId,
+          identity: callerIdentityOf(req),
+          session: readSessionOf(req),
+        },
       );
     } catch (dbError: unknown) {
       if (dbError instanceof LeaseLostError) {

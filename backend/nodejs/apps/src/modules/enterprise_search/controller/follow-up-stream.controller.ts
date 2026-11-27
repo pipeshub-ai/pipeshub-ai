@@ -15,6 +15,7 @@ import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-tur
 import { expandedChatCommand } from '../utils/chat-command';
 import { RunLostError } from '../services/conversation/domain/errors';
 import { conversationExtensions } from '../services/conversation/conversation-extensions';
+import { readSessionOf } from '../services/conversation/http/conversation-context';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
 import { ConversationTurnDeps } from '../services/conversation/turn/turn-deps';
 import {
@@ -171,6 +172,7 @@ export const followUpStream = (
             {
               freshIds: [answerId],
               ...('user' in req && { identity: callerIdentityOf(req) }),
+              session: readSessionOf(req),
             },
           ),
       });

@@ -20,6 +20,18 @@ describe('enterprise_search/schema unavailableTools', () => {
     expect(doc.toObject().unavailableTools).to.deep.equal([gmail])
   })
 
+  it('keeps the mark of a tool the answer called, and adds none to an item without it', () => {
+    const doc = new ChatSessionMessage({
+      sessionId: new mongoose.Types.ObjectId(),
+      orgId: new mongoose.Types.ObjectId(),
+      seq: 1,
+      messageType: 'bot_response',
+      content: 'x',
+      unavailableTools: [{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-old' }],
+    })
+    expect(doc.toObject().unavailableTools).to.deep.equal([{ ...gmail, needed: true }, { ...gmail, instanceId: 'i-old' }])
+  })
+
   it('refuses an unknown kind or problem', () => {
     const doc = new ChatSessionMessage({
       sessionId: new mongoose.Types.ObjectId(),

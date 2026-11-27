@@ -19,6 +19,9 @@ import {
 } from '../../../helpers/fake-redis-provider';
 import { NoRedisProvider } from '../../../../src/libs/services/redis/noRedisProvider';
 import { redisConnectionConfigFromHostPort } from '../../../../src/libs/services/redis/connectionConfig';
+import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
+import { setActivityRepository } from '../../../../src/libs/repositories/activity';
 
 // Runs the real Socket.IO server that NotificationService builds, with the real
 // AuthTokenService and real signed tokens. The client below speaks Socket.IO's
@@ -197,6 +200,16 @@ class PollingClient {
     }
   }
 
+  /** Every packet up to the end of the connection: the server's close packet, or a poll it no longer answers. */
+  async untilClosed(): Promise<string[]> {
+    const seen: string[] = [];
+    for (;;) {
+      const packet = await this.next();
+      seen.push(packet);
+      if (packet === '1' || packet.startsWith('closed:')) return seen;
+    }
+  }
+
   async close() {
     if (this.sid) {
       await fetch(this.url(), { method: 'POST', body: '1' }).catch(() => undefined);
@@ -339,6 +352,32 @@ describe('NotificationService over a real socket', () => {
       expect(socketsInRoom(alice.userId)).to.equal(0);
     });
 
+    it("logs what engine.io refuses before Socket.IO sees it, polling or websocket, with none of the request's secrets", async () => {
+      const warn = sinon.spy((internals() as unknown as { logger: { warn: (msg: string) => void } }).logger, 'warn');
+      const headers = { cookie: 'pcc_session=COOKIE-SECRET', authorization: 'Bearer TOKEN-SECRET', 'user-agent': 'TestBrowser/1.0' };
+
+      const polled = await fetch(`${base}/socket.io/?EIO=4&transport=polling&sid=SID-SECRET`, { headers });
+      expect(polled.status).to.equal(400);
+      const upgraded = await new Promise<number>((resolve, reject) => {
+        const request = http.request(`${base}/socket.io/?EIO=4&transport=websocket&sid=SID-SECRET`, {
+          headers: { ...headers, connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+        });
+        request.on('response', (res) => resolve(res.statusCode ?? 0));
+        request.on('upgrade', () => reject(new Error('the upgrade went through')));
+        request.on('error', reject);
+        request.end();
+      });
+      expect(upgraded).to.equal(400);
+
+      await waitFor(() => warn.getCalls().filter((c) => c.args[0] === 'socket.engine.connection_error').length === 2);
+      const lines = warn.getCalls().filter((c) => c.args[0] === 'socket.engine.connection_error').map((c) => c.args[1]);
+      expect(lines).to.deep.equal([
+        { code: 1, message: 'Session ID unknown', transport: 'polling', upgrade: false, userAgent: 'TestBrowser/1.0' },
+        { code: 1, message: 'Session ID unknown', transport: 'websocket', upgrade: true, userAgent: 'TestBrowser/1.0' },
+      ]);
+      expect(JSON.stringify(warn.getCalls().map((c) => c.args))).to.not.match(/SECRET/);
+    });
+
     it('turns away, without signing out, a session that cannot be checked right now', async () => {
       internals().sessionRefusal.rejects(new Error('mongo down'));
       const reply = await client().connect({ token: sessionToken(alice) });
@@ -453,6 +492,81 @@ describe('NotificationService over a real socket', () => {
       service.sendToUser(alice.userId, 'notification', { first: true });
 
       expect(await aliceSocket.nextEvent()).to.deep.equal(['notification', { first: true }]);
+    });
+  });
+
+  // The real sign-out route handler, with only its database write faked.
+  describe('sign-out', () => {
+    let recorded: sinon.SinonStub;
+
+    async function signOut(who: { userId: string; orgId: string }) {
+      const logger = { info: sinon.stub(), debug: sinon.stub(), warn: sinon.stub(), error: sinon.stub() };
+      const controller = new UserAccountController(
+        {} as never, {} as never, {} as never, {} as never, {} as never, logger as never, {} as never, {} as never,
+      );
+      const res = { status: sinon.stub(), end: sinon.stub() };
+      res.status.returns(res);
+      const next = sinon.stub();
+      await controller.logoutSession({ user: who, ip: '127.0.0.1' } as never, res as never, next);
+      return { res, next };
+    }
+
+    beforeEach(() => {
+      recorded = sinon.stub().resolves();
+      setActivityRepository({ record: recorded } as never);
+      sinon.stub(NotificationContainer, 'getNotificationService').callsFake(() => service);
+    });
+
+    afterEach(() => setActivityRepository());
+
+    for (const cluster of [false, true]) {
+      it(`tells each of the person's other live sockets, on any replica, then closes it; nothing more reaches it${cluster ? ' (Redis Cluster)' : ''}`, async () => {
+        if (cluster) {
+          replicas[0]!.service.shutdown();
+          ({ service, base } = await addReplica(true));
+        }
+        const other = await addReplica(cluster);
+        const here = await connectAs(alice);
+        const there = await connectAs(alice, other.base);
+
+        const { res } = await signOut(alice);
+
+        expect(res.status.calledWith(200)).to.be.true;
+        for (const tab of [here, there]) {
+          expect(await within(3000, tab.nextEvent())).to.deep.equal(['force_logout', { reason: 'signed_out' }]);
+          expect(await within(3000, tab.next())).to.equal('41');
+        }
+        await waitFor(() => socketsInRoom(alice.userId) === 0);
+        await waitFor(() => (other.service as unknown as NotificationServiceInternals).io?.sockets.adapter.rooms.get(alice.userId) === undefined);
+        service.sendToUser(alice.userId, 'newNotification', { words: 'said after the sign-out' });
+        for (const tab of [here, there]) {
+          const rest = await within(3000, tab.untilClosed());
+          expect(rest.filter((packet) => packet.startsWith('4')), 'no Socket.IO packet after the disconnect').to.deep.equal([]);
+        }
+      });
+    }
+
+    it("leaves another person's socket connected, and their notices still arrive", async () => {
+      const aliceSocket = await connectAs(alice);
+      const bobSocket = await connectAs(bob);
+
+      await signOut(alice);
+
+      expect(await within(3000, aliceSocket.nextEvent())).to.deep.equal(['force_logout', { reason: 'signed_out' }]);
+      service.sendToUser(bob.userId, 'newNotification', { for: 'bob' });
+      expect(await within(3000, bobSocket.nextEvent())).to.deep.equal(['newNotification', { for: 'bob' }]);
+      expect(socketsInRoom(bob.userId)).to.equal(1);
+    });
+
+    it('tells nobody when the sign-out could not be stored, as the session then still holds', async () => {
+      recorded.rejects(new Error('mongo down'));
+      const aliceSocket = await connectAs(alice);
+
+      const { next } = await signOut(alice);
+
+      expect(next.calledOnce).to.be.true;
+      service.sendToUser(alice.userId, 'notification', { still: 'connected' });
+      expect(await within(3000, aliceSocket.nextEvent())).to.deep.equal(['notification', { still: 'connected' }]);
     });
   });
 

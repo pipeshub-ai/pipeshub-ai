@@ -1721,6 +1721,17 @@ export class UserAccountController {
           userId,
           signedOutSessionTokens(res),
         );
+      // The session has ended; its tabs elsewhere would otherwise keep their live socket.
+      // Loaded here: a static import closes a require cycle through config.ts.
+      const { NotificationContainer } = await import(
+        '../../notification/container/notification.container'
+      );
+      if (userId) {
+        NotificationContainer.getNotificationService()?.emitForceLogout(
+          userId,
+          'signed_out',
+        );
+      }
       audit('auth.sign_out', { outcome: 'success' });
 
       res.status(200).end();

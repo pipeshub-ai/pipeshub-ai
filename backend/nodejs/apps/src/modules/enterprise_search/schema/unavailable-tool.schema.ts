@@ -16,6 +16,7 @@ export const unavailableToolSchema = new Schema<IUnavailableTool>(
     authMode: { type: String },
     sharedCredential: { type: Boolean, default: false },
     userCanConnect: { type: Boolean, default: false },
+    needed: { type: Boolean },
   },
   { _id: false },
 );

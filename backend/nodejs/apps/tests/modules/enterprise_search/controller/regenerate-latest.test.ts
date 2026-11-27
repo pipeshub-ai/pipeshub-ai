@@ -63,6 +63,46 @@ describe('regenerate the latest answer', () => {
         expect(w.store.messagesOf(w.session._id)).to.have.length(2 + LATER_ROWS)
       })
 
+      // Try again on a failed answer asked the question again as a new message,
+      // and the failed one stayed above it. A failed run's row is the newest answer: it is redone in its place.
+      it("a failed run's row is redone in its place: the question shows once, and nothing of the failure is kept", async () => {
+        const w = world(agent)
+        w.store.addMessage(w.session, { messageType: 'user_query', content: 'And now?' })
+        const failed = w.store.addMessage(w.session, { messageType: 'error', content: 'The model provider limited requests.' })
+        for (let i = 0; i < 3; i += 1) w.store.addMessage(w.session, { messageType: 'system', content: `line ${i}` })
+        const before = w.store.messagesOf(w.session._id).length
+        const run = regenerate(w, agent, String(failed._id))
+        await settle()
+
+        expect(w.ai.streamCalls, 'the AI service is asked again').to.have.length(1)
+        w.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
+        w.ai.finish()
+        await run.done
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+        const rows = w.store.messagesOf(w.session._id)
+        expect(rows).to.have.length(before)
+        const answer = rows.find((m) => String(m._id) === String(failed._id))
+        expect(answer?.messageType).to.equal('bot_response')
+        expect(answer?.content).to.equal('A fresh answer.')
+        expect(answer?.seq).to.equal(failed.seq)
+        expect(rows.filter((m) => m.messageType === 'user_query' && m.content === 'And now?')).to.have.length(1)
+        expect(answer?.labelHistory ?? []).to.deep.equal([])
+      })
+
+      it('an answer older than a failed run is not the newest one, and is refused', async () => {
+        const w = world(agent)
+        w.store.addMessage(w.session, { messageType: 'user_query', content: 'And now?' })
+        w.store.addMessage(w.session, { messageType: 'error', content: 'The model provider limited requests.' })
+        const run = regenerate(w, agent, w.botId)
+        await run.done
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.equal('Can only regenerate the last message in the conversation')
+        expect(w.ai.streamCalls).to.deep.equal([])
+      })
+
       it('an older answer is refused, even when the newest one sits behind many other rows', async () => {
         const w = world(agent)
         w.store.addMessage(w.session, { messageType: 'user_query', content: 'And now?' })

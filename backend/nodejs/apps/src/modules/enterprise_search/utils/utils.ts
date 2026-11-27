@@ -29,6 +29,7 @@ import {
   visibleRows,
   WITHHELD,
   rememberAnswerClosures,
+  type ReaderSession,
 } from '../services/conversation/privacy/visibility';
 import {
   AIServiceResponse,
@@ -128,6 +129,7 @@ import { adminRefusals, AIRequestRefusedError } from './ai-stream';
 import {
   answerLabelFrom,
   archivedLabelHistory,
+  replacedLabelHistory,
   sealAnswerForStorage,
   withoutLabelFields,
 } from '../services/conversation/privacy/label';
@@ -675,7 +677,7 @@ export const updateMessageById = async (
       1,
       mongoSession,
     );
-    const labelHistory = archivedLabelHistory(existing);
+    const labelHistory = replacedLabelHistory(existing);
     const replaced = await ChatSessionMessage.findOneAndReplace(
       {
         _id: messageId,
@@ -4477,6 +4479,8 @@ export const handleRegenerationError = async (
     userId: unknown;
     orgId: unknown;
     identity?: unknown;
+    /** The chat its rows are read as (`readSessionOf`). */
+    session?: ReaderSession;
   },
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
@@ -4533,6 +4537,7 @@ export const handleRegenerationError = async (
             ...(reader.identity !== undefined && {
               identity: reader.identity,
             }),
+            session: reader.session,
           },
         );
       }
