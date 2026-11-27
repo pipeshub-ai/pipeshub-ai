@@ -1133,6 +1133,7 @@
     "agentSidebarLabel": "代理",
     "agentNameLoading": "載入中…",
     "sharedAgentChat": "共享的智能體聊天",
+    "sharedAgentChatNotice": "你分享此聊天的對象可以閱讀聊天內容，但除非你也與他們共享該智能體，否則無法開啟該智能體。",
     "myAgents": "我的代理",
     "moreAgents": "更多代理",
     "agentHeaderMenuAria": "代理選項",
