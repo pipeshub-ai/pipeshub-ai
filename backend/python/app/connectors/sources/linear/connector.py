@@ -90,6 +90,7 @@ from app.connectors.sources.linear.api_gateway import (
     LinearGateway,
     LinearNotFound,
     LinearRateLimited,
+    LinearTransientError,
     classify,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
@@ -462,7 +463,10 @@ class LinearConnector(BaseConnector):
 
         # Collaborators: one talks to Linear, one removes records, one compares both sides.
         self._api = LinearGateway(
-            lambda: self._get_fresh_datasource(), logger, sleep=lambda seconds: self._sleep(seconds))
+            lambda: self._get_fresh_datasource(), logger, sleep=lambda seconds: self._sleep(seconds),
+            renew=lambda refused: self._renew_refused_token(refused),
+        )
+        self._renew_lock = asyncio.Lock()
         self._remover = RecordRemover(data_entities_processor, connector_id, logger)
         self._reconciler = SourceReconciler(
             self._api, data_entities_processor, self._remover, self.reconcile_sync_point,
@@ -549,6 +553,33 @@ class LinearConnector(BaseConnector):
             )
         self.data_source = await self._get_fresh_datasource()
         return await self._with_transient_retry("organization", self.data_source.organization)
+
+    async def _renew_refused_token(self, refused: LinearAuthError) -> None:
+        """After Linear refused the token mid-run: return with a new one in use, or raise why there is none.
+        Renewing goes through the token refresh service, which counts a refused refresh token towards turning
+        sync off."""
+        sent_with = self._token_in_use()
+        # Requests refused together renew once: the rest find the new token and retry with it.
+        async with self._renew_lock:
+            await self._get_fresh_datasource()
+            if self._token_in_use() != sent_with:
+                return  # saved or renewed since the request was sent
+            try:
+                why = await renew_access_token(self)
+            except Exception as e:
+                # A renewal that may work next time is no reason to ask the owner to reconnect.
+                raise LinearTransientError(
+                    f"Linear refused the stored token ({refused}), and it could not be renewed now: {type(e).__name__}"
+                ) from e
+            if why is not None:
+                raise LinearAuthError(
+                    f"Linear refused the stored token ({refused}), and {why}", HttpStatusCode.UNAUTHORIZED.value
+                )
+            await self._get_fresh_datasource()
+
+    def _token_in_use(self) -> str | None:
+        token = self.external_client.get_client().get_token() if self.external_client else None
+        return token if isinstance(token, str) else None
 
     async def on_background_init_failed(self, error: Optional[Exception]) -> None:
         # A dead token stops every run at start-up, so it is told and counted the way a run's own 401 is.

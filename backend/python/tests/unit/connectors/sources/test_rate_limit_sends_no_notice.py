@@ -33,3 +33,21 @@ def test_a_gitlab_read_cut_off_by_a_rate_limit_marks_the_run() -> None:
     c.note_failed_read("issues of group/project", MagicMock(data=None, status_code=429, error="429 Too Many Requests"))
     assert c.run_state.rate_limited is True
     assert c.sync_problems
+
+
+
+def test_zammad_marks_its_run_when_a_rate_limit_outlasts_the_retries() -> None:
+    from unittest.mock import patch
+
+    from app.connectors.sources.zammad.connector import ZammadConnector
+
+    with patch("app.connectors.sources.zammad.connector.ZammadApp"):
+        connector = ZammadConnector(
+            logger=logging.getLogger("test.zammad"), data_entities_processor=MagicMock(org_id="o1"),
+            data_store_provider=MagicMock(), config_service=MagicMock(), connector_id="zm-1",
+            scope="team", created_by="u1",
+        )
+    assert connector.resilience is not None
+    connector.run_state.start()
+    connector.resilience.on_throttle_outlasted()  # what the HTTP transport calls when retries run out on a 429
+    assert connector.run_state.rate_limited is True

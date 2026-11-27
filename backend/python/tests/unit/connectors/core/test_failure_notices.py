@@ -182,9 +182,13 @@ async def test_renewing_tells_a_dead_refresh_token_from_a_failure_that_may_pass(
     assert await fn.renew_access_token(c) is None
     refresher.refresh_now.side_effect = RefreshTokenInvalidError("revoked")
     assert "also rejected" in (await fn.renew_access_token(c) or "")
-    refresher.refresh_now.side_effect = ConnectionError("timeout")
-    with pytest.raises(ConnectionError):
+    refresher.refresh_now.side_effect = ConnectionError("timeout at https://zoom.us/oauth/token, client id abc")
+    with pytest.raises(fn.RenewalUnavailableError) as raised:
         await fn.renew_access_token(c)
+    assert isinstance(raised.value.__cause__, ConnectionError)
+    # What reaches a notice names the failure, not the token endpoint's text.
+    assert "zoom.us" not in str(raised.value) and "abc" not in str(raised.value)
+    assert "ConnectionError" in str(raised.value)
 
 
 APP = {"orgId": "o1", "type": "GitHub Teams", "name": "Eng", "scope": "team", "createdBy": "u1", "lastSyncedBy": "u2"}

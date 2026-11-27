@@ -553,6 +553,8 @@ class TestStreamError:
     @pytest.mark.asyncio
     async def test_fetch_for_stream_chains_the_cause(self) -> None:
         connector = _make_connector()
+        # An API key is not renewed, so the refusal stands.
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
         datasource = _use_datasource(connector, MagicMock())
         datasource.document = AsyncMock(
             return_value=GraphQLResponse(success=False, message="Unauthorized", status_code=401))

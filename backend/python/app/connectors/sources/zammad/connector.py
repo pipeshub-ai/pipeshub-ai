@@ -451,6 +451,12 @@ class ZammadConnector(BaseConnector):
         # Zammad before 6.5 has no only_total_count; then reconciliation lists every held ticket.
         self._ticket_count_unsupported = False
         self.run_state = SyncRunState()
+        if self.resilience is not None:
+            # A part left unread by a rate limit is read by the next run: nobody has anything to fix.
+            self.resilience.on_throttle_outlasted = self._note_rate_limited
+
+    def _note_rate_limited(self) -> None:
+        self.run_state.rate_limited = True
 
     async def on_background_init_failed(self, error: Optional[Exception]) -> None:
         await notify_init_failed(self, "Zammad", error)

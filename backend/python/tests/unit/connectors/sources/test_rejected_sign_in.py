@@ -23,7 +23,10 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
 )
 from app.connectors.sources.linear import connector as linear_mod
-from app.connectors.sources.linear.api_gateway import LinearAuthError
+from app.connectors.sources.linear.api_gateway import (
+    LinearAuthError,
+    LinearTransientError,
+)
 from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.zammad import connector as zammad_mod
 from app.connectors.sources.zammad.connector import ReadOutcome, ZammadConnector
@@ -282,3 +285,53 @@ async def test_zammad_does_not_reject_a_token_saved_while_the_check_was_refused(
     )
     assert await c._stop_if_signed_out() is False
     assert c.run_state.rejected is None
+
+
+def _linear_mid_run(monkeypatch: pytest.MonkeyPatch, credentials: dict[str, str], refresh_now: AsyncMock) -> LinearConnector:
+    import asyncio
+
+    in_use = MagicMock()
+    in_use.get_token.return_value = credentials.get("access_token")
+    monkeypatch.setattr(
+        startup_service, "get_token_refresh_service", lambda: MagicMock(refresh_now=refresh_now)
+    )
+    return _bare(
+        LinearConnector, config_service=_linear_config(credentials),
+        external_client=MagicMock(get_client=MagicMock(return_value=in_use)), _renew_lock=asyncio.Lock(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("refresh_now", "raised", "reason"),
+    [
+        (AsyncMock(), None, None),
+        (AsyncMock(side_effect=RefreshTokenInvalidError("revoked")), LinearAuthError, "refresh token was also rejected"),
+        (AsyncMock(side_effect=ConnectionError("down")), LinearTransientError, "could not be renewed now"),
+    ],
+)
+async def test_linear_renews_a_token_refused_during_a_run(
+    monkeypatch: pytest.MonkeyPatch, refresh_now: AsyncMock, raised: type[Exception] | None, reason: str | None,
+) -> None:
+    c = _linear_mid_run(monkeypatch, {"access_token": "tok", "refresh_token": "r"}, refresh_now)
+    refused = LinearAuthError("Authentication required", 401)
+    if raised is None:
+        await c._renew_refused_token(refused)
+    else:
+        with pytest.raises(raised, match=reason) as caught:
+            await c._renew_refused_token(refused)
+        assert type(caught.value) is raised
+    refresh_now.assert_awaited_once()
+
+
+async def test_linear_retries_a_token_saved_since_the_refused_request_without_renewing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refresh_now = AsyncMock()
+    c = _linear_mid_run(monkeypatch, {"access_token": "new", "refresh_token": "r"}, refresh_now)
+    held = {"token": "old"}  # the request went out before the owner saved the new token
+    client = c.external_client.get_client.return_value
+    client.get_token.side_effect = lambda: held["token"]
+    client.set_token.side_effect = lambda token: held.update(token=token)
+    await c._renew_refused_token(LinearAuthError("Authentication required", 401))
+    refresh_now.assert_not_awaited()
+    assert held["token"] == "new"

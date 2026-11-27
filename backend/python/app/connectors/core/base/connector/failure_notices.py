@@ -16,6 +16,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
+from app.utils.error_class import failure_reason
 from app.utils.url_redaction import redact_urls_in_text
 
 if TYPE_CHECKING:
@@ -33,6 +34,10 @@ class ReconnectRequiredError(Exception):
 
     ``str(error)`` is shown to the user. Steps that carry on past a failed item must
     re-raise it: no later call in the run can succeed."""
+
+
+class RenewalUnavailableError(RuntimeError):
+    """Renewing the sign-in failed for a reason that may pass. ``str(error)`` holds no provider text."""
 
 
 class SyncIncompleteError(RuntimeError):
@@ -174,6 +179,9 @@ async def renew_access_token(connector: "BaseConnector") -> str | None:
     except RefreshTokenInvalidError as e:
         log_refresh_failure(connector.logger, EVENT_CHECK_FAILED, e)
         return "the refresh token was also rejected"
+    except Exception as e:
+        # The token endpoint's error names its URL, the redirect URI and the client; a notice must not.
+        raise RenewalUnavailableError(f"the sign-in could not be renewed just now ({failure_reason(e)})") from e
     return None
 
 
