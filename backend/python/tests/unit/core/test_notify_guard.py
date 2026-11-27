@@ -28,14 +28,40 @@ ALLOWED = {"app/core/db/uow.py", "app/agents/actions/util/read_only_sql.py"}
 NOTIFYING_SQL_FUNCTIONS: tuple[str, ...] = ()
 
 
+PLACEHOLDER = re.compile(r"%(?:\([^)]*\))?[sdr]|\{[^{}]*\}")      # a %-format or str.format field: some value spliced in
+
+
+def rendered(node: ast.expr) -> str | None:
+    """The text a string expression builds, each value spliced in at run time written as ``x``: a constant, an f-string, ``+`` of
+    those, ``"..." % ...`` and ``"...".format(...)``. None for anything else (SQL built across names or calls is not seen)."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "x" for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = rendered(node.left), rendered(node.right)
+        return None if left is None and right is None else (left if left is not None else "x") + (right if right is not None else "x")
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and (left := rendered(node.left)) is not None:
+        return PLACEHOLDER.sub("x", left)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format" and (left := rendered(node.func.value)) is not None:
+        return PLACEHOLDER.sub("x", left)
+    return None
+
+
 def notifying_strings(text: str) -> list[int]:
-    """Lines of the string constants (docstrings aside) that send a NOTIFY."""
+    """Lines of the string expressions (docstrings aside) that send a NOTIFY."""
     tree = ast.parse(text)
     docs = {id(n.body[0].value) for n in ast.walk(tree)
             if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.body
             and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-    return [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
-            and sends_notify(n.value)]
+    lines, inside = set(), set(docs)          # a piece of a larger string expression is judged with the whole of it, not alone
+    for n in ast.walk(tree):                   # outermost first
+        if id(n) in inside or not isinstance(n, (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Call)) or (t := rendered(n)) is None:
+            continue
+        inside |= {id(c) for c in ast.walk(n) if c is not n}
+        if sends_notify(t):
+            lines.add(n.lineno)
+    return sorted(lines)
 
 
 def test_the_detector_finds_a_notify_however_it_is_written() -> None:
@@ -50,6 +76,14 @@ def test_the_detector_finds_a_notify_however_it_is_written() -> None:
     assert notifying_strings('X = "begin notify ch"\n') == [1]
     assert notifying_strings('X = "NOTIFY ch"\n') == [1]
     assert notifying_strings('X = "  notify ch, \'x\'"\n') == [1]
+    assert notifying_strings('X = f"NOTIFY {channel}"\n') == [1]
+    assert notifying_strings('X = f"SELECT 1; NOTIFY {channel}, {payload!r}"\n') == [1]
+    assert notifying_strings('X = "NOTIFY " + name\n') == [1]
+    assert notifying_strings('X = "SELECT 1; " + "NOTIFY " + name\n') == [1]
+    assert notifying_strings('X = "NOTIFY %s" % name\n') == [1]
+    assert notifying_strings('X = "NOTIFY %(ch)s, %(p)s" % args\n') == [1]
+    assert notifying_strings('X = "NOTIFY {}".format(name)\n') == [1]
+    assert notifying_strings('X = f"Notify all {who}."\nY = "Notify " + "all assignees."\n') == []
     assert notifying_strings('def f():\n    """Woken by NOTIFY, with a poll."""\n') == []
     assert notifying_strings('X = "Notify all assignees."\nY = "notify skipped: no loop"\n') == []
     assert notifying_strings('X = "notify skipped: no service associated with connector: %s"\n') == []
