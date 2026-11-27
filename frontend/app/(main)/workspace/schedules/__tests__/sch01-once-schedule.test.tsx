@@ -22,6 +22,9 @@ import {
 import type { NewSchedule, Schedule } from '../types';
 import { scheduleView } from './fixtures';
 
+// The browser's zone, so a DST gap is a fixed date.
+process.env.TZ = 'America/Los_Angeles';
+
 vi.mock('@/lib/api', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }));
@@ -101,6 +104,17 @@ describe('creating a one-off', () => {
     expect(onceInstant(localInputValue(inFive), now)).toEqual({ at: inFive.toISOString() });
   });
 
+  it('a time the clocks skip is refused, never moved an hour; ordinary and repeated times are kept', () => {
+    const before = new Date('2026-12-01T12:00:00-08:00');
+    expect(onceInstant('2027-03-14T02:30', before)).toEqual({ problem: 'notExisting' });
+    expect(onceInstant('2027-03-14T02:00', before)).toEqual({ problem: 'notExisting' });
+    expect(onceInstant('2027-03-14T01:59', before)).toEqual({ at: '2027-03-14T09:59:00.000Z' });
+    expect(onceInstant('2027-03-14T03:00', before)).toEqual({ at: '2027-03-14T10:00:00.000Z' });
+    expect(onceInstant('2027-03-15T09:00', before)).toEqual({ at: '2027-03-15T16:00:00.000Z' });
+    // 01:30 on 1 November 2026 happens twice; it exists, so it is kept.
+    expect('at' in onceInstant('2026-11-01T01:30', new Date('2026-10-01T00:00:00Z'))).toBe(true);
+  });
+
   it('the form is a once body in the browser’s zone, without cron fields', () => {
     const inFive = new Date(now.getTime() + 5 * 60_000);
     const body = toNewSchedule({ ...emptyForm(), name: 'Joke', query: 'Tell me a joke', kind: 'once', onceAt: localInputValue(inFive) }, now);
@@ -143,6 +157,11 @@ describe('creating a one-off', () => {
     const field = within(dialog).getByLabelText('Date and time');
     fireEvent.change(field, { target: { value: localInputValue(new Date(Date.now() + 10_000)) } });
     expect(within(dialog).getByRole('alert').textContent).toBe('Pick a time at least a minute from now.');
+    fireEvent.change(field, { target: { value: '2027-03-14T02:30' } });
+    expect(within(dialog).getByRole('alert').textContent).toBe(
+      "That time doesn't exist on that day in your time zone: the clocks skip it. Pick another time.",
+    );
+    expect((within(dialog).getByRole('button', { name: 'Create' }) as HTMLButtonElement).disabled).toBe(true);
     const later = new Date(Date.now() + 2 * 3_600_000);
     fireEvent.change(field, { target: { value: localInputValue(later) } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));

@@ -8006,6 +8006,7 @@
       "kindOnce": "一次，在指定日期和時間",
       "onceAt": "日期和時間",
       "onceAtHint": "依你的時區（{{timeZone}}）。至少一分鐘後，最多一年內。",
+      "onceNotExisting": "在你的時區，這一天沒有這個時間：時鐘會跳過它。請選擇其他時間。",
       "onceTooSoon": "請選擇至少一分鐘後的時間。",
       "onceTooFar": "請選擇一年以內的時間。"
     },
@@ -8035,7 +8036,8 @@
       "unavailable": "排程執行需要持久化代理聊天，而你的組織已將其關閉。",
       "triggerTokenInvalid": "Webhook 的觸發權杖不相符。請從排程中複製目前的權杖後重試。",
       "ranOnce": "此排程已執行過一次，不會再次執行；你可以刪除它。",
-      "notApproved": "此排程未獲核准，因此沒有建立。"
+      "notApproved": "此排程未獲核准，因此沒有建立。",
+      "approvalUsed": "此核准已建立過一個排程，且該排程已被刪除。請重新提出要求以建立新排程。"
     },
     "reason": {
       "scheduledRunsDisabled": "組織已關閉排程執行",

@@ -15,6 +15,7 @@ export const SCHEDULE_REFUSALS: Readonly<Record<ErrorCodeOf<'schedule'>, string>
   SCHEDULE_TRIGGER_TOKEN_INVALID: 'schedules.refusal.triggerTokenInvalid',
   SCHEDULE_RAN_ONCE: 'schedules.refusal.ranOnce',
   SCHEDULE_NOT_APPROVED: 'schedules.refusal.notApproved',
+  SCHEDULE_APPROVAL_USED: 'schedules.refusal.approvalUsed',
 };
 
 /** Why a firing was refused or skipped, and why the system paused or disabled a schedule. */

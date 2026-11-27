@@ -8058,6 +8058,7 @@
       "kindOnce": "Einmal, zu Datum und Uhrzeit",
       "onceAt": "Datum und Uhrzeit",
       "onceAtHint": "In Ihrer Zeitzone ({{timeZone}}). Frühestens in einer Minute, höchstens ein Jahr im Voraus.",
+      "onceNotExisting": "Diese Uhrzeit gibt es an diesem Tag in Ihrer Zeitzone nicht: Die Uhren springen darüber. Wählen Sie eine andere Uhrzeit.",
       "onceTooSoon": "Wählen Sie eine Zeit frühestens in einer Minute.",
       "onceTooFar": "Wählen Sie eine Zeit höchstens ein Jahr im Voraus."
     },
@@ -8087,7 +8088,8 @@
       "unavailable": "Geplante Läufe benötigen den dauerhaften Agent-Chat, der für Ihre Organisation ausgeschaltet ist.",
       "triggerTokenInvalid": "Das Trigger-Token des Webhooks stimmt nicht. Kopieren Sie das aktuelle Token aus dem Zeitplan und versuchen Sie es erneut.",
       "ranOnce": "Dieser Zeitplan ist schon einmal gelaufen. Er läuft nicht noch einmal; Sie können ihn löschen.",
-      "notApproved": "Dieser Zeitplan wurde nicht genehmigt und daher nicht angelegt."
+      "notApproved": "Dieser Zeitplan wurde nicht genehmigt und daher nicht angelegt.",
+      "approvalUsed": "Mit dieser Genehmigung wurde bereits ein Zeitplan angelegt, der gelöscht wurde. Fragen Sie erneut, um einen neuen einzurichten."
     },
     "reason": {
       "scheduledRunsDisabled": "geplante Läufe wurden für die Organisation ausgeschaltet",

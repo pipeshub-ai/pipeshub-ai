@@ -8122,6 +8122,7 @@
       "kindOnce": "Once, at a date and time",
       "onceAt": "Date and time",
       "onceAtHint": "In your time zone ({{timeZone}}). At least a minute from now, at most a year ahead.",
+      "onceNotExisting": "That time doesn't exist on that day in your time zone: the clocks skip it. Pick another time.",
       "onceTooSoon": "Pick a time at least a minute from now.",
       "onceTooFar": "Pick a time at most a year ahead."
     },
@@ -8151,7 +8152,8 @@
       "unavailable": "Scheduled runs need durable agent chat, which is off for your organization.",
       "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again.",
       "ranOnce": "This schedule already ran once. It won't run again; you can delete it.",
-      "notApproved": "This schedule wasn't approved, so it wasn't made."
+      "notApproved": "This schedule wasn't approved, so it wasn't made.",
+      "approvalUsed": "That approval already made a schedule that was deleted. Ask again to set up a new one."
     },
     "reason": {
       "scheduledRunsDisabled": "scheduled runs were turned off for the organization",

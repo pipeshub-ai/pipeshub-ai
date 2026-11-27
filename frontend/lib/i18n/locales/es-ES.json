@@ -8157,6 +8157,7 @@
       "kindOnce": "Una vez, en una fecha y hora",
       "onceAt": "Fecha y hora",
       "onceAtHint": "En tu zona horaria ({{timeZone}}). Al menos un minuto desde ahora, como mucho un año.",
+      "onceNotExisting": "Esa hora no existe ese día en tu zona horaria: los relojes se la saltan. Elige otra hora.",
       "onceTooSoon": "Elige una hora al menos un minuto desde ahora.",
       "onceTooFar": "Elige una hora como mucho un año más adelante."
     },
@@ -8186,7 +8187,8 @@
       "unavailable": "Las ejecuciones programadas necesitan el chat de agente persistente, que está desactivado en tu organización.",
       "triggerTokenInvalid": "El token de activación del webhook no coincide. Copia el token actual de la programación y vuelve a intentarlo.",
       "ranOnce": "Esta programación ya se ejecutó una vez. No volverá a ejecutarse; puedes eliminarla.",
-      "notApproved": "Esta programación no se aprobó, así que no se creó."
+      "notApproved": "Esta programación no se aprobó, así que no se creó.",
+      "approvalUsed": "Esa aprobación ya creó una programación que se eliminó. Vuelve a pedirlo para crear una nueva."
     },
     "reason": {
       "scheduledRunsDisabled": "las ejecuciones programadas se desactivaron para la organización",

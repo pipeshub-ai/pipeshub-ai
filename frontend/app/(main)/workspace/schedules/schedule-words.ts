@@ -122,13 +122,21 @@ const readerZone = (): string | null => {
   }
 };
 
-function dayKey(at: Date, timeZone: string | null): string {
-  return new Intl.DateTimeFormat('en-CA', {
+/** The calendar date `at` falls on in `timeZone` (null: the reader's), as numbers. */
+function calendarDate(at: Date, timeZone: string | null): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
     year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
+    month: 'numeric',
+    day: 'numeric',
     ...(timeZone ? { timeZone } : {}),
-  }).format(at);
+  }).formatToParts(at);
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  return { year: part('year'), month: part('month'), day: part('day') };
+}
+
+/** A calendar date `days` on from another, by the calendar: a DST change never makes a day 23 or 25 hours long here. */
+function dateKey(date: { year: number; month: number; day: number }, days = 0): string {
+  return new Date(Date.UTC(date.year, date.month - 1, date.day + days)).toISOString().slice(0, 10);
 }
 
 /**
@@ -143,10 +151,10 @@ export function onceWords(t: TFunction, at: string, timeZone: string, language: 
   let words: string;
   try {
     const time = new Intl.DateTimeFormat(language, { hour: 'numeric', minute: '2-digit', ...zoned }).format(instant);
-    const day = dayKey(instant, zone);
-    const tomorrow = new Date(now.getTime() + 86_400_000);
-    if (day === dayKey(now, zone)) words = t('schedules.when.onceToday', { time });
-    else if (day === dayKey(tomorrow, zone)) words = t('schedules.when.onceTomorrow', { time });
+    const day = dateKey(calendarDate(instant, zone));
+    const today = calendarDate(now, zone);
+    if (day === dateKey(today)) words = t('schedules.when.onceToday', { time });
+    else if (day === dateKey(today, 1)) words = t('schedules.when.onceTomorrow', { time });
     else {
       const date = new Intl.DateTimeFormat(language, { dateStyle: 'medium', timeStyle: 'short', ...zoned }).format(instant);
       words = t('schedules.when.onceOn', { date });

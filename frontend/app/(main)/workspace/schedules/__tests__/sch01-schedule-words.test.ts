@@ -83,6 +83,20 @@ describe('onceWords', () => {
     );
   });
 
+  // Today and tomorrow are calendar dates in the schedule's zone: a DST change makes a day 23 or 25 hours long.
+  it.each([
+    ['spring forward: the 15th is not tomorrow', '2027-03-13T23:30:00-08:00', '2027-03-15T09:00:00-07:00', 'America/Los_Angeles', 'Once, Mar 15, 2027, 9:00 AM'],
+    ['spring forward: the 14th is tomorrow', '2027-03-13T23:30:00-08:00', '2027-03-14T09:00:00-07:00', 'America/Los_Angeles', 'Once, tomorrow at 9:00 AM'],
+    ['spring forward: later the same day is today', '2027-03-13T23:30:00-08:00', '2027-03-13T23:45:00-08:00', 'America/Los_Angeles', 'Once, today at 11:45 PM'],
+    ['across the gap the same day is today', '2027-03-14T01:30:00-08:00', '2027-03-14T03:15:00-07:00', 'America/Los_Angeles', 'Once, today at 3:15 AM'],
+    ['fall back: the 2nd is tomorrow', '2026-11-01T00:30:00-07:00', '2026-11-02T09:00:00-08:00', 'America/Los_Angeles', 'Once, tomorrow at 9:00 AM'],
+    ['fall back: the 3rd is not tomorrow', '2026-11-01T00:30:00-07:00', '2026-11-03T00:10:00-08:00', 'America/Los_Angeles', 'Once, Nov 3, 2026, 12:10 AM'],
+    ['another zone’s DST: the 29th in Berlin is not tomorrow', '2027-03-27T23:30:00+01:00', '2027-03-29T00:30:00+02:00', 'Europe/Berlin', 'Once, Mar 29, 2027, 12:30 AM (Europe/Berlin)'],
+    ['another zone’s DST: the 28th in Berlin is tomorrow', '2027-03-27T23:30:00+01:00', '2027-03-28T23:30:00+02:00', 'Europe/Berlin', 'Once, tomorrow at 11:30 PM (Europe/Berlin)'],
+  ])('%s', (_case, now, at, zone, words) => {
+    expect(plain(onceWords(t, at, zone, 'en-US', new Date(now)))).toBe(words);
+  });
+
   it('an unknown zone or an unreadable time never throws', () => {
     expect(plain(onceWords(t, '2026-11-26T23:47:00Z', 'Not/AZone', 'en-US', now))).toBe('Once, today at 3:47 PM');
     expect(onceWords(t, 'soon', 'America/Los_Angeles', 'en-US', now)).toBe('Once, soon');

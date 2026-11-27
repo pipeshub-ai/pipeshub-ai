@@ -8256,6 +8256,7 @@
       "kindOnce": "Jednou, v zadané datum a čas",
       "onceAt": "Datum a čas",
       "onceAtHint": "Ve vašem časovém pásmu ({{timeZone}}). Nejdříve za minutu, nejpozději za rok.",
+      "onceNotExisting": "Tento čas ve vašem časovém pásmu v ten den neexistuje: hodiny ho přeskočí. Vyberte jiný čas.",
       "onceTooSoon": "Vyberte čas nejdříve za minutu.",
       "onceTooFar": "Vyberte čas nejpozději za rok."
     },
@@ -8285,7 +8286,8 @@
       "unavailable": "Plánované běhy vyžadují trvalý chat s agentem, který je ve vaší organizaci vypnutý.",
       "triggerTokenInvalid": "Spouštěcí token webhooku nesouhlasí. Zkopírujte aktuální token z plánu a zkuste to znovu.",
       "ranOnce": "Tento plán už jednou proběhl. Znovu neproběhne; můžete ho smazat.",
-      "notApproved": "Tento plán nebyl schválen, proto nebyl vytvořen."
+      "notApproved": "Tento plán nebyl schválen, proto nebyl vytvořen.",
+      "approvalUsed": "Toto schválení už vytvořilo plán, který byl smazán. Požádejte znovu a nastavte nový."
     },
     "reason": {
       "scheduledRunsDisabled": "plánované běhy byly pro organizaci vypnuty",

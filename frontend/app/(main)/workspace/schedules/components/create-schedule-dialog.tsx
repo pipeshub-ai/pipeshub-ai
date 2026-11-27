@@ -71,15 +71,36 @@ export function localInputValue(at: Date): string {
   return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
 }
 
-/** The one-off's instant from the field, or why it can't be made: blank, too soon or too far ahead. */
-export function onceInstant(value: string, now: Date = new Date()): { at: string } | { problem: 'missing' | 'tooSoon' | 'tooFar' } {
-  const parsed = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(value.trim()) ? new Date(value.trim()) : null;
-  if (parsed === null || Number.isNaN(parsed.getTime())) return { problem: 'missing' };
+export type OnceProblem = 'missing' | 'notExisting' | 'tooSoon' | 'tooFar';
+
+/**
+ * The one-off's instant from the field, or why it can't be made: blank, a time the clocks skip (a DST gap, which
+ * `Date` would move an hour on without a word), too soon or too far ahead.
+ */
+export function onceInstant(value: string, now: Date = new Date()): { at: string } | { problem: OnceProblem } {
+  const fields = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/.exec(value.trim());
+  if (fields === null) return { problem: 'missing' };
+  const parsed = new Date(value.trim());
+  if (Number.isNaN(parsed.getTime())) return { problem: 'missing' };
+  const [year, month, day, hour, minute] = fields.slice(1).map(Number);
+  const kept =
+    parsed.getFullYear() === year &&
+    parsed.getMonth() + 1 === month &&
+    parsed.getDate() === day &&
+    parsed.getHours() === hour &&
+    parsed.getMinutes() === minute;
+  if (!kept) return { problem: 'notExisting' };
   const ahead = parsed.getTime() - now.getTime();
   if (ahead < ONCE_MIN_AHEAD_MS) return { problem: 'tooSoon' };
   if (ahead > ONCE_MAX_AHEAD_MS) return { problem: 'tooFar' };
   return { at: parsed.toISOString() };
 }
+
+const ONCE_PROBLEM_KEYS: Readonly<Record<Exclude<OnceProblem, 'missing'>, string>> = {
+  notExisting: 'schedules.create.onceNotExisting',
+  tooSoon: 'schedules.create.onceTooSoon',
+  tooFar: 'schedules.create.onceTooFar',
+};
 
 function triggerOf(form: ScheduleForm, now: Date): NewSchedule['trigger'] {
   if (form.kind === 'cron') return { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim(), catchUp: form.catchUp };
@@ -400,7 +421,7 @@ export function CreateScheduleDialog({
                 />
                 {onceProblem !== null && (
                   <Text size="1" role="alert" style={{ color: 'var(--red-11)' }}>
-                    {t(onceProblem === 'tooFar' ? 'schedules.create.onceTooFar' : 'schedules.create.onceTooSoon')}
+                    {t(ONCE_PROBLEM_KEYS[onceProblem])}
                   </Text>
                 )}
               </Field>

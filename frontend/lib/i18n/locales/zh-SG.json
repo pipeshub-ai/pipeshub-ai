@@ -8006,6 +8006,7 @@
       "kindOnce": "一次，在指定日期和时间",
       "onceAt": "日期和时间",
       "onceAtHint": "按你的时区（{{timeZone}}）。至少一分钟后，最多一年内。",
+      "onceNotExisting": "在你的时区，这一天没有这个时间：时钟会跳过它。请选择其他时间。",
       "onceTooSoon": "请选择至少一分钟后的时间。",
       "onceTooFar": "请选择一年以内的时间。"
     },
@@ -8035,7 +8036,8 @@
       "unavailable": "计划运行需要持久化代理聊天，而你的组织已将其关闭。",
       "triggerTokenInvalid": "Webhook 的触发令牌不匹配。请从计划中复制当前令牌后重试。",
       "ranOnce": "此计划已运行过一次，不会再次运行；你可以删除它。",
-      "notApproved": "此计划未获批准，因此没有创建。"
+      "notApproved": "此计划未获批准，因此没有创建。",
+      "approvalUsed": "该批准已创建过一个计划，且该计划已被删除。请重新提出请求以创建新计划。"
     },
     "reason": {
       "scheduledRunsDisabled": "组织已关闭计划运行",
