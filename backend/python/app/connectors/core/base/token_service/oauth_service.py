@@ -89,16 +89,29 @@ def _code_claim_path(credentials_path: str, code: str) -> str:
 
 
 async def read_oauth_config(config_service: ConfigurationService, path: str) -> dict[str, Any]:
-    """The config at ``path`` ({} when unset). A store that did not answer is an OAuthStoreUnavailableError; a value
-    that is there but does not decode in the encrypted layer (a changed SECRET_KEY) reads as unset, as before, since
-    retrying cannot fix it."""
+    """The config at ``path`` ({} when unset or undecodable). A store that did not answer is an
+    OAuthStoreUnavailableError."""
     try:
-        config = await config_service.get_config(path, raise_on_error=True)
-    except (ValueError, DecryptionError):
-        return {}
+        config = await _read_unless_undecodable(config_service, path)
     except Exception as e:
         raise OAuthStoreUnavailableError("The OAuth config could not be read") from e
     return config if isinstance(config, dict) else {}
+
+
+async def read_oauth_app_list(config_service: ConfigurationService, path: str) -> list[dict[str, Any]]:
+    """The OAuth app list at ``path`` ([] when unset or undecodable). A failed read is raised as it is, for the caller
+    to class."""
+    apps = await _read_unless_undecodable(config_service, path)
+    return apps if isinstance(apps, list) else []
+
+
+async def _read_unless_undecodable(config_service: ConfigurationService, path: str) -> object:
+    """The value at ``path``, or None when unset. A value that is there but does not decode in the encrypted layer (a
+    changed SECRET_KEY) reads as unset, as before, since retrying cannot fix it; any other failure is raised."""
+    try:
+        return await config_service.get_config(path, raise_on_error=True)
+    except (ValueError, DecryptionError):
+        return None
 
 
 class MalformedTokenError(ValueError):

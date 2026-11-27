@@ -5753,7 +5753,7 @@ class TestUpdateToolsetInstanceRoute:
         cs = AsyncMock()
 
         call_count = 0
-        async def mock_get(path, default=None, use_cache=True):
+        async def mock_get(path, default=None, use_cache=True, **_kw):
             nonlocal call_count
             if "endpoints" in path:
                 # Frontend config with nested dict
@@ -5784,7 +5784,7 @@ class TestUpdateToolsetInstanceRoute:
         from app.api.routes.toolsets import update_toolset_instance
         cs = AsyncMock()
 
-        async def mock_get(path, default=None, use_cache=True):
+        async def mock_get(path, default=None, use_cache=True, **_kw):
             if "endpoints" in path:
                 raise Exception("config fail")
             return default or []

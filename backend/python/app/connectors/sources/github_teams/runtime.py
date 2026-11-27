@@ -4,8 +4,8 @@ Runtime utilities for the GitHub Teams connector.
 The data source is fully async (httpx), so there is no thread pool and no
 blocking-call machinery here — just the plumbing every call shares:
 - ``ds_call``: every data-source call goes through it — wall-clock budget,
-  one OAuth refresh on 401, a bounded wait on a rate limit, jittered retries
-  on transient statuses.
+  one OAuth refresh on 401, a bounded wait on a rate limit (up to the reset
+  inside a sync run), jittered retries on transient statuses.
 - A strictly-paced path for Search API calls (``search_call``) — GitHub's
   Search budget is 30 req/min and overruns 403 hard, unlike the core budget
   where a failed sync simply retries on the next schedule.
@@ -21,13 +21,14 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.token_service.oauth_service import RefreshTokenInvalidError
 from app.connectors.core.base.error.stream_errors import extract_source_status
+from app.connectors.core.sync.run_context import get_run_sync_id, note_backoff_wait
 from app.sources.client.github.github import GitHubResponse
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.error_class import classify_error
@@ -44,6 +45,7 @@ from .constants import (
     _GITHUB_RETRY_BASE_DELAY_SECONDS,
     _GITHUB_RETRY_MAX_DELAY_SECONDS,
     _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS,
+    _GITHUB_SYNC_RATE_LIMIT_MAX_WAIT_SECONDS,
     _REPO_LOOKUP_TTL_SECONDS,
     _RETRYABLE_STATUS_CODES,
     _RETRYABLE_TRANSPORT_ERRORS,
@@ -127,17 +129,24 @@ class RuntimeHelper:
         return response is not None and response.is_rate_limited is True
 
     @staticmethod
-    def _rate_limit_wait_seconds(response: GitHubResponse) -> float | None:
+    def _rate_limit_wait_seconds(response: GitHubResponse, limited: int) -> float | None:
         """How long to wait out a rate limit in-process, or None if too long.
 
         Bounded because a stream request is itself on the indexing service's
-        HTTP timeout; an hour-long primary reset has to be retried later.
+        HTTP timeout; an hour-long primary reset has to be retried later. A sync
+        run has no caller waiting on it, so it waits for the reset itself.
         """
         seconds = response.retry_after_seconds
-        if seconds is None:
-            # GitHub's guidance for a secondary limit without Retry-After.
-            seconds = _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS
-        if seconds > _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS:
+        if seconds is None or (seconds == 0 and limited > 1):
+            # No Retry-After (a secondary limit), or a reset our clock has passed while
+            # GitHub still refuses (clock skew): at least a minute, doubling each time,
+            # never a hot loop. docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+            seconds = _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS * 2 ** (limited - 1)
+        cap = (
+            _GITHUB_SYNC_RATE_LIMIT_MAX_WAIT_SECONDS if get_run_sync_id() is not None
+            else _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS
+        )
+        if seconds > cap:
             return None
         # +1s covers the reset epoch's one-second resolution; jitter keeps
         # concurrent workers from all resuming on the same tick.
@@ -147,8 +156,11 @@ class RuntimeHelper:
     def _resets_at(response: GitHubResponse) -> str:
         if response.retry_after_seconds is None:
             return "an unknown time"
-        reset = datetime.now(timezone.utc) + timedelta(seconds=response.retry_after_seconds)
-        return reset.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return RuntimeHelper._utc(time.time() + response.retry_after_seconds)
+
+    @staticmethod
+    def _utc(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # ------------------------------------------------------------------
     # Token refresh
@@ -378,6 +390,7 @@ class RuntimeHelper:
             return await method(*args, **kwargs)
 
         refreshed = False
+        limited = 0  # rate limits met so far; only they lengthen the next rate-limit wait
         response = await self._execute_github_op(op, timeout=_github_timeout, op_label=label)
 
         for attempt in range(1, _GITHUB_MAX_RETRIES + 1):
@@ -393,7 +406,8 @@ class RuntimeHelper:
                     return response
                 refreshed = True
             elif self._is_rate_limited(response):
-                wait = self._rate_limit_wait_seconds(response)
+                limited += 1
+                wait = self._rate_limit_wait_seconds(response, limited)
                 reason = response.api_message or response.exception_type
                 resets_at = self._resets_at(response)
                 # Returned as a 429, not waited out: a sync aborts with its
@@ -412,9 +426,10 @@ class RuntimeHelper:
                     )
                     return response
                 self.logger.warning(
-                    "GitHub rate limit on %s (%s); waiting %.0fs, resets at %s (attempt %s/%s).",
-                    label, reason, wait, resets_at, attempt, _GITHUB_MAX_RETRIES,
+                    "GitHub rate limit on %s (%s); waiting %.0fs, until %s, resets at %s (attempt %s/%s).",
+                    label, reason, wait, self._utc(time.time() + wait), resets_at, attempt, _GITHUB_MAX_RETRIES,
                 )
+                note_backoff_wait(wait)
                 await asyncio.sleep(wait)
             elif self._is_retryable_error(response):
                 if attempt == _GITHUB_MAX_RETRIES:
