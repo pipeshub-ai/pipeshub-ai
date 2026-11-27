@@ -198,6 +198,10 @@ export class OAuthDcrService {
     const docScope = doc.scope
       ? withoutRetiredScopes(doc.scope.split(/\s+/).filter(Boolean)).join(' ')
       : '';
+    // A document that names only retired scopes asked for nothing it can have; it does not get the default either.
+    if (doc.scope?.trim() && !docScope) {
+      throw new InvalidScopeError(RETIRED_SCOPE_MESSAGE);
+    }
     const allowedScopes = docScope
       ? this.resolveScopes(docScope)
       : this.mcpToolScopes();
