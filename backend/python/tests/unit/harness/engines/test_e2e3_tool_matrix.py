@@ -20,6 +20,7 @@ import pytest
 import pytest_asyncio
 
 from app import edition_config
+from app.core import org_context
 from harness_core.testing.sandbox.mcp_runner import SECRET_NAME
 from harness_core.tools.call_tool import CALL_TOOL, SEARCH_TOOLS
 from tests.unit.harness.engines.matrix.assembly import (
@@ -507,7 +508,9 @@ async def shown_to(matrix: MatrixLane, viewer: str, sources: list[dict[str, Any]
     actor = Actor(org_id=matrix.org.org_id, user_id=matrix.org.user_id(viewer))
     known = {f.alias or name for name, f in PipeshubRecordSource.model_fields.items()}
     asked = [PipeshubRecordSource.model_validate({k: v for k, v in s.items() if k in known}) for s in sources]
-    statuses = await TieredRecordAuthorizer(graph).decide(
-        actor, asked, publications=KnowledgePublications(graph, matrix.services.config)
-    )
+    # As /records/access runs it: under the viewer's verified token, which binds their org.
+    with org_context.bind(org_context.OrgContext(actor.org_id, actor.user_id, "user", "jwt", "-")):
+        statuses = await TieredRecordAuthorizer(graph).decide(
+            actor, asked, publications=KnowledgePublications(graph, matrix.services.config)
+        )
     return bool(statuses) and all(status == "readable" for status in statuses)

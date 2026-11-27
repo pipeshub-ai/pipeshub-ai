@@ -84,6 +84,7 @@ from app.api.middlewares.request_log import (
 from app.config.configuration_service import (
     ConfigurationService,
     delete_config_confirmed,
+    delete_config_or_raise,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
@@ -110,6 +111,7 @@ from app.utils.desktop_state import (
 from app.utils.env_utils import env_int
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import await_or_503
 from app.utils.user_messages import action_failed
 from harness_core.mcp_hub.errors import MCPHubRefused
 from harness_core.sandbox.mcp_runner.errors import MCPRunnerRefused
@@ -828,10 +830,11 @@ async def update_instance(
 
     # Stored tokens, env values and refresh tokens were given for the old target; sending
     # them to a new URL, token endpoint or program would hand them to someone else. Purged
-    # before the new target is saved, so no request can pair the two.
+    # before the new target is saved, so no request can pair the two; a purge that cannot be
+    # confirmed leaves the old target in place (503 for an outage, 500 otherwise).
     credentials_reset = _connection_target_changed(existing, record)
     if credentials_reset:
-        await _purge_instance_credentials(config_service, instance_id)
+        await await_or_503(_purge_instance_credentials(config_service, instance_id))
     else:
         credentials_reset = await _settle_shared_credential(config_service, existing, record)
 
@@ -862,9 +865,9 @@ async def _settle_shared_credential(
         return False
     shared_path = get_mcp_credentials_path(record["_id"], mcp_service.SHARED_CREDENTIAL_OWNER)
     removed = isinstance(await config_service.get_config(shared_path, default=None, use_cache=False), dict)
-    await legacy_records(config_service).remove(
+    await await_or_503(legacy_records(config_service).remove(
         "mcp", org_of(record) or "", record["_id"], mcp_service.SHARED_CREDENTIAL_OWNER,
-    )
+    ))
     return removed and shared_before
 
 
@@ -878,8 +881,11 @@ def _connection_target_changed(existing: dict[str, Any], record: dict[str, Any])
     fields = _CONNECTION_TARGET_FIELDS
     if not record.get("isCustom") and existing.get("typeId") == record.get("typeId"):
         # Same catalog type: runtime connects to the template's target whatever the stored copy
-        # says, so a copy that trails a release moves no credential. A new auth mode does.
-        fields = ("authMode",)
+        # says, so a copy that trails a release moves no credential. A new auth mode does, and so
+        # does a new URL when the template lets the admin type it (Okta).
+        # The global registry, like `instance_config_from_dict`: both must agree on whether `url` is locked.
+        template = mcp_service.catalog_template(record.get("typeId"))
+        fields = ("authMode", "url") if template and template.url_editable is True else ("authMode",)
     # `or None` so an older record's missing key and a new empty list compare equal.
     return any((existing.get(field) or None) != (record.get(field) or None) for field in fields)
 
@@ -1184,14 +1190,14 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
     await _assert_admin_owns_shared_credential(instance, user_context, request, config_service)
 
     cred_path = await _shared_aware_credential_path(instance, user_id, config_service)
-    await legacy_records(config_service).remove(
+    await await_or_503(legacy_records(config_service).remove(
         "mcp", current_org_id(), instance_id, cred_path.rsplit("/", 1)[-1], user_id=user_id
-    )
+    ))
     if instance.get("authMode") == MCPAuthMode.OAUTH.value:
         # Mirrors `reauthenticate_instance` — only the legacy per-owner DCR client is this
         # caller's alone to clear; the shared per-instance DCR client survives for other
         # authenticated users/agents on this instance.
-        await config_service.delete_config(get_mcp_dcr_client_path(instance_id, user_id))
+        await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, user_id)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -1242,13 +1248,13 @@ async def reauthenticate_instance(request: Request, instance_id: str) -> dict[st
     await _assert_admin_owns_shared_credential(instance, user_context, request, config_service)
 
     cred_path = await _shared_aware_credential_path(instance, user_id, config_service)
-    await legacy_records(config_service).remove(
+    await await_or_503(legacy_records(config_service).remove(
         "mcp", current_org_id(), instance_id, cred_path.rsplit("/", 1)[-1], user_id=user_id
-    )
+    ))
     # Only the legacy per-owner DCR client is this caller's alone to clear — the shared
     # per-instance client (if this instance uses one) is relied on by every other
     # authenticated user/agent and must survive a single caller's reauthenticate.
-    await config_service.delete_config(get_mcp_dcr_client_path(instance_id, user_id))
+    await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, user_id)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -2501,9 +2507,9 @@ async def remove_agent_instance_credentials(request: Request, agent_key: str, in
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     cred_path = get_mcp_credentials_path(instance_id, agent_key)
-    await legacy_records(config_service).remove(
+    await await_or_503(legacy_records(config_service).remove(
         "mcp", current_org_id(), instance_id, agent_key, user_id=user_context["user_id"]
-    )
+    ))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -2529,12 +2535,12 @@ async def reauthenticate_agent_instance(request: Request, agent_key: str, instan
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     cred_path = get_mcp_credentials_path(instance_id, agent_key)
-    await legacy_records(config_service).remove(
+    await await_or_503(legacy_records(config_service).remove(
         "mcp", current_org_id(), instance_id, agent_key, user_id=user_context["user_id"]
-    )
+    ))
     # See per-user reauthenticate_instance above — only the legacy per-owner DCR client is
     # this agent's alone to clear; the shared per-instance client must survive.
-    await config_service.delete_config(get_mcp_dcr_client_path(instance_id, agent_key))
+    await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, agent_key)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 

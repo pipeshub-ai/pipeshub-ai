@@ -92,6 +92,11 @@ class KgWriter:
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_grant_marks_set */ SELECT kg.w_grant_marks_set($1::bigint[], $2::bigint[], $3::text[], $4::boolean[], $5::bigint[])",
                                            *[[r[i] for r in p] for i in range(5)]) for p in _chunks(sorted(rows, key=lambda r: r[:3]))])
 
+    async def grant_parent_set(self, rows: list[tuple[int, int, str, int | None]]) -> int:
+        """The node_parent mark of grants (``grant_marks``): (principal_sk, node_sk, gtype, node_parent); it updates the rows that exist and makes none."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_grant_parent_set */ SELECT kg.w_grant_parent_set($1::bigint[], $2::bigint[], $3::text[], $4::bigint[])",
+                                           *[[r[i] for r in p] for i in range(4)]) for p in _chunks(sorted(rows, key=lambda r: r[:3]))])
+
     async def kb_listing_set(self, rows: list[tuple]) -> int:
         """The knowledge-base listing columns: (sk, coll code, id, kind code, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd),
         of rows the caller has just written (the writer is an upsert)."""

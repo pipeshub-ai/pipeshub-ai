@@ -10,7 +10,7 @@ Reads the Redis settings the services use (REDIS_HOST, REDIS_PORT, REDIS_PASSWOR
 REDIS_KV_PREFIX, REDIS_KEY_NAMESPACE) and writes through the PostgreSQL settings (PG_CORE_URL, ...).
 Only keys under the KV prefix and namespace are copied; leases, locks, caches and queues are runtime
 state and are left alone. Values are copied as stored (already encrypted); they are never decoded or
-printed. A key's remaining TTL becomes its expiry; a key already expired is not copied.
+printed. An entry that belongs to an org (``app.edition.kv_key_org``) is read and written for that org. A key's remaining TTL becomes its expiry; a key already expired is not copied.
 
 A key PostgreSQL already holds with a different value, or a configuration key it holds that Redis does
 not, stops the run before any write (exit 1, key names listed) unless ``--overwrite`` is given (which
@@ -32,11 +32,42 @@ import json
 import os
 import sys
 from collections import Counter
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.config.providers.postgres_store import PostgresKeyValueStore
     from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+
+
+class _PerKeyOrg:
+    """The destination store, each entry read and written for the org ``edition.kv_key_org`` names (none: the whole install)."""
+
+    def __init__(self, dst: PostgresKeyValueStore[bytes]) -> None:
+        self._dst = dst
+
+    @staticmethod
+    def _bound(key: str) -> AbstractContextManager[object]:
+        from app import edition
+        from app.core import org_context
+
+        org = edition.kv_key_org(key)
+        return org_context.for_org(org, job="kv_redis_to_postgres") if org else nullcontext()
+
+    async def get_key(self, key: str) -> bytes | None:
+        with self._bound(key):
+            return await self._dst.get_key(key)
+
+    async def create_key(self, key: str, value: bytes, *, overwrite: bool, ttl: float | None) -> bool:
+        with self._bound(key):
+            return await self._dst.create_key(key, value, overwrite=overwrite, ttl=ttl)
+
+    async def delete_key(self, key: str) -> bool:
+        with self._bound(key):
+            return await self._dst.delete_key(key)
+
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
+        return await self._dst.list_keys_in_directory(directory)
 
 
 def _prefix_of(key: str) -> str:
@@ -62,6 +93,7 @@ async def copy_kv(
 ) -> dict[str, Any]:
     """Redis is only read. Writes made while it runs are caught by the verify pass below (keys it
     copied are compared again and re-copied); a key changed after that, or a new one, needs a re-run."""
+    dst = _PerKeyOrg(dst)
     keys = sorted(await src.get_all_keys())
     summary: dict[str, Any] = {"dry_run": dry_run, "source_keys": len(keys), "by_prefix": dict(Counter(map(_prefix_of, keys)))}
     if dry_run:

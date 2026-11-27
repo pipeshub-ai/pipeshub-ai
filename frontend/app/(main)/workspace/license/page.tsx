@@ -155,7 +155,7 @@ export default function LicensePage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.license.title')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
               {t('workspace.license.subtitle')}
             </Text>
           </Box>

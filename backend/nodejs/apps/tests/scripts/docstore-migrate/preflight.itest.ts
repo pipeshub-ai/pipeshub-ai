@@ -91,6 +91,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(redMessage(r, 'legacy_conversations')).to.contain('start the application on MongoDB once');
     });
 
+    it('refuses an organisation whose create failed partway, and says what to remove', async () => {
+      await col('org').insertOne({ _id: new ObjectId(), slug: 'org-9001', registeredName: 'Half', domain: 'half.example', contactEmail: 'a@half.example', accountType: 'business', isDeleted: true, pendingCreate: true });
+      const r = await run();
+      expect(reds(r)).to.include('failed_org_create');
+      expect(redMessage(r, 'failed_org_create')).to.contain('1 org documents are organisations whose create failed partway');
+    });
+
     it('refuses an _id that is not an ObjectId, with its type', async () => {
       await col('users').insertOne({ _id: 'a'.repeat(24), orgId: new ObjectId(), slug: 'user-3000', email: 'text-id@x.example' });
       const r = await run();
