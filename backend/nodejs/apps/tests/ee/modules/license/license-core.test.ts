@@ -126,6 +126,27 @@ describe('license core', () => {
     }
   });
 
+  it('breaks a tie on issuedAt by license id code units, whatever the locale', () => {
+    const issuedAt = iso(-DAY_MS);
+    const upper = checkLicense(
+      signed(payload({ licenseId: 'lic_A', seats: 10, issuedAt })),
+      NOW,
+    );
+    const lower = checkLicense(
+      signed(payload({ licenseId: 'lic_a', seats: 20, issuedAt })),
+      NOW,
+    );
+    // 'lic_a' > 'lic_A' by code unit, so it wins in either order; localeCompare would differ by LANG.
+    for (const order of [
+      [upper, lower],
+      [lower, upper],
+    ]) {
+      expect(evaluateLicenses(order, NOW).effective?.licenseId).to.equal(
+        'lic_a',
+      );
+    }
+  });
+
   it('refuses a file signed with a key this build does not trust', () => {
     const stranger = generateKeyPairSync('ed25519').privateKey;
     expect(
