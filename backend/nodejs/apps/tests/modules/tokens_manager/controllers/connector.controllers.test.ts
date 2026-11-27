@@ -1749,6 +1749,36 @@ describe('tokens_manager/controllers/connector.controllers', () => {
         clock.restore()
       }
     })
+
+    it('a pending mark that throws before it returns a promise is logged, never an unhandled rejection', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout'] })
+      const rejections: unknown[] = []
+      const onRejection = (reason: unknown) => rejections.push(reason)
+      process.on('unhandledRejection', onRejection)
+      try {
+        // A plain stub returns undefined, so `.catch` on its result throws; outside a test run that kills the process.
+        const scheduler = { markReconcilePending: sinon.stub(), clearReconcilePending: sinon.stub().resolves() }
+        const handler = toggleConnectorInstance(mockAppConfig, scheduler as any)
+        req.params = { connectorId: 'conn-1' }
+        req.body = { type: 'sync' }
+        sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([{ type: 'admin' }]) } as any)
+        const command = sinon.stub(connectorUtils, 'executeConnectorCommand')
+        command.onCall(0).resolves({ statusCode: 200, data: { connector: { isActive: true } } })
+        command.onCall(1).resolves({ statusCode: 200, data: { success: true } })
+        command.rejects(new Error('connector service busy'))
+
+        await handler(req, res, next)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        for (let i = 0; i < 4; i++) await clock.tickAsync(30_000)
+        for (let i = 0; i < 2; i++) await new Promise<void>((resolve) => setImmediate(resolve))
+
+        expect(rejections).to.deep.equal([])
+        expect(scheduler.markReconcilePending.calledOnce).to.be.true
+      } finally {
+        process.removeListener('unhandledRejection', onRejection)
+        clock.restore()
+      }
+    })
   })
 
   describe('toggleConnectorInstance - fullSync branch', () => {

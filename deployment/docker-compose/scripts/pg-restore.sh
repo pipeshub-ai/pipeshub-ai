@@ -9,7 +9,9 @@
 # every archived WAL segment. `lsn:<location>` stops just after the first WAL record at or after that location (recovery_target_lsn,
 # inclusive): with the location read before a restore point is made on a quiet database, that is exactly the quiet state, and unlike a
 # time it needs no later commit to stop at. pgBackRest picks the backup that can reach the time or location ("a backup that contains the
-# requested time or lsn", https://pgbackrest.org/user-guide.html).
+# requested time or lsn", https://pgbackrest.org/user-guide.html). A time or location the repository's WAL cannot reach from that backup
+# (past a WAL gap, or past the last archived segment) is refused before anything is restored, with exit code 4 and the latest point that
+# can be reached (scripts/pg-restore-reach.pl).
 # Run it from deployment/docker-compose with the compose files, project and profiles of the stack, given as COMPOSE_FILE,
 # COMPOSE_PROJECT_NAME and COMPOSE_PROFILES (environment or .env), for example
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.postgres-docstore.yml:docker-compose.postgres-backup.yml COMPOSE_PROJECT_NAME=pipeshub-ai \
@@ -56,6 +58,15 @@ case "$target" in
   latest) ;;
   lsn:*) restore+=(--type=lsn "--target=${target#lsn:}" --target-action=promote) ;;
   *) restore+=(--type=time "--target=$target" --target-action=promote) ;;
+esac
+# A target the repository's WAL cannot carry recovery to (past a gap where the server dropped WAL, or past the last archived segment)
+# would stop the restored server at the end of recovery, and in place, with restart: always, start it again and again. The repository
+# decides, not the gap markers of pg-backup (on this machine, and lost with it): refused here, before anything is touched (exit 4).
+reach() { compose run --rm --no-deps -T --entrypoint perl pg-backup - "$1" "$2" "$set_label" < scripts/pg-restore-reach.pl; }
+case "$target" in
+  latest) ;;
+  lsn:*) reach lsn "${target#lsn:}" ;;
+  *) reach time "$target" ;;
 esac
 if [ "$in_place" = 1 ]; then
   volume="${project}_postgres_data"

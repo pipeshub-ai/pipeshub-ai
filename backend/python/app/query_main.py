@@ -223,12 +223,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
-    from app.agents.actions.storage_search.storage_search import (
-        sweep_orphan_views_at_startup,
-    )
-
-    await sweep_orphan_views_at_startup(app_container.config_service())
-
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -241,6 +235,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Fallback: if not set during initialization, resolve it now
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
+
+    from app.agents.actions.storage_search.storage_search import (
+        sweep_orphan_views_at_startup,
+    )
+
+    # Reads every org's storage settings, so not while requests wait.
+    app.state.orphan_view_sweep_task = spawn_detached(
+        sweep_orphan_views_at_startup(app_container.config_service(), graph_provider), name="orphan-view-sweep"
+    )
 
     # Chat attachments parse PDFs in parse workers sized from this governor, so
     # one slow or huge file costs only its own upload: a worker can be killed on
@@ -334,15 +337,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # instead of being checked on every agent request.
         try:
             from app.agents.agent_loop.skills_wiring import skills_enabled
-            from app.services.featureflag.platform_settings import is_skills_enabled
 
-            if skills_enabled() and await is_skills_enabled(container.config_service()):
+            if skills_enabled():
                 from app.agents.agent_loop.skills.manager_factory import (
                     reconcile_builtin_skills_for_orgs,
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider)
+                    reconcile_builtin_skills_for_orgs(graph_provider, container.config_service())
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
@@ -546,7 +548,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
         "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
-        "sandbox_alert_task",
+        "sandbox_alert_task", "orphan_view_sweep_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

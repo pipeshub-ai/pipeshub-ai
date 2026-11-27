@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 import type { ResolvedTurnMetrics } from '../../ports/resolved-turn-metrics';
 
 const trimmed = metricsBackend.createCounter({
