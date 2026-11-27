@@ -8,7 +8,7 @@ container-backed dependencies are stubbed. A request that passes the gate is ans
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi import FastAPI, Request, Response
@@ -17,6 +17,9 @@ from fastapi.testclient import TestClient
 from app import edition
 from app.api.middlewares.auth import _normalize_regular_payload
 from app.api.routes import chatbot
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterator
 
 APP_TOKEN = {"orgId": "6650f47a00000000000000aa", "tokenType": "oauth", "scope": "conversation:chat"}
 PERSON = "6650f47a0000000000000001"
