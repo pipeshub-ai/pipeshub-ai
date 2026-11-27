@@ -20,6 +20,7 @@ from app.services.model_identity.principal import PrincipalKind
 from app.services.model_identity.runtime import IdentityRuntime, set_identity_runtime
 from app.services.model_identity.workload import Workload
 from harness_core.driver.refusal import RunRefused
+from tests.support.edition_defaults import agents_run_as_the_caller
 
 ORG = "org-sm2"
 ALICE = "user-alice"
@@ -94,13 +95,25 @@ class _Graph:
         return self.user
 
 
+def _no_other_owner(*runs: Any) -> bool:  # noqa: ANN401 - the runs _run builds
+    """Where every agent runs as the caller the run is its person's own: no run names another owner or reads one."""
+    graph = _Graph(user={"_key": ALICE, "orgId": ORG}, error=RuntimeError("never read"))
+    return all(asyncio.run(_artifact_owner(run, graph)) is None for run in runs) and graph.asked == []
+
+
 def test_a_service_account_agents_files_belong_to_the_person_chatting() -> None:
+    if agents_run_as_the_caller():
+        assert _no_other_owner(_run())
+        return
     graph = _Graph(user={"_key": ALICE, "orgId": ORG})
     assert asyncio.run(_artifact_owner(_run(), graph)) == ALICE
     assert graph.asked == [ALICE]
 
 
 def test_a_service_identity_or_a_caller_of_another_org_leaves_them_the_creators() -> None:
+    if agents_run_as_the_caller():
+        assert _no_other_owner(_run(via="service"), _run())
+        return
     graph = _Graph(user={"_key": ALICE, "orgId": ORG})
     assert asyncio.run(_artifact_owner(_run(via="service"), graph)) is None
     assert graph.asked == []
@@ -108,6 +121,9 @@ def test_a_service_identity_or_a_caller_of_another_org_leaves_them_the_creators(
 
 
 def test_a_caller_that_cannot_be_read_refuses_the_run() -> None:
+    if agents_run_as_the_caller():
+        assert _no_other_owner(_run())
+        return
     with pytest.raises(RunRefused) as refused:
         asyncio.run(_artifact_owner(_run(), _Graph(error=RuntimeError("graph down"))))
     assert refused.value.error_type == "identity_unavailable"

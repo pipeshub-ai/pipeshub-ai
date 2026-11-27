@@ -367,6 +367,15 @@ async def _system_assistant(
     }
 
 
+def refuse_unidentified_run(run: RunContext) -> None:
+    """Where the edition runs every agent as the identified person asking, a run that names no person (a service
+    identity, or no actor or org) is refused before anything is read for it."""
+    from app import edition
+
+    if edition.AGENTS_RUN_AS_THE_CALLER and (run.via == "service" or not run.actor_id or not run.org_id):
+        raise RunRefused("unidentified_caller", "the run names no identified person to act as")
+
+
 async def _identity(
     run: RunContext,
     agent: dict[str, Any] | None,
@@ -376,21 +385,31 @@ async def _identity(
     user_context_enabled: bool | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """The user info the tools act as, and whether it is the agent's service account. ``user_context_enabled``:
-    the Labs switch the built-in assistant honours (the system assistant definition); an agent has its own."""
+    the Labs switch the built-in assistant honours (the system assistant definition); an agent has its own.
+
+    Where the edition runs every agent as the identified person asking (``edition.AGENTS_RUN_AS_THE_CALLER``),
+    a run with no person behind it is refused, and a service-account agent acts as that person too."""
     from fastapi import HTTPException
 
+    from app import edition
     from app.api.routes.agent import (
         AgentNotFoundError,
         _apply_user_context_gate,
         _enrich_user_info,
-        _enrich_user_info_for_service_account_agent_chat,
         _get_user_document,
-        _resolve_service_account_caller_identity,
     )
 
+    as_the_caller = edition.AGENTS_RUN_AS_THE_CALLER
+    refuse_unidentified_run(run)
+    service_account_agent = agent is not None and bool(agent.get("isServiceAccount", False))
     user_context = {"userId": run.actor_id, "orgId": run.org_id}
     try:
-        if agent is not None and agent.get("isServiceAccount", False):
+        if service_account_agent and not as_the_caller:
+            from app.api.routes.agent import (
+                _enrich_user_info_for_service_account_agent_chat,
+                _resolve_service_account_caller_identity,
+            )
+
             enriched = await _enrich_user_info_for_service_account_agent_chat(
                 agent, graph, logger, run.org_id
             )
@@ -404,7 +423,8 @@ async def _identity(
         user_doc = await _get_user_document(run.actor_id, graph, logger)
         enriched = await _enrich_user_info(user_context, user_doc)
         if agent is not None and run.agent is not None and not is_system_assistant(run):
-            permitted = await graph.check_agent_permission(
+            # A service-account agent is the org's: anyone of the org may run it, as themselves.
+            permitted = service_account_agent or await graph.check_agent_permission(
                 run.agent.agent_key, user_doc["_key"], run.org_id
             )
             if not permitted:
@@ -421,9 +441,14 @@ async def _identity(
 
 async def _artifact_owner(run: RunContext, graph: Any) -> str | None:  # noqa: ANN401
     """Who owns what a service-account agent makes in this run: the person chatting (main #4433), as the agent
-    route decides it; a service identity (``via`` service: the Slack bot) leaves it the agent creator's."""
+    route decides it; a service identity (``via`` service: the Slack bot) leaves it the agent creator's. Where every
+    agent runs as the caller, the run is already that person's own, so there is no other owner to name."""
     from fastapi import HTTPException
 
+    from app import edition
+
+    if edition.AGENTS_RUN_AS_THE_CALLER:
+        return None
     from app.api.routes.agent import _service_account_artifact_owner
 
     caller = {"userId": run.actor_id, "orgId": run.org_id, "isServiceAccount": run.via == "service"}

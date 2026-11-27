@@ -142,12 +142,22 @@ def test_leg10a_a_binding_of_another_owner_is_not_this_turn_s(rig: Rig) -> None:
 
     sa = [{"installation": "inst-1", "owner": "user:u-bob", "ref": "bnd-1"}]
     _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=sa)))
+    if edition_defaults.agents_run_as_the_caller():
+        # The service-account agent runs as the caller, so the caller's own binding is this turn's.
+        assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 0
+        assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
+        return
     assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 1
 
 
 def test_leg10a_a_service_account_agent_s_binding_is_the_agent_s(rig: Rig) -> None:
     bound = [{"installation": "inst-1", "owner": "agent:sa", "ref": "bnd-9"}]
     _served(rig.agent_stream("sa", header=rig.header(agent="sa", bindings=bound)))
+    if edition_defaults.agents_run_as_the_caller():
+        # The agent's own binding is nobody's in a turn that runs as the caller: the caller's own credential is read.
+        assert rig.world.reads_of(toolset_path("inst-1", "u-bob")) == 1
+        assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
+        return
     assert rig.world.reads_of(toolset_path("inst-1", "sa")) == 0
     assert rig.loop.calls[-1]["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "sa")}
 
@@ -175,16 +185,17 @@ def test_leg10a_the_switches_the_header_carries_are_not_read_from_the_settings(r
     """Actions, skills and user context answer from the header (also where the loop's factory reads them); the
     MCP switch reads the settings document until its reader goes through the same path (slice A)."""
     _served(rig.agent_stream(header=rig.header()))
-    assert rig.world.settings_reads <= 1
+    extra = edition_defaults.agent_turn_live_settings_reads_extra()
+    assert rig.world.settings_reads <= 1 + extra
     assert rig.loop.flags == rig.loop.task_flags == [
         {"ENABLE_ACTIONS": True, "ENABLE_SKILLS": True, "ENABLE_USER_CONTEXT": True}
     ]
-    assert rig.world.settings_reads <= 1, "the loop's own reads answered from the header too"
+    assert rig.world.settings_reads <= 1 + extra, "the loop's own reads answered from the header too"
 
 
 def test_leg10a_no_switch_is_read_from_the_settings_document(rig: Rig) -> None:
     _served(rig.agent_stream(header=rig.header()))
-    assert rig.world.settings_reads == 0
+    assert rig.world.settings_reads == edition_defaults.agent_turn_live_settings_reads_extra()
 
 
 def test_leg10a_the_process_builds_one_verifier_and_reads_the_keys_once(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,6 +321,12 @@ def test_a_client_credentials_caller_is_the_identity_it_acts_as(world: World, mo
     rig = Rig(world, monkeypatch, extra_users={"app": _normalize_regular_payload(dict(token_claims), "bearer")})
     as_identity = sign(claims(NOW, org="org-1", sub="u-bob", agent="shared", cid=CONVERSATION, access={"run": True}))
     as_client = sign(claims(NOW, org="org-1", sub="client-7", agent="shared", cid=CONVERSATION, access={"run": True}))
+    if edition_defaults.agents_run_as_the_caller():
+        # An app's token is no person: refused before any header is read, whichever identity the header signs.
+        for header in (as_client, as_identity):
+            assert rig.agent_stream(caller="app", header=header).status_code == 403
+        assert rig.loop.calls == []
+        return
     assert _refusal(rig.agent_stream(caller="app", header=as_client)) == "resolved_subject_mismatch"
     _served(rig.agent_stream(caller="app", header=as_identity))
     assert rig.loop.user_info["userId"] == "u-bob"

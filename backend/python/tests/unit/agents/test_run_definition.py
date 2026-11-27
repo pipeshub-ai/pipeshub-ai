@@ -16,6 +16,7 @@ from app.agents.run_definition import build_run_definition
 from app.api.middlewares.auth import AUTH_POLICY_ATTR
 from tests.support.agent_versions import versions_beside
 from tests.support.bound_org import bind_test_org
+from tests.support.edition_defaults import agents_run_as_the_caller
 from tests.support.mcp_tool_admission import (  # noqa: F401 - the fixtures, used by name
     mcp_approvals_open,
     mcp_approvals_required,
@@ -223,8 +224,14 @@ class TestRunDefinitionRouteScopes:
 
     @pytest.mark.asyncio
     async def test_the_slack_service_token_is_admitted_and_no_other(self) -> None:
-        # SF-6: the Slack bot admits service-account agent runs; the route decides which agents.
-        await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
+        # SF-6: the Slack bot admits service-account agent runs; the route decides which agents. A build whose
+        # agents run only as the identified person refuses every service token here.
+        if agents_run_as_the_caller():
+            with pytest.raises(HTTPException) as refused:
+                await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
+            assert refused.value.status_code == 403
+        else:
+            await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
         other = {**_SLACK_SERVICE_TOKEN, "scopes": ["fetch:config"]}
         with pytest.raises(HTTPException) as refused:
             await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), other)
@@ -421,6 +428,11 @@ class TestRunDefinitionOwner:
 _LIVE_DIGEST = "sha256:" + "d" * 64
 
 
+def _listed_as(*, service_account: bool) -> dict[str, bool]:
+    """The listing's credential kwarg: none where every agent lists with the caller's own credentials."""
+    return {} if agents_run_as_the_caller() else {"is_service_account": service_account}
+
+
 class TestHubOffSavedAgentPins:
     """WP84-FU-1: with the MCP hub off a saved agent's MCP tools are pinned at admission to the listing its server
     gives the run's credential owner now, as the assistant's are, so the claim withholds a tool whose schema changed
@@ -451,12 +463,12 @@ class TestHubOffSavedAgentPins:
         [server] = definition["mcpServers"]
         assert [(t["name"], t["descriptorDigest"]) for t in server["tools"]] == [("list_prs", _LIVE_DIGEST)]
         listing.assert_awaited_once()
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": False, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": [], **_listed_as(service_account=False)}
 
     @pytest.mark.asyncio
     async def test_hub_off_a_service_account_agent_lists_with_the_agents_own_credentials(self) -> None:
         _, listing = await self._define(_service_account_agent(), hub=False)
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": True, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": [], **_listed_as(service_account=True)}
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("mcp_approvals_open")

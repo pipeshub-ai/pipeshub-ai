@@ -46,3 +46,11 @@ def parser_identity_writers_extra() -> dict[tuple[str, str], str]:
     """Writers of ``hasIndexedCopy`` this build adds, ``(file under app/, function) -> why it writes no parser
     identity``, for ``tests/unit/modules/indexing/test_parser_identity_writers.py``. Here there are none."""
     return {}
+
+
+def agents_run_as_the_caller() -> bool:
+    """Whether every agent run, a service-account agent's included, is the identified person asking: no service
+    token starts one, and its tools list and run with that person's own credentials (``app.edition``)."""
+    from app import edition
+
+    return edition.AGENTS_RUN_AS_THE_CALLER
