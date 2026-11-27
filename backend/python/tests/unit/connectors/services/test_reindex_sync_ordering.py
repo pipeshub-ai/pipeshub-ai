@@ -141,6 +141,10 @@ async def test_outside_a_reindex_writes_are_unchecked() -> None:
     assert opened == [{}]
 
 
+def _connector(**attrs) -> SimpleNamespace:
+    return SimpleNamespace(records_excluded_by_indexing_filters=AsyncMock(return_value=set()), **attrs)
+
+
 def _record(record_id: str) -> SimpleNamespace:
     return SimpleNamespace(id=record_id, is_placeholder=False, indexing_status="FAILED", record_type="FILE", mime_type="text/plain")
 
@@ -159,7 +163,7 @@ async def test_a_batch_a_sync_superseded_does_not_stop_the_reindex_and_the_next_
 
     service = SimpleNamespace(graph_provider=graph, logger=MagicMock())
     await EventService._reindex_batches(
-        service, SimpleNamespace(reindex_records=reindex_records, data_entities_processor=processor),
+        service, _connector(reindex_records=reindex_records, data_entities_processor=processor),
         "drive", "c4", "o1", None, None, 0, None, ["FAILED"],
     )
     assert written == [1]
@@ -179,7 +183,7 @@ async def test_what_a_superseded_batch_left_unpublished_is_reindexed_as_stored()
 
     service = SimpleNamespace(graph_provider=graph, logger=MagicMock())
     await EventService._reindex_batches(
-        service, SimpleNamespace(reindex_records=reindex_records, data_entities_processor=processor),
+        service, _connector(reindex_records=reindex_records, data_entities_processor=processor),
         "drive", "c9", "o1", None, None, 0, None, ["FAILED"],
     )
     processor.reindex_existing_records.assert_awaited_once_with([left])
@@ -191,6 +195,6 @@ async def test_an_error_that_is_not_a_superseded_write_still_ends_the_reindex() 
     service = SimpleNamespace(graph_provider=graph, logger=MagicMock())
     with pytest.raises(RuntimeError, match="source down"):
         await EventService._reindex_batches(
-            service, SimpleNamespace(reindex_records=AsyncMock(side_effect=RuntimeError("source down"))),
+            service, _connector(reindex_records=AsyncMock(side_effect=RuntimeError("source down"))),
             "drive", "c5", "o1", None, None, 0, None, ["FAILED"],
         )

@@ -114,6 +114,13 @@ class _World:
         )
 
 
+class _Connector:
+    """A connector whose indexing filters exclude nothing: these tests are about sync ordering."""
+
+    async def records_excluded_by_indexing_filters(self, records: list) -> set[str]:
+        return set()
+
+
 async def _postgres() -> tuple[IGraphDBProvider, Any]:
     from app.core.db import DbConfig, KernelDB
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
@@ -166,7 +173,7 @@ async def test_a_sync_that_takes_access_away_during_a_reindex_keeps_it_away(worl
             await world.write("alice")
             await write_app_status(world.graph, logger, world.conn, AppStatus.IDLE.value)
 
-    class Connector:
+    class Connector(_Connector):
         async def reindex_records(self, records: list) -> None:
             assert [r.id for r in records] == [world.record().id]
             read = world.grants("alice", "bob")  # the source as this reindex reads it, while bob briefly had access
@@ -206,7 +213,7 @@ async def test_a_sync_a_webhook_starts_during_a_reindex_keeps_the_access_it_took
 
     monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", SimpleNamespace(submit=submit), raising=False)
 
-    class Connector:
+    class Connector(_Connector):
         async def reindex_records(self, records: list) -> None:
             assert [r.id for r in records] == [world.record().id]
             read = world.grants("alice", "bob")
@@ -252,7 +259,7 @@ async def test_a_user_link_pass_in_another_process_during_a_reindex_keeps_the_gr
         with for_org(world.org, job="test"):
             return await EntityEventService._link_connector(linking, world.conn)
 
-    class Connector:
+    class Connector(_Connector):
         data_entities_processor = SimpleNamespace(reindex_existing_records=AsyncMock())  # the superseded batch is re-queued as stored
 
         async def reindex_records(self, records: list) -> None:
@@ -317,7 +324,7 @@ async def test_a_reindex_that_began_during_a_user_link_pass_in_another_process_k
 
             assert await asyncio.create_task(link_elsewhere(no_users), context=contextvars.Context())
 
-    class Connector:
+    class Connector(_Connector):
         data_entities_processor = SimpleNamespace(reindex_existing_records=AsyncMock())  # the superseded batch is re-queued as stored
 
         async def reindex_records(self, records: list) -> None:
@@ -338,7 +345,7 @@ async def test_a_reindex_that_began_during_a_user_link_pass_in_another_process_k
 async def test_without_a_sync_the_reindex_writes_what_it_read(world: _World) -> None:
     await world.write("alice")
 
-    class Connector:
+    class Connector(_Connector):
         async def reindex_records(self, records: list) -> None:
             assert [r.id for r in records] == [world.record().id]
             await world.processor.on_new_records([(world.record(), world.grants("alice", "bob"))], replace_permissions=True)
@@ -352,7 +359,7 @@ async def test_a_sync_queued_for_a_slot_does_not_refuse_the_reindex_write(world:
     """A sync waiting for a slot has read nothing yet; its start moves the start time when it runs."""
     await world.write("alice")
 
-    class Connector:
+    class Connector(_Connector):
         async def reindex_records(self, records: list) -> None:
             await write_app_status(world.graph, logger, world.conn, AppStatus.QUEUED.value)
             await world.processor.on_new_records([(world.record(), world.grants("alice", "bob"))], replace_permissions=True)
@@ -373,7 +380,7 @@ async def test_a_sync_whose_start_was_not_recorded_is_seen_by_its_end(world: _Wo
                 "status": AppStatus.IDLE.value, ConnectorStateKeys.LAST_SYNC_FINISHED_AT: 7, "updatedAtTimestamp": 7,
             })
 
-    class Connector:
+    class Connector(_Connector):
         async def reindex_records(self, records: list) -> None:
             read = world.grants("alice", "bob")
             await asyncio.create_task(sync_elsewhere(), context=contextvars.Context())
