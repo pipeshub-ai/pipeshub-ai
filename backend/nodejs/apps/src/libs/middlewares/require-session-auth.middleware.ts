@@ -53,7 +53,7 @@ type SessionGuard = (
   next: NextFunction,
 ) => void;
 
-const SESSION_ONLY_MESSAGE =
+export const SESSION_ONLY_MESSAGE =
   'This endpoint requires an interactive user session; OAuth access tokens and personal access tokens are not accepted';
 
 /**
