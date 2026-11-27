@@ -416,14 +416,17 @@ class TestSalesforceConnector:
             {"op": "add_case", "key": "fresh", "subject": "Fresh case", "owner": "admin", "account": "acme"})
         modified = {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cut, "end": None}}}
         pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": modified}})
-        await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
-        await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
-                           salesforce_users, org_id, "the narrowed filter", filters=modified)
-        admin_reads = await _readable(graph_provider, salesforce_connector,
-                                      salesforce_users[salesforce_source.admin_email], org_id)
-        assert salesforce_source.ids["fresh"] in admin_reads
-        assert salesforce_source.ids["login"] not in admin_reads, "a case outside the filter is still readable"
-        pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": {}}})
+        try:
+            await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
+            await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
+                               salesforce_users, org_id, "the narrowed filter", filters=modified)
+            admin_reads = await _readable(graph_provider, salesforce_connector,
+                                          salesforce_users[salesforce_source.admin_email], org_id)
+            assert salesforce_source.ids["fresh"] in admin_reads
+            assert salesforce_source.ids["login"] not in admin_reads, "a case outside the filter is still readable"
+        finally:
+            # The later tests share this connector: a filter left narrowed hides every change they make.
+            pipeshub_client.update_connector_filters_sync_safe(salesforce_connector, filters={"sync": {"values": {}}})
         await wait_for_sync_completion(pipeshub_client, graph_provider, salesforce_connector, timeout=300)
         await self._settle(salesforce_source, pipeshub_client, graph_provider, salesforce_connector,
                            salesforce_users, org_id, "the cleared filter")
