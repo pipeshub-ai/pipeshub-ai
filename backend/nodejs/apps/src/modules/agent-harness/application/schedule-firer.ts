@@ -278,7 +278,7 @@ export class ScheduleFirer {
         }),
       );
       // Nothing will ever run of it: its person hears so, as of a refused firing.
-      if (once) await this.tellTooLate(claimed, now);
+      if (once) await this.tellRefused(claimed, ONCE_TOO_LATE, now);
       return false;
     }
     await this.fire(claimed, schedule);
@@ -998,19 +998,8 @@ export class ScheduleFirer {
         reason,
       }),
     );
-    if (reason === ONCE_TOO_LATE) await this.tellTooLate(firing, now);
-  }
-
-  /**
-   * Nothing will ever run of a one-time schedule whose slot was too late: its
-   * person hears so, as of a refused firing, while the org would have run it.
-   */
-  private async tellTooLate(
-    firing: ScheduleFiring,
-    now: number,
-  ): Promise<void> {
-    if (!(await this.orgOn(firing.orgId))) return;
-    await this.tellRefused(firing, ONCE_TOO_LATE, now);
+    if (reason === ONCE_TOO_LATE)
+      await this.tellRefused(firing, ONCE_TOO_LATE, now);
   }
 
   private async refuse(firing: ScheduleFiring, reason: string): Promise<void> {
@@ -1077,7 +1066,9 @@ export class ScheduleFirer {
 
   /**
    * The actor hears that their schedule could not run (UX3): once a day per
-   * schedule, read from its own firings, so every scheduler instance agrees.
+   * schedule, read from its own firings, so every scheduler instance agrees;
+   * and only while the org runs schedules (its harness and Labs), so an org
+   * that turned them off hears nothing of them. The firing is settled either way.
    */
   private async tellRefused(
     firing: ScheduleFiring,
@@ -1085,6 +1076,7 @@ export class ScheduleFirer {
     now: number,
   ): Promise<void> {
     if (this.notifier === undefined) return;
+    if (!(await this.orgOn(firing.orgId))) return;
     try {
       const recent = await this.store.firings(
         firing.orgId,

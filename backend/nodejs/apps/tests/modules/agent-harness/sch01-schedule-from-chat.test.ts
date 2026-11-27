@@ -4,7 +4,10 @@
  * on the person's own approval of exactly that call, read from the run's journal, once per decision.
  */
 import { expect } from 'chai';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import sinon from 'sinon';
+import { scheduleCreateArgumentsSchema } from '../../../src/modules/agent-harness/contracts/generated/ext/pipeshub/api/schedule-create-arguments';
 import { InMemoryScheduleStore } from '../../../src/modules/agent-harness/adapters/in-memory-schedules';
 import {
   ChatScheduleService,
@@ -251,6 +254,24 @@ describe('ADR-SCH-01 D1: a one-time schedule', () => {
       expect(admission.admitted).to.equal(1);
       expect(await store.get(ORG, schedule.id)).to.deep.include({ status: 'disabled', statusReason: RAN_ONCE });
       expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_RAN_ONCE');
+    });
+
+    it('due while the org’s harness is off: the firing is settled, nobody is told', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS;
+      await new ScheduleFirer({
+        store,
+        admission,
+        actors,
+        setting: new FakeSetting(),
+        notifier,
+        harnessOn: async () => false,
+      }).fireDue();
+      expect(admission.admitted).to.equal(0);
+      expect((await store.firings(ORG, schedule.id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([
+        ['refused', 'scheduled_runs_disabled'],
+      ]);
+      expect(notifier.refusals).to.deep.equal([]);
     });
 
     it('more than a day late: skipped, disabled, and its person told', async () => {
@@ -669,6 +690,20 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     const w = world();
     w.events.push(...approvedCall(fast));
     expect(await w.call(body(fast, ixOf(fast)))).to.deep.equal({ status: 400, code: 'HTTP_AGENT_HARNESS_SCHEDULE_INVALID' });
+  });
+
+  it('the route takes exactly the arguments the shared contract vectors say are valid', async () => {
+    const { vectors } = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../../../../contracts/harness/vectors/schedule-create-arguments.json'), 'utf8'),
+    ) as { vectors: Array<{ name: string; arguments: unknown; valid: boolean }> };
+    expect(vectors.length).to.be.greaterThan(20);
+    for (const vector of vectors) {
+      expect(scheduleCreateArgumentsSchema.safeParse(vector.arguments).success, vector.name).to.equal(vector.valid);
+      const w = world();
+      const answer = await w.call(body(vector.arguments, ixOf(vector.arguments)));
+      // A valid shape passes to the approval check (no decision here: 403); an invalid one never gets that far.
+      expect(answer.status, vector.name).to.equal(vector.valid ? 403 : 400);
+    }
   });
 
   it('a malformed body is a 400 that names nothing of it', async () => {

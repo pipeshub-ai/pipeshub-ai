@@ -8,55 +8,27 @@ import {
   HarnessLogger,
   silentHarnessLogger,
 } from '../application/harness-log';
-import { ChatScheduleService } from '../application/chat-schedules';
+import {
+  ChatScheduleService,
+  type ScheduleToolArguments,
+} from '../application/chat-schedules';
 import {
   HarnessScheduleRefusedError,
   HarnessUnauthorizedError,
 } from '../domain/errors';
-import {
-  MAX_SCHEDULE_QUERY_CHARS,
-  NOTIFY_CHANNELS,
-  type NotifyChannel,
-} from '../domain/schedules';
+import { ZodError as ContractZodError } from 'zod/v3';
+import { scheduleCreateArgumentsSchema } from '../contracts/generated/ext/pipeshub/api/schedule-create-arguments';
 import { HarnessAttemptRequest, logAuthorityRefusal } from './internal-auth';
 import { attemptClaims, transportError } from './internal-controller';
 import { scheduleHttpError } from './schedule-routes';
 
 const boundedId = z.string().min(1).max(256);
-const zone = z.string().min(1).max(64);
-
-/** The `schedule_create` tool's arguments (ADR-SCH-01 D2), exactly: the digest the person approved covers all of them. */
-const toolArguments = z
-  .object({
-    name: z.string().min(1).max(120),
-    ask: z.string().min(1).max(MAX_SCHEDULE_QUERY_CHARS),
-    when: z.discriminatedUnion('kind', [
-      z
-        .object({
-          kind: z.literal('once'),
-          at: z.string().min(16).max(40),
-          timeZone: zone,
-        })
-        .strict(),
-      z
-        .object({
-          kind: z.literal('cron'),
-          cron: z.string().min(9).max(120),
-          timeZone: zone,
-        })
-        .strict(),
-    ]),
-    notify: z
-      .array(z.enum(['in_app', 'email', 'slack']))
-      .min(1)
-      .max(NOTIFY_CHANNELS.length)
-      .refine(
-        (list): list is NotifyChannel[] => new Set(list).size === list.length,
-        'Each channel once',
-      )
-      .optional(),
-  })
-  .strict();
+/**
+ * The `schedule_create` tool's arguments (ADR-SCH-01 D2), exactly as the contract the worker validates them by before
+ * it asks the person: the digest the person approved covers all of them.
+ */
+const toolArguments = (args: unknown): ScheduleToolArguments =>
+  scheduleCreateArgumentsSchema.parse(args);
 
 export const createChatScheduleSchema = z.object({
   params: z.object({ runId: boundedId }),
@@ -66,7 +38,7 @@ export const createChatScheduleSchema = z.object({
       fence: z.coerce.number().int().nonnegative(),
       interactionId: boundedId,
       toolId: z.string().min(1).max(256),
-      arguments: toolArguments,
+      arguments: z.unknown(),
       callArgsDigest: z
         .string()
         .regex(/^sha256:[0-9a-f]{64}$/)
@@ -102,7 +74,7 @@ export class AgentHarnessChatScheduleController {
         {
           interactionId: body.interactionId,
           toolId: body.toolId,
-          arguments: body.arguments,
+          arguments: toolArguments(body.arguments),
           ...(body.callArgsDigest !== undefined
             ? { callArgsDigest: body.callArgsDigest }
             : {}),
@@ -120,7 +92,7 @@ export class AgentHarnessChatScheduleController {
     if (error instanceof HarnessUnauthorizedError) {
       logAuthorityRefusal(this.logger, req, error);
     }
-    if (error instanceof ZodError) {
+    if (error instanceof ZodError || error instanceof ContractZodError) {
       this.logger.warn(
         'schedule.chat_refused',
         harnessLogMeta('schedule.chat_refused', {
