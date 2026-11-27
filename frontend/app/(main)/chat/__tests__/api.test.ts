@@ -148,10 +148,11 @@ describe('ChatApi durable agent transport', () => {
     });
   });
 
-  // F-4: with the harness off, agent and assistant chat never touch the durable transport.
+  // F-4: with the harness off, agent and assistant chat never touch the durable transport. Every chat turn asks its
+  // final frame for that turn's rows alone (`frame=turn`), on the same route.
   it.each([
-    ['agent chat', { agentId: 'agent-1', chatMode: 'agent:auto' }, '/api/v1/agents/agent-1/conversations/stream'],
-    ['assistant chat', { chatMode: 'quick' }, '/api/v1/conversations/stream'],
+    ['agent chat', { agentId: 'agent-1', chatMode: 'agent:auto' }, '/api/v1/agents/agent-1/conversations/stream?frame=turn'],
+    ['assistant chat', { chatMode: 'quick' }, '/api/v1/conversations/stream?frame=turn'],
   ])('uses the legacy stream for %s when the rollout has no harness', async (_name, extra, endpoint) => {
     mockedStream.mockReset();
     useFeatureFlagsStore.setState({ flags: { ENABLE_AGENT_HARNESS: true }, agentHarness: null });
@@ -195,7 +196,7 @@ describe('ChatApi durable agent transport', () => {
 
     expect(mockedPost).not.toHaveBeenCalled();
     expect(mockedStream).toHaveBeenCalledWith(
-      '/api/v1/conversations/stream',
+      '/api/v1/conversations/stream?frame=turn',
       expect.any(Object),
       expect.any(Object),
     );

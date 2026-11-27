@@ -126,7 +126,7 @@ describe('AR: a refused admission says what happened, in the reader’s language
     await ChatApi.streamMessage(request(), { onError: vi.fn() });
     expect(legacyStream).toHaveBeenCalledTimes(1);
     expect(legacyStream).toHaveBeenCalledWith(
-      '/api/v1/agents/agent-1/conversations/session-1/messages/stream',
+      '/api/v1/agents/agent-1/conversations/session-1/messages/stream?frame=turn',
       expect.any(Object),
       expect.any(Object),
     );
@@ -152,8 +152,8 @@ describe('RG: Regenerate takes the path a new turn takes', () => {
     await ChatApi.streamAgentRegenerate('agent-1', 'session-1', 'answer-9', {}, model);
     expect(post, 'no …/runs admission').not.toHaveBeenCalled();
     expect(legacyStream.mock.calls.map(([url]) => url)).toEqual([
-      '/api/v1/agents/agent-1/conversations/session-1/message/answer-9/regenerate',
-      '/api/v1/agents/agent-1/conversations/session-1/message/answer-9/regenerate',
+      '/api/v1/agents/agent-1/conversations/session-1/message/answer-9/regenerate?frame=turn',
+      '/api/v1/agents/agent-1/conversations/session-1/message/answer-9/regenerate?frame=turn',
     ]);
   });
 

@@ -22,6 +22,9 @@ const mockedStreamGet = vi.mocked(streamSSEGet);
 
 const TURN = '3f1c2a8e-9d0b-4c5e-8a7f-112233445566';
 
+/** Every chat turn asks its final frame for that turn's rows alone (`frame=turn`), on the same route. */
+const TURN_FRAME = '?frame=turn';
+
 /** Today's regenerate: a bare greeting first, no run id, no SSE ids. */
 function legacyRegenerate(): SSEEvent[] {
   const [, ...rest] = completedRun().map(({ id: _id, ...frame }) => frame);
@@ -68,7 +71,7 @@ describe('LAT2: regenerate is one request', () => {
     await send({ onDurableRunAccepted, onChunk, onComplete });
 
     expect(mockedStream).toHaveBeenCalledTimes(1);
-    expect(mockedStream).toHaveBeenCalledWith(endpoint, expect.objectContaining({ runId: TURN, protocol: 'agui' }), expect.any(Object));
+    expect(mockedStream).toHaveBeenCalledWith(`${endpoint}${TURN_FRAME}`, expect.objectContaining({ runId: TURN, protocol: 'agui' }), expect.any(Object));
     expect(mockedPost, 'no …/runs admission').not.toHaveBeenCalled();
     expect(mockedStreamGet).not.toHaveBeenCalled();
     expect(onDurableRunAccepted).toHaveBeenCalledWith({ ...(agentId ? { agentId } : {}), sessionId: SESSION_ID, runId: RUN_ID });
