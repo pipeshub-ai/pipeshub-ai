@@ -3,8 +3,8 @@ import type { NextFunction, Request, Response } from 'express';
 /** Same exports as `telemetry-runtime.ts`; every one does nothing. */
 export const TelemetryService = {
   current: ():
-    | { flush(): Promise<void>; discardCollected(): void }
-    | undefined => undefined,
+    { flush(): Promise<void>; discardCollected(): void } | undefined =>
+    undefined,
 };
 
 export const startTelemetry = (_kvStore: unknown): void => {};

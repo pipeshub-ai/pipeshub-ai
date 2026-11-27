@@ -2,6 +2,11 @@
 """Metrics backend that records nothing. Same names as ``app.telemetry.backend``."""
 
 from collections.abc import Sequence
+from typing import Protocol
+
+
+class CounterHandle(Protocol):
+    def inc(self, *labels: str, value: float = 1.0) -> None: ...
 
 
 class _Instrument:
