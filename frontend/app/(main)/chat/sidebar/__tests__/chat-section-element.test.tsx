@@ -38,7 +38,8 @@ function renderRow(isActive = false) {
   return renderInTheme(<ChatSectionElement conversation={conversation} isActive={isActive} onClick={vi.fn()} />);
 }
 
-const dot = () => screen.queryByText('New answer');
+// The row's dot for a new answer, named by its words.
+const dot = () => screen.queryByRole('img', { name: 'New answer' });
 
 beforeEach(() => {
   installBrowserShims();
@@ -219,7 +220,9 @@ describe('D10: the row this tab streams shows Needs you over its spinner (CJFIX-
     useChatStore.getState().updateSlot(slotId, { isStreaming: true });
     useChatStore.setState((s) => ({ pendingConversations: { ...s.pendingConversations, [slotId]: { slotId, title: 'File a ticket', isGenerating: true, createdAt: 1 } as never } }));
     renderInTheme(<GeneratingTitleItem slotId={slotId} />);
-    expect(mark()).toBe('working');
+    // Working is the row's pulsing dot, named by its words.
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+    expect(mark()).toBeNull();
 
     act(() => useChatStore.getState().updateSlot(slotId, { pendingApprovals: [ask] }));
 
@@ -289,19 +292,22 @@ describe('a chat row’s run mark from the server (classic jobs D10)', () => {
     expect(mark()?.textContent).toBe('Needs you');
   });
 
-  it('shows the working spinner for a run this tab never streamed', () => {
+  // Working and finished are the row's own dots (a pulsing one, and the new-answer one), named by their words.
+  const finished = () => screen.queryByRole('img', { name: 'Finished since you last looked' });
+
+  it('shows the working mark for a run this tab never streamed', () => {
     rowWith(state({ runState: 'working', activeRun: { runId: 'r1', status: 'running' } }));
-    expect(mark()?.getAttribute('data-dot')).toBe('working');
-    expect(mark()?.textContent).toBe('Working');
+    expect(screen.getByRole('img', { name: 'Working in the background' })).toBeTruthy();
+    expect(mark()).toBeNull();
   });
 
   it('shows the finished dot for a run that ended unseen, and none on the chat open now', () => {
     rowWith(state({ finishedUnseen: true }));
-    expect(mark()?.getAttribute('data-dot')).toBe('finished');
-    expect(mark()?.textContent).toBe('Finished since you last looked');
+    expect(finished()).not.toBeNull();
     cleanup();
     rowWith(state({ finishedUnseen: true }), true);
-    expect(mark()).toBeNull();
+    expect(finished()).toBeNull();
+    expect(screen.queryByTestId('unread-dot')).toBeNull();
   });
 
   it('keeps needs you on the open chat, since it still waits there', () => {
@@ -312,8 +318,8 @@ describe('a chat row’s run mark from the server (classic jobs D10)', () => {
   it('merges the server’s unseen with this tab’s new answer into one mark', () => {
     useChatStore.getState().markConversationUnread('conv-9');
     rowWith(state({ finishedUnseen: true }));
-    expect(screen.getAllByTestId('chat-dot')).toHaveLength(1);
-    expect(mark()?.textContent).toBe('Finished since you last looked');
+    expect(screen.getAllByTestId('unread-dot')).toHaveLength(1);
+    expect(finished()).not.toBeNull();
   });
 
   it('shows nothing for a quiet chat', () => {

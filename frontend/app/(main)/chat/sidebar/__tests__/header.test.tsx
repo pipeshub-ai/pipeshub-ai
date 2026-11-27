@@ -87,6 +87,14 @@ describe('sidebar header actions', () => {
   });
 });
 
+function renderHeader() {
+  return render(
+    <Theme>
+      <ChatSidebarHeader />
+    </Theme>,
+  );
+}
+
 describe('Chat sidebar header: Home', () => {
   // Zustand copies actions into every new state, so a spy would outlive its test; swap a stub in instead.
   const originalClearSearchResults = useChatStore.getState().clearSearchResults;
@@ -100,14 +108,6 @@ describe('Chat sidebar header: Home', () => {
     useChatStore.setState({ clearSearchResults: originalClearSearchResults });
     useChatStore.getState().setMode('chat');
   });
-
-  function renderHeader() {
-    return render(
-      <Theme>
-        <ChatSidebarHeader />
-      </Theme>,
-    );
-  }
 
   it('links the logo to /chat/', () => {
     renderHeader();

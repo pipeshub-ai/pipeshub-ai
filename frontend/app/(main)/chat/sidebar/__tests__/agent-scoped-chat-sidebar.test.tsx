@@ -469,12 +469,12 @@ describe('agent sidebar: run marks move without a reload (classic jobs §6)', ()
     h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat', true)], sharedConversations: [], pagination });
     renderSidebar();
     expect(screen.getByTestId('jobs-nav-entries')).toBeTruthy();
-    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat'));
+    await waitFor(() => expect(screen.getByTestId('chat.yourChats').textContent).toBe('My roadmap chat'));
     const reads = h.fetchAgentConversations.mock.calls.length;
 
     h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat, renamed', true)], sharedConversations: [], pagination });
     act(() => refreshJobLists());
-    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat, renamed'));
+    await waitFor(() => expect(screen.getByTestId('chat.yourChats').textContent).toBe('My roadmap chat, renamed'));
     expect(h.fetchAgentConversations.mock.calls.length).toBe(reads + 1);
     expect(useChatStore.getState().isAgentConversationsLoading).toBe(false);
   });
@@ -482,11 +482,11 @@ describe('agent sidebar: run marks move without a reload (classic jobs §6)', ()
   it('keeps the rows shown when that quiet re-read fails', async () => {
     h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat', true)], sharedConversations: [], pagination });
     renderSidebar();
-    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat'));
+    await waitFor(() => expect(screen.getByTestId('chat.yourChats').textContent).toBe('My roadmap chat'));
     h.fetchAgentConversations.mockRejectedValue(new Error('down'));
     act(() => refreshJobLists());
     await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
-    expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat');
+    expect(screen.getByTestId('chat.yourChats').textContent).toBe('My roadmap chat');
     expect(useChatStore.getState().agentConversationsError).toBeNull();
   });
 });
