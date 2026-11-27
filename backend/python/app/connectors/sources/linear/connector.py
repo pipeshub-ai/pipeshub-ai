@@ -33,6 +33,13 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.failure_notices import (
+    note_token_accepted,
+    notify_init_failed,
+    notify_reconnect,
+    renew_access_token,
+    switched_off_after_rejection,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -83,6 +90,7 @@ from app.connectors.sources.linear.api_gateway import (
     LinearGateway,
     LinearNotFound,
     LinearRateLimited,
+    classify,
 )
 from app.connectors.sources.linear.common.apps import LinearApp
 from app.connectors.sources.linear.listing_checkpoint import (
@@ -505,7 +513,11 @@ class LinearConnector(BaseConnector):
 
             # Validate connection by fetching organization info
             org_response = await self._with_transient_retry("organization", self.data_source.organization)
+            if not org_response.success and isinstance(classify(org_response), LinearAuthError):
+                org_response = await self._organization_with_renewed_token(org_response)
             if not org_response.success:
+                if isinstance(rejected := classify(org_response), LinearAuthError):
+                    raise rejected
                 raise Exception(f"Failed to connect to Linear: {org_response.message}")
 
             org_data = org_response.data.get("organization", {}) if org_response.data else {}
@@ -522,6 +534,30 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
             raise ConnectorInitError(str(e)) from e
+
+    async def _organization_with_renewed_token(self, refused: GraphQLResponse) -> GraphQLResponse:
+        """The organization, asked again after renewing the token Linear refused at start-up. Renewing goes
+        through the token refresh service, which counts a refused refresh token towards turning sync off."""
+        try:
+            why = await renew_access_token(self)
+        except Exception as e:
+            # A renewal that may work next time is no reason to ask the owner to reconnect.
+            raise Exception(f"Linear refused the stored token ({refused.message}), and it could not be renewed now: {e}") from e
+        if why is not None:
+            raise LinearAuthError(
+                f"Linear refused the stored token ({refused.message}), and {why}", HttpStatusCode.UNAUTHORIZED.value
+            )
+        self.data_source = await self._get_fresh_datasource()
+        return await self._with_transient_retry("organization", self.data_source.organization)
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        # A dead token stops every run at start-up, so it is told and counted the way a run's own 401 is.
+        rejected = getattr(error, "__cause__", None)
+        if isinstance(rejected, LinearAuthError):
+            if not await switched_off_after_rejection(self, rejected):
+                await notify_reconnect(self, self._sync_failure_message(rejected))
+            return
+        await notify_init_failed(self, "Linear", error)
 
     async def _with_transient_retry(
         self,
@@ -577,7 +613,7 @@ class LinearConnector(BaseConnector):
             fresh_token = auth_config.get("apiToken", "")
 
         if not fresh_token:
-            raise Exception("No access token available")
+            raise LinearAuthError("No access token available")
 
         # Get current token from client
         internal_client = self.external_client.get_client()
@@ -724,7 +760,6 @@ class LinearConnector(BaseConnector):
                 init_error = RuntimeError(
                     f"Linear connector {self.connector_id} not initialized. Call init() first."
                 )
-                init_error._notification_sent = True
                 raise init_error
 
             await self._register_authenticated_identity()
@@ -872,7 +907,12 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
-            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+            if isinstance(e, LinearAuthError):
+                if not await switched_off_after_rejection(self, e):
+                    await notify_reconnect(self, self._sync_failure_message(e))
+            elif isinstance(e, LinearRateLimited):
+                pass  # the next run continues where the limit stopped this one
+            elif not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -880,6 +920,7 @@ class LinearConnector(BaseConnector):
                     message=self._sync_failure_message(e),
                 )
             raise
+        note_token_accepted(self)
 
     @staticmethod
     def _sync_failure_message(error: Exception) -> str:
@@ -887,11 +928,6 @@ class LinearConnector(BaseConnector):
             return (
                 "Linear rejected the connector's credentials, so nothing could be synced. "
                 "Reconnect Linear (or replace the API key) in the connector's settings."
-            )
-        if isinstance(error, LinearRateLimited):
-            return (
-                "Linear's rate limit was reached and did not clear in time. The sync stopped "
-                "where it was and the next run continues from there."
             )
         return (
             f"The sync stopped due to an error: {str(error)[:200]}. Recent Linear changes "

@@ -36,6 +36,12 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.failure_notices import (
+    SyncIncompleteError,
+    SyncRunState,
+    notify_init_failed,
+    reports_failed_sync,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -224,7 +230,7 @@ class ZammadReadError(Exception):
         self.burst = burst
 
 
-class ZammadSyncIncompleteError(Exception):
+class ZammadSyncIncompleteError(SyncIncompleteError):
     """Part of a sync could not be read or written; raised once the rest has run.
 
     Everything that was read is written first, and nothing is removed on the
@@ -444,6 +450,58 @@ class ZammadConnector(BaseConnector):
         self._synced_group_ids: set[str] | None = None
         # Zammad before 6.5 has no only_total_count; then reconciliation lists every held ticket.
         self._ticket_count_unsupported = False
+        self.run_state = SyncRunState()
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        await notify_init_failed(self, "Zammad", error)
+
+    def _token_in_use(self) -> object:
+        get_client = getattr(self.external_client, "get_client", None)
+        return getattr(get_client(), "token", None) if callable(get_client) else None
+
+    async def _stop_if_signed_out(self) -> bool:
+        """Raise when Zammad no longer accepts the access token: nothing written after that could be trusted.
+        True when Zammad confirmed it accepts the token the last read used, False when that could not be
+        checked. Asked with the token stored now, so one saved during the run is the one checked."""
+        read_with = self._token_in_use()
+        try:
+            datasource = await self._get_fresh_datasource()
+            checked_with = self._token_in_use()
+            me = await datasource.get_current_user()
+        except Exception as e:
+            self.logger.warning("Could not check whether Zammad still accepts the access token: %s", e)
+            return False
+        if me.status_code == HttpStatusCode.UNAUTHORIZED.value and self._token_in_use() != checked_with:
+            # Refused the token stored when the check started; the one saved since is still untried.
+            self.logger.warning(
+                "Zammad: the access token was replaced while it was checked; members stay as stored until the "
+                "next sync reads them with the new one"
+            )
+            return False
+        if me.status_code == HttpStatusCode.UNAUTHORIZED.value:
+            self.logger.error(
+                "Zammad rejected the access token (HTTP 401: %s). It was revoked, expired or is wrong, or API token "
+                "access is turned off. The sync stops until the token is replaced.", me.error or me.message,
+            )
+            raise self.run_state.reject(
+                "Zammad no longer accepts this connector's access token. Syncing stopped and nothing was removed. "
+                "Create a new token in Zammad and save it in the connector's settings, and check that API token "
+                "access is turned on (Admin > System > API)."
+            )
+        if getattr(me, "success", False) is True:
+            if self._token_in_use() != read_with:
+                # The new token works, which says nothing about the read the old one was refused.
+                self.logger.warning(
+                    "Zammad: the access token was replaced during the sync; members stay as stored until the "
+                    "next sync reads them with the new one"
+                )
+                return False
+            return True
+        self.logger.warning(
+            "Could not check whether Zammad still accepts the access token (HTTP %s: %s)",
+            me.status_code, me.error or me.message,
+        )
+        return False
 
     async def init(self) -> bool:
         """
@@ -572,6 +630,7 @@ class ZammadConnector(BaseConnector):
 
     # ==================== MAIN SYNC ORCHESTRATION ====================
 
+    @reports_failed_sync("Zammad")
     async def run_sync(self) -> None:
         """Main sync orchestration method"""
         self.logger.info(f"🔄 Starting Zammad sync for connector {self.connector_id}")
@@ -581,6 +640,7 @@ class ZammadConnector(BaseConnector):
             if not self.external_client:
                 await self.init()
 
+            # Fails early when the connector's config or token is missing.
             await self._get_fresh_datasource()
 
             # Load filters
@@ -602,20 +662,34 @@ class ZammadConnector(BaseConnector):
             roles_data, roles_read = await self._fetch_roles()
             if roles_read is not ReadOutcome.COMPLETE:
                 self._incomplete.append(f"the role list ({roles_read.value})")
+            # Refused to a dead token is not refused to this account. Until Zammad says which it is,
+            # the refusal could be either, so members stay as stored.
+            sign_in_unconfirmed = False
+            if roles_read is ReadOutcome.REFUSED:
+                sign_in_unconfirmed = not await self._stop_if_signed_out()
             roles = {int(r["id"]): RoleAccess.from_role(r) for r in roles_data if str(r.get("id", "")).isdigit()}
 
             # Step 2: Fetch and sync users
             self.logger.info("👤 Step 2: Syncing users...")
             users, user_email_map = await self._fetch_users(roles if roles_read is ReadOutcome.COMPLETE else None)
+            if self._users_read is ReadOutcome.REFUSED:
+                sign_in_unconfirmed = not await self._stop_if_signed_out() or sign_in_unconfirmed
+            if sign_in_unconfirmed:
+                self._incomplete.append("the check that Zammad still accepts the access token")
             if users:
                 await self.data_entities_processor.on_new_app_users(users)
                 self.logger.info(f"✅ Synced {len(users)} users")
             if self._users_read is not ReadOutcome.COMPLETE:
                 self._incomplete.append(f"the user list ({self._users_read.value})")
+            if ReadOutcome.REFUSED in (self._users_read, roles_read):
+                self.run_state.note(
+                    "Zammad refused the list of users or roles, so access is not up to date. Give the connector's "
+                    "token the ticket.agent and admin.role permissions."
+                )
             # Group and role members are built from the user and role lists, and
             # writing them replaces what is stored: from a list cut short, everyone
             # not on it would lose access through every group and role.
-            keep_members = ReadOutcome.INTERRUPTED in (self._users_read, roles_read)
+            keep_members = ReadOutcome.INTERRUPTED in (self._users_read, roles_read) or sign_in_unconfirmed
             readers = GroupReaders(self._user_access, roles)
 
             # Step 3: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
@@ -655,6 +729,7 @@ class ZammadConnector(BaseConnector):
             await self._sync_knowledge_bases()
 
             if self._incomplete:
+                await self._stop_if_signed_out()
                 # Everything readable has been written; the run still must not count as a success.
                 raise ZammadSyncIncompleteError(self._incomplete)
             self.logger.info(f"✅ Zammad sync completed for connector {self.connector_id}")
@@ -868,6 +943,10 @@ class ZammadConnector(BaseConnector):
                     # Zammad before 6.5 lists groups to admin.group only.
                     hint = "; before Zammad 6.5 the token needs the admin.group permission"
                 self._incomplete.append(f"the group list ({outcome.value}{hint})")
+                if response.status_code == HttpStatusCode.FORBIDDEN.value:
+                    self.run_state.note(
+                        "Zammad refused the list of groups. Give the connector's token the admin.group permission."
+                    )
                 self.logger.warning(
                     f"Failed to fetch groups from Zammad (page {page}, HTTP {response.status_code}){hint}"
                 )

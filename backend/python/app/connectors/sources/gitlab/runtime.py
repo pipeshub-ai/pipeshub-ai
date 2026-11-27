@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 from gitlab.exceptions import GitlabAuthenticationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.failure_notices import NO_REFRESH_TOKEN
+from app.connectors.core.base.token_service.oauth_service import RefreshTokenInvalidError
 from app.sources.client.gitlab.gitlab import GitLabResponse
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 
@@ -71,6 +73,8 @@ class RuntimeHelper:
         # consecutive-rejection counter). With this lock, one task refreshes
         # and the rest just apply the rotated token.
         self._token_refresh_lock = asyncio.Lock()
+        # Why the last refresh could not renew the token, None when that may pass.
+        self._cannot_refresh: str | None = None
 
     # ------------------------------------------------------------------
     # Executor lifecycle
@@ -125,33 +129,36 @@ class RuntimeHelper:
         if c.data_source is not None:
             c.data_source.token = access_token
 
-    async def refresh_token_if_needed(self) -> None:
+    async def refresh_token_if_needed(self) -> bool:
         """Sync the active client token from etcd when the background refresher has rotated it.
 
         No-op for ``API_TOKEN`` auth (PATs do not expire via OAuth).  For OAuth,
         compares the currently-held token against etcd and calls
-        ``_apply_access_token_to_clients`` only when they differ.
+        ``_apply_access_token_to_clients`` only when they differ. Returns False when the stored
+        token could not be read or installed, so a caller that just refreshed does not retry the old one.
         """
         c = self.c
         if not c.external_client:
-            return
+            return True
         try:
             config_path = f"/services/connectors/{c.connector_id}/config"
             config = await c.config_service.get_config(config_path)
             if not config:
-                return
+                return False
             auth_type = (config.get("auth") or {}).get("authType", "OAUTH")
             if auth_type == "API_TOKEN":
-                return
+                return True
             fresh_token = (config.get("credentials") or {}).get("access_token", "")
             if not fresh_token:
-                return
+                return False
             current_token = c.external_client.get_client().get_token()
             if current_token != fresh_token:
                 self.logger.debug("Updating GitLab client with refreshed OAuth token")
                 self._apply_access_token_to_clients(fresh_token)
+            return True
         except Exception as e:
             self.logger.warning("Could not refresh GitLab token: %s", e)
+            return False
 
     def _get_refresh_kwargs(self, c: "GitLabConnector") -> dict:
         """EE override: add org_id= to the refresh_now call for scoped etcd key paths."""
@@ -173,6 +180,7 @@ class RuntimeHelper:
         refresher rotated behind the client's back, or refresh for real.
         """
         c = self.c
+        self._cannot_refresh = None
         try:
             from app.connectors.core.base.token_service.startup_service import (
                 startup_service,
@@ -215,6 +223,7 @@ class RuntimeHelper:
                 auth_config = config.get("auth", {}) or {}
                 if auth_config.get("authType", "OAUTH") == "API_TOKEN":
                     self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
+                    self._cannot_refresh = "an access token is not renewed automatically"
                     return False
 
                 stored_access_token = (config.get("credentials") or {}).get("access_token", "")
@@ -228,6 +237,7 @@ class RuntimeHelper:
                 refresh_token = (config.get("credentials") or {}).get("refresh_token")
                 if not refresh_token:
                     self.logger.error("No refresh token in connector config; cannot refresh GitLab token.")
+                    self._cannot_refresh = NO_REFRESH_TOKEN
                     return False
 
                 connector_type = (
@@ -236,12 +246,39 @@ class RuntimeHelper:
                 await refresh_service.refresh_now(
                     c.connector_id, connector_type, refresh_token, **self._get_refresh_kwargs(c)
                 )
-                # Sync the SDK with the new token from etcd
-                await self.refresh_token_if_needed()
+                if not await self.refresh_token_if_needed():
+                    # Refreshed, but the client still holds the old token: retrying would read its 401 as a refusal.
+                    self.logger.error("GitLab token was refreshed but could not be installed; not retrying with the old one.")
+                    return False
                 return True
+        except RefreshTokenInvalidError as e:
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
+            self._cannot_refresh = "GitLab also rejected the refresh token"
+            return False
         except Exception as e:
             log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
+
+    async def _note_rejected_credentials(self, response: GitLabResponse, why: str | None) -> None:
+        """Mark the run as signed out, once a second call is refused too: one endpoint's 401 is
+        not enough to stop a sync. GitLab does not say whether a token was revoked or is wrong."""
+        c = self.c
+        if why is None or c.run_state.rejected is not None or c.data_source is None:
+            return
+        confirm = await self._execute_gitlab_op(lambda: c.data_source.get_user(), op_label="confirm credentials")
+        if not self._is_auth_error(confirm):
+            return
+        self.logger.error(
+            "GitLab rejected the connector's credentials (HTTP 401: %s) and they cannot be renewed (%s). The token "
+            "was revoked, expired or is wrong, or its OAuth app was removed. The sync stops until the connector is "
+            "reconnected.", response.error, why,
+        )
+        c.run_state.reject(
+            f"GitLab rejected this connector's sign-in ({why}). It may have been revoked or expired, or the OAuth "
+            "app may have been removed. Syncing stopped and nothing was removed. Reconnect it, or replace its "
+            "token, in the connector's settings; if that fails, check the OAuth app in GitLab.",
+            unrefreshable_token=self._current_token() if why == NO_REFRESH_TOKEN else None,
+        )
 
     # ------------------------------------------------------------------
     # Core invocation
@@ -313,7 +350,20 @@ class RuntimeHelper:
 
         ``timeout`` applies independently to each attempt — a stuck first call
         that triggers a refresh-and-retry still gets the full budget on retry.
+        A 429 marks the run rate-limited, so it sends no notice for what the limit cut off.
         """
+        response = await self._call_with_auth_retry(op, timeout=timeout, op_label=op_label)
+        if response.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value:
+            self.c.run_state.rate_limited = True
+        return response
+
+    async def _call_with_auth_retry(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+        *,
+        timeout: float | None,
+        op_label: str | None,
+    ) -> GitLabResponse:
         token_sent = self._current_token()
         response = await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
         if not self._is_auth_error(response):
@@ -326,8 +376,12 @@ class RuntimeHelper:
 
         self.logger.info("GitLab API returned auth error; refreshing OAuth token and retrying once.")
         if not await self.force_refresh_oauth_token():
+            await self._note_rejected_credentials(response, self._cannot_refresh)
             return response
-        return await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
+        response = await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
+        if self._is_auth_error(response):
+            await self._note_rejected_credentials(response, "also after a token refresh")
+        return response
 
     def _current_token(self) -> str | None:
         client = self.c.external_client
@@ -450,6 +504,8 @@ class RuntimeHelper:
                     err,
                     exc_info=err,
                 )
+                if getattr(err, "response_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
+                    self.c.run_state.rate_limited = True
                 return GitLabResponse(success=False, data=items, error=str(err))
             if done:
                 break
