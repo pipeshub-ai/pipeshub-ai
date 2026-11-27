@@ -122,6 +122,16 @@ only the few most-used tools in full and deferring the rest by group (Anthropic'
 - The preloading cues: a keyword index cannot score "after 2 mins" against tool text, so an on-demand group carries
   its own cue and hint patterns, which unlock it or point at it before the first turn.
 - Delete does not record the chat it came from (the schedule is gone; a tombstone keeps only its origin).
+- D5's current values on the harness: the durable loop journals an ask's reason as `interaction.explained`, which has
+  no field for them (an unknown field is refused and the run fails). The harness card reads the schedule itself
+  (`GET /agent-harness/schedules/{id}`, as the person) when its ask carries none; classic chat's card is sent them.
+  A schedule that cannot be read leaves the card listing the call's arguments.
+- D6 through `call_tool` (D8): the durable loop journals the model's call, the `call_tool` wrapper, so the approval is
+  bound to the wrapper's digest while the tool runs with the arguments inside it. The tool's context carries the name
+  the wrapper named (`ToolContext.called_as`) and the internal route's body carries it (`calledAs`). Node recomputes
+  the wrapper's digest from the arguments it is sent, `{name: calledAs, arguments}`, and accepts the call only when
+  that, or the arguments' own digest, is the journaled one. Engines are unchanged: their gateway unwraps `call_tool`
+  before the digest is taken.
 
 ## Owner amendments
 

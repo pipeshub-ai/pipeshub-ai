@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { i18n } from '@/lib/i18n';
 import type { ApprovalReason, PendingApproval, ToolApprovalDetails } from '../../../types';
@@ -23,6 +23,8 @@ const chat = vi.hoisted(() => ({
     settings: { availableModels: [] },
   },
 }));
+const schedules = vi.hoisted(() => ({ get: vi.fn(() => Promise.reject(new Error('unread'))) }));
+vi.mock('@/app/(main)/workspace/schedules/api', () => ({ SchedulesApi: schedules }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
@@ -192,6 +194,43 @@ describe('never a wrong before and after: the arguments as any call’s', () => 
     expect(interactionTitle(t as never, { toolName: 'pipeshub@schedules/update' })).toBe('Change a schedule');
     expect(interactionAction(t as never, { toolName: 'schedule_delete' })).toBe('Delete a schedule');
     expect(interactionTitle(t as never, { toolName: 'mcp_evil_schedule_delete' })).not.toBe('Delete a schedule');
+  });
+});
+
+describe('a harness card reads the schedule itself: its journaled ask has no place for the current values', () => {
+  const asRead = {
+    id: 'sch-1', name: JOKE.name, query: JOKE.ask, status: 'active', revision: 3, notify: ['in_app'],
+    trigger: { kind: 'cron', cron: '0 9 * * 1-5', timeZone: 'America/Los_Angeles', catchUp: 'skip' },
+  };
+
+  it('an edit sent without current values says the change once the schedule is read, as the person', async () => {
+    schedules.get.mockResolvedValueOnce(asRead as never);
+    renderHarness(held('pipeshub@schedules/update', { id: 'sch-1', revision: 3, ask: 'Tell me a short animal joke.' }));
+    await waitFor(() => expect(heading()).toBe('Change Joke in two minutes'));
+    expect(schedules.get).toHaveBeenCalledWith('sch-1');
+    expect(screen.getByTestId('schedule-change-ask').textContent).toBe('What it asksTell me a short joke. → Tell me a short animal joke.');
+  });
+
+  it('a delete and a pause read it too', async () => {
+    schedules.get.mockResolvedValueOnce(asRead as never).mockResolvedValueOnce(asRead as never);
+    renderHarness(held('pipeshub@schedules/delete', { id: 'sch-1', revision: 3 }));
+    await waitFor(() => expect(heading()).toBe('Delete Joke in two minutes'));
+    cleanup();
+    renderHarness(held('pipeshub@schedules/update', { id: 'sch-1', revision: 3, action: 'pause' }));
+    await waitFor(() => expect(heading()).toBe('Pause Joke in two minutes'));
+  });
+
+  it('values sent with the card are used as they are, never read again', () => {
+    renderHarness(held('pipeshub@schedules/update', { id: 'sch-1', ask: 'Tell me a short animal joke.' }, JOKE));
+    expect(heading()).toBe('Change Joke in two minutes');
+    expect(schedules.get).not.toHaveBeenCalled();
+  });
+
+  it('a schedule that cannot be read leaves the arguments listed', async () => {
+    renderHarness(held('pipeshub@schedules/update', { id: 'sch-1', ask: 'New' }));
+    await waitFor(() => expect(schedules.get).toHaveBeenCalled());
+    expect(heading()).toBe('Change a schedule');
+    expect(screen.getByTestId('approval-preview')).toBeTruthy();
   });
 });
 

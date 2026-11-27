@@ -309,7 +309,7 @@ export function describeScheduleStoreContract(
       await f.store.update(ORG, schedule.id, 1, { skipNextAt: null }, T0 + 7);
       expect(await f.store.get(ORG, schedule.id)).to.not.have.property('skipNextAt');
       expect(await f.store.update(ORG, 'no-such', 0, { name: 'x' }, T0)).to.equal(null);
-      expect(await f.store.update('0000000000000000000000ff', schedule.id, 2, { name: 'x' }, T0)).to.equal(null);
+      expect(await f.store.update(OTHER_ORG, schedule.id, 2, { name: 'x' }, T0)).to.equal(null);
       // A pause, a resume and a version move are changes too.
       const paused = await f.store.setStatus(
         ORG,

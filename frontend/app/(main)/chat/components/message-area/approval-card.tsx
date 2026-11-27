@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { maskedReason, previewPayload, safeText, sourceHref } from '../../approval-preview';
 import { PreviewValue } from './preview-value';
-import { ScheduleChangeCall, ScheduleSummary, useScheduleChangeWords } from './schedule-summary';
+import { ScheduleChangeCall, ScheduleSummary, useCardSchedule, useScheduleChangeWords } from './schedule-summary';
 import { DisplaySafetyNote, MarkedText } from './display-safety';
 import {
   allowConversationText,
@@ -341,12 +341,10 @@ export function ApprovalCard({
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const schedule = scheduleToolOf(approval);
+  const change = schedule === 'update' || schedule === 'delete' ? schedule : null;
+  const current = useCardSchedule(change, approval.args, approval.schedule);
   // ADR-SCH-03 D5: a schedule change is titled with what it does to which schedule ("Pause Standup summary").
-  const changeWords = useScheduleChangeWords(
-    schedule === 'update' || schedule === 'delete' ? schedule : null,
-    approval.editedArgs ?? approval.args,
-    approval.schedule,
-  );
+  const changeWords = useScheduleChangeWords(change, approval.editedArgs ?? approval.args, current);
   // AP-06: an approved edit that changed where the call sends names the new place, as it ran.
   const title = changeWords?.title ?? interactionTitle(t, editedDestination(approval));
   const why = interactionWhy(t, approval);
@@ -511,7 +509,7 @@ export function ApprovalCard({
           <EditedReceipt
             args={approval.args}
             editedArgs={edited}
-            renderAll={(args) => <CallPreview args={args} schedule={schedule} current={approval.schedule} />}
+            renderAll={(args) => <CallPreview args={args} schedule={schedule} current={current} />}
           />
         ) : effect?.diff ? (
           // UX-03: an edit shows what it changes; its arguments are the same text before and after.
@@ -519,7 +517,7 @@ export function ApprovalCard({
         ) : clone ? (
           <CloneSummary approval={approval} />
         ) : siteUpload ? null : (
-          <CallPreview args={approval.args} schedule={schedule} current={approval.schedule} />
+          <CallPreview args={approval.args} schedule={schedule} current={current} />
         )}
         {effect?.costEstimate ? <EffectCost usd={effect.costEstimate.usd} /> : null}
         {!argsHidden && reason ? <Sources reason={reason} /> : null}

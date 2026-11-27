@@ -450,7 +450,9 @@ async def test_sch03_harness_a_change_asks_with_the_current_values_whatever_the_
     await asks.consult(call, effect)
     assert asks(call, effect) == "ask"
     reason = asks.ask_reason(call, effect)
-    assert reason is not None and reason["schedule"] == CARD and reason["conversationGrant"] is False
+    assert reason is not None and reason["conversationGrant"] is False
+    # Read before asking, but not journaled with the reason: `interaction.explained` has no field for it.
+    assert asks.current(call) == CARD and "schedule" not in reason
     assert asks.grant_answers(call, effect) is False
     assert reason["destination"]["label"] == shared.CARD_LABELS[effect.tool_id]  # type: ignore[index]
 

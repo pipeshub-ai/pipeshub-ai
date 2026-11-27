@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import sinon from 'sinon';
 import { InMemoryScheduleStore } from '../../../src/modules/agent-harness/adapters/in-memory-schedules';
 import {
+  type ChatScheduleRequest,
   ChatScheduleService,
   SCHEDULE_DELETE_TOOL_ID,
   SCHEDULE_UPDATE_TOOL_ID,
@@ -420,6 +421,54 @@ describe('ADR-SCH-03 managing schedules from chat', () => {
         await w.chat.update(ORG, runId, made.id, { interactionId: LOOP_FIRST, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: now });
       }
       expect(w.admission.admitted).to.equal(2);
+    });
+
+    describe('a schedule tool reached through call_tool (D8): the approval is bound to the wrapper', () => {
+      // Sent by the real Python durable kernel (tests/unit/harness/test_sch03_call_tool_binding.py pins it).
+      const fixture = JSON.parse(
+        readFileSync(resolve(__dirname, 'fixtures/sch03-call-tool-approval.json'), 'utf8'),
+      ) as Record<'create' | 'update', { runId: string; bindingDigest: string; body: Record<string, unknown> & { interactionId: string } }>;
+      const journal = (w: ReturnType<typeof chatWorld>, runId: string, interactionId: string, bindingDigest: string) =>
+        w.events.push(
+          { type: 'interaction.requested', runId, data: { interactionId, kind: 'approval', bindingDigest } } as unknown as JournalEvent,
+          resolved(interactionId, 'approved', runId),
+        );
+      const wrapperOf = (name: string, args: unknown) => canonicalDigest({ name, arguments: args });
+      const bindingOf = (ix: string, toolId: string, argsDigest: string) =>
+        canonicalDigest({ interactionId: ix, kind: 'approval', subject: toolId, argsDigest });
+
+      it('the create the kernel sent passes Node’s check; other arguments or another wrapped name do not', async () => {
+        const { runId, bindingDigest, body } = fixture.create;
+        const w = chatWorld([runId]);
+        journal(w, runId, body.interactionId, bindingDigest);
+        const sent = body as unknown as ChatScheduleRequest;
+        const tampered = { ...sent, arguments: { ...(sent.arguments as object), ask: 'Something else' } } as ChatScheduleRequest;
+        expect(await code(w.chat.create(ORG, runId, 'att-1', tampered))).to.equal('SCHEDULE_NOT_APPROVED');
+        expect(await code(w.chat.create(ORG, runId, 'att-1', { ...sent, calledAs: 'schedule_delete' }))).to.equal(
+          'SCHEDULE_NOT_APPROVED',
+        );
+        const unwrapped: ChatScheduleRequest = { ...sent };
+        delete unwrapped.calledAs;
+        expect(await code(w.chat.create(ORG, runId, 'att-1', unwrapped))).to.equal('SCHEDULE_NOT_APPROVED');
+        const made = await w.chat.create(ORG, runId, 'att-1', sent);
+        expect(made.created).to.equal(true);
+      });
+
+      it('an update through call_tool changes the schedule; tampered arguments under the wrapper are refused', async () => {
+        const w = chatWorld();
+        const made = (await w.service.create(alice, CRON)).schedule;
+        const args = { id: made.id, revision: 0, action: 'pause' as const };
+        const ix = 'ix.approve.t1.0';
+        const callArgsDigest = wrapperOf('schedule_update', args);
+        journal(w, RUN, ix, bindingOf(ix, SCHEDULE_UPDATE_TOOL_ID, callArgsDigest));
+        const call = (a: Record<string, unknown>) =>
+          w.chat.update(ORG, RUN, made.id, {
+            interactionId: ix, toolId: SCHEDULE_UPDATE_TOOL_ID, arguments: a as never, callArgsDigest, calledAs: 'schedule_update',
+          });
+        expect(await code(call({ ...args, action: 'run_now' }))).to.equal('SCHEDULE_NOT_APPROVED');
+        const changed = await call(args);
+        expect([changed.changed, changed.schedule?.status]).to.deep.equal([true, 'paused']);
+      });
     });
 
     it('refused without the person’s own approval, for another schedule, other arguments or a mixed call', async () => {

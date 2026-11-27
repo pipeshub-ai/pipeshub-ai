@@ -42,6 +42,8 @@ export const createChatScheduleSchema = z.object({
         .string()
         .regex(/^sha256:[0-9a-f]{64}$/)
         .optional(),
+      /** The name the model's `call_tool` wrapper named, when it called the tool through it (ADR-SCH-03 D8). */
+      calledAs: z.string().min(1).max(256).optional(),
     })
     .strict(),
 });
@@ -104,6 +106,7 @@ export class AgentHarnessChatScheduleController {
           interactionId: body.interactionId,
           toolId: body.toolId,
           arguments: toolArguments(body.arguments),
+          ...(body.calledAs !== undefined ? { calledAs: body.calledAs } : {}),
           ...(body.callArgsDigest !== undefined
             ? { callArgsDigest: body.callArgsDigest }
             : {}),
@@ -188,6 +191,7 @@ export class AgentHarnessChatScheduleController {
         const call = {
           interactionId: body.interactionId,
           toolId: body.toolId,
+          ...(body.calledAs !== undefined ? { calledAs: body.calledAs } : {}),
           ...(body.callArgsDigest !== undefined
             ? { callArgsDigest: body.callArgsDigest }
             : {}),

@@ -90199,6 +90199,7 @@ paths:
                 interactionId: { type: string, maxLength: 256 }
                 toolId: { type: string, enum: ['pipeshub@schedules/create'] }
                 callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                calledAs: { type: string, minLength: 1, maxLength: 256, description: "The name the model's call_tool wrapper named, when the tool was called through it; callArgsDigest is then the wrapper's digest over these arguments" }
                 arguments: { $ref: '#/components/schemas/AgentHarnessScheduleCreateArguments' }
       responses:
         '201':
@@ -90248,6 +90249,7 @@ paths:
         '400': { description: Malformed query }
         '401': { description: "Missing, invalid, expired or superseded attempt token" }
         '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '429': { description: "More than 30 schedule reads for this run in a minute" }
   /agent-harness/internal/runs/{runId}/schedules/{scheduleId}:
     get:
       tags: [Agent Harness Internal]
@@ -90270,6 +90272,7 @@ paths:
               schema: { $ref: '#/components/schemas/AgentSchedule' }
         '401': { description: "Missing, invalid, expired or superseded attempt token" }
         '404': { description: "Run not found; `HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND`; `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
+        '429': { description: "More than 30 schedule reads for this run in a minute" }
   /agent-harness/internal/runs/{runId}/schedules/{scheduleId}/update:
     post:
       tags: [Agent Harness Internal]
@@ -90302,6 +90305,7 @@ paths:
                 interactionId: { type: string, maxLength: 256 }
                 toolId: { type: string, enum: ['pipeshub@schedules/update'] }
                 callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                calledAs: { type: string, minLength: 1, maxLength: 256, description: "The name the model's call_tool wrapper named, when the tool was called through it; callArgsDigest is then the wrapper's digest over these arguments" }
                 arguments: { type: object, description: "Exactly `contracts/harness/ext/pipeshub/api/schedule-update-arguments.schema.json`, its `id` the path's" }
       responses:
         '200':
@@ -90350,6 +90354,7 @@ paths:
                 interactionId: { type: string, maxLength: 256 }
                 toolId: { type: string, enum: ['pipeshub@schedules/delete'] }
                 callArgsDigest: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "The call's own arguments digest; needed only when the person edited the call" }
+                calledAs: { type: string, minLength: 1, maxLength: 256, description: "The name the model's call_tool wrapper named, when the tool was called through it; callArgsDigest is then the wrapper's digest over these arguments" }
                 arguments: { type: object, description: "Exactly `contracts/harness/ext/pipeshub/api/schedule-delete-arguments.schema.json`, its `id` the path's" }
       responses:
         '200':
@@ -91506,6 +91511,7 @@ paths:
         '403': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN`: not its owner" }
         '404': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_NOT_FOUND` or `HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED`" }
         '409': { description: "`HTTP_AGENT_HARNESS_SCHEDULE_CHANGED`; `HTTP_AGENT_HARNESS_SCHEDULE_RAN_ONCE`; `HTTP_AGENT_HARNESS_SCHEDULE_DISABLED`" }
+        '503': { description: "`HTTP_CP_UNAVAILABLE`: the change could not be recorded in the audit chain, so it was not made" }
   /agent-harness/schedules/{scheduleId}/agent-version:
     put:
       tags: [Agents]

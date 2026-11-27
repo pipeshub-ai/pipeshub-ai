@@ -1,9 +1,9 @@
 {
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
- "harnessTestFiles": 2051,
+ "harnessTestFiles": 2053,
  "claimedTestFiles": 4010,
- "claimedTests": 43123,
+ "claimedTests": 43133,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -15988,7 +15988,7 @@
    "name": "Scheduler",
    "status": "built, Labs off by default",
    "files": 46,
-   "tests": 420,
+   "tests": 426,
    "filesByLevel": {
     "component": 2,
     "contract": 1,
@@ -16003,7 +16003,7 @@
     "e2e-browser": 1,
     "integration": 16,
     "integration-docker": 1,
-    "unit": 354
+    "unit": 360
    },
    "markers": {
     "docker": 1
@@ -16039,13 +16039,13 @@
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch02-schedules-without-harness.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 16
+     "tests": 20
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/sch03-managing-schedules.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 23
+     "tests": 25
     },
     {
      "path": "backend/nodejs/apps/tests/modules/agent-harness/schedule-approvals.test.ts",
@@ -22777,14 +22777,14 @@
    "name": "Frontend chat surfaces",
    "status": "built",
    "files": 509,
-   "tests": 4593,
+   "tests": 4597,
    "filesByLevel": {
     "e2e-browser": 77,
     "unit": 432
    },
    "testsByLevel": {
     "e2e-browser": 327,
-    "unit": 4266
+    "unit": 4270
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -24180,7 +24180,7 @@
      "path": "frontend/app/(main)/chat/components/message-area/__tests__/sch03-schedule-change-cards.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 14
+     "tests": 18
     },
     {
      "path": "frontend/app/(main)/chat/components/message-area/__tests__/search-degraded-note.test.tsx",
@@ -29590,6 +29590,7 @@
   "backend/nodejs/apps/tests/cohesion/c35-one-digest-scheme.test.ts",
   "backend/nodejs/apps/tests/contracts/ma1-child-spawned.test.ts",
   "backend/nodejs/apps/tests/contracts/uxrb1-planned-run.test.ts",
+  "backend/nodejs/apps/tests/modules/agent-harness/sch03-internal-route-limits.test.ts",
   "backend/python/tests/cohesion/test_c24_selection_parity.py",
   "backend/python/tests/cohesion/test_c35_one_digest_scheme.py",
   "backend/python/tests/cohesion/test_c36_flags_and_dimensions.py",
@@ -29615,6 +29616,7 @@
   "backend/python/tests/cohesion/test_v2_spec_trackers.py",
   "backend/python/tests/cohesion/test_wp18_ux06_next_actions.py",
   "backend/python/tests/cohesion/test_wp56_priority_docs.py",
-  "backend/python/tests/contracts/test_ma1_role_child_journal.py"
+  "backend/python/tests/contracts/test_ma1_role_child_journal.py",
+  "backend/python/tests/unit/harness/test_sch03_call_tool_binding.py"
  ]
 }

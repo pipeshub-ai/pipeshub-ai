@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { scheduleCallOf, scheduleChangeOf } from '../../approval-preview';
@@ -10,6 +10,8 @@ import {
   type ScheduleChangeWords,
   type ShownValue,
 } from '@/app/(main)/workspace/schedules/schedule-words';
+import { SchedulesApi } from '@/app/(main)/workspace/schedules/api';
+import type { Schedule } from '@/app/(main)/workspace/schedules/types';
 import { MarkedText } from './display-safety';
 import { PreviewValue } from './preview-value';
 
@@ -56,6 +58,60 @@ export function ScheduleSummary({ args, fallback }: { args: string; fallback: Re
       </Text>
     </Flex>
   );
+}
+
+/** A schedule as a change's card reads it, `{id, name, ask, when, notify, status, revision}`: what the classic card is sent. */
+export function cardSchedule(schedule: Schedule): Record<string, unknown> {
+  const trigger = schedule.trigger;
+  const when =
+    trigger.kind === 'once'
+      ? { kind: 'once', at: trigger.at, timeZone: trigger.timeZone }
+      : trigger.kind === 'cron'
+        ? { kind: 'cron', cron: trigger.cron, timeZone: trigger.timeZone }
+        : {};
+  return {
+    id: schedule.id,
+    name: schedule.name,
+    ask: schedule.query ?? '',
+    when,
+    notify: [...schedule.notify],
+    status: schedule.status,
+    revision: schedule.revision,
+  };
+}
+
+/**
+ * The current values a schedule change's card shows. The classic card is sent them; a harness card reads the schedule
+ * itself, as the person, because the journal that carries a harness ask has no place for them. Undefined until read,
+ * and whenever it cannot be (the card then lists the call's arguments).
+ */
+export function useCardSchedule(tool: 'update' | 'delete' | null, args: string, sent: unknown): unknown {
+  const id = useMemo(() => {
+    if (tool === null || (sent !== undefined && sent !== null)) return null;
+    try {
+      const parsed: unknown = JSON.parse(args);
+      const value = parsed && typeof parsed === 'object' ? (parsed as { id?: unknown }).id : undefined;
+      return typeof value === 'string' && value !== '' ? value : null;
+    } catch {
+      return null;
+    }
+  }, [tool, args, sent]);
+  const [read, setRead] = useState<{ id: string; schedule: Record<string, unknown> } | null>(null);
+  useEffect(() => {
+    if (id === null) return undefined;
+    let live = true;
+    SchedulesApi.get(id).then(
+      (schedule) => {
+        if (live) setRead({ id, schedule: cardSchedule(schedule) });
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  if (sent !== undefined && sent !== null) return sent;
+  return read !== null && read.id === id ? read.schedule : undefined;
 }
 
 /**

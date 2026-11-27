@@ -97,6 +97,7 @@ class Invoker:
         turn_text: str = "",
         interaction_id: str | None = None,
         args_digest: str | None = None,
+        called_as: str | None = None,
     ) -> ToolContext:
         scope = self._scope
         return ToolContext(
@@ -108,6 +109,7 @@ class Invoker:
             turn_text,
             interaction_id,
             args_digest,
+            called_as,
         )
 
     async def read(self, call: EffectCall, ctx: ToolContext) -> ToolExecution:

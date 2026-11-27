@@ -153,6 +153,11 @@ export interface ChatScheduleRequest {
    * and the interaction id is the original call's.
    */
   callArgsDigest?: string;
+  /**
+   * The name the model's `call_tool` wrapper named, when the tool was reached through it (ADR-SCH-03 D8): the
+   * call's digest is then the wrapper's, `{name, arguments}`, over the same arguments.
+   */
+  calledAs?: string;
 }
 
 export interface ChatScheduleView {
@@ -411,6 +416,7 @@ export class ChatScheduleService {
       toolId: string;
       arguments: ScheduleUpdateToolArguments;
       callArgsDigest?: string;
+      calledAs?: string;
     },
   ): Promise<ChatScheduleChange> {
     const args = request.arguments;
@@ -529,6 +535,7 @@ export class ChatScheduleService {
       toolId: string;
       arguments: ScheduleDeleteToolArguments;
       callArgsDigest?: string;
+      calledAs?: string;
     },
   ): Promise<ChatScheduleChange> {
     if (request.arguments.id !== scheduleId) {
@@ -573,6 +580,7 @@ export class ChatScheduleService {
       toolId: string;
       arguments: unknown;
       callArgsDigest?: string;
+      calledAs?: string;
       expected: string;
     },
   ): Promise<HarnessRun> {
@@ -677,6 +685,7 @@ export class ChatScheduleService {
       toolId: string;
       arguments: unknown;
       callArgsDigest?: string;
+      calledAs?: string;
     },
     expected: string,
   ): void {
@@ -696,11 +705,20 @@ export class ChatScheduleService {
     }
     const digest = canonicalDigest(request.arguments);
     const callDigest = request.callArgsDigest ?? digest;
+    // Reached through `call_tool`, the call the person approved was the wrapper over these same arguments: its
+    // digest is recomputed here from the arguments sent, never taken on trust.
+    const wrapped =
+      request.calledAs !== undefined
+        ? canonicalDigest({
+            name: request.calledAs,
+            arguments: request.arguments,
+          })
+        : undefined;
     if (approval.editedDigest !== undefined) {
       if (digest !== approval.editedDigest) {
         throw notApproved('not the arguments as edited');
       }
-    } else if (callDigest !== digest) {
+    } else if (callDigest !== digest && callDigest !== wrapped) {
       throw notApproved('other arguments');
     }
     if (

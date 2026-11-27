@@ -190,6 +190,9 @@ export const SchedulesApi = {
       };
     }, true),
 
+  /** One schedule of the person's, as it is now: a harness change's card reads it for its "before" (ADR-SCH-03 D5). */
+  get: (id: string) => harnessCall(async () => scheduleFrom((await apiClient.get(at(id), QUIET)).data)),
+
   /** ADR-SCH-03 D4: an edit; refused `SCHEDULE_CHANGED` when the schedule moved past `revision` since it was read. */
   update: (id: string, patch: SchedulePatch) =>
     harnessCall(async () => {

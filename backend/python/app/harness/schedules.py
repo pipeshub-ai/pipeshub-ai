@@ -110,15 +110,19 @@ class NodeSchedules:
         self._log = route.log("app.harness.schedules")
 
     async def create(
-        self, interaction_id: str, call_args_digest: str, arguments: Mapping[str, JsonValue]
+        self, interaction_id: str, call_args_digest: str, arguments: Mapping[str, JsonValue],
+        called_as: str | None = None,
     ) -> ScheduleMade:
         """``call_args_digest``: the model's call's, which the interaction is keyed on; ``arguments`` may be the
-        person's edit of it (AP-06). The route adds the attempt's id and fence."""
+        person's edit of it (AP-06). ``called_as``: the name a ``call_tool`` wrapper named, when the model called
+        through it, so Node can tie the wrapper's digest to these arguments. The route adds the attempt's id and
+        fence."""
         body: dict[str, JsonValue] = {
             "interactionId": interaction_id,
             "toolId": SCHEDULE_TOOL_ID,
             "callArgsDigest": call_args_digest,
             "arguments": dict(arguments),
+            **({"calledAs": called_as} if called_as else {}),
         }
         try:
             response = await self._route.post(_PATH, body=body, operation="schedule.create")
@@ -152,14 +156,15 @@ class NodeSchedules:
         return _json(await self._get(f"{_PATH}/{quote(schedule_id, safe='')}", {}, "schedule.read"))
 
     async def change(
-        self, kind: str, interaction_id: str, call_args_digest: str, arguments: Mapping[str, JsonValue]
+        self, kind: str, interaction_id: str, call_args_digest: str, arguments: Mapping[str, JsonValue],
+        called_as: str | None = None,
     ) -> dict[str, Any] | None:
         """``kind``: ``update`` or ``delete``, as the person approved it (ADR-SCH-03 D6): Node checks the run's journal
         as for a create. The schedule as it is after the change; ``None`` once deleted."""
         tool_id = SCHEDULE_UPDATE_TOOL_ID if kind == "update" else SCHEDULE_DELETE_TOOL_ID
         body: dict[str, JsonValue] = {
             "interactionId": interaction_id, "toolId": tool_id, "callArgsDigest": call_args_digest,
-            "arguments": dict(arguments),
+            "arguments": dict(arguments), **({"calledAs": called_as} if called_as else {}),
         }
         suffix = f"{_PATH}/{quote(str(arguments['id']), safe='')}/{kind}"
         try:
@@ -270,7 +275,7 @@ class ScheduleCreateTool(Tool):
         called = ctx.args_digest or args_digest(kwargs)
         interaction = ctx.interaction_id or approval_interaction_id(EffectKey(ctx.run_id, SCHEDULE_TOOL_ID, called))
         try:
-            made = await self._schedules.create(interaction, called, kwargs)
+            made = await self._schedules.create(interaction, called, kwargs, ctx.called_as)
         except ScheduleRefused as refused:
             return ToolOutput(success=False, error=refused_text(refused), error_code="failed")
         except ScheduleUnavailable:
@@ -373,7 +378,7 @@ class _ScheduleChangeTool(_ScheduleTool):
             before = await self._schedules.read(str(kwargs["id"]))
             if before.get("revision") != kwargs["revision"]:
                 raise ScheduleRefused("SCHEDULE_CHANGED", "")
-            after = await self._schedules.change(self._kind, interaction, called, kwargs)
+            after = await self._schedules.change(self._kind, interaction, called, kwargs, ctx.called_as)
         except ScheduleRefused as refused:
             return ToolOutput(success=False, error=change_refused_text(refused), error_code="failed")
         except ScheduleUnavailable:
@@ -484,14 +489,19 @@ class ScheduleAsks:
         if not self._ours(effect) or self(call, effect) != "ask":
             return reason
         where = destination_wire(schedule_destination(call, effect.tool_id))
-        current = self._current.get(call.id)
-        shown: dict[str, JsonValue] = {"schedule": cast("JsonValue", current)} if isinstance(current, dict) else {}
+        # The schedule's current values are not journaled with the reason: `interaction.explained` has no field for
+        # them, and a journal refuses the whole commit for an unknown one.
         if reason:
-            return {**reason, "conversationGrant": False, "destination": where, **shown}
+            return {**reason, "conversationGrant": False, "destination": where}
         return {
             "rule": ASK_RULE, "layer": ASK_LAYER, "toolId": effect.tool_id, "conversationGrant": False,
-            "destination": where, **shown,
+            "destination": where,
         }
+
+    def current(self, call: ToolCall) -> dict[str, Any] | None:
+        """The schedule a change's card would show, as read before asking; None when it was not read."""
+        current = self._current.get(call.id)
+        return current if isinstance(current, dict) else None
 
     def grant_answers(self, call: ToolCall, effect: ToolEffect) -> bool:
         if self._ours(effect):
