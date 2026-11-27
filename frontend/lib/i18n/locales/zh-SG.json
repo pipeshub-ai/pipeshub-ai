@@ -3147,7 +3147,8 @@
         "message": "如果放弃，您的编辑将不会被保存",
         "confirm": "放弃",
         "cancel": "继续编辑"
-      }
+      },
+      "dataCollectionActive": "正在收集使用数据并发送到已配置的指标服务器。关闭此项即可停止。"
     },
     "mcpAccess": {
       "title": "MCP 访问",

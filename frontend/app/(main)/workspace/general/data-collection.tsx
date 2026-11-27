@@ -21,6 +21,8 @@ const METRICS_KEY = [SWR_NS.org, 'metrics'] as const;
 
 export interface MetricsConfig {
   enableMetricCollection: string; // "true" | "false" (string from API)
+  /** False when the deployment runs no telemetry; the page then hides Data Collection. */
+  telemetryEnabled?: boolean;
 }
 
 export const MetricsApi = {
@@ -70,6 +72,12 @@ export function DataCollectionSection() {
   const { t } = useTranslation();
   const checked = useGeneralStore((s) => s.form.optIn);
   const setField = useGeneralStore((s) => s.setField);
+  const collecting = useGeneralStore((s) => s.savedForm.optIn);
+  const { data } = useAdminMetrics();
+
+  // Shown only while telemetry can run on this deployment, so whatever is collected can
+  // always be seen and switched off. Hidden until the admin-only metrics config has loaded.
+  if (!data || data.telemetryEnabled === false) return null;
 
   return (
     <Box style={{ marginBottom: 'var(--space-5)' }}>
@@ -89,6 +97,15 @@ export function DataCollectionSection() {
         }
       >
         <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
+          {collecting && (
+            <Text
+              size="2"
+              weight="medium"
+              style={{ color: 'var(--accent-11)', display: 'block', marginBottom: 'var(--space-3)' }}
+            >
+              {t('workspace.general.dataCollectionActive')}
+            </Text>
+          )}
           <Text
             size="2"
             style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
