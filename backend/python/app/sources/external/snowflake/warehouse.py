@@ -32,8 +32,12 @@ async def connector_runner(
     config_service: ConfigurationService,
     connector_id: str | None,
     query_tag: str,
+    public_only: bool = True,
 ) -> AsyncIterator[SnowflakeStatementRunner]:
     """A runner on the connector's credentials and warehouse; its HTTP client closes on exit.
+
+    ``public_only`` is the connector's address rule: a private-link account name can resolve
+    to a private address, so a personal connector's runner reaches public addresses only.
 
     Raises ValueError when the connector's config is missing or incomplete.
     """
@@ -42,6 +46,8 @@ async def connector_runner(
     )
     settings = parse_connection_settings(config)
     data_source = SnowflakeDataSource(settings.create_client())
+    if public_only:
+        data_source.http.require_public_addresses()
     try:
         yield SnowflakeStatementRunner(
             data_source,

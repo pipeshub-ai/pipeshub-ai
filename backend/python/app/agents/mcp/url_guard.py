@@ -11,18 +11,23 @@ pinning in `app.utils.public_http`. Two MCP-specific rules on top:
   cross-origin hop. (The mcp SDK refuses cross-origin redirects too; the guard doesn't rely
   on it.)
 
-Behind an environment proxy (`HTTPS_PROXY`, honouring `NO_PROXY`) the proxy resolves and
-connects, so nothing can be pinned. A name that resolves here is still checked address by
-address; one that doesn't — pods that reach the internet only through the proxy — gets the
-static checks (scheme, literal addresses, blocked hostnames) and the rest is the proxy's to
-police.
+Behind an environment proxy (`HTTPS_PROXY`, honouring `NO_PROXY`) the request is still
+pinned: the proxy is asked to connect to the checked address (CONNECT <ip>:<port>, or an
+absolute URL naming the address for plain http), while the host name is kept for TLS and the
+`Host` header. Left to resolve the name itself, the proxy could connect wherever the name
+points by then. Only hosts listed in `PIPESHUB_PROXY_ALLOWED_HOSTS` go to the proxy by name:
+a name that doesn't resolve here (pods that reach the internet only through the proxy), or
+one a proxy that filters by domain must see. Those get the static checks (scheme, literal
+addresses, blocked hostnames) and, when the name does resolve, the address checks.
 """
 from __future__ import annotations
 
 import asyncio
 import functools
+import ipaddress
 import logging
 import os
+import ssl
 import time
 import urllib.request
 from dataclasses import dataclass, replace
@@ -48,7 +53,6 @@ from app.utils.url_redaction import redact_url
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
 if TYPE_CHECKING:
-    import ssl
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -56,18 +60,72 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "MCPUrlBlockedError",
     "GuardedTransport",
+    "PROXY_ALLOWED_HOSTS_ENV",
+    "ProxyNameRefusedError",
     "MCPUrlPolicy",
     "McpGuardedTransport",
     "PerOriginGuardedTransport",
     "assert_mcp_url_allowed",
+    "bracket_ipv6_through_proxy",
     "check_mcp_url",
     "check_mcp_url_at_save",
     "guarded_mcp_http_client",
     "guarded_mcp_http_client_factory",
     "private_network_allowed",
+    "proxy_gateway_failure",
+    "proxy_sends_name",
+    "proxy_tls_context",
 ]
 
 PRIVATE_NETWORK_ENV = "MCP_ALLOW_PRIVATE_NETWORK_URLS"
+# Hosts a request through an environment proxy may name instead of the checked address:
+# comma-separated, exact (`mcp.example.com`) or a subdomain wildcard (`*.example.com`).
+PROXY_ALLOWED_HOSTS_ENV = "PIPESHUB_PROXY_ALLOWED_HOSTS"
+
+
+class ProxyNameRefusedError(MCPUrlBlockedError):
+    """A host that doesn't resolve here, behind a proxy that would resolve it, and not listed."""
+
+
+def proxy_sends_name(host: Optional[str]) -> bool:
+    """Whether a request through an environment proxy names `host` rather than its checked address."""
+    if not host:
+        return False
+    host = host.lower().removesuffix(".")
+    for raw in os.environ.get(PROXY_ALLOWED_HOSTS_ENV, "").split(","):
+        entry = raw.strip().lower().removesuffix(".")
+        if not entry:
+            continue
+        if entry.startswith("*."):
+            if host.endswith(entry[1:]):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+_PROXY_GATEWAY_STATUSES = frozenset({502, 504})
+_REPEATABLE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def proxy_gateway_failure(method: str, scheme: str, status: int) -> bool:
+    """Whether a response to a plain-http request through a proxy is worth trying the next
+    checked address for: the proxy answering that it could not reach this one.
+
+    A plain-http request is not tunnelled, so the proxy sends a 502 or 504 when it can't reach
+    the address, where an https one gets a refused CONNECT. That answer looks the same as an
+    origin's own 502 or 504 relayed by the proxy, so only a method that is safe to send twice
+    (GET, HEAD, OPTIONS) moves on. A body the proxy already forwarded is never sent again.
+    """
+    return scheme == "http" and status in _PROXY_GATEWAY_STATUSES and method.upper() in _REPEATABLE_METHODS
+
+
+def _proxy_name_refused(url: str, host: str) -> ProxyNameRefusedError:
+    logger.warning("Blocked outbound request to %s: not resolvable here and not in %s", redact_url(url), PROXY_ALLOWED_HOSTS_ENV)
+    return ProxyNameRefusedError(
+        f"The server name {host!r} can't be looked up on this server, and requests through the proxy "
+        f"only go to addresses checked here. To let the proxy look it up, add it to {PROXY_ALLOWED_HOSTS_ENV}."
+    )
 
 
 def private_network_allowed(instance: Any = None) -> bool:  # noqa: ANN401
@@ -157,12 +215,16 @@ async def assert_mcp_url_allowed(url: str, *, allow_private: bool) -> PublicTarg
 
 async def check_mcp_url(url: str, *, allow_private: bool) -> None:
     """The check before a request whose connection may go through an environment proxy: a
-    name we can't resolve is left to the proxy, having passed the static checks."""
+    name we can't resolve is left to the proxy, having passed the static checks, only when it
+    is listed in `PIPESHUB_PROXY_ALLOWED_HOSTS`."""
     try:
         await assert_mcp_url_allowed(url, allow_private=allow_private)
     except MCPUrlBlockedError as e:
         if not (isinstance(e.__cause__, UnresolvableHostError) and _env_proxy_for(httpx.URL(url))):
             raise
+        host = _hostname(url) or ""
+        if not proxy_sends_name(host):
+            raise _proxy_name_refused(url, host) from e.__cause__
 
 
 def check_mcp_url_at_save(url: str, *, allow_private: bool) -> None:
@@ -180,9 +242,8 @@ def _origin(url: Any) -> tuple[str, str, Optional[int]]:  # noqa: ANN401
 
 
 def _env_proxy_for(url: Any) -> Optional[str]:  # noqa: ANN401
-    """The environment proxy httpx would have used for `url`, if any. Proxied deployments
-    keep working; the proxy resolves the host itself, so such requests are checked but
-    not pinned."""
+    """The environment proxy httpx would have used for `url`, if any. The guard sends through
+    it itself, still pinned to the checked address (see `proxy_tls_context`)."""
     proxies = urllib.request.getproxies()
     if not proxies or urllib.request.proxy_bypass(url.host):
         return None
@@ -202,9 +263,97 @@ def _verify_context() -> ssl.SSLContext:
     return _ssl_context_for(os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_CERT_DIR"))
 
 
-def _inner_transport(lib: Any, proxy: Optional[str]) -> Any:  # noqa: ANN401
-    """The real transport behind a guard."""
-    return lib.AsyncHTTPTransport(proxy=proxy, verify=_verify_context())
+class _NamedPeerContext(ssl.SSLContext):
+    """TLS that names `peer_name` when it is asked to name an address.
+
+    Through a proxy, httpcore's tunnel takes the TLS server name from the URL host, which
+    the guard has replaced with the checked address, and ignores the `sni_hostname`
+    extension the direct path honours. Without this the certificate would be checked
+    against the address and fail. Only an address literal is renamed, so a connection that
+    already names a host is left as it is.
+    """
+
+    peer_name: str = ""
+
+    def _named(self, server_hostname: Any) -> Any:  # noqa: ANN401 - str, bytes (anyio passes bytes) or None
+        name = server_hostname.decode("ascii") if isinstance(server_hostname, bytes) else server_hostname
+        try:
+            ipaddress.ip_address((name or "").strip("[]"))
+        except ValueError:
+            return server_hostname
+        return self.peer_name or server_hostname
+
+    def wrap_bio(self, incoming: Any, outgoing: Any, server_side: bool = False, server_hostname: Any = None, session: Any = None) -> Any:  # noqa: ANN401, FBT001, FBT002 - ssl's signature
+        return super().wrap_bio(incoming, outgoing, server_side=server_side, server_hostname=self._named(server_hostname), session=session)
+
+    def wrap_socket(self, sock: Any, *args: Any, server_hostname: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401 - ssl's signature
+        return super().wrap_socket(sock, *args, server_hostname=self._named(server_hostname), **kwargs)
+
+
+@functools.lru_cache(maxsize=256)
+def _named_peer_context(peer_name: str, cert_file: Optional[str], cert_dir: Optional[str]) -> ssl.SSLContext:
+    # Built as `ssl.create_default_context` builds httpx's context, so verification is the same.
+    context = _NamedPeerContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    if cert_file:
+        context.load_verify_locations(cafile=cert_file)
+    elif cert_dir:
+        context.load_verify_locations(capath=cert_dir)
+    else:
+        import certifi
+
+        context.load_verify_locations(cafile=certifi.where())
+    context.peer_name = peer_name
+    return context
+
+
+def proxy_tls_context(url: Any) -> ssl.SSLContext:  # noqa: ANN401
+    """The certificate check for a guard that sends through an environment proxy: the proxy
+    connects to the checked address, and the certificate is still checked against the host's
+    name. Pass it as `verify` to the transport behind a proxied guard. Built once per host."""
+    if isinstance(url, str):
+        url = httpx.URL(url)
+    # The ASCII (IDNA) form, as TLS sends it; `plan_hop` names the host the same way.
+    host = url.raw_host.decode("ascii")
+    return _named_peer_context(host, os.environ.get("SSL_CERT_FILE"), os.environ.get("SSL_CERT_DIR"))
+
+
+class _BracketedAddressPool:
+    """The connection pool behind a proxied transport, with an IPv6 address in brackets.
+
+    httpx hands httpcore the bare host, and httpcore writes it into what the proxy reads:
+    `CONNECT 2001:db8::1:443`, or `GET http://2001:db8::1:80/` for plain http, which no
+    proxy can split into address and port. Bracketed, both come out right. TLS still names
+    the host: `_NamedPeerContext` reads the address through the brackets.
+    """
+
+    def __init__(self, pool: Any) -> None:  # noqa: ANN401
+        self._pool = pool
+
+    async def handle_async_request(self, request: Any) -> Any:  # noqa: ANN401
+        url = request.url
+        if b":" in url.host and not url.host.startswith(b"["):
+            request.url = type(url)(scheme=url.scheme, host=b"[%b]" % url.host, port=url.port, target=url.target)
+        return await self._pool.handle_async_request(request)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._pool, name)
+
+
+def bracket_ipv6_through_proxy(transport: Any) -> Any:  # noqa: ANN401
+    """`transport`, an `AsyncHTTPTransport` with a proxy, sending a pinned IPv6 address to the
+    proxy in a form it can read (see `_BracketedAddressPool`)."""
+    transport._pool = _BracketedAddressPool(transport._pool)
+    return transport
+
+
+def _inner_transport(lib: Any, proxy: Optional[str], url: Any = None) -> Any:  # noqa: ANN401
+    """The real transport behind a guard; through a proxy, the check that names `url`'s host."""
+    if not proxy:
+        return lib.AsyncHTTPTransport(verify=_verify_context())
+    verify = proxy_tls_context(url) if url is not None else _verify_context()
+    return bracket_ipv6_through_proxy(lib.AsyncHTTPTransport(proxy=proxy, verify=verify))
 
 
 def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
@@ -214,7 +363,8 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
 
     class _GuardedTransport(lib.AsyncBaseTransport):
         """Refuses any request off `base_url`'s origin and pins the rest to the address the
-        policy validated, looked up again every few minutes."""
+        policy validated, looked up again every few minutes, through an environment proxy
+        too. A host listed in `PIPESHUB_PROXY_ALLOWED_HOSTS` goes to the proxy by name."""
 
         def __init__(
             self,
@@ -226,26 +376,34 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
             self._base_url = base_url
             self._origin = _origin(lib.URL(base_url))
             self._allow_private = allow_private
-            proxy = _env_proxy_for(lib.URL(base_url))
-            self._pin = proxy is None
-            self._inner = inner or _inner_transport(lib, proxy)
+            url = lib.URL(base_url)
+            proxy = _env_proxy_for(url)
+            self._proxied = proxy is not None
+            self._pin = not (self._proxied and proxy_sends_name(url.host))
+            self._inner = inner or _inner_transport(lib, proxy, url)
             self._target: Optional[PublicTarget] = None
             self._resolved_at = 0.0
-            self._proxy_checked = False
+            self._name_checked_at: Optional[float] = None
             self._resolve_lock = asyncio.Lock()
 
         async def _resolved_target(self) -> PublicTarget:
             async with self._resolve_lock:
                 if self._target is None or time.monotonic() - self._resolved_at > _RESOLVE_TTL_SECONDS:
-                    self._target = await assert_mcp_url_allowed(self._base_url, allow_private=self._allow_private)
+                    try:
+                        self._target = await assert_mcp_url_allowed(self._base_url, allow_private=self._allow_private)
+                    except MCPUrlBlockedError as e:
+                        if self._proxied and isinstance(e.__cause__, UnresolvableHostError):
+                            raise _proxy_name_refused(self._base_url, self._origin[1]) from e.__cause__
+                        raise
                     self._resolved_at = time.monotonic()
                 return self._target
 
         async def _checked_for_proxy(self) -> None:
             async with self._resolve_lock:
-                if not self._proxy_checked:
+                at = self._name_checked_at
+                if at is None or time.monotonic() - at > _RESOLVE_TTL_SECONDS:
                     await check_mcp_url(self._base_url, allow_private=self._allow_private)
-                    self._proxy_checked = True
+                    self._name_checked_at = time.monotonic()
 
         async def handle_async_request(self, request: Any) -> Any:  # noqa: ANN401
             if _origin(request.url) != self._origin:
@@ -255,13 +413,21 @@ def _guarded_transport_class(lib: Any) -> type:  # noqa: ANN401
                 return await self._inner.handle_async_request(request)
             target = await self._resolved_target()
             # Every address passed the check; a dual-stack host can list an unreachable one
-            # first, so a failed connect (nothing sent yet) moves on to the next.
+            # first, so a failed connect (nothing sent yet) moves on to the next. Through a
+            # proxy that is a refused CONNECT, which also comes before any byte of the request,
+            # or, for plain http, the proxy's 502 or 504 (see `proxy_gateway_failure`).
             last_error: Optional[Exception] = None
-            for address in target.addresses:
+            addresses = target.addresses
+            for n, address in enumerate(addresses, start=1):
                 try:
-                    return await self._inner.handle_async_request(self._pinned(request, replace(target, addresses=(address,))))
-                except (lib.ConnectError, lib.ConnectTimeout) as e:
+                    response = await self._inner.handle_async_request(self._pinned(request, replace(target, addresses=(address,))))
+                except (lib.ConnectError, lib.ConnectTimeout, lib.ProxyError) as e:
                     last_error = e
+                    continue
+                if n < len(addresses) and self._proxied and proxy_gateway_failure(request.method, request.url.scheme, response.status_code):
+                    await response.aclose()
+                    continue
+                return response
             raise last_error or lib.ConnectError("no address to connect to", request=request)
 
         def _pinned(self, request: Any, target: PublicTarget) -> Any:  # noqa: ANN401

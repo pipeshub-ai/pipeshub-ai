@@ -603,6 +603,7 @@ class MariaDBClient:
         if not instance_id:
             raise ValueError("MariaDB toolset configuration is missing required field: instanceId")
 
+        from app.agents import toolset_store
         from app.edition_config import get_toolset_by_id
         mariadb_instance = await get_toolset_by_id(instance_id, config_service)
         if not isinstance(mariadb_instance, dict):
@@ -656,6 +657,9 @@ class MariaDBClient:
                 timeout=DEFAULT_CONNECT_TIMEOUT_S,
                 ssl_ca=None,
                 charset="utf8mb4",
+                # A member creates a personal toolset and picks its host, as with a personal
+                # connector; an organisation's is set up by an administrator.
+                public_only=toolset_store.is_personal(mariadb_instance),
             )
 
             logger.info("Built MariaDB client from toolset config")
