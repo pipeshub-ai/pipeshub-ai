@@ -747,8 +747,9 @@
     "moreOptions": "更多選項",
     "docs": "說明文件",
     "enterprise": {
-      "label": "EE 版提供",
-      "tooltip": "屬於 PipesHub 企業版"
+      "label": "企業版提供",
+      "tooltip": "PipesHub 企業版包含此功能",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "發生了一些問題",
@@ -2143,7 +2144,7 @@
       "title": "群組",
       "subtitle": "建立及管理群組以控制存取權和權限",
       "enterpriseTitle": "群組權限功能僅在企業版中提供",
-      "enterpriseMessage": "升級至企業版即可使用群組權限功能。",
+      "enterpriseMessage": "以群組為基礎的存取控制：一次為整個群組授予存取權。",
       "createGroup": "建立群組",
       "searchPlaceholder": "搜尋...",
       "emptyTitle": "您尚未建立任何群組",
@@ -2227,18 +2228,168 @@
       }
     },
     "enterprise": {
-      "contact": "聯絡銷售",
+      "contact": "聯絡我們",
       "scim": {
         "heading": "SCIM 佈建功能僅在企業版中提供",
-        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。"
+        "message": "透過 Okta 或 Microsoft Entra ID 自動佈建和取消佈建使用者。",
+        "benefits": {
+          "providers": "透過 SCIM 2.0 支援 Okta 和 Microsoft Entra ID",
+          "offboarding": "取消佈建的使用者會自動失去存取權",
+          "noManualWork": "不再需要手動邀請和移除使用者"
+        }
       },
       "auditLogs": {
         "heading": "稽核記錄功能僅在企業版中提供",
-        "message": "查看工作區中誰在何時做了什麼。"
+        "message": "查看工作區中誰在何時做了什麼。",
+        "benefits": {
+          "everyEvent": "每項操作的執行者、時間、IP 位址、對象和結果",
+          "filters": "依使用者、操作或結果篩選",
+          "alerts": "設定提醒，並匯出記錄用於合規審查"
+        }
       },
       "usage": {
-        "heading": "用量、額度和帳單功能僅在企業版中提供",
-        "message": "依人員、代理程式、連接器和模型查看 AI 成本，管理額度、方案和發票，並在用量設定中設定支出提醒。"
+        "heading": "用量和帳單功能僅在企業版中提供",
+        "message": "查看並控制 AI 支出。依使用者、代理程式、連接器和模型追蹤，設定每位使用者可用的額度，並管理額度和發票。",
+        "benefits": {
+          "breakdown": "依使用者、代理程式、連接器和模型統計 AI 支出",
+          "billing": "額度和發票集中在一處",
+          "alerts": "AI 支出超出上限時提醒你"
+        }
+      },
+      "benefitsTitle": "包含內容",
+      "relatedTitle": "企業版還提供",
+      "tenants": {
+        "heading": "多租戶功能僅在企業版中提供",
+        "message": "在一套部署中，為每個團隊、地區或客戶提供各自的組織。",
+        "benefits": {
+          "separate": "每個租戶都有自己的使用者、群組、連接器、集合和代理程式",
+          "inherit": "選擇租戶繼承哪些設定，例如 AI 模型、電子郵件和登入",
+          "manage": "在一個地方建立和管理所有租戶"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "一次為整個群組授予存取權",
+          "teams": "把整個團隊或個別使用者加入群組",
+          "builtIn": "從內建的管理員和所有人群組開始"
+        }
+      },
+      "seeWhatsInEnterprise": "查看企業版功能",
+      "sidebarCard": {
+        "title": "企業版",
+        "body": "多租戶、SSO、SCIM 佈建、稽核記錄等。",
+        "action": "查看包含的功能",
+        "dismiss": "隱藏企業版卡片"
+      },
+      "overview": {
+        "currentEdition": "目前版本：社群版",
+        "title": "企業版",
+        "subtitle": "包含社群版的全部功能，另有多租戶、SSO、SCIM 佈建、稽核記錄和成本控管。",
+        "seePreview": "預覽",
+        "seePreviewLabel": "預覽{{name}}",
+        "plans": {
+          "community": {
+            "name": "社群版",
+            "yourPlan": "目前版本",
+            "summary": "免費、開源、自行部署",
+            "lead": "社群版包含",
+            "items": {
+              "search": "在已連接的應用程式中搜尋和聊天",
+              "agents": "AI 代理程式、動作和 MCP 伺服器",
+              "people": "使用者和團隊",
+              "signIn": "密碼、電子郵件一次性驗證碼、Google 和 Microsoft 登入"
+            },
+            "current": "你目前的版本"
+          },
+          "enterprise": {
+            "name": "企業版",
+            "summary": "適合規模較大的組織。價格請洽詢。",
+            "lead": "包含社群版的全部功能，另外還有：",
+            "seeAll": "查看全部功能"
+          }
+        },
+        "compare": {
+          "title": "版本比較",
+          "feature": "功能",
+          "community": "社群版",
+          "enterprise": "企業版",
+          "pricing": "價格請洽詢",
+          "included": "包含",
+          "notIncluded": "不包含",
+          "communityHas": {
+            "scim": "手動管理使用者",
+            "collaborativeChat": "共用聊天供閱讀",
+            "groups": "團隊",
+            "sso": "密碼、電子郵件一次性驗證碼、Google 和 Microsoft"
+          }
+        },
+        "faq": {
+          "title": "常見問題",
+          "free": {
+            "question": "社群版會一直免費嗎？",
+            "answer": "會。它將繼續開源且免費。"
+          },
+          "preview": {
+            "question": "能先預覽某項功能嗎？",
+            "answer": "可以。標有「{{label}}」的功能會開啟它所在的頁面，並顯示介面預覽。"
+          },
+          "get": {
+            "question": "如何取得企業版？",
+            "answer": "{{contact}}。我們會了解你的組織需要什麼，以及如何部署。"
+          }
+        },
+        "groups": {
+          "scale": "規模",
+          "governance": "存取與治理",
+          "security": "安全與法規遵循",
+          "cost": "成本與索引"
+        },
+        "items": {
+          "tenants": {
+            "name": "多租戶",
+            "description": "一套部署中，每個團隊、地區或客戶各有獨立的組織。"
+          },
+          "scim": {
+            "name": "SCIM 佈建",
+            "description": "透過 Okta 或 Microsoft Entra ID 自動佈建和取消佈建使用者。"
+          },
+          "collaborativeChat": {
+            "name": "協作聊天",
+            "description": "在同一個對話中一起聊天，並與團隊和群組共用。"
+          },
+          "groups": {
+            "name": "群組權限",
+            "description": "以群組為基礎的存取控制：一次為整個群組授予存取權。"
+          },
+          "toolApprovals": {
+            "name": "工具核准原則",
+            "description": "為每個代理程式工具設定全組織規則：執行、需要核准或封鎖。"
+          },
+          "actOnBehalf": {
+            "name": "代表他人執行操作",
+            "description": "讓服務帳號以指定使用者的身分操作（委派存取），每次嘗試都有記錄。"
+          },
+          "peoplesOwnApps": {
+            "name": "使用者應用程式治理",
+            "description": "審查並移除使用者連接的 OAuth 應用程式、動作和 MCP 伺服器。"
+          },
+          "sso": {
+            "name": "單一登入 (SSO)",
+            "description": "透過 Okta、OneLogin 或任何 SAML 2.0、OpenID Connect (OIDC) 提供者登入。"
+          },
+          "auditLogs": {
+            "name": "稽核記錄",
+            "description": "依執行者、時間、IP 位址和結果追蹤每項操作。可篩選、提醒和匯出。"
+          },
+          "usage": {
+            "name": "用量和帳單",
+            "description": "AI 支出的可見性與控制：依使用者、代理程式、連接器和模型追蹤，並設定每位使用者可用的額度。"
+          },
+          "indexingPriority": {
+            "name": "索引優先順序",
+            "description": "選擇優先索引的記錄、集合和上傳內容。"
+          }
+        }
       }
     },
     "teams": {
@@ -2840,7 +2991,7 @@
       "sections": {
         "overview": "總覽",
         "workspace": "工作區",
-        "usageAndCredits": "用量與額度",
+        "usageAndCredits": "用量和帳單",
         "security": "安全性",
         "personal": "個人",
         "people": "成員",
@@ -2874,13 +3025,14 @@
         "groups": "群組",
         "scim": "SCIM",
         "auditLogs": "稽核記錄",
-        "usage": "用量與額度",
+        "usage": "用量和帳單",
         "teams": "團隊",
         "webSearch": "網頁搜尋",
         "tenants": "租戶",
         "superOrgs": "組織",
         "oauthApps": "連接器 OAuth 應用程式",
         "serviceAccounts": "服務帳戶",
+        "enterprise": "企業版",
         "aiAccounts": "AI 帳戶",
         "schedules": "排程",
         "memories": "記憶",
@@ -3151,6 +3303,11 @@
         "message": "若捨棄，您的編輯內容將不會被儲存",
         "confirm": "捨棄",
         "cancel": "繼續編輯"
+      },
+      "edition": {
+        "title": "版本",
+        "name": "社群版",
+        "description": "開源、自行部署。企業版另有多租戶、SSO、SCIM 佈建、稽核記錄等功能。"
       }
     },
     "mcpAccess": {
@@ -5406,7 +5563,7 @@
     },
     "tenants": {
       "title": "租戶",
-      "subtitle": "在工作區內建立及管理租戶組織",
+      "subtitle": "在此部署中建立和管理租戶組織",
       "createTenant": "建立租戶",
       "searchPlaceholder": "搜尋租戶...",
       "emptyTitle": "尚未建立任何租戶",
