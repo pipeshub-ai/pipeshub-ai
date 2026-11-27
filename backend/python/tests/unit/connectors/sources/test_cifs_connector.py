@@ -28,6 +28,7 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
     ShareWalkIncompleteError,
 )
+from app.connectors.sources.network_share.permissions import share_permissions
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
@@ -662,6 +663,8 @@ class TestCifsConnectorSync:
         cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
         cifs_connector.configured_share = SHARE
         await cifs_connector.run_sync()
+        # A cached creator email is not looked up again.
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
         record, perms = mock_processor.on_new_records.await_args.args[0][0]
@@ -685,6 +688,38 @@ class TestCifsConnectorSync:
         _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
         assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
             (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_creator_lookup_keeps_the_stored_share_grants(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert group_perms is None
+        assert cifs_connector.creator_email is None
+        mock_processor.on_new_records.assert_awaited()
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_creator_lookup_that_failed_at_init_is_retried_at_sync(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        assert cifs_connector.creator_email is None
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
         ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
@@ -897,3 +932,56 @@ class TestCifsFolderPatterns:
         assert report.unmatched_patterns_item() is None
         report = await walk(("customer/*/drafts",))
         assert report.unmatched_patterns_item().params["values"] == '"customer/*/drafts"'
+
+
+class TestShareGrantsWithoutACreator:
+    """A personal connector whose creator lookup succeeds but names no one
+    grants its shares to nobody, not the organisation."""
+
+    @pytest.mark.parametrize("user", [None, {"email": None}, {}], ids=["deleted", "no-email", "empty"])
+    async def test_a_personal_connector_with_no_creator_email_grants_nobody(
+        self, user, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value=user)
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        assert [r.getMessage() for r in caplog.records] == [
+            "Personal connector cifs-1 has no creator email; its shares are shared with no one"
+        ]
+
+    async def test_a_personal_connector_whose_creator_is_found_grants_them_without_a_warning(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(cifs_connector)
+        assert [(p.type, p.entity_type, p.email, p.external_id) for p in perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com", "user-1")
+        ]
+        assert caplog.records == []
+
+    async def test_a_personal_connector_with_no_created_by_grants_nobody(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        cifs_connector.created_by = None
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert "cifs-1" in caplog.text
+
+    async def test_a_team_connector_still_grants_the_organisation(
+        self, mock_logger, mock_processor, mock_data_store_provider, mock_config_service, caplog
+    ):
+        team = _connector(
+            mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
+        )
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(team)
+        assert [(p.type, p.entity_type, p.external_id) for p in perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert caplog.records == []

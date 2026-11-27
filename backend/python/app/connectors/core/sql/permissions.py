@@ -17,19 +17,16 @@ async def database_permissions(connector: Any) -> list[Permission] | None:  # no
     if connector.scope == ConnectorScope.TEAM.value:
         return [Permission(type=PermissionType.OWNER, entity_type=EntityType.ORG)]
     if not connector.creator_email and connector.created_by:
-        # Not BaseConnector._load_creator_email: it swallows a failed lookup,
-        # which would read as a creator who is gone and remove their grant.
+        # raise_on_error: a swallowed failure would read as a creator who is
+        # gone and remove their grant.
         try:
-            async with connector.data_store_provider.transaction() as tx_store:
-                user = await tx_store.get_user_by_user_id(connector.created_by, raise_on_error=True)
+            await connector._load_creator_email(raise_on_error=True)
         except Exception as e:
             connector.logger.warning(
                 "Personal connector %s could not look up its creator; its database grants are kept: %s",
                 connector.connector_id, type(e).__name__,
             )
             return None
-        if user and user.get("email"):
-            connector.creator_email = user["email"]
     if connector.creator_email:
         return [Permission(
             type=PermissionType.OWNER,

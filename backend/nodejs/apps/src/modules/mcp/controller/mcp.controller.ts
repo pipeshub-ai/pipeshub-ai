@@ -21,12 +21,12 @@ import {
 } from '../../../libs/middlewares/mcp-relay';
 import { sendMcpError } from '../middlewares/mcp-guard.middleware';
 import { insufficientScopeChallenge, missingToolScopes } from '../step-up';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   clientTags,
   domainFromEmail,
-} from '../../../libs/services/telemetry/identity';
-import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
+  recordEvent,
+  recordServiceActivity,
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,

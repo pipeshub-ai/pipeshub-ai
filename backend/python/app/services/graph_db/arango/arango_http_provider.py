@@ -55,7 +55,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
-from app.core.org_context import MissingOrgContext
+from app.core.org_context import MissingOrgContext, org_optional
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -8784,26 +8784,33 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="get_user_by_source_id")
             return None
 
+    @org_optional
     async def get_user_by_user_id(
         self,
         user_id: str,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> dict | None:
         """
-        Get user by user ID.
+        Get user by user ID; with ``org_id``, only a user of that organisation.
         Note: user_id is the userId field value, not the _key.
         """
+        if org_id == "":
+            return None  # an empty organisation matches no user
         try:
+            scoped = org_id is not None
+            org_filter = "FILTER user.orgId == @org_id" if scoped else ""
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId == @user_id
+                    {org_filter}
                     LIMIT 1
                     RETURN user
             """
             result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_id": user_id}
+                bind_vars={"user_id": user_id, **({"org_id": org_id} if scoped else {})}
             )
             return result[0] if result else None
         except Exception as e:
@@ -29334,6 +29341,100 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_agent")
             return False
 
+    async def _in_mcp_transaction(self, work: Callable[[str], Awaitable[_T]], transaction: str | None) -> _T:
+        """Run an MCP server cleanup all-or-nothing. In the caller's transaction it is the caller's; otherwise in a stream
+        transaction of its own that holds the agent-to-server links exclusively, so concurrent agent deletes clean up one at a
+        time and each sees the other's removals, and a failure leaves the links for a retry to find. Run again on a
+        write-write conflict or lock timeout with another writer."""
+        if transaction is not None:
+            return await work(transaction)
+        write = [CollectionNames.AGENT_HAS_MCP_SERVER.value, CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                 CollectionNames.AGENT_TOOLS.value, CollectionNames.AGENT_MCP_SERVERS.value]
+        attempt = 0
+        while True:
+            txn: str | None = None
+            committed = False
+            try:
+                # Taking the exclusive links is inside the retry: another delete holding them answers a lock timeout.
+                txn = await self.http_client.begin_transaction(read=write, write=write, exclusive=[CollectionNames.AGENT_HAS_MCP_SERVER.value])
+                result = await work(txn)
+                await self.http_client.commit_transaction(txn)
+                committed = True
+                return result
+            except Exception as exc:
+                attempt += 1
+                if attempt >= _WRITE_CONFLICT_ATTEMPTS or not (_is_write_conflict(exc) or _is_lock_timeout(exc)):
+                    raise
+            finally:
+                # On every way out but a commit, a cancellation included: the links stay held exclusively until it ends.
+                if txn is not None and not committed:
+                    await asyncio.shield(self._abort_quietly(txn))
+            await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+
+    async def _delete_agent_mcp_servers(self, agent_doc_id: str, transaction: str) -> tuple[int, int, int]:
+        """The agent's server links, then each of those servers no agent is attached to any more: its tool links, the tools no
+        other server holds, and itself. Returns (links removed, tools removed, servers removed)."""
+        edges = tools = servers = 0
+        attached_server_ids = await self.execute_query(
+            f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._from == @agent_doc_id
+                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                RETURN OLD._to
+            """,
+            bind_vars={"agent_doc_id": agent_doc_id}, transaction=transaction) or []
+        if not attached_server_ids:
+            return edges, tools, servers
+        edges += len(attached_server_ids)
+        mcp_server_ids = await self.execute_query(
+            f"""
+            FOR msid IN UNIQUE(@server_ids)
+                FILTER LENGTH(
+                    FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                        FILTER edge._to == msid
+                        LIMIT 1 RETURN 1
+                ) == 0
+                RETURN msid
+            """,
+            bind_vars={"server_ids": attached_server_ids}, transaction=transaction) or []
+        if not mcp_server_ids:
+            return edges, tools, servers
+        mcp_tool_ids = await self.execute_query(
+            f"""
+            FOR msid IN @mcp_server_ids
+                FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                    FILTER edge._from == msid
+                    REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                    RETURN OLD._to
+            """,
+            bind_vars={"mcp_server_ids": mcp_server_ids}, transaction=transaction) or []
+        if mcp_tool_ids:
+            edges += len(mcp_tool_ids)
+            deleted_mcp_tools = await self.execute_query(
+                f"""
+                FOR tid IN UNIQUE(@mcp_tool_ids)
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                            FILTER edge._to == tid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                    RETURN OLD
+                """,
+                bind_vars={"mcp_tool_ids": mcp_tool_ids}, transaction=transaction) or []
+            tools += len(deleted_mcp_tools)
+        deleted_mcp_servers = await self.execute_query(
+            f"""
+            FOR msid IN @mcp_server_ids
+                REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                RETURN OLD
+            """,
+            bind_vars={"mcp_server_ids": mcp_server_ids}, transaction=transaction) or []
+        servers += len(deleted_mcp_servers)
+        return edges, tools, servers
+
     async def hard_delete_agent(self, agent_id: str, transaction: str | None = None) -> dict[str, int]:
         """
         Hard delete a single agent and all its related edges/nodes.
@@ -29517,101 +29618,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
                     )
 
-            # Steps 7b-7f: MCP servers — mirrors steps 3-7 above exactly (tool nodes live in
-            # the same AGENT_TOOLS collection; orphan checks below only see MCP_SERVER_HAS_TOOL
-            # since a given tool node is created uniquely per attachment, same as toolset tools).
-            mcp_servers_deleted = 0
-
-            find_mcp_server_ids_query = f"""
-            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                FILTER edge._from == @agent_doc_id
-                RETURN edge._to
-            """
-
-            mcp_server_ids = await self.execute_query(
-                find_mcp_server_ids_query,
-                bind_vars={"agent_doc_id": agent_doc_id},
-                transaction=transaction
-            )
-
-            if mcp_server_ids:
-                delete_mcp_tool_edges_query = f"""
-                FOR msid IN @mcp_server_ids
-                    FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                        FILTER edge._from == msid
-                        REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                        RETURN OLD._to
-                """
-
-                mcp_tool_ids = await self.execute_query(
-                    delete_mcp_tool_edges_query,
-                    bind_vars={"mcp_server_ids": mcp_server_ids},
-                    transaction=transaction
-                )
-
-                if mcp_tool_ids:
-                    edges_deleted += len(mcp_tool_ids)
-
-                    delete_orphaned_mcp_tools_query = f"""
-                    FOR tid IN @mcp_tool_ids
-                        LET remaining = FIRST(
-                            FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
-                                FILTER edge._to == tid
-                                LIMIT 1
-                                RETURN 1
-                        )
-                        FILTER remaining == null
-                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
-                        RETURN OLD
-                    """
-
-                    deleted_mcp_tools = await self.execute_query(
-                        delete_orphaned_mcp_tools_query,
-                        bind_vars={"mcp_tool_ids": mcp_tool_ids},
-                        transaction=transaction
-                    )
-
-                    if deleted_mcp_tools:
-                        tools_deleted += len(deleted_mcp_tools)
-
-            delete_mcp_server_edges_query = f"""
-            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                FILTER edge._from == @agent_doc_id
-                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                RETURN OLD
-            """
-
-            deleted_mcp_server_edges = await self.execute_query(
-                delete_mcp_server_edges_query,
-                bind_vars={"agent_doc_id": agent_doc_id},
-                transaction=transaction
-            )
-
-            if deleted_mcp_server_edges:
-                edges_deleted += len(deleted_mcp_server_edges)
-
-            if mcp_server_ids:
-                delete_orphaned_mcp_servers_query = f"""
-                FOR msid IN @mcp_server_ids
-                    LET remaining = FIRST(
-                        FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
-                            FILTER edge._to == msid
-                            LIMIT 1
-                            RETURN 1
-                    )
-                    FILTER remaining == null
-                    REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value}
-                    RETURN OLD
-                """
-
-                deleted_mcp_servers = await self.execute_query(
-                    delete_orphaned_mcp_servers_query,
-                    bind_vars={"mcp_server_ids": mcp_server_ids},
-                    transaction=transaction
-                )
-
-                if deleted_mcp_servers:
-                    mcp_servers_deleted = len(deleted_mcp_servers)
+            # Steps 7b-7f: MCP servers (see _delete_agent_mcp_servers).
+            mcp_edges, mcp_tools, mcp_servers_deleted = await self._in_mcp_transaction(
+                lambda txn: self._delete_agent_mcp_servers(agent_doc_id, txn), transaction)
+            edges_deleted += mcp_edges
+            tools_deleted += mcp_tools
 
             # Step 8: Delete all permission edges pointing to this agent
             delete_permissions_query = f"""
@@ -29870,10 +29881,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                     mcp_tool_ids = list({edge['_to'] for edge in deleted_mcp_tool_edges})
                     if mcp_tool_ids:
+                        # A tool a server no agent uses still holds (its edge was not removed above) stays with that server.
                         delete_mcp_tools_query = f"""
                         FOR tool_id IN @mcp_tool_ids
                             LET tool = DOCUMENT(tool_id)
                             FILTER tool != null
+                            FILTER LENGTH(
+                                FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                                    FILTER edge._to == tool_id
+                                    LIMIT 1 RETURN 1
+                            ) == 0
                             REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
                             RETURN OLD
                         """

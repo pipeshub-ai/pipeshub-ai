@@ -1,4 +1,4 @@
-import { metricsBackend } from '../services/telemetry/metrics-backend';
+import { metricsBackend } from '../services/telemetry/telemetry-impl';
 
 const buckets = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 60];
 
