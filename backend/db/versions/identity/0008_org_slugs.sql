@@ -1,13 +1,12 @@
 -- The slugs callers chose (createWithAdmin's slug), unique across the install as MongoDB's org collection keeps them. The counter's
--- 'org-<n>' slugs are not here: the sequence keeps those apart, and a caller may not choose that shape. A cross-org unique key is an
--- exempted public_by_design key, so no service role reaches this table: identity.org_slug_claim writes it, and answers a taken slug
--- exactly as a malformed one.
+-- 'org-<n>' slugs are not here: the sequence keeps those apart, and a caller may not choose that shape. The table answers across
+-- organisations (one slug, one organisation), so it is global: no service role reaches it, and only its two vetted writes fill it,
+-- each answering a taken slug as a malformed one.
 CREATE TABLE identity.org_slugs (
-  org_id text PRIMARY KEY,
-  slug text NOT NULL,
-  CONSTRAINT org_slugs_slug_key UNIQUE (slug)
+  slug text PRIMARY KEY,
+  org_id text NOT NULL UNIQUE
 );
-SELECT kernel.apply_rls('identity.org_slugs', 'org', p_vetted => true, p_vetted_write => true);
-SELECT kernel.exempt_constraint('identity.org_slugs', 'org_slugs_slug_key', 'public_by_design',
-  'an organisation slug a caller chose is unique across the install; identity.org_slug_claim answers a taken one as a malformed one',
-  'security-review');
+SELECT kernel.apply_rls('identity.org_slugs', 'global', p_vetted_write => true);
+-- The document copy claims each copied organisation's slug too (identity.copied_org_slug_claim, in the unit that writes the row), so the
+-- table holds every chosen slug and the unique key decides a claim racing the copy. Rows copied before this revision are claimed here.
+INSERT INTO identity.org_slugs (org_id, slug) SELECT o.org_id, o.slug FROM identity.orgs o WHERE o.slug !~ '^org-[0-9]+$';

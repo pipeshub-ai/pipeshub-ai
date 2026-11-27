@@ -100,3 +100,27 @@ functions:
       other_result: [[true]]
       no_org_result: [[false]]
       bad_args: [[""], [null], ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]]
+
+  # The document copy's claim of a copied organisation's slug, in the unit that writes its row, so identity.org_slugs holds every
+  # chosen slug and a claim racing the copy is decided by the unique key: a slug another organisation holds fails the copy's unit
+  # with unique_violation, as its row would on MongoDB. The pair already there (a batch run again) answers false and writes nothing.
+  # The copy never passes a counter slug ('org-<digits>'). The import role only.
+  - name: identity.copied_org_slug_claim
+    class: write
+    scope: global
+    writer: pipeshub_import
+    args:
+      - {name: p_org_id, type: text, length: [24, 24]}
+      - {name: p_slug, type: text, length: [1, 200]}
+    returns: boolean
+    reads: [identity.org_slugs]
+    body: |
+      IF EXISTS (SELECT 1 FROM identity.org_slugs t WHERE t.org_id = p_org_id AND t.slug = p_slug) THEN
+        RETURN false;
+      END IF;
+      INSERT INTO identity.org_slugs (org_id, slug) VALUES (p_org_id, p_slug);
+      RETURN true;
+    test:
+      checks: [privileges, catalog, shadowing]
+      needle: "DELETE FROM identity.org_slugs"
+      args: ["aaaaaaaaaaaaaaaaaaaaaaaa", "needle-copied"]
