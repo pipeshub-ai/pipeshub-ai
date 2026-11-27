@@ -26,6 +26,12 @@ if TYPE_CHECKING:
 
 MAX_LISTED = 10
 NO_REFRESH_TOKEN = "no refresh token is stored to renew it"
+# Dates and times first: the id pattern below takes "2026-11-27" but leaves "T10:21:29Z", which changes every run.
+_TIMESTAMP = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"
+    r"|\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b",
+    re.IGNORECASE,
+)
 _VARIABLE_TEXT = re.compile(r"\b(?=[0-9a-f-]*\d)[0-9a-f-]{8,}\b|\d{4,}", re.IGNORECASE)
 
 
@@ -76,7 +82,7 @@ class SyncRunState:
 def stable_reason(error: BaseException | str, limit: int = 200) -> str:
     """The error's text without URLs, ids and timestamps, so a repeat reads the same."""
     text = " ".join(redact_urls_in_text(str(error)).split())
-    return _VARIABLE_TEXT.sub("…", text)[:limit]
+    return _VARIABLE_TEXT.sub("…", _TIMESTAMP.sub("…", text))[:limit]
 
 
 def listed(names: list[str]) -> str:

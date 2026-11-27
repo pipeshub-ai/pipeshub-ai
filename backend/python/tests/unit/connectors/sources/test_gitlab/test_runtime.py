@@ -673,3 +673,13 @@ class TestRunOutcome:
         assert response is refused
         assert c.run_state.rejected is None
         assert c.run_state.rate_limited is True
+
+    async def test_an_api_token_is_told_apart_while_the_refresh_service_is_unavailable(self) -> None:
+        refused = GitLabResponse(success=False, error="401 Unauthorized", status_code=401)
+        c, runtime = self._signed_out(MagicMock(return_value=refused))
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        with patch(self._PATCH_PATH) as mock_ss:
+            mock_ss.get_token_refresh_service = MagicMock(return_value=None)
+            await runtime.call_with_auth_retry(MagicMock(return_value=refused))
+        assert "not renewed automatically" in str(c.run_state.rejected)
+        assert c.run_state.unrefreshable_token is None

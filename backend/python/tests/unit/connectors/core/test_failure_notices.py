@@ -162,6 +162,10 @@ async def test_the_same_failure_reads_the_same_every_run() -> None:
     first = fn.stable_reason("request 8f14e45fceea167a at 1764070000123 failed")
     assert first == fn.stable_reason("request c9f0f895fb98ab91 at 1764073600456 failed")
     assert "failed" in first and "deadline" in fn.stable_reason("deadline exceeded")
+    stamped = fn.stable_reason("deadline exceeded at 2026-11-27T10:21:29Z")
+    assert stamped == fn.stable_reason("deadline exceeded at 2026-11-28T11:05:30.120+05:30")
+    assert stamped.startswith("deadline exceeded at") and "21:29" not in stamped
+    assert fn.stable_reason("retry at 10:21:29") == fn.stable_reason("retry at 23:59:01")
 
 
 @pytest.mark.parametrize(("config", "why"), [

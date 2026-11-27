@@ -186,11 +186,6 @@ class RuntimeHelper:
                 startup_service,
             )
 
-            refresh_service = startup_service.get_token_refresh_service()
-            if not refresh_service:
-                self.logger.error("Token refresh service unavailable; cannot refresh GitLab token.")
-                return False
-
             # Snapshot BEFORE queuing on the lock. The winner ends its critical
             # section by pushing the rotated token into the client, so a waiter
             # that only compares etcd against the client finds them equal and
@@ -238,6 +233,12 @@ class RuntimeHelper:
                 if not refresh_token:
                     self.logger.error("No refresh token in connector config; cannot refresh GitLab token.")
                     self._cannot_refresh = NO_REFRESH_TOKEN
+                    return False
+
+                # Only now: a token that is never renewed is told apart even while the service is unavailable.
+                refresh_service = startup_service.get_token_refresh_service()
+                if not refresh_service:
+                    self.logger.error("Token refresh service unavailable; cannot refresh GitLab token.")
                     return False
 
                 connector_type = (
