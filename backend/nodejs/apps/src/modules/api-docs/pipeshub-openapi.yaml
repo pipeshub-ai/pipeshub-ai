@@ -93045,7 +93045,8 @@ paths:
             (`(a{2}){3}`); nests groups deeper than 20; or uses a `(?` form other
             than a plain group, look-around, a named group or `(?i)` (so flags
             other than `(?i)`, comments and scoped flags are refused). The message
-            says which.
+            says which. Also returned when the folders and files named in
+            `filters` are too many to search.
           content:
             application/json:
               schema:
@@ -93054,6 +93055,8 @@ paths:
           description: Missing or invalid bearer token.
         '403':
           description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '422':
+          description: The connected app's knowledge limit is too large to resolve.
         '501':
           description: This deployment does not keep records on local file storage. Use `POST /search`.
         '500':
