@@ -1023,10 +1023,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                         await asyncio.wait_for(drained.wait(), _CUT_UNWIND_WAIT_S)
                     if not drained.is_set():
                         # Its progress is not read while the handler may still change it: the cut stays a counted attempt.
-                        self.logger.warning(
-                            "Record %s: the handler did not unwind within %.1fs of its budget ending; the cut is counted",
-                            parsed.payload.get("recordId"), _CUT_UNWIND_WAIT_S,
-                        )
+                        # Said once, on the record's index.end line, which also writes the timeout it re-raises.
                         timing.note(cut_unwind_timeout_s=_CUT_UNWIND_WAIT_S)
                     else:
                         await requeue_after_productive_cut(

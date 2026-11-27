@@ -4,6 +4,7 @@ The handler runs on the worker loop and the budget lives on the claim loop, so t
 """
 
 import asyncio
+import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from logging import getLogger
@@ -233,5 +234,6 @@ async def test_a_handler_that_outlasts_the_unwind_bound_leaves_the_cut_counted_a
     with caplog.at_level("WARNING"), pytest.raises(TimeoutError):
         await c._drive_indexing(parsed, "message:1")
     assert commits == []   # not read while the handler may still change it: counted
-    assert any("rec-9" in r.getMessage() and "0.2s" in r.getMessage() for r in caplog.records)
-    assert {"cut_unwind_timeout_s": 0.2} in noted
+    assert {"cut_unwind_timeout_s": 0.2} in noted   # on the record's index.end line
+    # The timeout is re-raised and index.end writes it: a second WARNING here would log one failure twice.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "rec-9" in r.getMessage()]
