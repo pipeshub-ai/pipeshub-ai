@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 import { ChatPathMetrics } from '../../ports/chat-path-metrics';
 
 const turns = metricsBackend.createCounter({

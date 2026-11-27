@@ -1,4 +1,4 @@
-import { metricsBackend } from '../services/telemetry/metrics-backend';
+import { metricsBackend } from '../services/telemetry/telemetry-impl';
 
 export const docstoreMetrics = {
   nulStripped: metricsBackend.createCounter({

@@ -133,7 +133,9 @@ class _SyncPoints:
         return self.data.get(key)
 
     async def update_sync_point(self, key: str, value: dict) -> None:
-        self.data[key] = value
+        # Merged, a null clearing a field, as every graph store does (Neo4j SET +=, ArangoDB UPDATE, PostgreSQL ||).
+        merged = {**self.data.get(key, {}), **value}
+        self.data[key] = {k: v for k, v in merged.items() if v is not None}
 
 
 def _connector(gh: RepoWithHistory, sync_filters: FilterCollection | None) -> MagicMock:

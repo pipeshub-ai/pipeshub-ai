@@ -7,6 +7,7 @@ One job: after a run, decide whether anyone should be told anything, and say it 
   notice every run, so the platform's notification backoff keeps it to one, then one a day or so later.
 - A run that could not read part of Drive for a passing reason (rate limits, outages) is not reported: the
   next run retries it. Only when that has happened `PERSISTENT_RUNS` runs in a row is one warning sent.
+- A Workspace none of whose accounts belongs to an active user is reported as a warning: nothing can be synced.
 - Selected folders nobody it syncs can find or open (a wrong ID, a deleted folder, one not shared with anyone
   synced) are reported as a warning: someone has to fix the ID, share the folder, or unselect it.
 
@@ -102,6 +103,7 @@ class DriveRunReport:
         self._scopes = scopes
         self.problem: AccessProblem | None = None
         self.unreadable_folders: list[str] = []
+        self.nobody_to_sync = False
         # Users Google would not let the service account act as, for the run's one log line.
         self.refused_users: set[str] = set()
 
@@ -132,6 +134,10 @@ class DriveRunReport:
     def note_unreadable_folders(self, folder_ids: list[str]) -> None:
         self.unreadable_folders = sorted(set(folder_ids))
 
+    def note_nobody_to_sync(self, *, nobody: bool) -> None:
+        """Whether no active user of this deployment has an account in the Workspace. The last selection counts."""
+        self.nobody_to_sync = nobody
+
     async def finish(self, *, complete: bool) -> None:
         """Send what this run calls for. Never raises: telling people must not change the run's outcome."""
         try:
@@ -148,6 +154,12 @@ class DriveRunReport:
                                 client_id=self._client_id, scopes=self._scopes)
             if notice is not None:
                 await self._send(notice)
+        if self.nobody_to_sync:
+            await self._send(DriveNotice(
+                NotificationType.CONNECTOR_WARNING, NotificationSeverity.WARNING,
+                "nobody to sync Google Drive for",
+                "No active PipesHub user has an active account in this Google Workspace, so no files are synced. "
+                "Invite or activate people whose PipesHub email is their Google Workspace email."))
         if self.unreadable_folders:
             count = len(self.unreadable_folders)
             await self._send(DriveNotice(
@@ -162,6 +174,8 @@ class DriveRunReport:
             if runs:
                 await self._sync_point.update_sync_point(RUN_HEALTH_SYNC_POINT_KEY, {"incompleteRuns": 0})
             return
+        if self.nobody_to_sync:
+            return  # not an outage: it neither counts towards nor uses up the warning about one
         runs += 1
         await self._sync_point.update_sync_point(RUN_HEALTH_SYNC_POINT_KEY, {"incompleteRuns": runs})
         if runs == PERSISTENT_RUNS and self.problem is None:
