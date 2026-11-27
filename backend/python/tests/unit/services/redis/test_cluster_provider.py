@@ -17,7 +17,7 @@ def _config(**overrides) -> RedisConnectionConfig:
 
 @pytest.fixture
 def mock_cluster_cls():
-    with patch("app.services.redis.cluster_provider.RedisCluster") as mock_cls:
+    with patch("app.services.redis.cluster_provider._InitializedCluster") as mock_cls:
         mock_cls.side_effect = lambda **kwargs: MagicMock(**{"aclose": AsyncMock()})
         yield mock_cls
 
@@ -401,3 +401,30 @@ class TestModeAndCluster:
     def test_mode_is_cluster(self, mock_cluster_cls):
         provider = ClusterRedisProvider(_config())
         assert provider.mode == "cluster"
+
+
+class TestClientsLoadTheTopologyFirst:
+    async def test_a_command_waits_for_the_topology_before_it_is_routed(self, monkeypatch) -> None:
+        """redis-py routes a command before it initializes; on a cold client concurrent first commands were sent
+        unkeyed, and the reload after their MOVED closed connections in use (a won SET NX was re-sent and lost)."""
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.services.redis import cluster_provider
+
+        order: list[str] = []
+
+        async def initialize(self, *args, **kwargs) -> object:
+            order.append("initialize")
+            return self
+
+        async def execute_command(self, *args, **kwargs) -> bool:
+            order.append(f"route {args[0]}")
+            return True
+
+        monkeypatch.setattr(RedisCluster, "initialize", initialize)
+        monkeypatch.setattr(RedisCluster, "execute_command", execute_command)
+        client = ClusterRedisProvider(_config(cluster_endpoints=["n1:7000"])).create_client()
+
+        assert isinstance(client, cluster_provider._InitializedCluster)
+        assert await client.execute_command("SET", "k", "v", nx=True) is True
+        assert order == ["initialize", "route SET"]
