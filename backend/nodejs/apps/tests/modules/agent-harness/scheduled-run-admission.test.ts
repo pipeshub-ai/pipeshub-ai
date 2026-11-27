@@ -1,5 +1,9 @@
 import { expect } from 'chai';
-import { admissionRefusalReason } from '../../../src/modules/agent-harness/application/scheduled-run-admission';
+import {
+  admissionRefusalReason,
+  RunAdmissionScheduledRuns,
+} from '../../../src/modules/agent-harness/application/scheduled-run-admission';
+import { decideChatModeRollout } from '../../../src/modules/agent-harness/domain/rollout';
 import {
   HarnessConflictError,
   HarnessForbiddenError,
@@ -25,4 +29,38 @@ describe('agent-harness scheduled firings: an admission refusal as the firing\'s
       expect(admissionRefusalReason(error)).to.equal(reason);
     });
   }
+});
+
+describe('agent-harness scheduled firings ask for the harness (the assistant in Agent mode)', () => {
+  const firing = {
+    orgId: 'org-1',
+    actorId: 'user-1',
+    idempotencyKey: 'schedule:sch_1:o:2026-11-27T17:05:04.000Z',
+    deadlineMs: Date.now() + 60_000,
+    input: { query: 'Tell me a joke', model: { chatMode: 'agent' } },
+    authorization: 'Bearer t',
+    trigger: { scheduleId: 'sch_1', firingId: 'f-1', slotKey: 'o:2026-11-27T17:05:04.000Z' },
+  };
+
+  it('a firing is admitted as a turn that asked for the harness', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const admissions = {
+      submit: async (request: Record<string, unknown>) => {
+        seen.push(request);
+        return { route: 'durable', admission: { run: { runId: 'run-1' }, sessionId: 'ses-1' } };
+      },
+    };
+    const outcome = await new RunAdmissionScheduledRuns(admissions as never).admit(firing as never);
+    expect(outcome).to.deep.equal({ kind: 'admitted', runId: 'run-1', sessionId: 'ses-1' });
+    expect(seen[0]).to.include({ via: 'trigger', durableRequested: true });
+  });
+
+  it('with that ask the assistant\'s Agent mode stays durable; without it, it would go to today\'s loop', () => {
+    const org = { useHarness: true, reason: 'enabled' } as never;
+    const allowed = { assistantModes: ['agent'] };
+    expect(decideChatModeRollout(org, 'agent', true, { ...allowed, durableRequested: true }).useHarness).to.equal(true);
+    const unasked = decideChatModeRollout(org, 'agent', true, allowed);
+    expect(unasked.useHarness).to.equal(false);
+    expect(unasked.reason).to.equal('chat_mode_not_supported');
+  });
 });
