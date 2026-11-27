@@ -89,6 +89,43 @@ HUB_ROOT_KB_CHILDREN = """/* pipeshub:graph.hub_root_kb_children */ SELECT k.id 
     WHERE r.doc->>'connectorId' = k.id AND r.doc->>'orgId' = $1 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true'
     LIMIT 1) x"""
 
+# Upwards from the asked ids, on graph.* alone (this is the reference kg's sample is held to): each node's hierarchy parents (records, by PARENT_CHILD or
+# ATTACHMENT) a level at a time, as far as the deepest level asked, and the first one that is a member of the parent. Read downwards from the parent's members,
+# a group's every record was read to answer for a page of them. Each read is a lateral subquery of its own (OFFSET 0, LIMIT 1): flattened into a join, with no
+# statistics for the organisation yet, the planner read every relation of the org and every member of the group to hash them. A node's parents are a range of
+# edges_by_target in its order (as kg.trash reads a record's parent), a node's membership a range of the primary key in its order, a group by its key in its order,
+# all with sorts off (DEPTHS_SORTS_OFF): left to the planner, with or without statistics, they took edges_by_neighbour_out bounded by the org only, the group's members
+# by edges_by_target, and the org's groups by connector. ``to_id || ''`` keeps the parent's id out of the index choice too.
+# Under these settings only the index whose order a statement asks for can answer it: each read above asks for its key's order.
+DEPTHS_SORTS_OFF = """/* pipeshub:graph.depths_sorts_off */ WITH s AS MATERIALIZED (SELECT current_setting('enable_sort') AS was) SELECT was, set_config('enable_sort', 'off', true) FROM s"""
+DEPTHS_SORTS_BACK = "/* pipeshub:graph.depths_sorts_back */ SELECT set_config('enable_sort', $1, true)"
+DEPTHS_APP = """/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE up(node, cur, k) AS (SELECT q.id, q.id, 0 FROM unnest($3::text[]) AS q(id)
+                  UNION SELECT up.node, e.from_id, up.k + 1 FROM up JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+                      AND e.to_id >= up.cur AND e.to_id <= up.cur AND e.to_coll = 'records' AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                      ORDER BY e.to_id OFFSET 0) e ON true
+                  WHERE up.k < $4)
+                    SELECT up.node AS id, min(up.k) + 1 AS lvl FROM up CROSS JOIN LATERAL (SELECT 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo'
+                        AND b.from_id >= up.cur AND b.from_id <= up.cur AND b.from_coll = 'records' AND (b.to_coll = 'apps' AND b.to_id || '' = $2 OR b.to_coll = 'recordGroups' AND EXISTS (SELECT 1 FROM graph.nodes g
+                          WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.id >= b.to_id AND g.id <= b.to_id AND (g.doc->>'connectorId') || '' = $2
+                            AND NOT coalesce((g.doc->>'isDeleted')::boolean, false) ORDER BY g.id OFFSET 0))
+                        ORDER BY b.from_id LIMIT 1) m
+                    GROUP BY up.node"""
+DEPTHS_GROUP = """/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE up(node, cur, k) AS (SELECT q.id, q.id, 0 FROM unnest($3::text[]) AS q(id)
+                  UNION SELECT up.node, e.from_id, up.k + 1 FROM up JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+                      AND e.to_id >= up.cur AND e.to_id <= up.cur AND e.to_coll = 'records' AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                      ORDER BY e.to_id OFFSET 0) e ON true
+                  WHERE up.k < $4)
+                    SELECT up.node AS id, min(up.k) + 1 AS lvl FROM up CROSS JOIN LATERAL (SELECT 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo'
+                        AND b.from_id >= up.cur AND b.from_id <= up.cur AND b.from_coll = 'records' AND b.to_coll = 'recordGroups' AND b.to_id || '' = $2 ORDER BY b.from_id LIMIT 1) m
+                    GROUP BY up.node"""
+DEPTHS_RECORD = """/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE up(node, cur, k) AS (SELECT q.id, q.id, 0 FROM unnest($3::text[]) AS q(id)
+                  UNION SELECT up.node, e.from_id, up.k + 1 FROM up JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
+                      AND e.to_id >= up.cur AND e.to_id <= up.cur AND e.to_coll = 'records' AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                      ORDER BY e.to_id OFFSET 0) e ON true
+                  WHERE up.k < $4)
+                    SELECT up.node AS id, min(up.k) AS lvl FROM up WHERE up.cur = $2 AND up.k >= 1 GROUP BY up.node"""
+
+
 class HierarchyMixin(PgBase):
     async def _rows(self, sql: str, *args: Any, transaction: str | None = None) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction)
@@ -350,31 +387,16 @@ class HierarchyMixin(PgBase):
         rec_depth = max(1, safe - 1)
 
         async def walk(tx: Tx) -> dict[str, int]:
-            if parent_type == "app":
-                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
-                      SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
-                          AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
-                        WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
-                        UNION SELECT b.from_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'apps' AND b.to_id = $2
-                          AND b.from_coll = 'records') s
-                      UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
-                          AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
-                      WHERE w.lvl <= $4)
-                    SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
-            elif parent_type == "recordGroup":
-                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
-                      SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
-                        AND b.from_coll = 'records'
-                      UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
-                          AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
-                      WHERE w.lvl <= $4)
-                    SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
-            else:
-                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
-                      UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
-                          AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
-                      WHERE w.lvl < $4)
-                    SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""", org, parent_id, list(node_ids), safe)
+            was = (await tx.fetchrow(DEPTHS_SORTS_OFF))["was"]
+            try:
+                if parent_type == "app":
+                    rows = await tx.fetch(DEPTHS_APP, org, parent_id, list(node_ids), rec_depth)
+                elif parent_type == "recordGroup":
+                    rows = await tx.fetch(DEPTHS_GROUP, org, parent_id, list(node_ids), rec_depth)
+                else:
+                    rows = await tx.fetch(DEPTHS_RECORD, org, parent_id, list(node_ids), safe)
+            finally:
+                await tx.fetchval(DEPTHS_SORTS_BACK, was)
             return {r["id"]: int(r["lvl"]) for r in rows}
         got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
         if got is not None:
