@@ -90,7 +90,17 @@ def test_write_prologue_references_the_fence_output_in_the_outer_select() -> Non
 
     outer = uow.PROLOGUE_WRITE.split("FROM pre")[0]
     assert "s.fence" in outer and "kernel.assert_profile_epoch($8) AS fence" in uow.PROLOGUE_WRITE
+    # the org is set in the materialized pre, which the fence's subquery reads, so it is set before the fence runs
+    pre = uow.PROLOGUE_WRITE.split("SELECT pre.r")[0]
+    assert "MATERIALIZED" in pre and "set_config('app.org_id', $2, true) AS org" in pre
+    assert uow.PROLOGUE_WRITE.count("app.org_id") == 1 and "pre.org IS NOT NULL) s" in uow.PROLOGUE_WRITE
     assert "fence" not in uow.PROLOGUE_READ
+
+
+def test_every_prologue_turns_jit_off_for_its_unit() -> None:
+    from app.core.db import uow
+
+    assert all("set_config('jit', 'off', true)" in p for p in (uow.PROLOGUE_READ, uow.PROLOGUE_WRITE))
 
 
 def test_request_id_is_sanitised() -> None:

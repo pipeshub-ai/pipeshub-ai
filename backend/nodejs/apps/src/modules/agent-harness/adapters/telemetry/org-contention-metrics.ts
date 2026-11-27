@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 import { AuditLinkMetrics } from '../../application/audit-link-watch';
 import { AdmissionQuotaMetrics } from '../../../../libs/repositories/agent-harness/admission-quota-ledger/mongo';
 

@@ -87,6 +87,13 @@ describe('a reload on the web', () => {
     expect(storage.has('pipeshub_signed_in')).toBe(false);
   });
 
+  it.each([429, 503])('a restore answered %s (no verdict) keeps the signed-in mark', async (status) => {
+    storage.set('pipeshub_signed_in', 'user-a:o1');
+    fetchMock.mockResolvedValueOnce(jsonResponse(status, {}));
+    await loadPage();
+    expect(storage.get('pipeshub_signed_in')).toBe('user-a:o1');
+  });
+
   it('a sign-out in another tab while the restore was out wins: the late token is dropped and the mark stays gone (R48MIGFIX-3)', async () => {
     storage.set('pipeshub_signed_in', 'user-a:o1');
     let answer: (r: Response) => void = () => {};
