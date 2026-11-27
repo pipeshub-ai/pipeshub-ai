@@ -15,6 +15,7 @@ depends_on = None
 # notification for the same recipient, as before this revision. MongoDB has no schema epoch, so there an older build reads a scheduled row
 # as visible.
 min_code_epoch = 5
+blocking_index_ok = "the index keys dedupe_key, which this revision adds, so it cannot be built before its transaction"
 
 
 def upgrade():
