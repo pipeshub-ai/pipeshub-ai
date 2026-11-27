@@ -236,7 +236,7 @@ class SeededGraphProvider:
                 return _node_to_record(node)
         return None
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False):
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False, **_: object):
         return {"_key": self._user_key}
 
     async def get_record_by_id(self, record_id: str, transaction: str | None = None):

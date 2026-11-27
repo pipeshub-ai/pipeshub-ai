@@ -455,6 +455,7 @@ _BACKGROUND = {
     "hierarchy": "run_hierarchy_backfill_migration",
     "redundant": "run_redundant_group_edges_migration",
     "listing": "run_kh_listing_state_migration",
+    "order": "run_kh_children_order_migration",
 }
 _DONE = {"success": True, "skipped": True}
 
@@ -485,7 +486,7 @@ class TestBackgroundGraphMigrations:
 
         assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
 
-        assert migrations["tried"] == ["links", "folders", "hierarchy", "redundant", "listing"]
+        assert migrations["tried"] == ["links", "folders", "hierarchy", "redundant", "listing", "order"]
         migrations["sleep"].assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -500,7 +501,7 @@ class TestBackgroundGraphMigrations:
 
         assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
 
-        assert migrations["tried"] == ["links", "folders", "links", "hierarchy", "redundant", "listing"]
+        assert migrations["tried"] == ["links", "folders", "links", "hierarchy", "redundant", "listing", "order"]
         migrations["sleep"].assert_awaited_once_with(KH_MIGRATION_RETRY_SECONDS)
 
     @pytest.mark.asyncio

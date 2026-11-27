@@ -21,7 +21,8 @@ from app.config import file_types
 # stop sending once a reserve of it is left (github_async._check_reserve); a
 # person opening a file does not, and stops only when the pool is spent. A
 # rate limit that resets within _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS is waited
-# out in ds_call; a longer one fails fast: the sync aborts with its checkpoint
+# out in ds_call; a sync run waits up to _GITHUB_SYNC_RATE_LIMIT_MAX_WAIT_SECONDS
+# and then reads on. A longer one fails fast: the sync aborts with its checkpoint
 # withheld and the scheduler retries later, and a stream answers 429 with
 # Retry-After, on which indexing puts the record back in line until then.
 # (The timestamp backfill runs on GraphQL's separate point budget.)
@@ -196,7 +197,14 @@ _GITHUB_RETRY_MAX_DELAY_SECONDS = 30.0
 # the indexing service's HTTP timeout (aiohttp's 300s default), so a primary
 # reset up to an hour away is left to the caller's retry instead.
 _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS = 90
-# GitHub's documented wait for a secondary limit that sends no Retry-After.
+# Inside a sync run nobody waits on the call, so it waits for the reset: the
+# primary window is one hour ("5,000 requests per hour",
+# https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+# plus a minute for clock skew. A longer wait stops the sync; the next one resumes.
+_GITHUB_SYNC_RATE_LIMIT_MAX_WAIT_SECONDS = 3660
+# GitHub's documented wait for a secondary limit that sends no Retry-After ("wait
+# for at least one minute before retrying"), doubled on each further limit ("wait
+# for an exponentially increasing amount of time between retries").
 _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS = 60
 
 # GitHub collaborator "affiliation" values, used to enumerate collaborators

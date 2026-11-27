@@ -23,9 +23,16 @@ import {
   EventType,
   LLMConfiguredEvent,
 } from '../services/kafka_events.service';
-import { AiModelsConfigRepository } from '../services/aiModelsConfig.repository';
+import {
+  AiModelsConfigRepository,
+  AiModelsWriteAborted,
+} from '../services/aiModelsConfig.repository';
+import type { AIModelConfiguration } from '../types/ai-models.types';
 import {
   IDENTITY_FORWARDING_KEYS,
+  CONFIG_SECRET_PLACEHOLDER,
+  connectionEndpointsDifferBody,
+  isCredentialHeaderName,
   restoreCredentialTemplates,
 } from '../utils/maskConfigSecrets';
 import { identityPolicyBodySchema } from '../validator/validators';
@@ -145,15 +152,35 @@ export function setConnectionIdentityForwarding(
       const connectionId = req.params.connectionId;
       const body = req.body as ConnectionForwardingBody;
       const keys = IDENTITY_FORWARDING_KEYS;
+      const newSecret =
+        (body.serviceApiKey !== undefined && body.serviceApiKey !== '') ||
+        Object.entries(body.headerTemplates).some(
+          ([name, value]) =>
+            isCredentialHeaderName(name) && value !== CONFIG_SECRET_PLACEHOLDER,
+        );
       let updated = 0;
       const updatedTypes = new Set<string>();
-      await new AiModelsConfigRepository(keyValueStoreService).mutate(
-        (aiModels) => {
-          updated = 0;
-          updatedTypes.clear();
-          for (const modelType of AI_MODEL_TYPES) {
-            for (const entry of aiModels[modelType] ?? []) {
-              if (entry.connectionId !== connectionId) continue;
+      // Typed by assertion: it is set inside the callback, so TS must not narrow it to null.
+      let refusal = null as Record<string, unknown> | null;
+      try {
+        await new AiModelsConfigRepository(keyValueStoreService).mutate(
+          (aiModels) => {
+            updated = 0;
+            updatedTypes.clear();
+            const members: {
+              modelType: string;
+              entry: AIModelConfiguration;
+            }[] = [];
+            for (const modelType of AI_MODEL_TYPES) {
+              for (const entry of aiModels[modelType] ?? []) {
+                if (entry.connectionId === connectionId)
+                  members.push({ modelType, entry });
+              }
+            }
+            // A new secret is for one endpoint; with several, nothing is saved.
+            refusal = newSecret ? connectionEndpointsDifferBody(members) : null;
+            if (refusal) throw new AiModelsWriteAborted();
+            for (const { modelType, entry } of members) {
               const configuration: Record<string, unknown> = {
                 ...entry.configuration,
               };
@@ -170,20 +197,24 @@ export function setConnectionIdentityForwarding(
               } else {
                 Reflect.deleteProperty(configuration, keys.jwtAudience);
               }
-              if (body.serviceApiKey !== undefined) {
-                if (body.serviceApiKey === '') {
-                  Reflect.deleteProperty(configuration, keys.serviceApiKey);
-                } else {
-                  configuration[keys.serviceApiKey] = body.serviceApiKey;
-                }
+              if (body.serviceApiKey === '') {
+                Reflect.deleteProperty(configuration, keys.serviceApiKey);
+              } else if (body.serviceApiKey !== undefined) {
+                configuration[keys.serviceApiKey] = body.serviceApiKey;
               }
               entry.configuration = configuration;
               updated += 1;
               updatedTypes.add(modelType);
             }
-          }
-        },
-      );
+          },
+        );
+      } catch (error) {
+        if (refusal && error instanceof AiModelsWriteAborted) {
+          res.status(400).json(refusal);
+          return;
+        }
+        throw error;
+      }
       if (updated === 0) {
         res
           .status(404)
@@ -191,7 +222,11 @@ export function setConnectionIdentityForwarding(
         return;
       }
       await publishModelsReconfigured(eventService, appConfig, updatedTypes);
-      res.status(200).json({ status: 'success', connectionId, updated });
+      res.status(200).json({
+        status: 'success',
+        connectionId,
+        updated,
+      });
     } catch (error) {
       next(error);
     }
@@ -291,8 +326,7 @@ export function previewIdentityForwarding(
         body: { userId: body.userId, workload: body.workload, configuration },
       };
       const response = (await new AIServiceCommand(options).execute()) as
-        | AIServiceResponse
-        | undefined;
+        AIServiceResponse | undefined;
       res
         .status(response?.statusCode ?? 502)
         .json(response?.data ?? { status: 'error' });

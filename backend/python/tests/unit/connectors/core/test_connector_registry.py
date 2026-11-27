@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -711,8 +712,8 @@ class TestGetConnectorInstanceFromDb:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
-        """Returns None on DB error."""
+    async def test_a_failed_read_is_a_503(self):
+        """A failed read is not a missing connector."""
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.side_effect = RuntimeError("db down")
@@ -721,9 +722,11 @@ class TestGetConnectorInstanceFromDb:
         mock_data_store.graph_provider = gp
         container.data_store = AsyncMock(return_value=mock_data_store)
 
-        result = await registry._get_connector_instance_from_db("c1")
+        with pytest.raises(HTTPException) as caught:
+            await registry._get_connector_instance_from_db("c1")
 
-        assert result is None
+        assert caught.value.status_code == 503
+        gp.get_document.assert_awaited_once_with("c1", registry._collection_name, raise_on_error=True)
 
 
 # ===========================================================================
@@ -1353,8 +1356,7 @@ class TestGetConnectorInstance:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
-        """Returns None on error."""
+    async def test_a_failed_read_is_a_503_not_a_missing_connector(self):
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_document.side_effect = RuntimeError("boom")
@@ -1363,11 +1365,10 @@ class TestGetConnectorInstance:
         mock_data_store.graph_provider = gp
         container.data_store = AsyncMock(return_value=mock_data_store)
 
-        result = await registry.get_connector_instance(
-            "c1", "user-1", "org-1", is_admin=False
-        )
+        with pytest.raises(HTTPException) as caught:
+            await registry.get_connector_instance("c1", "user-1", "org-1", is_admin=False)
 
-        assert result is None
+        assert caught.value.status_code == 503
 
 
 # ===========================================================================
