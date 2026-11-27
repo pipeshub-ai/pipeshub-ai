@@ -15,7 +15,12 @@
  */
 import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { isRetryableRefreshStatus, parseRetryAfterMs, REFRESH_ATTEMPT_TIMEOUT_MS } from '@/lib/api/refresh-retry';
+import {
+  isRetryableRefreshStatus,
+  parseRetryAfterMs,
+  REFRESH_ATTEMPT_TIMEOUT_MS,
+  REFRESH_BODY_TIMEOUT_MS,
+} from '@/lib/api/refresh-retry';
 
 export const SESSION_HINT_KEY = 'pipeshub_signed_in';
 /** Where builds before ADR-WEB-02 kept the tokens; read once to move them, then deleted. */
@@ -134,7 +139,20 @@ export type AccessTokenAnswer =
    */
   | { outcome: 'unreachable'; retryAfterMs?: number };
 
-async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
+type RefreshBody = { accessToken?: unknown; refreshToken?: unknown } | null;
+
+/** Counts refresh attempts, so a replacement token that arrives late is kept only while no later attempt has started. */
+let refreshGeneration = 0;
+
+/**
+ * `keepLate` stores a replacement refresh token whose body arrived after REFRESH_BODY_TIMEOUT_MS, when the attempt has
+ * already settled as no answer. Only a bearer client needs it; the cookie path gets its replacement as a header.
+ */
+async function postRefresh(
+  init: RequestInit,
+  keepLate?: (refreshToken: string) => Promise<void>,
+): Promise<AccessTokenAnswer> {
+  const generation = ++refreshGeneration;
   // One attempt may not hang the refresh: no answer within the limit counts as no answer.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REFRESH_ATTEMPT_TIMEOUT_MS);
@@ -158,23 +176,43 @@ async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
     if (!response.ok) return { outcome: 'refused' };
     // The server said yes and has already replaced the refresh token; a bearer client gets the replacement only in
     // this body, so cutting the read off would leave it holding the spent token, and its next refresh ends the session.
-    // shortcut: a body that stalls after a 2xx keeps the refresh lock until the connection fails; bound it if seen.
+    // A separate, longer bound keeps a stalled body from holding the refresh lock; past it the read goes on.
     clearTimeout(timer);
-    let data: { accessToken?: unknown; refreshToken?: unknown } | null;
-    try {
-      data = (await response.json()) as { accessToken?: unknown; refreshToken?: unknown } | null;
-    } catch {
-      // The server said yes and its body did not arrive: a navigation cut the read off mid-restore, and the session it
-      // renewed is good. Read as refused, this removed the signed-in mark and the next page load signed the person out.
+    // undefined: the server said yes and its body did not arrive (a navigation cut the read off mid-restore). The
+    // session it renewed is good. Read as refused, this removed the signed-in mark and the next page load signed out.
+    const body = response.json().then(
+      (data) => data as RefreshBody,
+      () => undefined,
+    );
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>((resolve) => {
+      bodyTimer = setTimeout(() => resolve('late'), REFRESH_BODY_TIMEOUT_MS);
+    });
+    const data = await Promise.race([body, late]);
+    clearTimeout(bodyTimer);
+    if (data === 'late') {
+      if (keepLate) {
+        void body
+          .then((lateData) => (lateData === undefined ? undefined : answerFrom(lateData)))
+          .then((answer) => {
+            const token = answer?.outcome === 'issued' ? answer.refreshToken : undefined;
+            if (!token) return;
+            // Under the lock, and only if no attempt started since: a later one may already have kept a newer token.
+            return oneRefreshAtATime(async () => {
+              if (refreshGeneration === generation) await keepLate(token);
+            });
+          })
+          .catch(() => undefined);
+      }
       return { outcome: 'unreachable' };
     }
-    return answerFrom(data);
+    return data === undefined ? { outcome: 'unreachable' } : answerFrom(data);
   } finally {
     clearTimeout(timer);
   }
 }
 
-function answerFrom(data: { accessToken?: unknown; refreshToken?: unknown } | null): AccessTokenAnswer {
+function answerFrom(data: RefreshBody): AccessTokenAnswer {
   if (typeof data?.accessToken !== 'string' || !data.accessToken) return { outcome: 'refused' };
   return typeof data.refreshToken === 'string' && data.refreshToken
     ? { outcome: 'issued', accessToken: data.accessToken, refreshToken: data.refreshToken }
@@ -204,10 +242,11 @@ async function desktopRefresh(vault: DesktopSessionBridge): Promise<AccessTokenA
     return { outcome: 'unreachable' };
   }
   if (!refreshToken) return { outcome: 'refused' };
-  const answer = await postRefresh({ headers: { Authorization: `Bearer ${refreshToken}` } });
-  if (answer.outcome === 'issued' && answer.refreshToken) {
-    await vault.writeRefreshToken(answer.refreshToken).catch(() => false);
-  }
+  const keep = async (token: string) => {
+    await vault.writeRefreshToken(token).catch(() => false);
+  };
+  const answer = await postRefresh({ headers: { Authorization: `Bearer ${refreshToken}` } }, keep);
+  if (answer.outcome === 'issued' && answer.refreshToken) await keep(answer.refreshToken);
   return answer;
 }
 
@@ -251,19 +290,21 @@ async function editionRefresh(credential: EditionRefreshCredential): Promise<Acc
   if (!headers) return { outcome: 'refused' };
   // Credentials too: an edition whose headers ask for the cookie (naming the org, `x-pipeshub-session-org`) is
   // answered from it, and the from-source split is another origin.
-  const answer = await postRefresh({ credentials: 'include', headers });
-  if (answer.outcome === 'issued' && answer.refreshToken) {
-    if (editionRefreshKeeper) {
-      try {
-        await editionRefreshKeeper(answer.refreshToken);
-      } catch (error) {
-        console.error('The edition could not keep the renewed session token:', error);
-      }
-    } else {
-      console.error('The session token was renewed but the edition installed no keeper: the next refresh will end it');
-    }
-  }
+  const answer = await postRefresh({ credentials: 'include', headers }, keepEditionToken);
+  if (answer.outcome === 'issued' && answer.refreshToken) await keepEditionToken(answer.refreshToken);
   return answer;
+}
+
+async function keepEditionToken(refreshToken: string): Promise<void> {
+  if (!editionRefreshKeeper) {
+    console.error('The session token was renewed but the edition installed no keeper: the next refresh will end it');
+    return;
+  }
+  try {
+    await editionRefreshKeeper(refreshToken);
+  } catch (error) {
+    console.error('The edition could not keep the renewed session token:', error);
+  }
 }
 
 /** A new access token from the session's refresh token, wherever it is kept. */

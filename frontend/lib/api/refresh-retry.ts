@@ -18,6 +18,11 @@ export const REFRESH_BASE_DELAY_MS = 1_000;
 export const REFRESH_MAX_DELAY_MS = 15_000;
 /** Longest one attempt may take; slower counts as a network failure. */
 export const REFRESH_ATTEMPT_TIMEOUT_MS = 10_000;
+/**
+ * Longest wait for the body of a yes. Past it the cycle settles as no answer and releases the refresh lock; the body is
+ * still read, and a replacement refresh token in it is kept.
+ */
+export const REFRESH_BODY_TIMEOUT_MS = 30_000;
 /** Total time one refresh cycle keeps trying, attempt time included, before it stops and shows the reconnecting notice. */
 export const REFRESH_MAX_TOTAL_WAIT_MS = 45_000;
 /** Pause between refresh cycles the scheduler starts on its own while the notice is showing. */
