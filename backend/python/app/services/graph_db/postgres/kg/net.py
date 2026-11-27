@@ -26,6 +26,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.core.db import notify
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg import (
@@ -181,7 +182,7 @@ async def _ask(db: KernelDB, org: str, app: str, *, force: bool = False) -> None
     _ASKED[(org, app)] = now + HOLD_S
 
     async def go(tx: Tx) -> None:
-        await tx.execute("/* pipeshub:kg.demote_ask */ SELECT pg_notify($1, $2)", CHANNEL, json.dumps([org, app]))
+        await notify(tx, CHANNEL, json.dumps([org, app]))
         await tx.execute("/* pipeshub:kg.demote_mark */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, $2, ARRAY[$3]::text[])", org, app, MARKER)
     try:
         with bind(drainer._ctx(org)):
