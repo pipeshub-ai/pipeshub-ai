@@ -412,8 +412,9 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const scopedSlotId = useScopedSlotId();
   const answerSlotId = useAnswerSlotId();
-  // The slot this row renders in (an answer's scope, else the render slot): its approvals, run and card state.
-  const activeSlotId = scopedSlotId;
+  // The slot this row renders in (an answer's scope, else the render slot, else the active slot): its approvals,
+  // run and card state. Without a provider that is the active slot, as on the chat page.
+  const activeSlotId = answerSlotId;
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
   // Reads the chat again, so the access check that could not run is asked again. Only a read: nothing is sent.
