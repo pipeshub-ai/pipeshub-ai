@@ -219,6 +219,30 @@ async def test_a_token_shown_only_its_own_record_tells_the_owner_once_which_perm
     assert "ticket.agent or admin.user" in str(notices.sent[0]["message"])
 
 
+async def test_a_token_replaced_after_a_listing_of_its_own_record_keeps_members_as_stored(world: World) -> None:
+    """The list came from the old token, shown only its own user 1; /users/me would now answer for the new token's
+    account. That answer says nothing about the listing, so the read stays unfinished."""
+    groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
+    roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
+    world.zammad.lists_everyone = False
+    world.zammad.token = "old"
+    fetch_users = world.connector._fetch_users
+
+    async def listed_then_replaced(*args: object) -> object:
+        listing = await fetch_users(*args)
+        world.zammad.token, world.zammad.me = "new", 2  # the owner saved another account's token
+        return listing
+
+    world.connector._fetch_users = listed_then_replaced
+
+    parts = await world.sync_incomplete()
+
+    assert "the user list (interrupted)" in parts
+    assert world.linked() == EVERYONE
+    assert world.directory.group_members == groups_before
+    assert world.directory.role_members == roles_before
+
+
 async def test_a_token_whose_own_account_cannot_be_read_withdraws_nobody(world: World) -> None:
     world.zammad.lists_everyone = False
     world.zammad.path_status["/api/v1/users/me"] = 503

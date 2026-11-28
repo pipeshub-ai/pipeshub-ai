@@ -434,6 +434,8 @@ class ZammadConnector(BaseConnector):
         self._users_read = ReadOutcome.COMPLETE
         # Ids of every row the last _fetch_users listed, written or not (inactive, no email, system users).
         self._listed_user_ids: set[str] = set()
+        # The token that listing used: whose own record a scoped listing holds.
+        self._users_listed_with: object = None
         # Parts of the current sync that could not be read or written (see ZammadSyncIncompleteError).
         self._incomplete: list[str] = []
         # Ids of the groups listed as inactive; their tickets leave PipesHub like a filtered-out group's.
@@ -829,6 +831,7 @@ class ZammadConnector(BaseConnector):
         self._listed_user_ids = set()
 
         datasource = await self._get_fresh_datasource()
+        self._users_listed_with = self._token_in_use()
         page = 1
         per_page = 100
         outcome = ReadOutcome.COMPLETE
@@ -932,7 +935,15 @@ class ZammadConnector(BaseConnector):
             # A full listing also holds Zammad's seeded user 1 ("-", db/seeds/user_nr_1.rb), which no token
             # signs in as; and every listing holds the caller, so none is empty.
             return True
-        me = await (await self._get_fresh_datasource()).get_current_user()
+        datasource = await self._get_fresh_datasource()
+        # /users/me answers for the token asked with: only the listing's own token says whose record it holds.
+        me = await datasource.get_current_user() if self._token_in_use() == self._users_listed_with else None
+        if me is None or self._token_in_use() != self._users_listed_with:
+            self.logger.warning(
+                "The Zammad access token was replaced after the user list was read; group and role members and "
+                "linked accounts stay as stored until the next sync reads them with the new one"
+            )
+            return False
         if not (me.success and isinstance(me.data, dict) and me.data.get("id") is not None):
             self.logger.warning(
                 f"Could not read the token's own Zammad account (HTTP {me.status_code}: {me.error or me.message}); "
