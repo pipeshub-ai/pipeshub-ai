@@ -89,6 +89,23 @@ class TestRoutingKey:
         monkeypatch.setenv("SECRET_KEY", "b" * 64)
         assert scope != routing_key("org-1", "conv-1", 8, principal_id="user-1").split(":")[1]
 
+    def test_a_secret_given_by_file_gives_the_same_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("SECRET_KEY", "c" * 64)
+        by_value = routing_key("org-1", "conv-1", 8, principal_id="user-1")
+        secret_file = tmp_path / "secret-key"
+        secret_file.write_text("c" * 64 + "\n", encoding="utf-8")
+        secret_file.chmod(0o400)
+        monkeypatch.setenv("SECRET_KEY", "")
+        monkeypatch.setenv("SECRET_KEY_FILE", str(secret_file))
+        assert routing_key("org-1", "conv-1", 8, principal_id="user-1") == by_value
+        assert routing_key("org-1", "conv-1", 8, principal_id="user-1") == by_value
+
+    def test_no_secret_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SECRET_KEY", raising=False)
+        monkeypatch.delenv("SECRET_KEY_FILE", raising=False)
+        with pytest.raises(ValueError, match="SECRET_KEY"):
+            routing_key("org-1", "conv-1", 8, principal_id="user-1")
+
     def test_conversations_spread_over_the_shards(self) -> None:
         shards = {routing_key("org-1", f"conv-{i}", 8).rsplit(":", 1)[1] for i in range(200)}
         assert len(shards) == 8

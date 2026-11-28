@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import logging
 import os
-import stat
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -34,6 +32,11 @@ from app.utils.encryption.secret_strength import (
     weak_secret_reason,
 )
 from app.utils.security_profile import hardened_profile, warn_once
+from harness_core.security.derived_keys import (
+    FILE_SUFFIX,
+    SecretKeyRingError,
+    ring_secret,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -47,20 +50,12 @@ SECRET_KEY_NEXT_ENV = "SECRET_KEY_NEXT"
 SECRET_KEY_KDF_ENV = "SECRET_KEY_KDF"
 # The ring's members, writer first; each may also come from the file its ``<name>_FILE`` names.
 RING_ENVS = (SECRET_KEY_ENV, SECRET_KEY_PREVIOUS_ENV, SECRET_KEY_NEXT_ENV)
-FILE_SUFFIX = "_FILE"
 # Every variable that hands a process the platform's root key, by value or by file: what a component refuses.
 PLATFORM_KEY_ENVS = tuple(name for env in RING_ENVS for name in (env, f"{env}{FILE_SUFFIX}"))
-
-_LOG = logging.getLogger(__name__)
-_warned_paths: set[str] = set()
 
 _CIPHER_SALT = b"pipeshub/platform-cipher"
 _CIPHER_INFO = b"aes-256-gcm/v2"
 
-
-
-class SecretKeyRingError(ValueError):
-    """The ring must not be used; the message says why."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,33 +116,6 @@ def weak_secret_message(name: str, reason: str) -> str:
         "with `openssl rand -base64 32` (install.sh generates one for you). To replace a key already in use, follow "
         '"Rotating SECRET_KEY" in the runbooks: the new key goes in SECRET_KEY, the old one in SECRET_KEY_PREVIOUS.'
     )
-
-
-def ring_secret(name: str, env: Mapping[str, str] | None = None) -> str:
-    """One ring member: the file ``<name>_FILE`` names (one trailing line break dropped), else ``<name>``, else ``""``."""
-    source = os.environ if env is None else env
-    file_env = f"{name}{FILE_SUFFIX}"
-    path = (source.get(file_env) or "").strip()
-    if not path:
-        return source.get(name) or ""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            mode = os.fstat(handle.fileno()).st_mode
-            secret = handle.read()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise SecretKeyRingError(f"{file_env} names {path}, which cannot be read ({type(exc).__name__})") from None
-    # A file written by `echo` or an editor ends with a line break; any other whitespace is the key's and is refused.
-    if secret.endswith("\n"):
-        secret = secret[:-1]
-        if secret.endswith("\r"):
-            secret = secret[:-1]
-    if not secret:
-        raise SecretKeyRingError(f"{file_env} names {path}, which is empty")
-    if mode & stat.S_IROTH and path not in _warned_paths:
-        # Not refused: Kubernetes and Docker set a secret's mode themselves. Every account on the host can read it.
-        _warned_paths.add(path)
-        _LOG.warning("%s names %s, which every account can read: make it mode 0400", file_env, path)
-    return secret
 
 
 def secret_key_configured(env: Mapping[str, str] | None = None) -> bool:
