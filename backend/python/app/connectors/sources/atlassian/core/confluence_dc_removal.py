@@ -21,6 +21,12 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.registry.filters import SyncFilterKey
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id,
+    read_page,
+    repeats,
+    v1_next_start,
+)
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -31,6 +37,9 @@ FILTER_REMOVAL_MARGIN = timedelta(hours=24)
 CONTENT_LIST_LIMIT = 100
 RECORD_SCAN_PAGE_SIZE = 500
 ID_SYNC_CHUNK = 50
+# Stored pages a full listing's search missed that are read one by one, per space and type. More than this is a
+# search far behind the database: none is read and the run unlinks nothing.
+MISSED_READ_CAP = 100
 RECORD_DELETE_CHUNK = 200
 # How many runs the checkpoint is held for pages that failed to save before they
 # are given up on, so one broken page can't stop a space from ever moving on.
@@ -305,12 +314,63 @@ class ConfluenceDataCenterRemovalMixin:
             ]
             if archived:
                 await self._note_archived_kept(archived)
+            failed_ids = {item_id for item_id, _, _ in listing.failed}
+            missed = [
+                r for r in stored
+                if r.external_record_id in existing and r.external_record_id not in leaving
+                and existing[r.external_record_id].status == "current"
+                and r.external_record_id not in listing.seen and r.external_record_id not in failed_ids
+            ]
+            if missed and listing.complete and self.data_entities_processor.full_sync_running(self.connector_id):
+                await self._keep_missed_by_search(space, record_type, missed)
         if gone or left_out:
             settled = await self._delete_content_records(gone + left_out) and settled
         return settled
 
+    async def _keep_missed_by_search(self, space: RecordGroup, record_type: RecordType, pages: list[Record]) -> None:
+        """Read by id the stored pages the database lists as current but the search did not return.
+
+        The search index can be behind the database, and a full sync unlinks what it did not write. ``GET
+        /rest/api/content/{id}`` answers 404 "if there is no content with the given id, or if the calling user
+        does not have permission to view the content" (https://docs.atlassian.com/ConfluenceServer/rest/8.5.4/,
+        https://developer.atlassian.com/server/confluence/11.1.0.swagger.v3.json), so a 404 page is left to the
+        unlink. One that is there is kept with what hangs under it, its access read again; one it can't read is
+        kept and the run unlinks nothing.
+        """
+        if len(pages) > MISSED_READ_CAP:
+            self.logger.warning(
+                f"The search missed {len(pages)} stored {record_type.value} records of space {space.short_name}; "
+                "keeping them as stored, and this full sync unlinks nothing"
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [r.id for r in pages])
+            self._sync_read_incomplete = True
+            return
+        datasource = await self._get_fresh_datasource()
+        there: list[Record] = []
+        for page in pages:
+            page_id = page.external_record_id
+            try:
+                response = await datasource.get_content_v1(page_id, expand="space")
+                if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                    continue
+                data = response.json() if response is not None and response.status == HttpStatusCode.SUCCESS.value else None
+            except Exception as e:
+                self.logger.warning(f"Could not read {record_type.value} {page_id}, which the search missed: {e}")
+                data = None
+            if isinstance(data, dict) and str(data.get("id")) == str(page_id):
+                there.append(page)
+                continue
+            self.logger.warning(f"Keeping {record_type.value} {page_id}, which the search missed: it could not be read")
+            self.data_entities_processor.note_kept_records(self.connector_id, [page.id])
+            self._sync_read_incomplete = True
+        if there:
+            self.logger.info(
+                f"Keeping {len(there)} {record_type.value} records of space {space.short_name} the search missed"
+            )
+            await self._note_archived_kept(there)
+
     async def _note_archived_kept(self, pages: list[Record]) -> None:
-        """Note archived pages kept as stored, with the files, comments and replies under them.
+        """Note archived pages (or ones the search missed) kept as stored, with the files, comments and replies under them.
 
         The search leaves archived pages out, but Confluence still shows them to those
         allowed, so a full sync keeps them and what hangs under them rather than
@@ -365,6 +425,7 @@ class ConfluenceDataCenterRemovalMixin:
         datasource = await self._get_fresh_datasource()
         for status in statuses:
             start = 0
+            seen: set = set()
             while True:
                 try:
                     response = await datasource.list_space_content_v1(
@@ -383,23 +444,24 @@ class ConfluenceDataCenterRemovalMixin:
                     )
                     return None
                 data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
-                results = data.get("results") if isinstance(data, dict) else None
-                if not isinstance(results, list):
+                # An item without an id could not be told apart from one that left: the page is unread.
+                page = read_page(data, content_id)
+                if page is None:
                     self.logger.warning(
                         f"Could not list the {content_type}s of space {space_key} "
-                        f"(HTTP {response.status if response else 'no response'}); nothing removed"
+                        f"(HTTP {response.status if response else 'no response'}, or a page not read in full); "
+                        "nothing removed"
                     )
                     return None
-                for item in results:
-                    if isinstance(item, dict) and item.get("id"):
-                        listed[str(item["id"])] = self._listed_item(item, status)
-                next_url = (data.get("_links") or {}).get("next")
-                if not next_url:
-                    break
-                if not results:
-                    self.logger.warning(f"Can't follow the {content_type} listing of space {space_key}; nothing removed")
+                if repeats(page.results, content_id, seen):
+                    self.logger.warning(f"The {content_type} listing of space {space_key} repeats a page; nothing removed")
                     return None
-                start += len(results)
+                for item in page.results:
+                    listed[str(item["id"])] = self._listed_item(item, status)
+                following = v1_next_start(data, start, len(page.results), CONTENT_LIST_LIMIT, use_link_offset=False)
+                if following is None:
+                    break
+                start = following
         return listed
 
     @staticmethod

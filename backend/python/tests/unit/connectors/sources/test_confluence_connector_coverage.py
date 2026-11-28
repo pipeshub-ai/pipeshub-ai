@@ -807,9 +807,8 @@ class TestFetchGroupMembers:
             "size": 2,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
-        assert emails == ["a@t.com"]
-        assert account_ids == []
+        # A member with neither an account id nor an email can't be told apart: the stored members are kept.
+        assert await c._fetch_group_members("g1", "Group 1") is None
 
     @pytest.mark.asyncio
     async def test_api_failure_returns_none(self):

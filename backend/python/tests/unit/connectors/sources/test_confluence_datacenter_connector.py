@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import pytest
 
+from app.connectors.sources.atlassian.core.confluence_access import ChildrenUnreadable
+
 pytestmark = pytest.mark.confluence_datacenter
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
@@ -336,13 +338,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-1",
+                    "type": "known", "userKey": "user-1",
                     "displayName": "User One",
                     "email": "user1@example.com",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -364,13 +368,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-no-email",
+                    "type": "known", "userKey": "user-no-email",
                     "displayName": "No Email",
                     "email": "",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         await connector._sync_users()
@@ -382,7 +388,9 @@ class TestSyncUsers:
     async def test_sync_users_handles_api_failure(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         # Should not raise, just stop
@@ -397,13 +405,15 @@ class TestSyncUsers:
         user_response = {
             "results": [
                 {
-                    "userKey": "user-1",
+                    "type": "known", "userKey": "user-1",
                     "displayName": "Alice",
                     "email": "alice@example.com",
                 }
             ],
         }
-        mock_ds.get_user_list_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(return_value=_make_mock_response(200, user_response))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -425,7 +435,7 @@ class TestSyncUsers:
 
         page1_users = [
             {
-                "userKey": f"u{i}",
+                "type": "known", "userKey": f"u{i}",
                 "displayName": f"User {i}",
                 "email": f"u{i}@example.com",
             }
@@ -433,7 +443,7 @@ class TestSyncUsers:
         ]
         page2_users = [
             {
-                "userKey": "u200",
+                "type": "known", "userKey": "u200",
                 "displayName": "User 200",
                 "email": "u200@example.com",
             }
@@ -448,7 +458,9 @@ class TestSyncUsers:
                 return _make_mock_response(200, {"results": page1_users})
             return _make_mock_response(200, {"results": page2_users})
 
-        mock_ds.get_user_list_v1 = AsyncMock(side_effect=mock_user_list)
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        mock_ds.get_active_users_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_app_user = MagicMock(return_value=AppUser(
             app_name=Connectors.CONFLUENCE,
@@ -506,8 +518,8 @@ class TestSyncUserGroups:
         await connector._sync_user_groups()
 
     @pytest.mark.asyncio
-    async def test_sync_groups_skips_without_id(self):
-        """Groups without id or name are skipped."""
+    async def test_a_group_without_id_or_name_leaves_the_listing_unread(self):
+        """A listed group it can't name could be a stored one: the page is unread, not that group skipped."""
         connector = _make_connector()
         mock_ds = MagicMock()
         groups_response = {
@@ -529,8 +541,8 @@ class TestSyncUserGroups:
         connector._get_app_users_by_emails = AsyncMock(return_value=[])
 
         await connector._sync_user_groups()
-        # Only one group should be processed
-        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is False
 
 
 # ===========================================================================
@@ -1110,6 +1122,7 @@ class TestFetchSpacePermissions:
             ]
         )
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         permissions = await connector._fetch_space_permissions("ENG", "Engineering", space_id="1")
         assert len(permissions) == 1
 
@@ -1136,27 +1149,16 @@ class TestFetchPagePermissions:
     async def test_fetches_page_permissions(self):
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        mock_ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_make_mock_response(
                 200,
-                {
-                    "viewContentRestrictions": {
-                        "results": [
-                            {
-                                "operation": "read",
-                                "restrictions": {
-                                    "user": {"results": []},
-                                    "group": {"results": []},
-                                },
-                            }
-                        ],
-                    }
-                },
+                {"operation": "read", "restrictions": {"user": {"results": [{"userKey": "u1"}]}, "group": {"results": []}}},
             )
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_page_restriction_to_permissions = AsyncMock(return_value=[])
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         permissions = await connector._fetch_page_permissions("page-1")
         assert permissions == []
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
@@ -1170,7 +1172,7 @@ class TestFetchPagePermissions:
         """
         connector = _make_connector()
         mock_ds = MagicMock()
-        mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        mock_ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_make_mock_response(403, {})
         )
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -1261,6 +1263,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1284,6 +1287,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1292,16 +1296,16 @@ class TestFetchCommentsRecursive:
         assert len(comments) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_content_comments_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        comments = await connector._fetch_comments_recursive(
-            "12345", "Test", "footer", [], None, "page"
-        )
-        assert comments == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comments_recursive(
+                "12345", "Test", "footer", [], None, "page"
+            )
 
 
 # ===========================================================================
@@ -1331,6 +1335,7 @@ class TestFetchCommentChildrenRecursive:
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         children = await connector._fetch_comment_children_recursive(
             "11111", "footer", "12345", "space-1", []
@@ -1352,6 +1357,7 @@ class TestFetchCommentChildrenRecursive:
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         children = await connector._fetch_comment_children_recursive(
             "11111", "inline", "12345", "space-1", []
@@ -1359,16 +1365,16 @@ class TestFetchCommentChildrenRecursive:
         assert len(children) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_content_comments_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        children = await connector._fetch_comment_children_recursive(
-            "11111", "footer", "12345", "space-1", []
-        )
-        assert children == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comment_children_recursive(
+                "11111", "footer", "12345", "space-1", []
+            )
 
 # =============================================================================
 # Merged from test_confluence_connector_coverage.py
@@ -2156,6 +2162,7 @@ class TestCreatePermissionFromPrincipal:
     async def test_group_not_found(self):
         c = _conn()
         c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        _no_group_named(c)
 
         perm = await c._create_permission_from_principal("group", "grp-x", PermissionType.READ)
         assert perm is None
@@ -2167,11 +2174,11 @@ class TestCreatePermissionFromPrincipal:
         assert perm is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_a_failed_lookup_raises_instead_of_reading_as_missing(self):
         c = _conn()
         c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
-        perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
-        assert perm is None
+        with pytest.raises(Exception, match="DB error"):
+            await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
 
 
 # ===========================================================================
@@ -2362,7 +2369,8 @@ class TestFetchGroupMembers:
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         emails = await c._fetch_group_members("g1", "Group 1")
-        assert emails == ["a@t.com"]
+        # A member with neither a user key nor an email can't be told apart: the stored members are kept.
+        assert emails is None
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -3381,7 +3389,9 @@ class TestSyncUsersCoverage:
     async def test_no_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=None)
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=None)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -3389,7 +3399,9 @@ class TestSyncUsersCoverage:
     async def test_error_response(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500))
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -3397,7 +3409,9 @@ class TestSyncUsersCoverage:
     async def test_empty_results(self):
         c = _conn()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
+        c._server_version = (10, 2, 0)
+        c.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {"results": []}))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
 
@@ -3970,6 +3984,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _c()
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
+        _no_group_named(c)
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is None
 
@@ -4481,3 +4497,17 @@ class TestSyncSpacesIncludeFilter:
         mock_ds.get_spaces_v1.assert_awaited_once()
         call_kwargs = mock_ds.get_spaces_v1.call_args
         assert call_kwargs[1].get("keys") == ["ENG"]
+
+
+def _no_group_named(c: MagicMock) -> None:
+    """The name fallback finds no group (a successful, empty lookup)."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+    tx = MagicMock()
+    tx.get_nodes_by_filters = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[MagicMock]:
+        yield tx
+
+    c.data_store_provider.transaction = transaction

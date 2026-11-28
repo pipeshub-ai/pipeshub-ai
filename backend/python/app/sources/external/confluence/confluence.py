@@ -845,6 +845,45 @@ class ConfluenceDataSource:
         )
         return await self._client.execute(req)
 
+    async def get_global_permissions_v1(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """``GET /rest/api/permissions`` (Data Center 9.2.5+): every global permission, as a list of
+        ``{operation: {targetType, operationKey}, subject}``; "Can use" is ``application`` / ``use``."""
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        req = HTTPRequest(
+            method="GET",
+            url=f"{self._v1_rest_api_base()}/permissions",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query={},
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_active_users_v1(
+        self,
+        start: int = 0,
+        limit: int = 200,
+        headers: dict[str, Any] | None = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/admin/users/list/active`` — the users who count into license usage (Data Center 9.3+).
+
+        Same page shape as ``get_user_list_v1``, without deactivated, unlicensed, externally deleted, shadowed
+        and anonymous users.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        req = HTTPRequest(
+            method="GET",
+            url=f"{self._v1_rest_api_base()}/admin/users/list/active",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict({"start": start, "limit": limit}),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def search_users_v1(
         self,
         query: str,
@@ -3397,6 +3436,36 @@ class ConfluenceDataSource:
 
         resp = await self._client.execute(req)
         return resp
+
+    async def get_content_restriction_by_operation_v1(
+        self,
+        content_id: str,
+        operation_key: str,
+        start: int = 0,
+        limit: int = 200,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/content/{id}/restriction/byOperation/{operationKey}`` (Data Center, every release from 9.1.0).
+
+        An ``OperationRestriction``: ``operation`` and ``restrictions.user`` / ``restrictions.group``, each a page
+        of ``results`` with ``start``, ``limit`` and ``size``. Restrictions set on this content only, not those it
+        inherits from its ancestors.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        _path: dict[str, Any] = {"id": content_id, "operationKey": operation_key}
+        url = self._v1_rest_api_base() + _safe_format_url(
+            "/content/{id}/restriction/byOperation/{operationKey}", _path
+        )
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(dict(headers or {})),
+            path=_as_str_dict(_path),
+            query=_as_str_dict({"start": start, "limit": limit}),
+            body=None,
+        )
+        return await self._client.execute(req)
 
     async def get_page_content_v1(
         self,

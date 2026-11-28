@@ -382,7 +382,6 @@ class TestSyncFolders:
             {
                 "results": [
                     {"id": "folder1", "title": None},
-                    {"id": None, "title": "Folder 2"},
                     _folder_data("folder3", "Folder 3"),
                 ],
                 "_links": {},
@@ -1351,7 +1350,7 @@ class TestFetchSpacePermissionsResults:
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_space_permissions_assignments = AsyncMock(return_value=_make_mock_response(200, {
-            "results": [{"id": "perm-1"}],
+            "results": [{"id": "perm-1", "principal": {"type": "user", "id": "acc-1"}}],
             "_links": {},
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -2439,9 +2438,8 @@ class TestFetchGroupMembers:
             "size": 2,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
-        assert emails == ["a@t.com"]
-        assert account_ids == []
+        # A member with neither an account id nor an email can't be told apart: the stored members are kept.
+        assert await c._fetch_group_members("g1", "Group 1") is None
 
     @pytest.mark.asyncio
     async def test_inactive_members_are_left_out_and_recorded(self) -> None:
@@ -3903,14 +3901,14 @@ class TestFetchGroupMembersFullCoverage:
         assert await c._fetch_group_members("g1", "devs") is None
 
     @pytest.mark.asyncio
-    async def test_skips_no_email(self):
+    async def test_a_member_it_cannot_name_is_an_unread_page(self):
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(200, {
             "results": [{"email": "", "displayName": "NoEmail"}], "size": 1,
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == ([], [])
+        assert await c._fetch_group_members("g1", "devs") is None
 
 
 class TestGetAppUsersByEmailsFullCoverage:
@@ -5459,8 +5457,28 @@ class TestFetchCommentChildrenRecursiveAdditional:
         assert len(result) >= 1
 
     @pytest.mark.asyncio
-    async def test_child_without_id_still_appended(self):
-        """Child dicts without id are still collected; recursion uses None id safely."""
+    async def test_a_404_after_the_first_page_of_replies_is_unread(self) -> None:
+        """It existed when its first replies came back: the rest is unread, not gone."""
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_children = AsyncMock(side_effect=[
+            _mk_resp(200, {"results": [{"id": "201", "body": {}}], "_links": {"next": "/wiki/api/v2/footer-comments/100/children?cursor=C2"}}),
+            _mk_resp(404, {}),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_comment_children_recursive = AsyncMock(return_value=[])
+
+        from app.connectors.sources.atlassian.confluence_cloud.connector import (
+            ConfluenceConnector,
+        )
+        with pytest.raises(CommentsUnreadable):
+            await ConfluenceConnector._fetch_comment_children_recursive(
+                c, "100", "footer", RecordType.CONFLUENCE_PAGE
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_child_without_id_makes_the_replies_unread(self):
+        """A reply it can't name could read as gone: the replies are unread."""
         c = _mk_connector()
         child_data = {"id": None, "body": {}}
         ds = MagicMock()
@@ -5473,10 +5491,10 @@ class TestFetchCommentChildrenRecursiveAdditional:
         from app.connectors.sources.atlassian.confluence_cloud.connector import (
             ConfluenceConnector,
         )
-        result = await ConfluenceConnector._fetch_comment_children_recursive(
-            c, "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
-        assert len(result) == 1
+        with pytest.raises(CommentsUnreadable):
+            await ConfluenceConnector._fetch_comment_children_recursive(
+                c, "100", "footer", RecordType.CONFLUENCE_PAGE
+            )
 
     @pytest.mark.asyncio
     async def test_api_exception_returns_partial(self):
@@ -5969,7 +5987,7 @@ class TestCreatePseudoGroup:
 
 class TestFetchGroupMembersAdditional:
     @pytest.mark.asyncio
-    async def test_member_without_email_is_skipped(self):
+    async def test_a_member_it_cannot_name_keeps_the_stored_members(self):
         c = _mk_connector()
         ds = MagicMock()
         ds.get_group_members = AsyncMock(
@@ -5982,9 +6000,7 @@ class TestFetchGroupMembersAdditional:
             })
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        emails, account_ids = await c._fetch_group_members("g1", "Group1")
-        assert emails == ["valid@x.com"]
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "Group1") is None
 
     @pytest.mark.asyncio
     async def test_pagination_fetches_all_members(self):
@@ -6029,10 +6045,10 @@ class TestSyncUserGroupsTransformNone:
     @pytest.mark.asyncio
     async def test_pagination_continues_when_size_equals_batch(self):
         c = _mk_connector()
-        group_page_1 = {"id": "grp-1", "name": "Team A"}
+        full_page = [{"id": f"grp-{i}", "name": f"Team {i}"} for i in range(50)]  # size is the page's own count
         ds = MagicMock()
         ds.get_groups = AsyncMock(side_effect=[
-            _mk_resp(200, {"results": [group_page_1], "size": 50}),
+            _mk_resp(200, {"results": full_page, "size": 50}),
             _mk_resp(200, {"results": [], "size": 0}),
         ])
         c._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -6041,7 +6057,7 @@ class TestSyncUserGroupsTransformNone:
         await c._sync_user_groups()
 
         assert ds.get_groups.await_count == 2
-        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        assert c.data_entities_processor.on_new_user_groups.await_count == 50
 
 
 class TestSyncSpacesFailedResponse:
@@ -6440,15 +6456,16 @@ class TestSyncContentPermissionsByTitlesAdditional:
         await c._sync_content_permissions_by_titles(["Title1"])
 
     @pytest.mark.asyncio
-    async def test_item_without_id_skipped(self):
-        """Item without ID skipped (line 1484)."""
+    async def test_an_item_without_id_is_an_unread_batch(self):
+        """An item it can't name: the batch is unread and the run reports it."""
         c = _mk_connector()
         ds = MagicMock()
         ds.search_content_by_titles = AsyncMock(
             return_value=_mk_resp(200, {"results": [{"id": None, "title": "T1", "type": "page"}]})
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        await c._sync_content_permissions_by_titles(["T1"])
+        with pytest.raises(ValueError, match="Failed to sync permissions"):
+            await c._sync_content_permissions_by_titles(["T1"])
 
     @pytest.mark.asyncio
     async def test_unknown_type_skipped(self):

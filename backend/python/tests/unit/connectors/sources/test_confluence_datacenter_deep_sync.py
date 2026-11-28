@@ -16,6 +16,8 @@ from uuid import uuid4
 
 import pytest
 
+from app.connectors.sources.atlassian.core.confluence_access import ChildrenUnreadable
+
 pytestmark = pytest.mark.confluence_datacenter
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
@@ -181,9 +183,11 @@ class TestSyncUsers:
     async def test_single_page_users(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"userKey": "u1", "displayName": "User1", "email": "u1@x.com"},
+                {"type": "known", "userKey": "u1", "displayName": "User1", "email": "u1@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -203,16 +207,18 @@ class TestSyncUsers:
             if call_count == 1:
                 return _resp(200, {
                     "results": [
-                        {"userKey": f"u{i}", "displayName": f"U{i}", "email": f"u{i}@x.com"}
+                        {"type": "known", "userKey": f"u{i}", "displayName": f"U{i}", "email": f"u{i}@x.com"}
                         for i in range(200)
                     ],
                 })
             return _resp(200, {
-                "results": [{"userKey": "u200", "displayName": "U200", "email": "u200@x.com"}],
+                "results": [{"type": "known", "userKey": "u200", "displayName": "U200", "email": "u200@x.com"}],
             })
 
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(side_effect=mock_user_list)
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(side_effect=mock_user_list)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         await connector._sync_users()
@@ -222,10 +228,12 @@ class TestSyncUsers:
     async def test_skips_users_without_email(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(200, {
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(200, {
             "results": [
-                {"userKey": "u1", "displayName": "NoEmail", "email": ""},
-                {"userKey": "u2", "displayName": "HasEmail", "email": "u2@x.com"},
+                {"type": "known", "userKey": "u1", "displayName": "NoEmail", "email": ""},
+                {"type": "known", "userKey": "u2", "displayName": "HasEmail", "email": "u2@x.com"},
             ],
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -239,7 +247,9 @@ class TestSyncUsers:
     async def test_api_failure_breaks_loop(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_user_list_v1 = AsyncMock(return_value=_resp(500, {}))
+        connector._server_version = (10, 2, 0)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
+        ds.get_active_users_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
         # Should not raise but break the loop
@@ -481,7 +491,7 @@ class TestSyncContent:
 
     @pytest.mark.asyncio
     async def test_pagination_with_next_start(self):
-        """v1 content listing paginates via numeric ``start`` in ``_links.next``, not opaque cursors."""
+        """The next page starts after the items read, whatever offset the next link names."""
         connector = _make_connector()
         from app.connectors.core.registry.filters import FilterCollection
         connector.sync_filters = FilterCollection()
@@ -501,7 +511,7 @@ class TestSyncContent:
                     "results": [{"id": "p1", "title": "P1", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
                     "_links": {"next": "/wiki/rest/api/content/search?start=50"},
                 })
-            assert kw.get("start") == 50
+            assert kw.get("start") == 1
             return _resp(200, {
                 "results": [{"id": "p2", "title": "P2", "space": {"id": 1}, "childTypes": {"comment": {"value": False}}, "children": {"attachment": {"results": []}}}],
                 "_links": {},
@@ -728,6 +738,25 @@ class TestFetchPermissionAuditContentIds:
         assert "131103" in content_ids
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("pages", [
+        pytest.param([{"entities": [], "pagingInfo": {"lastPage": False, "nextPageCursor": None}}],
+                     id="an-empty-page-that-is-not-the-last"),
+        pytest.param([{"entities": [{"affectedObjects": [{"type": "Page", "id": "101"}]}]}], id="no-paging-info"),
+        pytest.param([{"pagingInfo": {"lastPage": True}}], id="no-entities"),
+        pytest.param([{"entities": [{"affectedObjects": [{"type": "Page", "id": "101"}]}],
+                       "pagingInfo": {"lastPage": False, "nextPageCursor": {"cursor": "C1"}}}] * 3,
+                     id="a-cursor-that-repeats"),
+    ])
+    async def test_an_audit_page_it_cannot_place_keeps_the_window(self, pages) -> None:
+        """Unread, not the end: the caller keeps the audit checkpoint and reads the window again."""
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_auditing_events_v1 = AsyncMock(side_effect=[_resp(200, p) for p in pages])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        assert await connector._fetch_permission_audit_content_ids(1700000000000, 1700001000000) is None
+
+    @pytest.mark.asyncio
     async def test_pagination_with_page_cursor(self):
         """Test pageCursor-based pagination through multiple pages."""
         connector = _make_connector()
@@ -916,6 +945,7 @@ class TestFetchSpacePermissions:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         connector._create_permission_from_principal = AsyncMock(return_value=Permission(
             entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ
         ))
@@ -940,6 +970,7 @@ class TestFetchSpacePermissions:
         ]))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         connector._create_permission_from_principal = AsyncMock(
             side_effect=[
                 Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ),
@@ -981,22 +1012,10 @@ class TestFetchPagePermissions:
     async def test_returns_permissions(self):
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_resp(
                 200,
-                {
-                    "viewContentRestrictions": {
-                        "results": [
-                            {
-                                "operation": "read",
-                                "restrictions": {
-                                    "user": {"results": []},
-                                    "group": {"results": []},
-                                },
-                            }
-                        ],
-                    }
-                },
+                {"operation": "read", "restrictions": {"user": {"results": [{"userKey": "u1"}]}, "group": {"results": []}}},
             )
         )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -1004,6 +1023,7 @@ class TestFetchPagePermissions:
             Permission(entity_type=EntityType.GROUP, external_id="g1", type=PermissionType.READ)
         ])
 
+        connector._group_permissions = AsyncMock(return_value=[])  # the administrators' grant, tested elsewhere
         perms = await connector._fetch_page_permissions("pg1")
         assert len(perms) == 1
 
@@ -1012,7 +1032,7 @@ class TestFetchPagePermissions:
         """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
-        ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
+        ds.get_content_restriction_by_operation_v1 = AsyncMock(
             return_value=_resp(500, {})
         )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -1045,6 +1065,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[])
 
         comments = await connector._fetch_comments_recursive(
@@ -1109,6 +1130,7 @@ class TestFetchCommentsRecursive:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
         connector._transform_to_comment_record = MagicMock(return_value=MagicMock())
+        connector._fetch_attachment_file_records = AsyncMock(return_value=[])  # no attachments on these comments
 
         child_comment = (MagicMock(), [])
         connector._fetch_comment_children_recursive = AsyncMock(return_value=[child_comment])
@@ -1120,16 +1142,16 @@ class TestFetchCommentsRecursive:
         assert len(comments) == 2
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_an_api_failure_is_unread_not_empty(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_content_comments_v1 = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        comments = await connector._fetch_comments_recursive(
-            "12345", "TestPage", "footer", [], "s1", "page", "node-1"
-        )
-        assert comments == []
+        with pytest.raises(ChildrenUnreadable):
+            await connector._fetch_comments_recursive(
+                "12345", "TestPage", "footer", [], "s1", "page", "node-1"
+            )
 
     @pytest.mark.asyncio
     async def test_extract_storage_attachment_filenames(self):

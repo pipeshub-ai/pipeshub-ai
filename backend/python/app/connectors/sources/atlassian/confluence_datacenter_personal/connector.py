@@ -6,8 +6,8 @@ Single-user sync without permission APIs. Inherits from BaseConnector directly.
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
-import uuid
 import re
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -20,24 +20,30 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
-    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -47,7 +53,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -62,7 +67,16 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
-from app.connectors.sources.atlassian.core.confluence_access import listing_modified_after
+from app.connectors.sources.atlassian.core.confluence_access import (
+    content_id as listed_item_id,
+)
+from app.connectors.sources.atlassian.core.confluence_access import (
+    listing_modified_after,
+    ChildrenUnreadable,
+    read_all_pages,
+    read_page,
+    v1_next_start,
+)
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
@@ -76,7 +90,6 @@ from app.connectors.sources.atlassian.core.confluence_sync import (
     synced,
 )
 from app.connectors.sources.atlassian.core.people import confluence_people
-from app.sources.client.http.http_retry import call_with_retry
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     CommentRecord,
@@ -91,14 +104,9 @@ from app.models.permission import Permission, PermissionType
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
+from app.sources.client.http.http_retry import call_with_retry
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_found_at_source,
-    to_stream_error,
-)
 
 # How far back each incremental sync re-reads before its checkpoint. CQL reads dates
 # in the site's time zone, not UTC; the admin's date filters are used as set.
@@ -332,6 +340,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
         self.pages_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
         self._space_listing_complete = False
+        # Set when a sync carried on past a part of Confluence it could not read (full_sync_coverage).
+        self._sync_read_incomplete = False
         # Spaces this sync wrote to the graph, which the space sweep expects to read back.
         self._saved_space_ids: set[str] = set()
         # Items the by-id syncs of the current space listing failed to save; counted in failedPages.
@@ -569,6 +579,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             self._spaces_listed = 0
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
+            listed_space_ids: set[str] = set()
 
             while True:
                 datasource = await self._get_fresh_datasource()
@@ -586,11 +597,18 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     break
 
                 response_data = response.json()
-                spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(spaces_data, list):
-                    self.logger.error("❌ The space listing had no results list; no space is removed this sync")
+                page = read_page(response_data)
+                if page is None:
+                    self.logger.error("A page of the space listing was not read in full; no space is removed this sync")
                     break
+                spaces_data = page.results
                 listed_count = len(spaces_data)
+                page_space_ids = {str(s.get("id")) for s in spaces_data}
+                if spaces_data and page_space_ids <= listed_space_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error("The space listing repeated a page; no space is removed this sync")
+                    break
+                listed_space_ids |= page_space_ids
                 self._spaces_listed += listed_count
 
                 # Extract base URL from first response
@@ -651,26 +669,17 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     self._saved_space_ids.update(str(g.external_group_id) for g, _ in batch_groups_with_permissions)
                     self.logger.info(f"Synced batch of {len(batch_groups_with_permissions)} spaces")
 
-                # Next page: prefer _links.next (cursor or start), else bump start by batch size
-                next_url = response_data.get("_links", {}).get("next")
-                token = self._pagination_token_from_next_link(next_url)
-                if token is None:
-                    # Counted before the exclusion filter, which can shorten a full page.
-                    if listed_count < batch_size:
-                        self._space_listing_complete = not next_url and not skipped_a_space
-                        break
-                    start_offset += batch_size
-                else:
-                    try:
-                        start_offset = int(token)
-                    except ValueError:
-                        # Cursor-style token not usable as start offset; stop to avoid tight loop
-                        self.logger.warning(
-                            "Unsupported pagination token in spaces v1 next link; stopping space sync early"
-                        )
-                        break
+                # The next page starts after the spaces listed (counted before the exclusion filter): ``start`` is
+                # the index of the first item and ``limit`` "may be restricted by fixed system limits".
+                next_start = v1_next_start(response_data, start_offset, listed_count, batch_size, use_link_offset=False)
+                if next_start is None:
+                    self._space_listing_complete = not skipped_a_space
+                    break
+                start_offset = next_start
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}")
+            if not self._space_listing_complete:
+                self._sync_read_incomplete = True
 
             return record_groups
 
@@ -688,11 +697,15 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 keys=[space_key], limit=1, expand="homepage"
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
+                self._sync_read_incomplete = True  # the homepage it can't place may be the one the search misses
+                return None, None, None
+            space_page = read_page(space_resp.json())
+            if space_page is None:
                 self._sync_read_incomplete = True
                 return None, None, None
-            space_results = space_resp.json().get("results", [])
-            if not space_results:
+            if not space_page.results:
                 return None, None, None
+            space_results = space_page.results
             homepage = space_results[0].get("homepage") or {}
             homepage_id = str(homepage.get("id")) if homepage.get("id") else None
             homepage_title = homepage.get("title")
@@ -905,6 +918,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             total_comments_synced = 0
             listing_complete = True
             seen: set[str] = set()
+            listed_item_ids: set[Optional[str]] = set()
             # (id, title, last modified) of items that failed to save this run.
             failed_items: list[tuple[str, str, str]] = []
             # Items given up on, id -> last modified then; skipped until it changes.
@@ -979,19 +993,24 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     break
 
                 response_data = response.json()
-                items_data = response_data.get("results") if isinstance(response_data, dict) else None
-                if not isinstance(items_data, list):
-                    self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                page = read_page(response_data, listed_item_id)
+                if page is None:
+                    self.logger.error(f"A page of the {content_type} listing of space {space_key} was not read in full")
                     listing_complete = False
                     break
+                items_data = page.results
+                page_item_ids = {listed_item_id(i) for i in items_data}
+                if items_data and page_item_ids <= listed_item_ids:
+                    # The same page again: the offset is being ignored, so the rest can't be read.
+                    self.logger.error(f"The {content_type} listing of space {space_key} repeated a page")
+                    listing_complete = False
+                    break
+                listed_item_ids |= page_item_ids
 
                 # Extract api_base_url from response root for URL construction
-                api_base_url = (response_data.get("_links") or {}).get("base")
+                api_base_url = page.base
 
                 if not items_data:
-                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
-                    if (response_data.get("_links") or {}).get("next"):
-                        listing_complete = False
                     break
 
                 # Transform items to WebpageRecords with permissions
@@ -1042,6 +1061,9 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         )
 
                         if not webpage_record_update.record:
+                            # Skipping it would leave it unlisted: a full sync would unlink it and no later sync
+                            # read it again. It is synced again by id instead.
+                            failed_items.append((str(item_id), str(item_title or ""), item_revision_marker(item_data) or ""))
                             continue
 
                         webpage_record = webpage_record_update.record
@@ -1062,17 +1084,14 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                         parent_node_id = webpage_record.id
 
                         # Process attachments first (keep list in memory for comment embedded attachment resolution)
-                        children = item_data.get("children", {})
-                        attachment_data = children.get("attachment", {})
-                        inline_attachments = attachment_data.get("results", [])
-                        attachment_size = attachment_data.get("size", 0)
+                        children = item_data.get("children")
+                        inline = read_page(children.get("attachment"), listed_item_id) if isinstance(children, dict) else None
 
-                        # Check if inline results are truncated (Confluence limits inline expansion to ~5-25 items)
-                        # If so, fetch attachments separately to avoid silent data loss
-                        if inline_attachments and len(inline_attachments) < attachment_size:
+                        # Confluence cuts the inline expansion at ~5-25 items. One that is cut (a size past its
+                        # results, even with none listed, or a next link) or unreadable is fetched on its own.
+                        if inline is None or inline.next_url:
                             self.logger.debug(
-                                f"Inline attachments truncated for {content_type} {item_title} "
-                                f"({len(inline_attachments)}/{attachment_size}), fetching separately"
+                                f"Inline attachments of {content_type} {item_title} are not complete; fetching separately"
                             )
                             # Fetch all attachments via separate pagination
                             page_attachments, fetched_api_base_url = await self._fetch_all_attachments(item_id)
@@ -1081,7 +1100,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                                 api_base_url = fetched_api_base_url
                         else:
                             # Use inline results if complete
-                            page_attachments = inline_attachments
+                            page_attachments = inline.results
 
                         if page_attachments:
                             self.logger.debug(f"Found {len(page_attachments)} attachments for {content_type} {item_title}")
@@ -1107,6 +1126,8 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                                         api_base_url=api_base_url
                                     )
 
+                                    if not attachment_record:
+                                        raise ChildrenUnreadable(f"attachment {attachment_id} could not be built")
                                     if attachment_record:
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
@@ -1120,9 +1141,12 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                                         self.logger.debug(f"Attachment: {attachment_record.record_name}")
 
                                 except Exception as att_error:
+                                    # Dropping it would save the page as if it had no such attachment.
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
                                     self._sync_read_incomplete = True
-                                    continue
+                                    raise ChildrenUnreadable(
+                                        f"an attachment of {content_type} {item_title} could not be processed"
+                                    ) from att_error
 
                         # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
                         self.logger.debug(f"Fetching comments for {content_type} {item_title}...")
@@ -1164,22 +1188,12 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     await save_synced_records(self.data_entities_processor, records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments + comments)")
 
-                # Extract next page token from _links.next
-                # May contain either start=N (offset) or cursor=<token> depending on API version
-                next_url = response_data.get("_links", {}).get("next")
-                if not next_url:
+                # Every Data Center release documents only start/limit here, and the limit "may be restricted by
+                # fixed system limits": the next page starts after the items read, whatever offset the link names.
+                next_start = v1_next_start(response_data, start_offset or 0, len(items_data), batch_size, use_link_offset=False)
+                if next_start is None:
                     break
-
-                pagination_token = self._pagination_token_from_next_link(next_url)
-                if pagination_token is None:
-                    # No pagination token — stop if fewer results than batch_size
-                    if len(items_data) < batch_size:
-                        break
-                    # Confluence occasionally omits _links.next despite having more:
-                    # advance by the number of items actually returned to stay correct.
-                    start_offset = (start_offset or 0) + len(items_data)
-                    pagination_token = str(start_offset)
-                    continue
+                pagination_token = str(next_start)
 
             if (
                 record_type == RecordType.CONFLUENCE_PAGE
@@ -1211,6 +1225,10 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
                     checkpoint_key=sync_point_key, failed=tuple(failed_items),
                 ))
+            # Unread, or read from a checkpoint: a full sync must not unlink what it did not see. A failed delete or a
+            # never-stored item that failed does not count: the reconcile marks only stored items at risk.
+            if not listing_complete or last_sync_time:
+                self._sync_read_incomplete = True
             if not listing_complete:
                 self.logger.warning(
                     f"Keeping the {content_type}s checkpoint for space {space_key}: not everything in "
@@ -1255,54 +1273,19 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         Returns:
             Tuple of (list of attachment data dictionaries, api_base_url from response)
         """
-        all_attachments = []
-        api_base_url = None
-        batch_size = 100
-        start = 0
+        async def fetch(start: int, limit: int) -> object:
+            datasource = await self._get_fresh_datasource()
+            return await datasource.get_content_attachments_v1(
+                content_id=content_id, start=start, limit=limit, expand="version,history,container"
+            )
 
-        try:
-            while True:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.get_content_attachments_v1(
-                    content_id=content_id,
-                    start=start,
-                    limit=batch_size,
-                    expand="version,history,container"
-                )
-
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(
-                        f"⚠️ Failed to fetch attachments for content {content_id}: "
-                        f"{response.status if response else 'No response'}"
-                    )
-                    self._sync_read_incomplete = True
-                    break
-
-                response_data = response.json()
-                
-                # Capture api_base_url from first response
-                if api_base_url is None:
-                    api_base_url = (response_data.get("_links") or {}).get("base")
-                
-                attachments = response_data.get("results", [])
-
-                if not attachments:
-                    break
-
-                all_attachments.extend(attachments)
-
-                # Check if we've reached the end
-                if len(attachments) < batch_size:
-                    break
-
-                start += batch_size
-
-            return all_attachments, api_base_url
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch attachments for content {content_id}: {e}")
+        listing = await read_all_pages(fetch, listed_item_id)
+        if listing is None:
+            # The attachments it did not read would read as gone to a full sync.
+            self.logger.warning(f"The attachments of content {content_id} were not read in full")
             self._sync_read_incomplete = True
-            return [], None
+            raise ChildrenUnreadable(f"the attachments of content {content_id} were not read in full")
+        return listing
 
     async def _fetch_attachment_file_records(
         self,
@@ -1359,10 +1342,13 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
             return records_with_permissions
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
+            # One it could not save would read as gone to a full sync, and no later sync would read it again.
             self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the attachments of comment {comment_id} could not be processed") from e
 
     async def _fetch_comments_recursive(
         self,
@@ -1398,181 +1384,165 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         """
         try:
             all_comments = []
-            batch_size = 100
-            start_offset = 0
 
             self.logger.debug(f"Fetching {comment_type} comments for {parent_type}: {page_title}")
 
             # v1: GET .../content/{id}/child/comment (footer + inline); filter by extensions.location
-            while True:
+            async def fetch(start: int, limit: int) -> object:
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_content_comments_v1(
-                    content_id=str(page_id),
-                    start=start_offset,
-                    limit=batch_size,
-                    depth="",
+                return await datasource.get_content_comments_v1(
+                    content_id=str(page_id), start=start, limit=limit, depth="",
                 )
 
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.warning(
-                        f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: "
-                        f"{response.status if response else 'No response'}"
+            listing = await read_all_pages(fetch, listed_item_id)
+            if listing is None:
+                # The ones it did not read would read as gone to a full sync: keep what is stored.
+                self.logger.warning(f"The {comment_type} comments of {page_title} were not read in full")
+                self._sync_read_incomplete = True
+                raise ChildrenUnreadable(f"The {comment_type} comments of {page_title} were not read in full")
+            comments_data, base_url = listing
+
+            for comment_data in comments_data:
+                loc = (comment_data.get("extensions") or {}).get("location") or "footer"
+                if comment_type == "inline" and loc != "inline":
+                    continue
+                if comment_type == "footer" and loc == "inline":
+                    continue
+
+                try:
+                    cid = comment_data.get("id")
+                    if not cid:
+                        continue
+                    comment_id_str = str(cid)
+
+                    existing_comment = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=comment_id_str,
                     )
-                    self._sync_read_incomplete = True
-                    break
 
-                response_data = response.json()
-                comments_data = response_data.get("results", [])
+                    normalized = self._normalize_v1_comment_for_transform(comment_data, comment_type)
+                    comment_record = self._transform_to_comment_record(
+                        normalized,
+                        page_id,
+                        parent_space_id,
+                        comment_type,
+                        None,
+                        base_url=base_url,
+                        existing_record=existing_comment,
+                        parent_node_id=parent_node_id,
+                    )
 
-                if not comments_data:
-                    break
+                    if comment_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {comment_id_str} could not be built")
+                    if comment_record:
+                        comment_record.inherit_permissions = True
+                        comment_record.rewrite_permissions = True
+                        all_comments.append(synced(comment_record, [], existing_comment))
 
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")
-
-                for comment_data in comments_data:
-                    loc = (comment_data.get("extensions") or {}).get("location") or "footer"
-                    if comment_type == "inline" and loc != "inline":
-                        continue
-                    if comment_type == "footer" and loc == "inline":
-                        continue
-
-                    try:
-                        cid = comment_data.get("id")
-                        if not cid:
-                            continue
-                        comment_id_str = str(cid)
-
-                        existing_comment = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=comment_id_str,
+                        # Sync comment attachments (explicit child attachments)
+                        comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                        comment_file_records = await self._fetch_attachment_file_records(
+                            comment_id=comment_id_str,
+                            comment_record_type=comment_record_type,
+                            comment_node_id=comment_record.id,
+                            parent_space_id=parent_space_id,
+                            attachments_indexing_enabled=attachments_indexing_enabled,
                         )
+                        all_comments.extend(comment_file_records)
 
-                        normalized = self._normalize_v1_comment_for_transform(comment_data, comment_type)
-                        comment_record = self._transform_to_comment_record(
-                            normalized,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            None,
-                            base_url=base_url,
-                            existing_record=existing_comment,
-                            parent_node_id=parent_node_id,
-                        )
-
-                        if comment_record:
-                            comment_record.inherit_permissions = True
-                            comment_record.rewrite_permissions = True
-                            all_comments.append(synced(comment_record, [], existing_comment))
-
-                            # Sync comment attachments (explicit child attachments)
-                            comment_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
-                            comment_file_records = await self._fetch_attachment_file_records(
-                                comment_id=comment_id_str,
-                                comment_record_type=comment_record_type,
-                                comment_node_id=comment_record.id,
-                                parent_space_id=parent_space_id,
-                                attachments_indexing_enabled=attachments_indexing_enabled,
-                            )
-                            all_comments.extend(comment_file_records)
-
-                            # Extract and resolve embedded attachments from comment body.storage
-                            body = comment_data.get("body", {})
-                            storage = body.get("storage", {})
-                            body_storage_html = storage.get("value", "")
+                        # Extract and resolve embedded attachments from comment body.storage
+                        body = comment_data.get("body", {})
+                        storage = body.get("storage", {})
+                        body_storage_html = storage.get("value", "")
+                        
+                        if body_storage_html:
+                            embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
                             
-                            if body_storage_html:
-                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                            if embedded_filenames:
+                                # Build combined attachment list for resolution (comment attachments + page attachments)
+                                comment_attachments_data, comment_api_base_url = await self._fetch_all_attachments(comment_id_str)
+                                # Use base_url from parent comment list response if comment attachments don't have one
+                                effective_base_url = comment_api_base_url or base_url
+                                combined_attachments = comment_attachments_data + (page_attachments or [])
                                 
-                                if embedded_filenames:
-                                    # Build combined attachment list for resolution (comment attachments + page attachments)
-                                    comment_attachments_data, comment_api_base_url = await self._fetch_all_attachments(comment_id_str)
-                                    # Use base_url from parent comment list response if comment attachments don't have one
-                                    effective_base_url = comment_api_base_url or base_url
-                                    combined_attachments = comment_attachments_data + (page_attachments or [])
+                                # Track already-synced attachment IDs to avoid duplicates
+                                synced_attachment_ids = {
+                                    rec[0].external_record_id 
+                                    for rec in comment_file_records
+                                }
+                                # The page's own attachments are saved under the page in this same batch.
+                                synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
+                                
+                                # Resolve each embedded filename and create FileRecord if not already synced
+                                for filename in embedded_filenames:
+                                    attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
                                     
-                                    # Track already-synced attachment IDs to avoid duplicates
-                                    synced_attachment_ids = {
-                                        rec[0].external_record_id 
-                                        for rec in comment_file_records
-                                    }
-                                    # The page's own attachments are saved under the page in this same batch.
-                                    synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
-                                    
-                                    # Resolve each embedded filename and create FileRecord if not already synced
-                                    for filename in embedded_filenames:
-                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                    if attachment_id and attachment_id not in synced_attachment_ids:
+                                        # Find the attachment data
+                                        attachment_data = next(
+                                            (att for att in combined_attachments if att.get("id") == attachment_id),
+                                            None
+                                        )
                                         
-                                        if attachment_id and attachment_id not in synced_attachment_ids:
-                                            # Find the attachment data
-                                            attachment_data = next(
-                                                (att for att in combined_attachments if att.get("id") == attachment_id),
-                                                None
+                                        if attachment_data:
+                                            # Check if attachment already exists in DB (e.g., page attachment)
+                                            existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                connector_id=self.connector_id,
+                                                external_record_id=attachment_id
                                             )
                                             
-                                            if attachment_data:
-                                                # Check if attachment already exists in DB (e.g., page attachment)
-                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
-                                                    connector_id=self.connector_id,
-                                                    external_record_id=attachment_id
+                                            if not existing_attachment:
+                                                # Create FileRecord for embedded attachment
+                                                file_record = self._transform_to_attachment_file_record(
+                                                    attachment_data=attachment_data,
+                                                    parent_external_record_id=comment_id_str,
+                                                    parent_external_record_group_id=parent_space_id,
+                                                    parent_node_id=comment_record.id,
+                                                    parent_record_type=comment_record_type,
+                                                    api_base_url=effective_base_url
                                                 )
                                                 
-                                                if not existing_attachment:
-                                                    # Create FileRecord for embedded attachment
-                                                    file_record = self._transform_to_attachment_file_record(
-                                                        attachment_data=attachment_data,
-                                                        parent_external_record_id=comment_id_str,
-                                                        parent_external_record_group_id=parent_space_id,
-                                                        parent_node_id=comment_record.id,
-                                                        parent_record_type=comment_record_type,
-                                                        api_base_url=effective_base_url
-                                                    )
-                                                    
-                                                    if file_record:
-                                                        if not attachments_indexing_enabled:
-                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        file_record.inherit_permissions = True
-                                                        file_record.rewrite_permissions = True
-                                                        all_comments.append((file_record, []))
-                                                        synced_attachment_ids.add(attachment_id)
+                                                if file_record:
+                                                    if not attachments_indexing_enabled:
+                                                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                    file_record.inherit_permissions = True
+                                                    file_record.rewrite_permissions = True
+                                                    all_comments.append((file_record, []))
+                                                    synced_attachment_ids.add(attachment_id)
 
-                        children = await self._fetch_comment_children_recursive(
-                            comment_id_str,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id,
-                            page_attachments=page_attachments,
-                            attachments_indexing_enabled=attachments_indexing_enabled
-                        )
-                        all_comments.extend(children)
+                    children = await self._fetch_comment_children_recursive(
+                        comment_id_str,
+                        comment_type,
+                        page_id,
+                        parent_space_id,
+                        page_permissions,
+                        parent_node_id=parent_node_id,
+                        page_attachments=page_attachments,
+                        attachments_indexing_enabled=attachments_indexing_enabled
+                    )
+                    all_comments.extend(children)
 
-                    except Exception as comment_error:
-                        self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
-                        self._sync_read_incomplete = True
-                        continue
+                except ChildrenUnreadable:
+                    raise
+                except Exception as comment_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
+                    self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"comment {comment_data.get('id')} could not be processed") from comment_error
 
-                next_url = response_data.get("_links", {}).get("next")
-                token = self._pagination_token_from_next_link(next_url) if next_url else None
-                if token is not None:
-                    try:
-                        start_offset = int(token)
-                        continue
-                    except ValueError:
-                        self._sync_read_incomplete = True
-                        break
-                if len(comments_data) < batch_size:
-                    break
-                start_offset += batch_size
 
             self.logger.debug(f"✓ Fetched {len(all_comments)} {comment_type} comments (including replies) for page {page_title}")
             return all_comments
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the {comment_type} comments of {page_title} could not be read") from e
 
     async def _fetch_comment_children_recursive(
         self,
@@ -1603,167 +1573,155 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         """
         try:
             all_children = []
-            batch_size = 100
-            start_offset = 0
 
-            while True:
+            async def fetch(start: int, limit: int) -> object:
                 datasource = await self._get_fresh_datasource()
-                response = await datasource.get_content_comments_v1(
-                    content_id=str(comment_id),
-                    start=start_offset,
-                    limit=batch_size,
-                    depth="",
+                return await datasource.get_content_comments_v1(
+                    content_id=str(comment_id), start=start, limit=limit, depth="",
                 )
 
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self._sync_read_incomplete = True
-                    break
+            listing = await read_all_pages(fetch, listed_item_id)
+            if listing is None:
+                # The ones it did not read would read as gone to a full sync: keep what is stored.
+                self.logger.warning(f"The replies to comment {comment_id} were not read in full")
+                self._sync_read_incomplete = True
+                raise ChildrenUnreadable(f"The replies to comment {comment_id} were not read in full")
+            children_data, base_url = listing
 
-                response_data = response.json()
-                children_data = response_data.get("results", [])
+            for child_data in children_data:
+                try:
+                    cid = child_data.get("id")
+                    if not cid:
+                        continue
+                    child_id_str = str(cid)
 
-                if not children_data:
-                    break
+                    existing_child = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=child_id_str,
+                    )
 
-                response_links = response_data.get("_links", {})
-                base_url = response_links.get("base")
+                    normalized = self._normalize_v1_comment_for_transform(child_data, comment_type)
+                    child_record = self._transform_to_comment_record(
+                        normalized,
+                        page_id,
+                        parent_space_id,
+                        comment_type,
+                        comment_id,
+                        base_url=base_url,
+                        existing_record=existing_child,
+                        parent_node_id=parent_node_id,
+                    )
 
-                for child_data in children_data:
-                    try:
-                        cid = child_data.get("id")
-                        if not cid:
-                            continue
-                        child_id_str = str(cid)
+                    if child_record is None and (normalized.get("version") or {}).get("authorId"):
+                        # It had what a comment record needs, so building it failed: unknown, not skipped. (One
+                        # without an author, as an anonymous comment, is never stored, so skipping it loses nothing.)
+                        self._sync_read_incomplete = True
+                        raise ChildrenUnreadable(f"comment {child_id_str} could not be built")
+                    if child_record:
+                        child_record.inherit_permissions = True
+                        child_record.rewrite_permissions = True
+                        all_children.append(synced(child_record, [], existing_child))
 
-                        existing_child = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=child_id_str,
+                        # Sync comment attachments (explicit child attachments)
+                        child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
+                        child_file_records = await self._fetch_attachment_file_records(
+                            comment_id=child_id_str,
+                            comment_record_type=child_record_type,
+                            comment_node_id=child_record.id,
+                            parent_space_id=parent_space_id,
+                            attachments_indexing_enabled=attachments_indexing_enabled,
                         )
+                        all_children.extend(child_file_records)
 
-                        normalized = self._normalize_v1_comment_for_transform(child_data, comment_type)
-                        child_record = self._transform_to_comment_record(
-                            normalized,
-                            page_id,
-                            parent_space_id,
-                            comment_type,
-                            comment_id,
-                            base_url=base_url,
-                            existing_record=existing_child,
-                            parent_node_id=parent_node_id,
-                        )
-
-                        if child_record:
-                            child_record.inherit_permissions = True
-                            child_record.rewrite_permissions = True
-                            all_children.append(synced(child_record, [], existing_child))
-
-                            # Sync comment attachments (explicit child attachments)
-                            child_record_type = RecordType.INLINE_COMMENT if comment_type == "inline" else RecordType.COMMENT
-                            child_file_records = await self._fetch_attachment_file_records(
-                                comment_id=child_id_str,
-                                comment_record_type=child_record_type,
-                                comment_node_id=child_record.id,
-                                parent_space_id=parent_space_id,
-                                attachments_indexing_enabled=attachments_indexing_enabled,
-                            )
-                            all_children.extend(child_file_records)
-
-                            # Extract and resolve embedded attachments from comment body.storage
-                            body = child_data.get("body", {})
-                            storage = body.get("storage", {})
-                            body_storage_html = storage.get("value", "")
+                        # Extract and resolve embedded attachments from comment body.storage
+                        body = child_data.get("body", {})
+                        storage = body.get("storage", {})
+                        body_storage_html = storage.get("value", "")
+                        
+                        if body_storage_html:
+                            embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
                             
-                            if body_storage_html:
-                                embedded_filenames = self._extract_storage_attachment_filenames(body_storage_html)
+                            if embedded_filenames:
+                                # Build combined attachment list for resolution
+                                child_attachments_data, child_api_base_url = await self._fetch_all_attachments(child_id_str)
+                                # Use base_url from parent comment list response if child attachments don't have one
+                                effective_base_url = child_api_base_url or base_url
+                                combined_attachments = child_attachments_data + (page_attachments or [])
                                 
-                                if embedded_filenames:
-                                    # Build combined attachment list for resolution
-                                    child_attachments_data, child_api_base_url = await self._fetch_all_attachments(child_id_str)
-                                    # Use base_url from parent comment list response if child attachments don't have one
-                                    effective_base_url = child_api_base_url or base_url
-                                    combined_attachments = child_attachments_data + (page_attachments or [])
+                                # Track already-synced attachment IDs
+                                synced_attachment_ids = {
+                                    rec[0].external_record_id 
+                                    for rec in child_file_records
+                                }
+                                # The page's own attachments are saved under the page in this same batch.
+                                synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
+                                
+                                # Resolve each embedded filename and create FileRecord if not already synced
+                                for filename in embedded_filenames:
+                                    attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
                                     
-                                    # Track already-synced attachment IDs
-                                    synced_attachment_ids = {
-                                        rec[0].external_record_id 
-                                        for rec in child_file_records
-                                    }
-                                    # The page's own attachments are saved under the page in this same batch.
-                                    synced_attachment_ids.update(att.get("id") for att in page_attachments or [])
-                                    
-                                    # Resolve each embedded filename and create FileRecord if not already synced
-                                    for filename in embedded_filenames:
-                                        attachment_id = self._resolve_attachment_by_filename(filename, combined_attachments)
+                                    if attachment_id and attachment_id not in synced_attachment_ids:
+                                        # Find the attachment data
+                                        attachment_data = next(
+                                            (att for att in combined_attachments if att.get("id") == attachment_id),
+                                            None
+                                        )
                                         
-                                        if attachment_id and attachment_id not in synced_attachment_ids:
-                                            # Find the attachment data
-                                            attachment_data = next(
-                                                (att for att in combined_attachments if att.get("id") == attachment_id),
-                                                None
+                                        if attachment_data:
+                                            # Check if attachment already exists in DB
+                                            existing_attachment = await self.data_entities_processor.get_record_by_external_id(
+                                                connector_id=self.connector_id,
+                                                external_record_id=attachment_id
                                             )
                                             
-                                            if attachment_data:
-                                                # Check if attachment already exists in DB
-                                                existing_attachment = await self.data_entities_processor.get_record_by_external_id(
-                                                    connector_id=self.connector_id,
-                                                    external_record_id=attachment_id
+                                            if not existing_attachment:
+                                                # Create FileRecord for embedded attachment
+                                                file_record = self._transform_to_attachment_file_record(
+                                                    attachment_data=attachment_data,
+                                                    parent_external_record_id=child_id_str,
+                                                    parent_external_record_group_id=parent_space_id,
+                                                    parent_node_id=child_record.id,
+                                                    parent_record_type=child_record_type,
+                                                    api_base_url=effective_base_url
                                                 )
                                                 
-                                                if not existing_attachment:
-                                                    # Create FileRecord for embedded attachment
-                                                    file_record = self._transform_to_attachment_file_record(
-                                                        attachment_data=attachment_data,
-                                                        parent_external_record_id=child_id_str,
-                                                        parent_external_record_group_id=parent_space_id,
-                                                        parent_node_id=child_record.id,
-                                                        parent_record_type=child_record_type,
-                                                        api_base_url=effective_base_url
-                                                    )
-                                                    
-                                                    if file_record:
-                                                        if not attachments_indexing_enabled:
-                                                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                                        file_record.inherit_permissions = True
-                                                        file_record.rewrite_permissions = True
-                                                        all_children.append((file_record, []))
-                                                        synced_attachment_ids.add(attachment_id)
+                                                if file_record:
+                                                    if not attachments_indexing_enabled:
+                                                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                                                    file_record.inherit_permissions = True
+                                                    file_record.rewrite_permissions = True
+                                                    all_children.append((file_record, []))
+                                                    synced_attachment_ids.add(attachment_id)
 
-                        grandchildren = await self._fetch_comment_children_recursive(
-                            child_id_str,
-                            comment_type,
-                            page_id,
-                            parent_space_id,
-                            page_permissions,
-                            parent_node_id=parent_node_id,
-                            page_attachments=page_attachments,
-                            attachments_indexing_enabled=attachments_indexing_enabled
-                        )
-                        all_children.extend(grandchildren)
+                    grandchildren = await self._fetch_comment_children_recursive(
+                        child_id_str,
+                        comment_type,
+                        page_id,
+                        parent_space_id,
+                        page_permissions,
+                        parent_node_id=parent_node_id,
+                        page_attachments=page_attachments,
+                        attachments_indexing_enabled=attachments_indexing_enabled
+                    )
+                    all_children.extend(grandchildren)
 
-                    except Exception as child_error:
-                        self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
-                        self._sync_read_incomplete = True
-                        continue
+                except ChildrenUnreadable:
+                    raise
+                except Exception as child_error:
+                    # Dropping it would save the rest as the whole list: the page is synced again by id instead.
+                    self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
+                    self._sync_read_incomplete = True
+                    raise ChildrenUnreadable(f"reply {child_data.get('id')} could not be processed") from child_error
 
-                next_url = response_data.get("_links", {}).get("next")
-                token = self._pagination_token_from_next_link(next_url) if next_url else None
-                if token is not None:
-                    try:
-                        start_offset = int(token)
-                        continue
-                    except ValueError:
-                        self._sync_read_incomplete = True
-                        break
-                if len(children_data) < batch_size:
-                    break
-                start_offset += batch_size
 
             return all_children
 
+        except ChildrenUnreadable:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
             self._sync_read_incomplete = True
-            return []
+            raise ChildrenUnreadable(f"the replies to comment {comment_id} could not be read") from e
 
     def _transform_to_comment_record(
         self,

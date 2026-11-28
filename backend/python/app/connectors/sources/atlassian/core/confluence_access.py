@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from app.config.constants.arangodb import MimeTypes
+from app.config.constants.http_status_code import HttpStatusCode
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
         DataSourceEntitiesProcessor,
     )
@@ -26,6 +30,87 @@ def _is_folder(record: Record) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class Page:
+    """One page of a Confluence listing, read in full (``read_page``)."""
+
+    results: list[dict[str, Any]]
+    links: dict[str, Any]
+
+    @property
+    def next_url(self) -> Optional[str]:
+        return self.links.get("next")
+
+    @property
+    def base(self) -> Optional[str]:
+        return self.links.get("base")
+
+
+def user_key(item: dict[str, Any]) -> Optional[str]:
+    """The id of a user: ``userKey`` / ``key`` (Data Center), ``accountId`` (Cloud) or ``username``."""
+    value = item.get("userKey") or item.get("key") or item.get("accountId") or item.get("username")
+    return value if isinstance(value, str) and value else None
+
+
+def group_key(item: dict[str, Any]) -> Optional[str]:
+    """The id of a group: ``name`` (Data Center) or ``id``."""
+    value = item.get("name") or item.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+def content_id(item: dict[str, Any]) -> Optional[str]:
+    """The id of a page, blog post, comment or attachment."""
+    value = item.get("id")
+    return str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) else None
+
+
+def principal_id(item: dict[str, Any]) -> Optional[str]:
+    """Who a Cloud v2 space permission row names: ``principal.id``."""
+    principal = item.get("principal")
+    return content_id(principal) if isinstance(principal, dict) else None
+
+
+def read_page(body: object, item_id: Optional[Callable[[dict[str, Any]], Optional[str]]] = None) -> Optional[Page]:
+    """A listing page, or None when it is not one read in full: unknown is not empty.
+
+    The shape every Confluence REST listing documents (Data Center PageResponse, Cloud v1 and v2 lists):
+    ``results`` a list of objects; ``size``, when given, the number of those results; ``_links``, when given,
+    an object whose ``next``, when given, is a link. An empty page that still links onward is not the end of
+    the listing, and with ``item_id``, an item without a usable id is not a readable item.
+    """
+    if not isinstance(body, dict):
+        return None
+    results = body.get("results")
+    if not isinstance(results, list) or not all(isinstance(item, dict) for item in results):
+        return None
+    size = body.get("size")
+    if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size != len(results)):
+        return None
+    links = body.get("_links", {})
+    if not isinstance(links, dict):
+        return None
+    next_url = links.get("next")
+    if next_url is not None and (not isinstance(next_url, str) or not next_url):
+        return None
+    next_url = next_url or continuation(body)
+    if next_url and not results:
+        return None
+    if next_url and not links.get("next"):
+        links = {**links, "next": next_url}
+    if item_id is not None and not all(item_id(item) for item in results):
+        return None
+    return Page(results, links)
+
+
+def continuation(body: dict[str, Any]) -> Optional[str]:
+    """The next page a listing names: ``_links.next``, or the top-level ``next`` the 9.x child lists document."""
+    links = body.get("_links") if isinstance(body.get("_links"), dict) else {}
+    for value in (links.get("next"), body.get("next")):
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def v1_next_start(
     response_data: dict[str, Any],
     start: int,
@@ -39,23 +124,90 @@ def v1_next_start(
     Confluence can return fewer results than asked for before the end, so when the response
     has links, ``_links.next`` decides whether more pages follow. Without links, a full page
     means more. Pass ``use_link_offset=True`` on Cloud and False on Data Center.
-    Raises ValueError when a Cloud next link has no usable offset, so the caller fails the
-    read instead of guessing one.
+    Raises ValueError when a Cloud next link has no usable offset, or when an empty page still
+    links to a next one, so the caller fails the read instead of taking a cut listing as whole.
     """
-    links = response_data.get("_links")
-    if isinstance(links, dict) and links:
-        next_url = links.get("next")
-        if not next_url or not page_len:
-            return None
-        # Cloud's link points at the next page; Data Center's short page still links to start + limit (CONFSERVER-95272).
+    links = response_data.get("_links") if isinstance(response_data.get("_links"), dict) else {}
+    next_url = continuation(response_data)
+    if next_url:
+        if not page_len:
+            raise ValueError(f"an empty page links to a next one: {next_url}")
+        # Cloud's link points at the next page. On Data Center ``start`` is "the index of the first item within the
+        # result set" and the limit may be cut by fixed system limits, so the rows read decide, not the link.
         if not use_link_offset:
             return start + page_len
         values = parse_qs(urlparse(next_url).query).get("start") or []
         if not values or not values[0].isdigit() or int(values[0]) <= start:
             raise ValueError(f"next page link has no usable start offset: {next_url}")
         return int(values[0])
-    size = response_data.get("size", page_len)
+    total = response_data.get("totalCount")
+    if isinstance(total, int) and not isinstance(total, bool) and page_len and start + page_len < total:
+        return start + page_len  # Data Center 10+ counts the whole list
+    if links:
+        return None
+    size = response_data.get("size")
+    size = size if isinstance(size, int) and not isinstance(size, bool) else page_len
     return start + page_len if size >= batch_size and page_len else None
+
+
+class ChildrenUnreadable(Exception):
+    """A page's comment, reply or attachment list could not be read, or one of its items processed, in full.
+
+    Raised instead of returning the rest: the item that holds the list fails and is synced again by id, so its
+    checkpoint does not move past what was never written.
+    """
+
+
+def repeats(rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], object], seen: set) -> bool:
+    """True when a non-empty page lists only rows already read, as a server ignoring ``start`` answers; otherwise
+    the page's rows are added to ``seen``. Such a list can't be read to its end, so its caller treats it as unread."""
+    keys = {key(row) for row in rows}
+    if rows and keys <= seen:
+        return True
+    seen |= keys
+    return False
+
+
+async def read_all_pages(
+    fetch: Callable[[int, int], Awaitable[Any]],
+    item_id: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
+    batch_size: int = 100,
+) -> Optional[tuple[list[dict[str, Any]], Optional[str]]]:
+    """Every row of a Data Center offset-paged listing and its ``_links.base``; None when any page can't be read.
+
+    ``fetch(start, limit)`` returns the HTTP response of one page. The next page starts where the rows read so far
+    end (``v1_next_start``): ``start`` is "the index of the first item within the result set" and the limit "may be
+    restricted by fixed system limits" (the Data Center REST specs), so neither the offset a next link names nor a
+    short page decides it. A 404 on the first request means the content is gone, so it has no children; on a
+    later page it is unread. Any other failed request, an exception, a page ``read_page`` refuses, or an empty page that links onward makes the whole listing unread.
+    """
+    rows: list[dict[str, Any]] = []
+    base: Optional[str] = None
+    start = 0
+    seen: set = set()
+    key = item_id or (lambda row: repr(sorted(row.items())))
+    while True:
+        try:
+            response = await fetch(start, batch_size)
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                # On the first request the content is gone (or out of sight), and its children with it. After rows
+                # came back it existed a moment ago: a 404 then says nothing about the rows after them.
+                return ([], None) if start == 0 else None
+            body = response.json() if response is not None and response.status == HttpStatusCode.SUCCESS.value else None
+        except Exception:
+            return None
+        page = read_page(body, item_id)
+        if page is None or repeats(page.results, key, seen):
+            return None
+        rows.extend(page.results)
+        base = base or page.base
+        try:
+            next_start = v1_next_start(body, start, len(page.results), batch_size, use_link_offset=False)
+        except ValueError:
+            return None
+        if next_start is None:
+            return rows, base
+        start = next_start
 
 
 def _parse_iso(value: str) -> datetime:

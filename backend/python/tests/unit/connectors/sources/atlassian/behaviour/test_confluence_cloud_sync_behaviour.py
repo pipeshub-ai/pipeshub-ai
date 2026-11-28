@@ -50,6 +50,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     V1_EXPANSION_DEFAULT_LIMIT,
     ConfluenceConnector,
+    read_restriction_fingerprint,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.atlassian.core.quota import (
@@ -459,6 +460,34 @@ class TestPageSync:
 
         assert {"10", "12"} <= set(db.records) and "11" not in db.records
 
+    @pytest.mark.parametrize("inline", [
+        pytest.param({"results": ["not an attachment"], "size": 1}, id="malformed"),
+        pytest.param({"results": [], "size": 3}, id="empty-but-says-three"),
+        pytest.param({"results": [], "size": 0, "_links": {"next": "/rest/api/content/10/child/attachment?start=25"}},
+                     id="empty-but-links-on"),
+    ])
+    async def test_an_unreadable_inline_attachment_list_is_read_on_its_own(
+        self, api, db, checkpoints, search, inline
+    ) -> None:
+        page = v1_page("10")
+        page["children"]["attachment"] = inline
+        search.by_cursor[None] = search_page([page])
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        saved = checkpoints.values_for("confluence_pages/ENG") or {}
+        assert not saved.get("last_sync_time"), "neither list was read: the window is read again"
+
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [
+            {"id": "att1", "title": "a.pdf", "mediaType": "application/pdf", "fileSize": 10, "version": {"number": 1},
+             "_links": {"download": "/download/attachments/10/a.pdf"}}], "_links": {"base": WIKI}})
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "the attachment list is read on its own, though the expansion listed none"
+
     async def test_a_failed_listing_page_does_not_move_the_checkpoint(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
         search.by_cursor["C2"] = json_response({"message": "Service Unavailable"}, status=503)
@@ -779,7 +808,32 @@ class TestGroups:
         assert len(db.user_groups) == saves, "the group is not saved from a guessed page"
         assert sorted(m.email for m in db.user_groups[-1][1]) == ["ana@acme.com", "bo@acme.com"]
 
-    async def test_a_group_that_disappears_part_way_through_its_members_ends_up_empty(self, api, db, checkpoints) -> None:
+    @pytest.mark.parametrize("answer", [
+        pytest.param({"results": [], "size": 0, "_links": {"base": WIKI, "next": "/rest/api/group/grp-eng/membersByGroupId?start=1"}},
+                     id="an-empty-page-that-links-on"),
+        pytest.param({"size": 0, "_links": {"base": WIKI}}, id="no-results"),
+        pytest.param({"results": None}, id="null-results"),
+        pytest.param({"results": [{"displayName": "Someone"}], "size": 1}, id="a-member-without-an-id"),
+    ])
+    async def test_a_member_page_that_is_not_a_page_keeps_the_stored_members(self, api, db, checkpoints, answer) -> None:
+        self._people(db)
+        path = f"{V1}/group/grp-eng/membersByGroupId"
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        both = [{"accountId": "acc-ana", "email": "ana@acme.com"}, {"accountId": "acc-bo", "email": "bo@acme.com"}]
+        api.on("GET", path, {"results": both, "size": 2, "_links": {"base": WIKI}})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+
+        api.on("GET", path, self._members_by_start({
+            "0": {"results": both[:1], "size": 1, "_links": {"base": WIKI, "next": "/rest/api/group/grp-eng/membersByGroupId?start=1"}},
+            "1": answer,
+        }))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved without the members it never read"
+
+    async def test_a_group_not_found_part_way_through_its_members_keeps_them(self, api, db, checkpoints) -> None:
         db.app_users.append(AppUser(
             app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
             org_id="org-1", email="ana@acme.com", full_name="Ana",
@@ -794,8 +848,9 @@ class TestGroups:
 
         await connector._sync_user_groups()
 
-        group, saved_members = db.user_groups[-1]
-        assert group.source_user_group_id == "grp-eng" and saved_members == [], "a deleted group keeps no members"
+        # It existed when its first members came back: a 404 after them says nothing about the rest.
+        assert not db.user_groups, "not saved with the members read so far"
+        assert connector.full_sync_coverage().complete is False
 
 
 class TestRestrictedPageFiles:
@@ -2269,13 +2324,16 @@ class TestListingsThatDoNotEnd:
         await connector._sync_folders("ENG")
 
         assert checkpoints.values_for("confluence_folders/ENG") is None
-        assert any("folder list stopped early" in p for p in connector._sync_problems)
+        assert any("folder list was not read in full" in p for p in connector._sync_problems)
 
     @pytest.mark.parametrize("next_page", [
         {"results": [], "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P3"}},
         {"results": [{"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}}],
          "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P2"}},
-    ], ids=["empty-page-pointing-further", "next-link-repeats"])
+        {"results": [{"principal": {"type": "group"}, "operation": {"key": "read", "targetType": "space"}}], "_links": {}},
+        {"results": None, "_links": {}},
+        {"_links": {}},
+    ], ids=["empty-page-pointing-further", "next-link-repeats", "a-principal-without-an-id", "null-results", "no-results"])
     async def test_a_space_permission_list_read_in_part_keeps_the_stored_access(
         self, api, db, checkpoints, next_page
     ) -> None:
@@ -2330,6 +2388,49 @@ class TestAttachmentsGoneFromAPage:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert "att1" not in db.records and "10" in db.records
+
+    @pytest.mark.parametrize("omitted", ["expansion", "results"])
+    async def test_an_omitted_expansion_and_an_empty_v2_list_remove_the_stored_files(
+        self, api, db, checkpoints, search, omitted
+    ) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert "att1" in db.records
+
+        page = v1_page("10", version=2)
+        if omitted == "expansion":
+            del page["children"]
+        else:
+            page["children"]["attachment"] = {"size": 0}
+        search.by_cursor = {None: search_page([page])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [], "_links": {"base": WIKI}})
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" not in db.records, "a v2 list read to its end is the inventory, an empty one included"
+        assert "10" in db.records
+
+    @pytest.mark.parametrize("status", [503, 403])
+    @pytest.mark.parametrize("omitted", ["expansion", "results"])
+    async def test_an_omitted_attachment_expansion_removes_nothing(
+        self, api, db, checkpoints, search, omitted, status
+    ) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert "att1" in db.records
+
+        page = v1_page("10", version=2)
+        if omitted == "expansion":
+            del page["children"]
+        else:
+            page["children"]["attachment"] = {"size": 0}
+        search.by_cursor = {None: search_page([page])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "no"}, status=status))
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "not an empty inventory: the stored file stays"
+        assert connector.full_sync_coverage().complete is False, "neither list was read: unread, not none"
 
     async def test_an_attachment_list_read_in_part_removes_nothing(self, api, db, checkpoints, search) -> None:
         self._page_with(api, search, "att1", "att2")
@@ -2414,6 +2515,24 @@ class TestNoRawErrorTextForUsers:
 
 
 class TestSpentQuotaEdges:
+    @pytest.mark.parametrize(
+        "spent_at", [f"{V2}/pages/10/attachments", f"{V2}/pages/10", f"{V2}/pages/10/footer-comments"]
+    )
+    async def test_a_quota_spent_while_reading_a_pages_attachments_stops_the_sync(
+        self, api, db, checkpoints, search, spent_at
+    ) -> None:
+        TestAttachmentsGoneFromAPage()._page_with(api, search, "att1")
+        api.on("GET", f"{V2}/pages/10/footer-comments", {"results": [], "_links": {}})
+
+        def spent(_: httpx.Request) -> httpx.Response:
+            raise AtlassianQuotaExhausted(time.time() + 600)
+
+        api.on("GET", spent_at, spent)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        with pytest.raises(AtlassianQuotaExhausted):
+            await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
     async def test_a_response_the_policy_refuses_to_wait_for_is_closed(self, monkeypatch) -> None:
         from app.sources.client.http.http_resilient_transport import (
             ResilientHTTPTransport,
@@ -2583,7 +2702,7 @@ class TestSmallAuditFixes:
 
         assert connector._notification_service.sent == []
 
-    async def test_a_restriction_entry_without_an_id_keeps_the_page_restricted(
+    async def test_a_restriction_entry_without_an_id_leaves_the_restrictions_unread(
         self, api, db, checkpoints, search
     ) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
@@ -2593,7 +2712,7 @@ class TestSmallAuditFixes:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "not opened to the whole space"
+        assert "10" not in db.records, "an entry it can't name is unread: not opened to the space, not dropped"
 
 
 class TestSpaceGrantErrors:
@@ -2878,6 +2997,14 @@ class TestFoldersAboveInScopePages:
         await connector._remove_folders_gone(ENG)
 
         assert db.records["500"].id in db.kept_records
+
+
+def test_a_restriction_listing_that_links_onward_is_always_checked_again() -> None:
+    first_page = {"results": [{"accountId": "acc-ana"}], "size": 1, "_links": {"next": "/rest/api/content/10/restriction?start=1"}}
+    item = {"restrictions": {"read": {"restrictions": {"user": first_page, "group": {"results": [], "size": 0}}}}}
+    assert read_restriction_fingerprint(item).startswith("unlisted@"), "a fingerprint of the first page only can't be compared"
+    first_page["_links"] = {}
+    assert not read_restriction_fingerprint(item).startswith("unlisted@"), "a listing read to its end is compared"
 
 
 class FullSyncUnlink:
@@ -3276,6 +3403,23 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
 
         assert connector.full_sync_coverage().complete is True
         assert unlink.unlinked(connector) & {"att1", "att2"} == {"att2"}
+
+    async def test_a_v1_fallback_whose_size_is_not_a_count_counts_as_cut_short(
+        self, api, db, checkpoints, search
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        odd = v1_page("10", version=2)
+        odd["children"]["attachment"] = {
+            "results": [ATT_A], "size": "2", "limit": 25, "_links": {"self": f"{WIKI}/rest/api/content/10/child/attachment"},
+        }
+        search.by_cursor = {None: search_page([odd])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "no"}, status=403))
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlink.unlinked(connector) & {"att1", "att2"} == set()
 
     async def test_a_complete_v1_fallback_keeps_the_run_complete(self, api, db, checkpoints, search) -> None:
         await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
