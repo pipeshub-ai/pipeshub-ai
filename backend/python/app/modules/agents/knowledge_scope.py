@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    gated,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.qna.chat_state import (
@@ -344,6 +347,7 @@ async def service_account_knowledge(
     logger: Logger,
     *,
     bound: bool,
+    licensed: bool,
 ) -> list[dict[str, Any]]:
     """The part of a service-account agent's knowledge it may search.
 
@@ -353,16 +357,20 @@ async def service_account_knowledge(
     runs as a bound service account, whose own grants then decide what of it is
     read. A failed connector lookup keeps no connector, and a source whose app
     could not be read is kept only if the lookup lists it as a team connector.
+    Without a licence key, an unbound agent searches as its creator, so it keeps only the
+    connectors everyone in the org can already see (``permission_sync_gate``).
     """
     knowledge = [k for k in agent_knowledge or [] if isinstance(k, dict)]
     team: set[str] = set()
     if any(not _is_collection(k) for k in knowledge):
         instances = await fetch_user_connector_instances(graph_provider, user_id, org_id, logger)
+        open_only = not bound and not licensed
         # Typed from the lookup, not the entry: an entry the graph could not resolve is typed UNKNOWN.
         team = {
             str(i.get("_key") or i.get("id"))
             for i in instances
             if isinstance(i, dict) and i.get("scope") == ConnectorScope.TEAM.value and not _is_collection(i)
+            and not (open_only and gated(i))
         }
     kept = [
         k for k in knowledge

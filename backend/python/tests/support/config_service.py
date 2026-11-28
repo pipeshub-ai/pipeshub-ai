@@ -106,6 +106,7 @@ class FakeConfigurationService:
         *,
         raise_on_error: bool = False,
         keep_in_cache: bool = True,
+        max_age_seconds: float | None = None,
     ) -> Any:  # noqa: ANN401
         self.reads.append(key)
         if key in self._nodes:
