@@ -135,10 +135,14 @@ async def check_connection(
     logger: Logger,
     *,
     client_factory: ClientFactory = _default_client,
+    public_only: bool = True,
 ) -> ConnectionCheckResult:
-    """Try the setup form's MariaDB settings: connect, read one row, close."""
+    """Try the setup form's MariaDB settings: connect, read one row, close.
+
+    ``public_only``: dial public addresses only (a personal connector's settings).
+    """
     try:
-        config = config_from_auth(auth_config)
+        config = config_from_auth(auth_config).model_copy(update={"public_only": public_only})
     except ValueError as e:
         return ConnectionCheckResult(success=False, message=str(e))
 
