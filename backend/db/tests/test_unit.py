@@ -909,26 +909,3 @@ def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
     py.write_text('revision = "graph_0003"\n\n\ndef upgrade():\n    op.execute(' + repr(sql) + ')\n')
     assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, sql
 
-
-def test_normalise_leaves_field_labels_that_match_a_name():
-    from db import surface
-    lines = ["database owner=owner", "role owner login=true", "member owner -> x admin=true", "column kernel.settings.owner type=name",
-             "policy t p cmd=r permissive=true roles=owner,pipeshub_app using=(owner = CURRENT_USER) check=-",
-             "column t.c type=text notnull=false identity= generated= default=owner"]
-    assert surface.normalise(lines, "postgres", "owner") == {
-        "database owner=<bootstrap-superuser>", "role <bootstrap-superuser> login=true", "member <bootstrap-superuser> -> x admin=true",
-        "column kernel.settings.owner type=name",
-        "policy t p cmd=r permissive=true roles=<bootstrap-superuser>,pipeshub_app using=(owner = CURRENT_USER) check=-",
-        "column t.c type=text notnull=false identity= generated= default=owner"}
-
-
-def test_normalise_finds_expression_fields_only_outside_quoted_names():
-    from db import surface
-    name = '"Platform default=Admin"'
-    lines = [f"database owner={name}", f"member {name} -> x admin=true",
-             f'column t.c type=text notnull=false identity= generated= default={name}',
-             f'policy t p cmd=r permissive=true roles={name} using=(owner = {name}) check=-']
-    assert surface.normalise(lines, "postgres", name) == {
-        "database owner=<bootstrap-superuser>", "member <bootstrap-superuser> -> x admin=true",
-        f"column t.c type=text notnull=false identity= generated= default={name}",
-        f"policy t p cmd=r permissive=true roles=<bootstrap-superuser> using=(owner = {name}) check=-"}

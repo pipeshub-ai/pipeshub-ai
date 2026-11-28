@@ -80,9 +80,13 @@ def test_a_non_superuser_administrator_bootstraps_and_migrates_with_every_check_
 
 # Names that a pattern, a quoting rule or a token substitution could get wrong: '_' is a LIKE wildcard ('pipeshubx_admin' matched
 # 'pipeshub_%'); a name that needs quoting; 'bootstrap' occurs in the superuser's token and 'owner' is a field label and a column;
-# and names that hold the separators and field labels of the surface lines themselves.
+# names that hold the separators and field labels of the surface lines; and names equal to a language, a schema, a table or a column
+# the surface lines name. The surface of each must be exactly the superuser bootstrap's (the committed snapshot).
 ADVERSARIAL = ["pipeshubx_admin", "Platform Admin", "bootstrap", "owner", "X login=true", "Platform default=Admin", "a,b", '"q"',
-               "trailing "]
+               "trailing ",
+               # words of the surface lines themselves: languages, schemas, a table and a column, a superuser-like name
+               # ("public" cannot be a role name: PostgreSQL reserves it, so a schema name stands in for it)
+               "plpgsql", "c", "sql", "internal", "information_schema", "kernel", "ext", "settings", "postgresql"]
 
 
 @pytest.mark.parametrize("admin", ADVERSARIAL)
