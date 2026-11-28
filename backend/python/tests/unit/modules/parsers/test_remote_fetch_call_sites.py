@@ -52,6 +52,10 @@ NETWORK_ROOTS = ("modules/parsers", "modules/transformers", "events", "utils/ima
 NETWORK_IMPORTERS = {
     "modules/parsers/image_parser/image_parser.py": "the one image sink, behind allow_remote_fetch",
     "modules/transformers/blob_storage.py": "talks to the platform's own storage, not to an image URL",
+    # Reviewed: the client of the Docling service's own /table-structure endpoint. The URL is the deployment's
+    # DOCLING_SERVICE_URL, never one read from a document; it sends crops and word boxes of the PDF being parsed to that
+    # service and fetches nothing a document names.
+    "modules/parsers/pdf/table_hybrid_client.py": "the Docling service's own table-structure endpoint (DOCLING_SERVICE_URL), not a document URL",
 }
 
 

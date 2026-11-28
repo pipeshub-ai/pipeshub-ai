@@ -226,6 +226,8 @@ dependencies = [
     "discord.py==2.7.1",
     "docker>=7.0.0",
     "docling==2.142.1",
+    # The step cap sets a private attribute of its decode loop; the table-structure endpoint and its tests are built against this version.
+    "docling-ibm-models==4.0.4",
     "einops>=0.8.0",
     "dropbox==12.2.4",
     "docx2python==3.7.1",

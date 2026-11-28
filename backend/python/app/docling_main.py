@@ -33,6 +33,7 @@ from app.services.docling.docling_service import (
 from app.services.docling.docling_service import (
     app as docling_app,
 )
+from app.services.docling.table_structure import shutdown_table_supervisor
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
@@ -142,6 +143,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
     shutdown_docling_pool()
+    await shutdown_table_supervisor()
     governor.stop()
     governor_task.cancel()
     try:

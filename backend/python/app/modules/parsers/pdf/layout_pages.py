@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import logging
 import os
 import re
 import tempfile
@@ -88,16 +89,36 @@ def _drop_unmapped_glyphs(regions: list[LayoutRegion]) -> list[LayoutRegion]:
     return kept
 
 
-def parse_pdf_layout(pdf_bytes: bytes) -> list[ParsedPageData]:
+def _table_collector(spool_dir: str | None, pdf_path: str):  # noqa: ANN202
+    """The job collector of the structure-model shadow run, or ``None``. Failing to make one is not a parse failure."""
+    if not spool_dir:
+        return None
+    try:
+        from app.modules.parsers.pdf.table_hybrid_flow import (
+            TableJobCollector,
+            shadow_active,
+        )
+
+        return TableJobCollector(spool_dir, pdf_path) if shadow_active() else None
+    except Exception:
+        logging.getLogger(__name__).warning("table hybrid shadow: no job collector", exc_info=True)
+        return None
+
+
+def parse_pdf_layout(pdf_bytes: bytes, spool_dir: str | None = None) -> list[ParsedPageData]:
+    """The pages' layout regions. With *spool_dir*, also spool the table jobs of the structure-model shadow run there;
+    that never changes the result and never raises."""
     _cap_cv2_threads()
     # The rasteriser reads the file by path.
     tmp_path: str | None = None
+    collector = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", prefix="pipeshub_pdf_") as tmp:
             tmp_path = tmp.name
             tmp.write(pdf_bytes)
             tmp.flush()
         pages: list[ParsedPageData] = []
+        collector = _table_collector(spool_dir, tmp_path)
         with pdfplumber.open(tmp_path) as pdf:
             raster_cache = DocumentRasterCache(tmp_path, num_pages=len(pdf.pages))
             model_rasters = DocumentRasterCache(
@@ -106,7 +127,8 @@ def parse_pdf_layout(pdf_bytes: bytes) -> list[ParsedPageData]:
             for page_index, page in enumerate(pdf.pages):
                 regions = _drop_unmapped_glyphs(
                     extract_layout_regions(
-                        page, pdf_path=tmp_path, raster_cache=raster_cache, model_raster_cache=model_rasters
+                        page, pdf_path=tmp_path, raster_cache=raster_cache, model_raster_cache=model_rasters,
+                        **({"table_collector": collector, "page_index": page_index} if collector is not None else {}),
                     )
                 )
                 # pdf.pages keeps every Page, and each caches its parsed chars and
@@ -122,6 +144,9 @@ def parse_pdf_layout(pdf_bytes: bytes) -> list[ParsedPageData]:
                 )
         return pages
     finally:
+        # The collector holds the rendered document open: close it on a failed parse too (the worker outlives it).
+        if collector is not None:
+            collector.close()
         if tmp_path is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)

@@ -168,6 +168,7 @@ class ParsingClient(BaseServiceClient):
         provider: ParserProvider | None = None,
         skip_table_enrichment: bool = False,
         file_path: str | None = None,
+        record_id: str | None = None,
     ) -> ParseResult:
         """Parse *file_content* by calling the Parsing Service. A 410 (``RECORD_GONE``: the service saw the record's delete
         marker change) is never taken at its word: the record is read first (``orphan.DeliveryGuard.confirm_gone``). Gone:
@@ -179,7 +180,7 @@ class ParsingClient(BaseServiceClient):
             try:
                 return await self._parse_once(
                     file_content, record_name, mime_type, extension, org_id, provider,
-                    skip_table_enrichment=skip_table_enrichment, file_path=file_path,
+                    skip_table_enrichment=skip_table_enrichment, file_path=file_path, record_id=record_id,
                     extra_fields=guard.request_fields() if guard is not None else {},
                 )
             except ParsingClientError as exc:
@@ -213,6 +214,7 @@ class ParsingClient(BaseServiceClient):
         skip_table_enrichment: bool,
         file_path: str | None,
         extra_fields: dict[str, str],
+        record_id: str | None = None,
     ) -> ParseResult:
         """One request to the Parsing Service.
 
@@ -237,6 +239,8 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        if record_id:
+            form_data["record_id"] = record_id
         form_data.update(extra_fields)
         # The record budget this call waits under: the service bounds its stage (and its late writes) by it.
         form_data["record_budget_s"] = str(messaging_env.record_processing_timeout_for(extension, mime_type))

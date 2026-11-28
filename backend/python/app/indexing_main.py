@@ -3651,6 +3651,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")
     try:
+        from app.modules.parsers.pdf.table_hybrid_flow import shutdown_shadow
+        await shutdown_shadow()
+    except Exception as e:
+        logger.error(f"Error stopping the table shadow run: {e}")
+    try:
         from app.modules.parsers.pdf.docling_processor import shutdown_docling_pool
         shutdown_docling_pool()
     except Exception as e:

@@ -62,6 +62,7 @@ from app.modules.parsers.pdf.pdf_rasterizer import (
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
+from app.modules.parsers.pdf.table_hybrid_flow import shutdown_shadow
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
@@ -363,6 +364,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cleared first, or the next submit in this process starts a new pool.
     set_parse_pool_governor(None)
     shutdown_parse_pool()
+    await shutdown_shadow()
     shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
