@@ -157,7 +157,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("zendesk", "item-acl", OVERRIDE, "zendesk/connector.py::ZendeskConnector._ticket_to_record", "ticket folders inherit=False, opened to the requester", read=False),
     Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py::ZammadConnector._create_answer_with_permissions", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
     Connector("zoom", "item-acl", OVERRIDE, "zoom/connector.py::ZoomConnector._build_record_group", "per-user groups, inherit=False", read=False),
-    Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py::DrupalWikiConnector._sync_spaces", "spaces inherit=False with org, user and group grants", read=False),
+    Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py::DrupalWikiConnector._sync_spaces", "spaces inherit=False: an open space grants the org, a protected one its members (users and groups; Reader-role-only reading is a known limitation); a protected page shared into an open space is granted the org, one shared into protected spaces their members and its own space's, not inheriting", read=False),
     Connector("bookstack", "item-acl", OVERRIDE, "bookstack/connector.py::BookStackConnector._page_record", "each chapter and page carries its own access (inherit=False): BookStack decides it apart from its book's", read=False),
     Connector("demo", "item-acl", OVERRIDE, "demo/connector.py::DemoConnector", "RECORD_LEVEL demo connector", read=False),
 )

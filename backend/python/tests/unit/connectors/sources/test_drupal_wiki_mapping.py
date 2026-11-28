@@ -12,13 +12,17 @@ import pytest
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.drupal_wiki.connector import (
+    MEMBERS_REFUSED,
     PAGE_ID_PREFIX,
     DrupalWikiConnector,
     source_id_from_external,
 )
 from app.models.entities import RecordType
 from app.models.permission import EntityType, PermissionType
-from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError
+from app.sources.external.drupal_wiki.graphql import (
+    DrupalWikiGraphQLError,
+    DrupalWikiGraphQLRefusedError,
+)
 
 CONNECTOR_ID = "conn-1"
 ORG_ID = "org-1"
@@ -56,48 +60,45 @@ PAGE = {
 
 
 class TestSpacePermissions:
-    def test_open_spaces_grant_the_whole_org(self, connector: DrupalWikiConnector) -> None:
-        for status in ("AUTHENTICATED", "ANONYMOUS"):
-            permissions = connector._build_space_permissions({"id": 3, "accessStatus": status}, None)
-            assert len(permissions) == 1
-            assert permissions[0].entity_type == EntityType.ORG
-            assert permissions[0].type == PermissionType.READ
+    @pytest.mark.asyncio
+    async def test_a_protected_space_grants_its_enabled_people_and_its_groups(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        # Its members see it (handbook node 226); node 363 narrows that to the Reader role,
+        # which no documented API names, so every member is granted (a shortcut in the code).
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(return_value={
+            "users": [{"email": "A@example.com "}, {"email": "blocked@example.com"}, {"email": None}],
+            "groups": [{"id": 7}, {"id": "7"}, {"id": None}],
+        })
 
-    def test_private_space_without_members_grants_nothing(self, connector: DrupalWikiConnector) -> None:
-        assert connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, None) == []
+        permissions = await connector._protected_space_permissions(12, "HR")
 
-    def test_every_member_of_a_private_space_gets_one_read_edge(self, connector: DrupalWikiConnector) -> None:
-        # Holding any role means being able to see the space -- an approver cannot
-        # approve a revision without reading it -- so membership is the grant, and
-        # nothing downstream separates the kinds of grant.
-        members = {
-            "users": [
-                {"id": 1, "email": "alice@example.com"},
-                {"id": 2, "email": "bob@example.com"},
-                {"id": 3, "email": "eve@example.com"},
-            ],
-            "groups": [{"id": 5}],
-        }
-        permissions = connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, members)
-        by_key = {(p.entity_type, p.email or p.external_id): p.type for p in permissions}
-        assert by_key == {
-            (EntityType.USER, "alice@example.com"): PermissionType.READ,
-            (EntityType.USER, "bob@example.com"): PermissionType.READ,
-            (EntityType.USER, "eve@example.com"): PermissionType.READ,
-            (EntityType.GROUP, "5"): PermissionType.READ,
-        }
+        assert sorted((p.entity_type, p.email, p.external_id, p.type) for p in permissions) == [
+            (EntityType.GROUP, None, "7", PermissionType.READ),
+            (EntityType.USER, "a@example.com", None, PermissionType.READ),
+        ]
 
-    def test_duplicate_principal_yields_one_edge(self, connector: DrupalWikiConnector) -> None:
-        members = {
-            "users": [
-                {"id": 1, "email": "alice@example.com"},
-                {"id": 2, "email": "ALICE@example.com"},
-            ],
-            "groups": [],
-        }
-        permissions = connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}, members)
-        assert len(permissions) == 1
-        assert permissions[0].type == PermissionType.READ
+    @pytest.mark.asyncio
+    async def test_members_that_cannot_be_read_leave_the_space_as_it_is(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLError("502"))
+        assert await connector._protected_space_permissions(12, "HR") is None
+        connector.graphql.get_space_members = AsyncMock(return_value={"users": None, "groups": []})
+        assert await connector._protected_space_permissions(12, "HR") is None
+        connector._enabled_emails = None
+        assert await connector._protected_space_permissions(12, "HR") is None
+
+    @pytest.mark.asyncio
+    async def test_a_wiki_that_refuses_the_member_query_grants_nobody(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLRefusedError("refused"))
+        assert await connector._protected_space_permissions(12, "HR") == []
+        assert MEMBERS_REFUSED in connector._space_problems
 
 class TestRecords:
     def test_page_record(self, connector: DrupalWikiConnector) -> None:
