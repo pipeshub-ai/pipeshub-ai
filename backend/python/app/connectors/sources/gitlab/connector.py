@@ -22,7 +22,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import StreamingResponse
 
@@ -96,6 +96,9 @@ from .scope import ScopeHelper
 from .streaming import StreamingHelper
 from .users import UsersSync
 
+if TYPE_CHECKING:
+    from app.connectors.core.base.connector.source_user_listing import SourceUserListing
+    from app.models.permission import Permission
 
 _GITLAB_EXECUTOR_MAX_WORKERS = 8
 
@@ -291,6 +294,15 @@ class GitLabConnector(BaseConnector):
         # Runtime state set during init/sync
         self._gitlab_included_group_paths: list[str] | None = None
         self._gitlab_user_id: int | None = None
+        # This run's member listing, built by UsersSync; None until the user sync has read it.
+        self._user_listing: SourceUserListing | None = None
+        # The token's own account as GitLab returns it (GET /user) this run: its email, lower-cased,
+        # and its id. Whether that read completed at all.
+        self._token_account_email: str | None = None
+        self._token_account_id: str | None = None
+        self._token_account_read = False
+        # Whether the creator gets the token's view this run (_decide_creator_token_view).
+        self._creator_token_view = False
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -368,14 +380,13 @@ class GitLabConnector(BaseConnector):
         await notify_init_failed(self, "GitLab", error)
 
     async def _resolve_creator_identity(self) -> None:
-        """Cache the connector creator's email, GitLab id, and role flags (best-effort)."""
+        """Cache the connector creator's email, GitLab id, and role flags (best-effort).
+
+        The "creator" is the user whose credentials the connector runs with, resolved as the
+        processor resolves the user it links: the app's ``authenticatedBy``, else its creator.
+        """
         if self.created_by:
-            try:
-                creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                if creator and getattr(creator, "email", None):
-                    self.creator_email = creator.email
-            except Exception as e:
-                self.logger.warning("Could not resolve creator email for %s: %s", self.created_by, e)
+            self.creator_email = await self.authenticator_email()
 
         if self.data_source is None:
             return
@@ -418,42 +429,61 @@ class GitLabConnector(BaseConnector):
     # Sync
     # ------------------------------------------------------------------
 
-    async def _register_authenticated_identity(self) -> None:
-        """Record which source account this connector is authenticated as, so a creator whose
-        PipesHub email differs still resolves that account's permissions for this connector."""
+    async def _read_token_account(self) -> None:
+        """Read the account the token signs in as. Before the user sync: the creator holds the token
+        only when GitLab returns their email for it, and only then is their email put on its row."""
+        self._token_account_email = self._token_account_id = None
+        self._token_account_read = False
         if not self.data_source:
             return
-        email, source_user_id = None, None
         try:
             me_res = await self.runtime.ds_call(self.data_source.get_user)
-            if me_res.success and me_res.data is not None:
-                # `email` is the account's own address; `public_email` is all a
-                # restricted token sees.
-                email = getattr(me_res.data, "email", None) or getattr(me_res.data, "public_email", None)
-                source_user_id = getattr(me_res.data, "id", None)
         except Exception as e:
             self.logger.debug("Could not read the authenticated GitLab account: %s", e)
             return
+        self._token_account_read = True
+        if not me_res.success or me_res.data is None:
+            return
+        # `email` is the account's own address; `public_email` is all a restricted token sees.
+        email = getattr(me_res.data, "email", None) or getattr(me_res.data, "public_email", None)
+        source_user_id = getattr(me_res.data, "id", None)
+        if isinstance(email, str) and email.strip():
+            self._token_account_email = email.strip().lower()
+        if source_user_id is not None:
+            self._token_account_id = str(source_user_id)
+
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
+        if not self._token_account_read:
+            return
         await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None,
-            str(source_user_id) if source_user_id is not None else None,
+            self._token_account_email, self._token_account_id, listing=self._user_listing,
         )
 
     @reports_failed_sync("GitLab")
     async def run_sync(self) -> None:
         """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
+        self._user_listing = None
+        await self.drop_authenticator_link_if_listed()
         try:
             await self.repos.cancel_timestamp_backfill()
             self.sync_problems = []
             await self.runtime.refresh_token_if_needed()
-            await self._register_authenticated_identity()
             self.logger.info("Starting GitLab sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlab", self.connector_id, self.logger
             )
             self._gitlab_included_group_paths = None
+            # Who is linked and granted may change between runs (a re-authentication).
+            self.creator_email = await self.authenticator_email()
+            await self._read_token_account()
             self.logger.info("Starting sync of GitLab users")
+            # Decides the creator's token view too (_decide_creator_token_view), once its listing is finished.
             await self.users.sync_users()
+            await self._register_authenticated_identity()
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
             self.repos.schedule_timestamp_backfill()
@@ -593,6 +623,27 @@ class GitLabConnector(BaseConnector):
             email=self.creator_email,
             type=PermissionType.OWNER,
         )
+
+    async def _decide_creator_token_view(self) -> None:
+        """Decide from this run's member listing whether the creator gets the token's view: OWNER
+        on every group, and on what GitLab gives no member list for.
+
+        The creator whose email GitLab returns for the token's own account holds the token, so the
+        token's view is theirs. Anyone else gets it only when the listing proves them absent from
+        GitLab and they were never listed (``authenticator_gets_token_view``): a creator with an
+        account of their own sees what that account's memberships give.
+        """
+        creator = (self.creator_email or "").strip().lower()
+        if not creator:
+            self._creator_token_view = False
+        elif self._token_account_email == creator:
+            self._creator_token_view = True
+        else:
+            self._creator_token_view = await self.authenticator_gets_token_view(self._user_listing)
+
+    def creator_token_view_permission(self) -> Permission | None:
+        """The creator's OWNER permission where they get the token's view, else None."""
+        return self.creator_user_permission() if self._creator_token_view else None
 
     # ------------------------------------------------------------------
     # Factory method

@@ -22,6 +22,7 @@ from app.core.org_context import (
     current_or_system,
     current_org_id,
     org_optional,
+    require_system,
 )
 from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
 from app.schema.node_validator import SchemaValidationError
@@ -670,6 +671,40 @@ class IdentityMixin(PgBase):
         n = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_authenticated_as */ WITH d AS (DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs'
             AND doc->>'connectorId' = $2 RETURNING 1) SELECT count(*) FROM d""", org, connector_id), transaction, write=True)
         return bool(n)
+
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        """Org by org, because every statement is bound to one org (RLS): one statement per org removes the links of the connector
+        instances of those app types. Every org is covered, inactive and external ones too: an external org can hold apps, and
+        a link left in it would keep granting the admin's records. A failing org is reported and the others still run; the
+        links already removed are answered either way, so the caller drops their caches."""
+        require_system("remove_listed_authenticator_links")
+        from app.core.org_context import for_org
+
+        orgs: dict[str, None] = {}
+        for external in (False, True):
+            for org in await self.get_all_orgs(active=False, is_external=external, raise_on_error=True):
+                if org_id := org.get("_key") or org.get("id"):
+                    orgs[str(org_id)] = None
+        removed: list[dict] = []
+        failed: list[str] = []
+        for org_id in orgs:
+            try:
+                with for_org(org_id, job="remove_listed_authenticator_links"):
+                    rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.remove_listed_authenticator_links */ DELETE FROM graph.edges e
+                        USING graph.nodes a WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND a.org_id = e.org_id AND a.coll = 'apps'
+                        AND a.id = e.doc->>'connectorId' AND a.doc->>'type' = ANY($2::text[])
+                        AND (e.from_id = e.to_id OR EXISTS (SELECT 1 FROM graph.edges r WHERE r.org_id = e.org_id AND r.coll = 'userAppRelation'
+                            AND r.from_id = e.from_id AND r.to_id = a.id AND coalesce(r.doc->>'sourceUserId', '') <> ''
+                            AND coalesce((r.doc->>'isExternalUser')::boolean, false) = false))
+                        RETURNING e.doc->>'connectorId' AS connector_id, e.from_id AS user_key, e.from_id = e.to_id AS self_link""",
+                                                             current_org_id(), list(app_types)), None, write=True)
+                removed.extend({"connectorId": r["connector_id"], "org": org_id, "user": r["user_key"], "selfLink": r["self_link"]}
+                               for r in rows)
+            except Exception as exc:
+                failed.append(org_id)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,
+                                        op="remove_listed_authenticator_links", step="org", org=org_id)
+        return removed, failed
 
     # ---- apps and connector instances ----------------------------------------------------------------------------
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:

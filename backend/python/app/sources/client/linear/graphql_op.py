@@ -464,8 +464,8 @@ class LinearGraphQLOperations:
 
         "users": {
             "query": """
-                query users($first: Int, $after: String, $filter: UserFilter, $orderBy: PaginationOrderBy) {
-                    users(first: $first, after: $after, filter: $filter, orderBy: $orderBy) {
+                query users($first: Int, $after: String, $filter: UserFilter, $orderBy: PaginationOrderBy, $includeDisabled: Boolean) {
+                    users(first: $first, after: $after, filter: $filter, orderBy: $orderBy, includeDisabled: $includeDisabled) {
                         nodes {
                             ...UserFields
                         }

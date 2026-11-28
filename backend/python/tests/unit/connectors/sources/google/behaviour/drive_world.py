@@ -210,6 +210,9 @@ class DriveWorld:
         self.domains_unreadable = False
         # When set, the user listing is cut: these people are left out of it.
         self.cut_user_listing: Optional[set[str]] = None
+        # The admin the service account acts as is a delegated admin (isAdmin false): users.list answers it with
+        # the users of the organizational units it manages only.
+        self.delegated_admin = False
         # Whether a domain share reaches the people of the account's other domains, which Google does not document.
         self.domain_share_reaches_all = False
         # Or only from one domain to another: {("example.com", "labs.example.org")}.
@@ -768,6 +771,7 @@ class DriveWorld:
         return {
             "id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended,
             "creationTime": "2023-01-01T00:00:00.000Z", "aliases": sorted(a for a, e in self.aliases.items() if e == u.email),
+            "isAdmin": u.email == self.admin_email and not self.delegated_admin,
         }
 
     def _admin_users(self, req: ApiRequest) -> object:

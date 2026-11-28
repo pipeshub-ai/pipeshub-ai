@@ -21,8 +21,10 @@ OAUTH_REQUESTS_PER_SECOND = 6
 class AtlassianQuotaExhausted(Exception):
     """Atlassian asked for a wait longer than a sync should hold: the hourly quota is spent."""
 
-    def __init__(self, reset_at: float) -> None:
+    def __init__(self, reset_at: float, *, set_by_this_call: bool = False) -> None:
         self.reset_at = reset_at
+        # True when the call that raised it is the one whose 429 set the policy's pause.
+        self.set_by_this_call = set_by_this_call
         super().__init__(f"Atlassian's API quota is used up until {quota_reset_text(reset_at)}")
 
 
@@ -53,7 +55,7 @@ class QuotaAwarePolicy(ResiliencePolicy):
         # Only a 429 is the quota; Atlassian says a 503 may carry Retry-After and is not one.
         if retry_after is not None and retry_after > self.max_delay and self._last_status == 429:
             self.quota_reset_at = time.time() + retry_after
-            raise AtlassianQuotaExhausted(self.quota_reset_at)
+            raise AtlassianQuotaExhausted(self.quota_reset_at, set_by_this_call=True)
         return super().note_retry(attempt, retry_after)
 
     async def acquire(self) -> None:

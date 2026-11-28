@@ -11,11 +11,12 @@ collaborator gets, and it goes with them.
 """
 
 import pytest
-from slack_behaviour_fakes import BOT_TOKEN, USER_TOKEN, SlackWorkspace
+from slack_behaviour_fakes import BOT_TOKEN, USER_TOKEN, SlackError, SlackWorkspace
 from slack_behaviour_setup import (
     ALICE,
     BOB,
     GENERAL,
+    NOEMAIL,
     PARTNERS,
     SECRET,
     standard_workspace,
@@ -31,7 +32,15 @@ CHANNELS = (GENERAL, SECRET, PARTNERS)
 
 @pytest.fixture
 def workspace(slack: SlackWorkspace) -> SlackWorkspace:
-    return standard_workspace(slack)
+    standard_workspace(slack)
+    # A person with no email may be the authenticator, which leaves every user list incomplete;
+    # here they are not in the workspace, so the list is complete and the authenticator can be judged.
+    slack.users.remove(_user(slack, NOEMAIL))
+    return slack
+
+
+def _user(slack: SlackWorkspace, uid: str) -> dict:
+    return next(u for u in slack.users if u["id"] == uid)
 
 
 def grants_for(store, channel_id: str, email: str) -> list:
@@ -68,8 +77,70 @@ class TestBotToken:
         await connector.run_sync()
 
         assert len(grants_for(store, SECRET, "alice@acme.com")) == 1
-        (grant,) = grants_for(store, GENERAL, "alice@acme.com")
-        assert grant.email == "Alice@Acme.com", "a public channel names its members through the role, not one by one"
+        assert grants_for(store, GENERAL, "alice@acme.com") == [], "a public channel names its members through the role"
+
+    async def test_a_listed_authenticator_gets_no_grant_on_a_private_channel_they_are_not_in(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "bob@acme.com"
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert grants_for(store, PARTNERS, "bob@acme.com") == []
+        assert len(grants_for(store, SECRET, "bob@acme.com")) == 1, "their own membership still shows their channels"
+
+    async def test_an_authenticator_the_workspace_now_lists_loses_the_grant_wherever_members_are_read(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert len(grants_for(store, PARTNERS, ADMIN)) == 1
+        workspace.add_user("U0ADMIN", ADMIN, "Admin")
+        workspace.channels[PARTNERS]["is_archived"] = True
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == PARTNERS)
+
+        await connector.run_sync()
+
+        assert grants_for(store, SECRET, ADMIN) == [], "a channel rewritten from its members drops the token's view"
+        # A channel whose members cannot be read keeps its stored grants, the token's view among them,
+        # until a sync reads its members again.
+        assert store.access_emails(PARTNERS) == {"alice@acme.com", "carol@partner.com", ADMIN}
+
+    async def test_a_member_authenticator_who_never_had_the_token_view_keeps_a_channel_whose_members_cannot_be_read(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "bob@acme.com"
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        workspace.channels[SECRET]["is_archived"] = True
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+
+        await connector.run_sync()
+
+        assert len(grants_for(store, SECRET, "bob@acme.com")) == 1
+
+    async def test_a_person_without_an_email_leaves_an_unlisted_authenticator_without_a_new_grant(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        workspace.add_user(NOEMAIL, None, "Nomail")
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert grants_for(store, PARTNERS, ADMIN) == []
+
+    async def test_an_unlisted_authenticator_still_gets_every_channel(self, workspace, store, checkpoints) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(grants_for(store, PARTNERS, ADMIN)) == 1
 
     async def test_a_bot_has_no_account_to_link_and_an_earlier_link_is_removed(self, workspace, store, checkpoints) -> None:
         store.authenticator_email = ADMIN
@@ -79,6 +150,17 @@ class TestBotToken:
 
         assert store.links == []
         assert store.unlinks == 1
+
+
+class TestNothingStored:
+    async def test_the_grant_is_decided_on_every_sync_and_never_stored(self, workspace, store, checkpoints) -> None:
+        store.authenticator_email = ADMIN
+        connector, config = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(grants_for(store, PARTNERS, ADMIN)) == 1
+        assert not [key for key in config.others if key.endswith("/authenticatorGrant")]
 
 
 class TestUpdates:

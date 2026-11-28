@@ -15,6 +15,7 @@ from app.connectors.core.base.connector.failure_notices import (
     SyncRunState,
 )
 from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.sources.zoom.connector import ZoomConnector, ZoomUser
 from app.services.notification.types import NotificationType
 from app.sources.client.zoom.zoom import ZoomResponse
@@ -35,6 +36,7 @@ _C = TypeVar("_C")
 def _bare(cls: type[_C], **attrs: object) -> _C:
     c = object.__new__(cls)
     c.connector_id, c.connector_name, c.created_by = "c1", SimpleNamespace(value="X"), "u1"
+    c.scope = ConnectorScope.TEAM.value  # set by BaseConnector.__init__, which object.__new__ skips
     c.connector_instance_name = "Eng"
     c.logger = logging.getLogger("test.rejected")
     c.notify = AsyncMock()

@@ -300,6 +300,15 @@ class TestTeamDirectory:
         assert members.complete and members.active_ids() == {"dbmid:a"}
 
     @pytest.mark.asyncio
+    async def test_more_to_come_without_a_cursor_is_an_incomplete_list(self) -> None:
+        source = AsyncMock()
+        source.team_members_list = AsyncMock(return_value=ok(SimpleNamespace(
+            members=[self.member("dbmid:a")], has_more=True, cursor=None)))
+        members = await read_team_members(source)
+        assert not members.complete and members.error
+        source.team_members_list_continue.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_failed_page_leaves_the_list_incomplete_and_withdraws_nobody(self) -> None:
         source = AsyncMock()
         source.team_members_list = AsyncMock(return_value=ok(SimpleNamespace(
@@ -456,10 +465,13 @@ class TestTeamListing:
         team._owed.load = AsyncMock(return_value=[])
         team._owed.save = AsyncMock()
         team._process_users_in_batches = AsyncMock(side_effect=RuntimeError("graph down"))
-        steps = ("_register_authenticated_identity", "_sync_members", "_initialize_event_cursor",
+        steps = ("_sync_members", "_initialize_event_cursor",
                  "_sync_user_groups", "sync_personal_record_groups")
         for name in steps:
             setattr(team, name, AsyncMock(return_value=[]))
+        team._read_authenticated_admin = AsyncMock(return_value=(None, None))
+        team.drop_authenticator_link_if_listed = AsyncMock()
+        team.register_authenticated_source_user = AsyncMock()
 
         with patch("app.connectors.sources.dropbox.connector.load_connector_filters",
                    AsyncMock(return_value=(FilterCollection(), FilterCollection()))), pytest.raises(RuntimeError):

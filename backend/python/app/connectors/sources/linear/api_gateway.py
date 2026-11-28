@@ -141,11 +141,13 @@ class LinearGateway:
         page_size: int = 50,
         after: str | None = None,
         fetch: Callable[[LinearDataSource, int, str | None], Awaitable[GraphQLResponse]] | None = None,
+        explicit_end: bool = False,
     ) -> AsyncIterator[tuple[list[dict[str, Any]], str | None, bool]]:
         """Yield ``(nodes, end_cursor, has_next)`` for each page of the connection at ``path``.
 
         ``fetch`` runs one page through a data source method; without it the operation is
-        looked up by name.
+        looked up by name. ``explicit_end``: a page without its nodes, or that does not say
+        whether more follow, raises instead of being read as an empty last page.
         """
         cursor = after
         while True:
@@ -165,6 +167,10 @@ class LinearGateway:
                 raise LinearPaginationError(f"{operation}: Linear returned no connection at {'.'.join(path)}")
             nodes = connection.get("nodes") or []
             info = connection.get("pageInfo") or {}
+            if explicit_end and not (
+                isinstance(connection.get("nodes"), list) and isinstance(info.get("hasNextPage"), bool)
+            ):
+                raise LinearPaginationError(f"{operation}: Linear did not say whether the list ends here")
             has_next = bool(info.get("hasNextPage"))
             end_cursor = info.get("endCursor")
             if has_next and (not end_cursor or end_cursor == cursor):

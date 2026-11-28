@@ -60,6 +60,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -113,7 +114,7 @@ from app.connectors.sources.slack.common.bursts import (
     thread_record_ids,
 )
 from app.connectors.sources.slack.common.full_sync_keep import SlackFullSyncKeepMixin
-from app.connectors.sources.slack.common.people import file_uploader
+from app.connectors.sources.slack.common.people import SLACKBOT_USER_ID, file_uploader
 from app.connectors.sources.slack.common.rate_limits import Tier
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -576,6 +577,8 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
+        # This sync's user listing; None until the user sync builds it.
+        self._user_listing:                SourceUserListing | None  = None
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -847,6 +850,11 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         Phase 5 — Changes     (_sync_message_changes)   → AUDIT_LOG checkpoint
         """
         try:
+            # First, with no source call, so a sync that fails early still removes a link
+            # the creator should not hold.
+            self._user_listing = None
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info(f"🚀 Slack sync — org {self.data_entities_processor.org_id}")
 
             if not self.external_client:
@@ -970,6 +978,8 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         # Set when a page fails: the caches above then miss users, and every
         # permission list built from them would be short (see _sync_channels).
         self._users_read_failed = False
+        # Who the listing shows: users.list returns deleted members too.
+        listing = self._user_listing = SourceUserListing(includes_inactive=True)
         self._guest_user_ids: set[str] = set()
 
         cursor: Optional[str] = None
@@ -986,11 +996,24 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
                 # missing it is left out or short, and must not be unlinked as unseen.
                 self._full_sync_read_failed = True
                 self._users_read_failed = True
+                listing.cut(f"users.list failed: {getattr(resp, 'error', 'no response')}")
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
-            members = resp.data.get("members", [])
+            members = resp.data.get("members") if isinstance(resp.data, dict) else None
+            if not isinstance(members, list):
+                # Not a page of users: it says nothing about whether more follow.
+                self._full_sync_read_failed = True
+                self._users_read_failed = True
+                listing.cut("a user page had no members list")
+                self.logger.error("users.list returned a page with no members list")
+                break
             if not members:
+                # An empty page that points further is a listing that stopped early.
+                if (resp.data.get("response_metadata") or {}).get("next_cursor"):
+                    listing.cut("an empty user page that points further")
+                else:
+                    listing.finish()
                 break
 
             batch: list[AppUser] = []
@@ -1015,13 +1038,21 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
                 if not email and not is_bot:
                     self.logger.debug(f"Skipping {m.get('name')}: no email")
                     skipped += 1
+                    if uid != SLACKBOT_USER_ID:
+                        # A person whose email Slack did not show may be the authenticator.
+                        listing.add_row(None, uid)
                     continue
 
                 if is_bot:
                     bots_cached += 1
                     continue
 
+                # Deactivated and guest accounts are listed members too, though they
+                # get no workspace grants.
+                listing.add_row(email, uid)
                 app_user = self._to_app_user(m)
+                if not app_user:
+                    listing.row_failed(f"member {uid} could not be read")
                 if app_user:
                     batch.append(app_user)
                     if m.get("deleted"):
@@ -1039,6 +1070,7 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
 
             cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
+                listing.finish()
                 break
 
         # After all pages, build the internal-ID cache for fast mention resolution
@@ -1120,7 +1152,8 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         users (owners, admins, regular members).  This role is referenced in
         channel permissions so that public channels don't need per-user edges.
         """
-        if getattr(self, "_users_read_failed", False):
+        listing = getattr(self, "_user_listing", None)
+        if getattr(self, "_users_read_failed", False) or (listing is not None and listing.is_cut):
             # Written from a short user list, the role would drop every member
             # not yet read, and with it their access to every public channel.
             self.logger.warning("ℹ️ User list was not read in full; workspace role left as it is")
@@ -1445,6 +1478,8 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         belongs to, as the other connectors do. A bot token names a bot, which has no
         account to link: any link left from an earlier user token is removed, and
         _authenticator_grant() gives them the channels instead."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(getattr(self, "_user_listing", None))
         try:
             ds = await self._fresh_datasource()
             resp = await ds.auth_test()
@@ -1461,18 +1496,25 @@ class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
         user_id = data.get("user_id")
         await self.register_authenticated_source_user(
             self.user_id_to_email_cache.get(user_id) if user_id else None, user_id,
+            listing=getattr(self, "_user_listing", None),
         )
 
     async def _authenticator_grant(self) -> Permission | None:
         """READ for the user who authenticated this connector, on every channel the token
         reads. They hold the token, so Slack already shows them whatever it fetches; a bot
-        token has no Slack account to link them to, so this grant is how they reach it."""
+        token has no Slack account to link them to, so this grant is how they reach it.
+
+        Only for an authenticator the user list proves is not in the workspace and who was never
+        listed (``authenticator_gets_token_view``): a member sees their own channels through their
+        membership, not the token's view."""
         email = await self.authenticator_email()
         if not email:
             self.logger.warning(
                 f"Connector {self.connector_id}: the user who authenticated it could not be "
                 f"read; they will only see the channels their own email is a member of"
             )
+            return None
+        if not await self.authenticator_gets_token_view(getattr(self, "_user_listing", None)):
             return None
         return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ)
 

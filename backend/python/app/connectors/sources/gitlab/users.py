@@ -5,7 +5,7 @@ Responsibilities:
 - Resolve the sync scope (which groups/projects to walk for members).
 - Walk group and project member listings (scoped and unscoped paths).
 - Enrich ``GroupMember`` objects with full ``User`` objects to retrieve ``public_email``.
-- Inject the connector creator into the member set.
+- Add the connector creator's user (a stub under the token account's id) when they get the token's view.
 - Persist ``AppUser`` rows and migrate pseudo-group permissions.
 """
 
@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from gitlab.v4.objects import GroupMember
 
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUser
 
@@ -32,12 +33,20 @@ def _filter_op_val(f: Any) -> str:
     return (op.value if hasattr(op, "value") else str(op)).lower()
 
 
+def _shown_emails(field: str, *members: object) -> list[str]:
+    """The addresses GitLab shows in this field of these objects of one user."""
+    values = [getattr(member, field, None) for member in members]
+    return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
+
+
 class UsersSync:
     """Handles all GitLab user-synchronisation steps for ``GitLabConnector``."""
 
     def __init__(self, connector: "GitLabConnector") -> None:
         self.c = connector
         self.logger = connector.logger
+        # Built anew by each sync_users; GitLab member listings name blocked and deactivated users too.
+        self._listing = SourceUserListing(includes_inactive=True)
 
     # ------------------------------------------------------------------
     # Entry point
@@ -52,6 +61,8 @@ class UsersSync:
         top-level groups on a large EE deployment would scan every group the
         bot account is Guest+ on.
         """
+        c = self.c
+        self._listing = c._user_listing = SourceUserListing(includes_inactive=True)
         scope = await self._resolve_user_sync_scope()
         if scope is not None:
             group_paths, project_paths = scope
@@ -61,8 +72,12 @@ class UsersSync:
                 len(project_paths),
             )
             await self._sync_users_scoped(group_paths, project_paths)
-            return
-        await self._sync_users_unscoped()
+        else:
+            await self._sync_users_unscoped()
+
+    def _cut(self) -> None:
+        """A group or project member read was skipped or failed: what was read is partial."""
+        self._listing.cut("a GitLab group or project member read was skipped or failed")
 
     # ------------------------------------------------------------------
     # Scope resolution
@@ -114,6 +129,7 @@ class UsersSync:
                 progress_label="list_groups NOT_IN user-sync scope",
             )
             if not groups_res.success:
+                self._cut()
                 self.logger.error(
                     "Could not list groups for NOT_IN user-sync scope: %s", groups_res.error
                 )
@@ -149,6 +165,7 @@ class UsersSync:
                 progress_label="list_projects NOT_IN user-sync scope",
             )
             if not proj_res.success:
+                self._cut()
                 self.logger.error(
                     "Could not list projects for NOT_IN user-sync scope: %s", proj_res.error
                 )
@@ -187,8 +204,9 @@ class UsersSync:
         This method expands each group via ``list_group_projects(include_subgroups=True)``
         to close that gap.
 
-        Falls back to creator-only access when every configured target fails,
-        mirroring the Jira ``_fallback_permissions_for_forbidden_scheme`` pattern.
+        When every configured target fails, the creator is the only user listed and the
+        listing is incomplete; whether they get creator-only access is then decided by
+        ``GitLabConnector._decide_creator_token_view``.
         """
         c = self.c
         dict_member: dict[int, GroupMember] = {}
@@ -209,6 +227,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not pres.success:
+                    self._cut()
                     self.logger.error("Error fetching members for %s: %s", label, pres.error)
                     return False, 0
                 rows = list(pres.data or [])
@@ -216,6 +235,7 @@ class UsersSync:
                     dict_member[member.id] = member
                 return bool(rows), len(rows)
             except Exception as e:
+                self._cut()
                 self.logger.error("Error in syncing users for %s: %s", label, e, exc_info=True)
                 return False, 0
 
@@ -231,6 +251,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not members_res.success:
+                    self._cut()
                     self.logger.error(
                         "Error fetching members for configured group %s: %s",
                         group_path, members_res.error,
@@ -244,6 +265,7 @@ class UsersSync:
                         any_success = True
                     total_groups_synced += 1
             except Exception as e:
+                self._cut()
                 self.logger.error(
                     "Error in syncing users for group %s: %s", group_path, e, exc_info=True
                 )
@@ -256,9 +278,11 @@ class UsersSync:
                     progress_label=f"list_group_projects user-sync({group_path})",
                 )
             except Exception as e:
+                self._cut()
                 self.logger.error("Error expanding subgroup projects for %s: %s", group_path, e, exc_info=True)
                 continue
             if not gres.success:
+                self._cut()
                 self.logger.error(
                     "Could not fully list subgroup projects for user sync of "
                     "group %s: %s. Walking partial list (%s project(s)).",
@@ -311,7 +335,7 @@ class UsersSync:
 
         # A walk cut short by dead credentials is not the membership.
         c.run_state.raise_if_rejected()
-        creator_added = self._inject_creator_member_into(dict_member)
+        creator_added = self._build_creator_member_stub() is not None
         all_failed = bool(group_paths or project_paths) and not any_success
         if all_failed and not creator_added:
             raise RuntimeError(
@@ -321,7 +345,8 @@ class UsersSync:
         if all_failed:
             self.logger.warning(
                 "GitLab user sync: every configured group/project failed to enumerate members; "
-                "relying on creator-only access (%s) for this run.",
+                "the creator (%s) is the only user listed this run. The listing is incomplete, so "
+                "they get creator-only access only as the token's own account.",
                 c.creator_email,
             )
 
@@ -333,8 +358,8 @@ class UsersSync:
             "project(s) (avg %.2f rows/project)",
             len(dict_member), total_member_rows_seen, total_projects_synced, avg_rows_per_project,
         )
-        dict_member = await self._enrich_members_with_full_user(dict_member)
-        await self._sync_users_from_projects_groups(dict_member)
+        enriched = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(enriched, dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
     # ------------------------------------------------------------------
@@ -359,6 +384,7 @@ class UsersSync:
         dict_member: dict[int, Any] = {}
         groups_failed = not groups_res.success
         if groups_failed:
+            self._cut()
             self.logger.error(
                 "Error in fetching groups: %s, continuing with projects members", groups_res.error
             )
@@ -369,6 +395,7 @@ class UsersSync:
                 try:
                     group_id = getattr(group, "id", None)
                     if group_id is None:
+                        self._cut()
                         self.logger.warning("Group missing ID, skipping")
                         total_groups_skipped += 1
                         continue
@@ -381,6 +408,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
+                        self._cut()
                         self.logger.info("Error in fetching members for group %s", group_id)
                         total_groups_skipped += 1
                         continue
@@ -388,6 +416,7 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_groups_synced += 1
                 except Exception as e:
+                    self._cut()
                     self.logger.error(
                         "Error in syncing users for group %s: %s", group_id, e, exc_info=True
                     )
@@ -402,11 +431,12 @@ class UsersSync:
         )
         projects_failed = not projects_res.success
         if projects_failed:
+            self._cut()
             self.logger.error("Error in fetching projects: %s", projects_res.error)
 
         # A walk cut short by dead credentials is not the membership.
         c.run_state.raise_if_rejected()
-        creator_added = self._inject_creator_member_into(dict_member)
+        creator_added = self._build_creator_member_stub() is not None
         if groups_failed and projects_failed and not creator_added:
             raise RuntimeError(
                 "GitLab user sync aborted: both list_groups and list_projects "
@@ -416,7 +446,8 @@ class UsersSync:
         if groups_failed and projects_failed:
             self.logger.warning(
                 "GitLab user sync (unscoped): both list_groups (%s) and list_projects (%s) "
-                "failed; relying on creator-only access (%s) for this run.",
+                "failed; the creator (%s) is the only user listed this run. The listing is incomplete, so "
+                "they get creator-only access only as the token's own account.",
                 groups_res.error, projects_res.error, c.creator_email,
             )
 
@@ -429,6 +460,7 @@ class UsersSync:
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
+                        self._cut()
                         self.logger.warning("Project missing ID, skipping")
                         total_projects_skipped += 1
                         continue
@@ -441,6 +473,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
+                        self._cut()
                         self.logger.error("Error in fetching members for project %s", project_id)
                         total_projects_skipped += 1
                         continue
@@ -448,6 +481,7 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_projects_synced += 1
                 except Exception as e:
+                    self._cut()
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)
 
         self.logger.info(
@@ -458,8 +492,8 @@ class UsersSync:
             "Total projects synced: %s, Total projects skipped: %s",
             total_projects_synced, total_projects_skipped,
         )
-        dict_member = await self._enrich_members_with_full_user(dict_member)
-        await self._sync_users_from_projects_groups(dict_member)
+        enriched = await self._enrich_members_with_full_user(dict_member)
+        await self._sync_users_from_projects_groups(enriched, dict_member)
         self.logger.info("Users sync and migration of pseudo groups complete")
 
     # ------------------------------------------------------------------
@@ -487,9 +521,9 @@ class UsersSync:
         async def fetch_full_user(member_id: int, member: Any) -> tuple[int, Any]:
             attributes = getattr(member, "attributes", None)
             listed = attributes.get("public_email") if isinstance(attributes, dict) else None
-            if isinstance(listed, str) and listed.strip():
-                # GitLab 16+ members payloads carry public_email. When it is empty the
-                # profile is still read: with an admin token it holds the private email.
+            if isinstance(listed, str) and listed.strip() and not c._is_admin:
+                # GitLab 16+ members payloads carry public_email. The profile is still read when
+                # it is empty, and with an admin token, which is shown the account's own email there.
                 return member_id, member
             async with sem:
                 if c.run_state.rejected is not None:
@@ -502,6 +536,7 @@ class UsersSync:
                     )
                     if user_res.success and user_res.data is not None:
                         return member_id, user_res.data
+                    self._cut()
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",
                         member_id,
@@ -509,6 +544,7 @@ class UsersSync:
                     )
                     return member_id, member
                 except Exception as e:
+                    self._cut()
                     self.logger.warning(
                         "Exception fetching GitLab user id=%s; using member payload: %s",
                         member_id, e, exc_info=True,
@@ -572,19 +608,33 @@ class UsersSync:
     # ------------------------------------------------------------------
 
     async def _sync_users_from_projects_groups(
-        self, dict_member: dict[int, Any]
+        self, dict_member: dict[int, Any], listed: dict[int, Any] | None = None
     ) -> None:
-        """Create ``AppUser`` rows from the enriched member dict.
+        """Create ``AppUser`` rows from the enriched member dict. ``listed`` holds the rows as the
+        member listings gave them, before a profile replaced some.
 
-        Special case: the row whose ``id`` matches the connector creator's
-        GitLab numeric id always becomes an ``AppUser`` using
-        ``creator_email``, even when ``public_email`` is empty.  Without this
-        bypass the creator becomes a pseudo-group keyed by a numeric id their
-        PipesHub identity never matches.
+        Special case: the token account's own row becomes an ``AppUser`` using
+        ``creator_email`` when GitLab shows it no email, but only when the
+        creator is the token holder (``GET /user`` returned the creator's
+        email). Without this bypass the creator becomes a pseudo-group keyed
+        by a numeric id their PipesHub identity never matches. Anyone else's
+        token account row stays a member whose identity is unknown.
+
+        Every row GitLab listed goes into this sync's user listing, under every
+        address GitLab shows for it; the listing is then finished. Only the
+        account's own ``email``, which GitLab shows to an admin token, identifies
+        a row: a public one is an address the user chose to show. Only after that
+        is the creator stub added (an ``AppUser`` under the token account's GitLab
+        id, for an Admin or Auditor persona GitLab lists no row for): it is never a
+        row, and only a creator who gets the token's view has it, since its user
+        takes over the token account's pseudo-group grants.
         """
         # A later read may have found the sign-in dead; what it missed must not be saved as the members.
         self.c.run_state.raise_if_rejected()
         c = self.c
+        listing = self._listing
+        creator = (c.creator_email or "").strip().lower()
+        creator_holds_token = bool(creator) and c._token_account_email == creator
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []
         for member_id, member in dict_member.items():
@@ -595,13 +645,11 @@ class UsersSync:
                 fallback = getattr(member, "email", None)
                 user_email = fallback.strip() if isinstance(fallback, str) else ""
 
-            # Creator bypass: if this is the configuring user and GitLab
-            # did not surface an email for them, use the PipesHub email.
             if (
                 not user_email
+                and creator_holds_token
                 and c._gitlab_user_id is not None
                 and member_id == c._gitlab_user_id
-                and c.creator_email
             ):
                 user_email = c.creator_email
                 self.logger.info(
@@ -610,6 +658,16 @@ class UsersSync:
                     user_email, member_id,
                 )
 
+            seen_as = (member, (listed or {}).get(member_id))
+            own = _shown_emails("email", *seen_as)
+            public = _shown_emails("public_email", *seen_as)
+            if user_email and user_email not in (*own, *public):
+                own.append(user_email)  # the creator's, on the row of the token account they hold
+            for email in (*own, *public):
+                listing.add_row(email, str(member_id))
+            if not own:
+                # This member may be the authenticator under an address GitLab does not show.
+                listing.add_row(None, str(member_id))
             if not user_email:
                 total_users_skipped += 1
                 self.logger.debug(
@@ -628,6 +686,23 @@ class UsersSync:
                         full_name=getattr(member, "name", user_email),
                     )
                 )
+
+        # The walk ended; a member read it skipped or lost has cut the listing.
+        listing.finish()
+        await c._decide_creator_token_view()
+        stub = self._build_creator_member_stub() if c._creator_token_view else None
+        if stub is not None and stub.id not in dict_member:
+            app_users.append(
+                AppUser(
+                    app_name=c.connector_name,
+                    org_id=c.data_entities_processor.org_id,
+                    connector_id=c.connector_id,
+                    source_user_id=str(stub.id),
+                    is_active=True,
+                    email=stub.email,
+                    full_name=stub.name,
+                )
+            )
 
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)

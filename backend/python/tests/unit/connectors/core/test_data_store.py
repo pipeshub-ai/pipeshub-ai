@@ -234,7 +234,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_app_role_by_external_id(self, connector_id, external_id, *, raise_on_error=False):
         return None
 
-    async def get_app_by_id(self, connector_id):
+    async def get_app_by_id(self, connector_id, *, raise_on_error=False) -> None:
         return None
 
     async def get_app_users(self, org_id, connector_id, *, raise_on_error=False):

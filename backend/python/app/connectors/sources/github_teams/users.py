@@ -29,12 +29,15 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUser
 
 from .constants import (
     _GITHUB_PROFILE_REUSE_SECONDS,
     _GITHUB_USER_ENRICHMENT_CONCURRENCY,
+    HTTP_SERVER_ERROR,
+    HTTP_TOO_MANY_REQUESTS,
     NOREPLY_EMAIL_SUFFIX,
     VERIFIED_DOMAIN_EMAIL_BATCH,
 )
@@ -67,6 +70,17 @@ _recent_profiles: dict[tuple[str, int], tuple[float, object]] = {}
 # cache wait for one fetch instead of each making their own. All syncs of a
 # process run on its one event loop.
 _profile_fetch_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _is_transient_failure(res: object) -> bool:
+    """A failed call GitHub may answer next time: a rate limit, a 5xx, or no answer at all (a dropped
+    connection, a timeout). A GraphQL error payload or a 4xx is GitHub's answer."""
+    if getattr(res, "is_rate_limited", None) is True:
+        return True
+    status = getattr(res, "status_code", None)
+    if status is not None:
+        return status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR
+    return getattr(res, "exception_type", None) is not None
 
 
 def _recent_profile(org_id: str, user_id: int) -> object | None:
@@ -102,6 +116,18 @@ class UsersSync:
         self._collab_resolution_attempted: set[int] = set()
         # GitHub user id -> the email this run bound it to, the one its grants carry.
         self._resolved_emails: dict[int, str] = {}
+        # Every verified-domain email GitHub showed for a user this run.
+        self._verified_emails: dict[int, list[str]] = {}
+        # The members each organization listed this run.
+        self._org_member_ids: dict[str, set[int]] = {}
+        # The last sync_users' listing of every principal (org members and outside collaborators, by
+        # every email GitHub shows for them), for the authenticator's link. Finished only once every
+        # org's listings were read to their end and what they found was stored.
+        self._listing = SourceUserListing(includes_inactive=True)
+
+    @property
+    def listing(self) -> SourceUserListing:
+        return self._listing
 
     def org_member_emails(self) -> set[str]:
         """Resolved emails of org members (never outside collaborators).
@@ -123,6 +149,7 @@ class UsersSync:
         """Discover every principal on the target orgs and bind those we can
         identify to ``AppUser`` rows. See the module docstring for the phases."""
         c = self.c
+        self._listing = SourceUserListing(includes_inactive=True)
         if not c.data_source:
             raise Exception("GitHub data source not initialized")
         # Here rather than at the profile lookups, which a sync that resolves
@@ -169,12 +196,11 @@ class UsersSync:
         # 100 members vs 1 call per member) and better: it returns the member's
         # corporate address — the one the PipesHub directory knows — where a
         # public profile email is often a personal one that matches nobody.
-        if unresolved_ids:
-            phase_b = await self._resolve_via_verified_domains(
-                dict_member, unresolved_ids, orgs
-            )
-            resolved_email.update(phase_b)
-            unresolved_ids -= set(phase_b.keys())
+        # Members resolved from the cache are asked about too, for the listing: the cached
+        # email is only one address of theirs, and stays the one they are bound to.
+        phase_b = await self._resolve_via_verified_domains(dict_member, set(dict_member), orgs)
+        resolved_email.update({uid: email for uid, email in phase_b.items() if uid in unresolved_ids})
+        unresolved_ids -= set(phase_b.keys())
 
         # ---- Phase C: public profile emails ----
         # Read what the listing already carries before paying for a fetch. Org
@@ -202,6 +228,16 @@ class UsersSync:
         c.run_state.raise_if_rejected()
         await self._persist_app_users(dict_member, resolved_email)
         self._resolved_emails = dict(resolved_email)
+        # Only a verified-domain email identifies a principal. A public profile email is one the user chose
+        # to show, and a cached one may have come from there: it shows who they are, but they may be the
+        # authenticator under another address, so they are an unidentified row too.
+        for uid, member in dict_member.items():
+            verified = self._verified_emails.get(uid, [])
+            for email in {resolved_email.get(uid), self._plain_email_attr(member), *verified} - {None}:
+                self._listing.add_row(email, str(uid))
+            if not verified:
+                self._listing.add_row(None, str(uid))
+        self._listing.finish()
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {
             email for uid, email in resolved_email.items() if uid in member_ids
@@ -231,20 +267,27 @@ class UsersSync:
         c = self.c
         principals: dict[int, Any] = {}
         self._member_ids: set[int] = set()
+        self._org_member_ids = {}
         self._collab_resolution_attempted = set()
         any_success = False
 
-        def collect(rows: Any, *, is_member: bool) -> int:
+        def collect(rows: Any, org: str, *, is_member: bool) -> int:
             kept = 0
             for row in rows or []:
                 rid = getattr(row, "id", None)
+                kind = getattr(row, "type", "User")
                 # Bots hold no PipesHub identity; enumerating them costs a
                 # profile fetch to learn nothing.
-                if rid is not None and getattr(row, "type", "User") == "User":
-                    principals[rid] = row
-                    if is_member:
-                        self._member_ids.add(rid)
-                    kept += 1
+                if kind is not None and kind != "User":
+                    continue
+                if rid is None or kind is None:
+                    self._listing.row_failed("a listed account has no id or no type")
+                    continue
+                principals[rid] = row
+                if is_member:
+                    self._member_ids.add(rid)
+                    self._org_member_ids.setdefault(org, set()).add(rid)
+                kept += 1
             return kept
 
         for org in orgs:
@@ -257,6 +300,8 @@ class UsersSync:
                 # unreachable org must.
                 if getattr(res, "status_code", None) == 404:
                     any_success = True
+                    # Also what a token that cannot see the org gets, so it proves no member list.
+                    self._listing.cut(f"{org} answered 404 to its member listing")
                     self.logger.info(
                         "%s is not an organization (404 on member listing); it has no org "
                         "members. Repos owned by it rely on visibility and explicit "
@@ -264,6 +309,7 @@ class UsersSync:
                     )
                     continue
                 self.logger.error("Failed to list members for org %s: %s", org, res.error)
+                self._listing.cut(f"the members of {org} could not be listed")
                 # GitHub also answers 403 for a rate limit, which no scope fixes.
                 if getattr(res, "status_code", None) == 403 and getattr(res, "is_rate_limited", False) is not True:
                     c.run_state.note(
@@ -272,7 +318,7 @@ class UsersSync:
                     )
                 continue
             any_success = True
-            member_count = collect(res.data, is_member=True)
+            member_count = collect(res.data, org, is_member=True)
 
             outside_res = await c.runtime.ds_call(
                 c.data_source.list_org_outside_collaborators, org
@@ -282,10 +328,11 @@ class UsersSync:
                     "Could not list outside collaborators for org %s: %s. Any that hold repo "
                     "access will be unresolvable this sync.", org, outside_res.error,
                 )
+                self._listing.cut(f"the outside collaborators of {org} could not be listed")
                 continue
             self.logger.info(
                 "Org %s: %s member(s), %s outside collaborator(s)",
-                org, member_count, collect(outside_res.data, is_member=False),
+                org, member_count, collect(outside_res.data, org, is_member=False),
             )
 
         self._principal_ids = set(principals)
@@ -418,8 +465,12 @@ class UsersSync:
         belongs to an org owner AND the org has a verified domain. Any failure
         (missing scope, no verified domain, unknown login in the chunk) stops
         this org's sweep and later phases take over — never the sync.
+
+        Returns the first email found for each member, in the order of ``orgs``; every
+        email found is kept in ``_verified_emails``.
         """
         c = self.c
+        self._verified_emails = {}
         member_ids = getattr(self, "_member_ids", set())
         candidates: list[tuple[int, str]] = []
         for uid in sorted(unresolved_ids & member_ids):
@@ -433,14 +484,20 @@ class UsersSync:
         for org in orgs:
             if not _GITHUB_LOGIN_RE.fullmatch(org):
                 continue
-            remaining = [(uid, login) for uid, login in candidates if uid not in resolved]
-            if not remaining:
-                break
-            for start in range(0, len(remaining), VERIFIED_DOMAIN_EMAIL_BATCH):
-                chunk = remaining[start : start + VERIFIED_DOMAIN_EMAIL_BATCH]
+            listed = self._org_member_ids.get(org)
+            asked = [(uid, login) for uid, login in candidates if listed is None or uid in listed]
+            earlier_chunk_read = False
+            for start in range(0, len(asked), VERIFIED_DOMAIN_EMAIL_BATCH):
+                chunk = asked[start : start + VERIFIED_DOMAIN_EMAIL_BATCH]
                 query = self._verified_domain_query(org, [login for _, login in chunk])
                 res = await c.runtime.ds_call(c.data_source.graphql_query, query)
                 if not res.success:
+                    # A first-chunk refusal is how a token that is not an org owner always
+                    # answers, and must not stop it linking; a failure after a chunk was
+                    # read, or one GitHub may not repeat, is an outage that left members
+                    # unresolved.
+                    if earlier_chunk_read or _is_transient_failure(res):
+                        self._listing.cut(f"the verified-domain emails of {org} could not all be read")
                     self.logger.info(
                         "Verified-domain email lookup unavailable for org %s: %s. "
                         "(Requires an org-owner token and a verified domain on the "
@@ -448,6 +505,7 @@ class UsersSync:
                         org, str(getattr(res, "error", ""))[:200],
                     )
                     break
+                earlier_chunk_read = True
                 data = res.data if isinstance(res.data, dict) else {}
                 for idx, (uid, _login) in enumerate(chunk):
                     node = data.get(f"u{idx}")
@@ -461,8 +519,8 @@ class UsersSync:
                             and email.strip()
                             and not _is_noreply_email(email)
                         ):
-                            resolved[uid] = email.strip()
-                            break
+                            resolved.setdefault(uid, email.strip())
+                            self._verified_emails.setdefault(uid, []).append(email.strip())
         return resolved
 
     @staticmethod
@@ -551,6 +609,9 @@ class UsersSync:
                 reused, int(_GITHUB_PROFILE_REUSE_SECONDS // 3600), fetched,
             )
         if failed:
+            # The profile email is what presence is judged by, so a member whose fetch
+            # failed may be an unseen creator. Failed fetches are not cached: the next sync retries.
+            self._listing.row_failed(f"{failed} GitHub profile(s) could not be fetched")
             self.logger.info(
                 "Could not fetch full GitHub profile for %s user(s); using partial payload",
                 failed,

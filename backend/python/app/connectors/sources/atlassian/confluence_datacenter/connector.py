@@ -30,6 +30,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -360,6 +361,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         self.external_client: Optional[ExternalConfluenceClient] = None
         self.data_source: Optional[ConfluenceDataSource] = None
         self.connector_id: str = connector_id
+        # This run's user listing, for the authenticator's link; None until _sync_users builds one.
+        self._user_listing: SourceUserListing | None = None
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -459,6 +462,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         if not self.data_source:
             return
         email, source_user_id = "", None
@@ -478,7 +483,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.debug("Could not read the authenticated Confluence account: %s", e)
             return
-        await self.register_authenticated_source_user(email or None, source_user_id)
+        await self.register_authenticated_source_user(
+            email or None, source_user_id,
+            listing=self._user_listing,
+        )
 
     async def run_sync(self) -> None:
         """
@@ -506,7 +514,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
-            await self._register_authenticated_identity()
+            # Reset so a value left by an earlier run never counts as this run's listing.
+            self._user_listing = None
+            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -515,6 +525,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             # Step 1: Sync users
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
@@ -644,6 +655,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             start = 0
             total_synced = 0
             total_skipped = 0
+            # Whether /user/list names deactivated users is not documented, so the listing proves the
+            # authenticator present but never absent. A user without an email is an unidentified row.
+            listing = self._user_listing = SourceUserListing(includes_inactive=False)
 
             # Paginate through all users
             while True:
@@ -666,12 +680,24 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    listing.cut("a user page could not be read")
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results", [])
+                users_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(users_data, list):
+                    self.logger.error("User list response has no 'results' list; keeping the listing incomplete")
+                    listing.cut("a user page had no results list")
+                    break
 
+                # Only a missing next link ends the listing: the server may cut `limit`, so a short page can have
+                # more after it, and an empty page that points further is a failed read.
+                has_next = bool((response_data.get("_links") or {}).get("next"))
                 if not users_data:
+                    if has_next:
+                        listing.cut("an empty user page pointed further")
+                    else:
+                        listing.finish()
                     break
 
                 # Transform users (skip users without email)
@@ -686,6 +712,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     # Skip if no email
                     email = user_data.get("email", "").strip()
+                    listing.add_row(email or None, user_data.get("userKey") or user_data.get("accountId"))
                     if not email:
                         self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
@@ -719,10 +746,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 continue
 
                 # Move to next page
-                start += batch_size
+                start += len(users_data)
 
                 # Check if we've reached the end
-                if len(users_data) < batch_size:
+                if len(users_data) < batch_size and not has_next:
+                    listing.finish()
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")

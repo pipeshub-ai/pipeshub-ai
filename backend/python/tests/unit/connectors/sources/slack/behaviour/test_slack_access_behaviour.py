@@ -39,6 +39,14 @@ def workspace(slack: SlackWorkspace) -> SlackWorkspace:
     return standard_workspace(slack)
 
 
+@pytest.fixture
+def complete_workspace(workspace: SlackWorkspace) -> SlackWorkspace:
+    """Without the person who has no email: they may be the authenticator, and only a list that shows
+    who everyone is lets the authenticator be judged, and so granted."""
+    workspace.users[:] = [u for u in workspace.users if u["id"] != NOEMAIL]
+    return workspace
+
+
 def role_member_emails(store) -> set[str]:
     _, members = store.roles["workspace_member"]
     return {m.email for m in members}
@@ -263,15 +271,15 @@ class TestArchivedAndDirectConversations:
         assert store.group_access[SECRET] == stored
 
     async def test_a_private_channel_whose_members_cannot_be_read_does_not_gain_the_authenticator(
-        self, workspace, store, checkpoints,
+        self, complete_workspace, store, checkpoints,
     ) -> None:
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
 
         store.authenticator_email = "owner@outside.com"
-        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
-                       when=lambda p: p.get("channel") == SECRET)
+        complete_workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                                when=lambda p: p.get("channel") == SECRET)
         await connector.run_sync()
 
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
@@ -284,12 +292,12 @@ class TestArchivedAndDirectConversations:
         ids=["first-page-refused", "later-page-refused", "first-page-error"],
     )
     async def test_a_public_channel_whose_members_cannot_be_read_is_open_to_the_workspace_alone(
-        self, workspace, store, checkpoints, error, later_page, read_failed,
+        self, complete_workspace, store, checkpoints, error, later_page, read_failed,
     ) -> None:
         store.authenticator_email = "owner@outside.com"
-        workspace.page_size["conversations.members"] = 1
-        workspace.fail("conversations.members", SlackError(error), times=None,
-                       when=lambda p: p.get("channel") == GENERAL and bool(p.get("cursor")) == later_page)
+        complete_workspace.page_size["conversations.members"] = 1
+        complete_workspace.fail("conversations.members", SlackError(error), times=None,
+                                when=lambda p: p.get("channel") == GENERAL and bool(p.get("cursor")) == later_page)
         connector, _ = await workspace_connector(store, checkpoints)
 
         await connector.run_sync()
@@ -302,10 +310,10 @@ class TestArchivedAndDirectConversations:
         assert connector.full_sync_coverage().complete is not read_failed
 
     async def test_a_public_channel_read_with_no_members_still_gets_the_authenticator(
-        self, workspace, store, checkpoints,
+        self, complete_workspace, store, checkpoints,
     ) -> None:
         store.authenticator_email = "owner@outside.com"
-        workspace.members[GENERAL] = []
+        complete_workspace.members[GENERAL] = []
         connector, _ = await workspace_connector(store, checkpoints)
 
         await connector.run_sync()

@@ -47,6 +47,11 @@ on:
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/vector_db/**'
       - 'backend/python/app/services/graph_db/**'
+      # The startup removal of the creator-to-admin link, and the connectors whose credentials act as an admin account: their real-store tests.
+      - 'backend/python/app/migrations/workspace_admin_link_migration.py'
+      - 'backend/python/app/connectors/sources/google/gmail/team/**'
+      - 'backend/python/app/connectors/sources/google/drive/team/**'
+      - 'backend/python/app/connectors/sources/dropbox/**'
       # The record schema and the validator Neo4j and PostgreSQL write through.
       - 'backend/python/app/schema/**'
       # Skills: the graph_db skill-candidate tests drive the skill store and its routes.
@@ -164,6 +169,11 @@ on:
       - 'backend/python/app/modules/parsers/code_parser/**'
       - 'backend/python/app/connectors/core/base/sync_point/**'
       - 'backend/python/app/connectors/core/registry/filters.py'
+      # The base connector decides the creator's token view and link the GitLab suite checks
+      # (test_gitlab_sim_authenticator.py).
+      - 'backend/python/app/connectors/core/base/connector/connector_service.py'
+      - 'backend/python/app/connectors/core/base/connector/source_user_listing.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       # Helpers outside tests/integration that the suites import.
       - 'backend/python/tests/conftest.py'
       - 'backend/python/tests/support/**'

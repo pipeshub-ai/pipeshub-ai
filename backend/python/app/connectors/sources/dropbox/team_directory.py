@@ -47,9 +47,18 @@ async def read_team_members(data_source: DropboxDataSource) -> TeamMembers:
             result.error = str(response.error)
             result.auth_error = is_auth_error(response.error)
             return result
-        result.raw.extend(response.data.members)
-        if response.data.has_more is not True or not response.data.cursor:
+        page_members = getattr(response.data, "members", None)
+        has_more = getattr(response.data, "has_more", None)
+        if not isinstance(page_members, list) or not isinstance(has_more, bool):
+            # Not a page of members: the ones read before it are kept, and the list is incomplete.
+            result.error = "a page had no member list or did not say whether more follow"
+            return result
+        result.raw.extend(page_members)
+        if not has_more:
             result.complete = True
+            return result
+        if not response.data.cursor:
+            result.error = "the member list says more follows but gave no cursor"
             return result
         try:
             response = await data_source.team_members_list_continue(response.data.cursor)

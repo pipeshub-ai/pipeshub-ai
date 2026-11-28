@@ -81,6 +81,7 @@ from app.core.org_context import (
     MissingOrgContext,
     for_org,
     org_optional,
+    require_system,
     spawn_detached,
     spawn_in_request,
 )
@@ -1516,6 +1517,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
         # Pattern: MATCH (r:Record {externalRecordId: $id, connectorId: $cid})
         # Frequency: 3+ queries use this exact pattern
+        # The link of a connector is found, repointed and removed by its connector id.
+        indexes.append(
+            "CREATE INDEX authenticated_as_connector IF NOT EXISTS "
+            "FOR ()-[r:AUTHENTICATED_AS]-() ON (r.connectorId)"
+        )
+
         indexes.append(
             "CREATE INDEX record_external_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"
@@ -11445,6 +11452,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, parameters={"connector_id": connector_id}, txn_id=transaction
         )
         return bool(rows and rows[0].get("deleted"))
+
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        require_system("remove_listed_authenticator_links")
+        query = """
+        MATCH (u:User)-[r:AUTHENTICATED_AS]->(s:User)
+        MATCH (a:App {id: r.connectorId})
+        WHERE a.type IN $app_types
+          AND (u = s OR EXISTS {
+            MATCH (u)-[rel:USER_APP_RELATION]->(a)
+            WHERE coalesce(rel.sourceUserId, '') <> '' AND coalesce(rel.isExternalUser, false) = false
+          })
+        WITH r, r.connectorId AS connectorId, coalesce(a.orgId, r.orgId) AS org, u.id AS userKey, u = s AS selfLink
+        DELETE r
+        RETURN connectorId, org, userKey, selfLink
+        """
+        rows = await self.client.execute_query(query, parameters={"app_types": list(app_types)})
+        return [
+            {"connectorId": row["connectorId"], "org": row["org"], "user": row["userKey"], "selfLink": row["selfLink"]}
+            for row in rows or []
+        ], []
 
     async def batch_upsert_user_groups(
         self,

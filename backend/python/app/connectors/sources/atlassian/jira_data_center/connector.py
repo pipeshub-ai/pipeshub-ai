@@ -40,6 +40,10 @@ from app.connectors.core.base.connector.failure_notices import (
     notify_reconnect,
     switched_off_after_rejection,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -325,20 +329,21 @@ def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
 def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None] | None:
     """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``.
 
-    Returns None when the payload is not a page of users (a scalar, or an object with no
-    list of ``values`` or ``users``): that says nothing about whether more pages follow.
+    Returns None when the payload is not a page of users (a scalar, an object with no list of
+    ``values`` or ``users``, or a list holding a row that is not a user): that says nothing about
+    whether more pages follow, and the row may be anyone.
     """
     if isinstance(payload, list):
-        return [u for u in payload if isinstance(u, dict)], None
+        return (payload, None) if all(isinstance(u, dict) for u in payload) else None
     if not isinstance(payload, dict):
         return None
 
     raw_users = payload.get("values")
     if raw_users is None:
         raw_users = payload.get("users")
-    if not isinstance(raw_users, list):
+    if not isinstance(raw_users, list) or not all(isinstance(u, dict) for u in raw_users):
         return None
-    users = [u for u in raw_users if isinstance(u, dict)]
+    users = raw_users
 
     next_cursor = payload.get("nextCursor")
     if not next_cursor and isinstance(payload.get("nextPage"), str):
@@ -576,6 +581,10 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # /user/list ended with a page that neither said it was the last nor pointed further.
+        self._user_list_end_unsaid: bool = False
+        # This sync's user listing, for the authenticator's link; None until _fetch_users builds one.
+        self._user_listing: SourceUserListing | None = None
         self._stored_app_users: list[AppUser] = []
         self._listed_user_keys: set[str] = set()
         # Every account the user list showed, active or not.
@@ -1034,25 +1043,24 @@ class JiraDataCenterConnector(BaseConnector):
     # Sync Orchestration
     # ============================================================================
 
-    async def _register_authenticated_identity(self) -> None:
-        """Record which source account this connector is authenticated as, so a creator whose
-        PipesHub email differs still resolves that account's permissions for this connector."""
+    async def _read_own_account(self) -> tuple[str | None, str | None]:
+        """The email and key of the account this connector is authenticated as, so a creator whose PipesHub
+        email differs still resolves that account's permissions. Sets ``_own_key``, which the user sync keeps
+        eligible; (None, None) when it cannot be read."""
         if not self.data_source:
-            return
+            return None, None
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_current_user_v2()
             if not response or response.status != HttpStatusCode.OK.value:
-                return
+                return None, None
             data = self._safe_json_parse(response, "GET /rest/api/2/myself") or {}
         except Exception as e:
             self.logger.debug("Could not read the authenticated Jira account: %s", e)
-            return
+            return None, None
         email = data.get("emailAddress")
         self._own_key = data.get("accountId") or data.get("key") or data.get("name")
-        await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, self._own_key,
-        )
+        return (email.strip() if isinstance(email, str) else None), self._own_key
 
     async def _read_server_version(self) -> None:
         """Read the server's version once per sync. GET /rest/api/2/serverInfo's ServerInfoBean has no documented
@@ -1120,6 +1128,11 @@ class JiraDataCenterConnector(BaseConnector):
         Run sync of Jira projects and issues - only new/updated tickets
         """
         try:
+            # Reset so a value left by an earlier run never counts as this run's listing. The removal
+            # pass needs no client, so a run whose init fails still removes a link it should not keep.
+            self._user_listing = None
+            await self.drop_authenticator_link_if_listed()
+
             if not self.data_source:
                 # ``init()`` returns False (rather than raising) on missing /
                 # invalid auth config. Without this check we would proceed
@@ -1134,7 +1147,7 @@ class JiraDataCenterConnector(BaseConnector):
                     )
 
             await self._stop_if_signed_out()
-            await self._register_authenticated_identity()
+            own_email, own_key = await self._read_own_account()
             await self._read_server_version()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
@@ -1169,6 +1182,9 @@ class JiraDataCenterConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             await self._withdraw_unlisted_app_users(jira_users)
+            await self.register_authenticated_source_user(
+                own_email, own_key, listing=self._user_listing,
+            )
 
             # Fetch and sync user groups (returns mapping for role resolution). Saving a
             # group replaces its members, so on an unfinished user read a group whose
@@ -1771,6 +1787,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
+        self._user_listing = None
 
         # A failed read raises: read as no links, it would link no one while product access is unknown.
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
@@ -1874,7 +1891,53 @@ class JiraDataCenterConnector(BaseConnector):
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
+        self._user_listing = self._listing_of(raw_jira_users, resolved)
+        await self._settle_authenticator(self._user_listing)
         return list(resolved.values())
+
+    def _listing_of(self, raw_jira_users: list[dict[str, Any]], resolved: dict[str, AppUser]) -> SourceUserListing:
+        """The user read as a listing for the authenticator's link. /user/list lists every account, active or
+        not; the search fallback (a release without /user/list) or a refused read may leave anyone out, so
+        only the authenticator's own lookup can show them absent. An account whose email neither the read
+        nor the reverse lookup resolved is an unidentified row."""
+        listing = SourceUserListing(includes_inactive=not (self._user_bulk_incomplete or self._user_bulk_forbidden))
+        for user in raw_jira_users:
+            user_key = user.get("accountId") or user.get("key") or user.get("name")
+            email = user.get("emailAddress") if isinstance(user.get("emailAddress"), str) else None
+            if not (email and email.strip()) and user_key in resolved:
+                email = resolved[user_key].email
+            listing.add_row(email, user_key)
+        if self._user_read_unfinished:
+            listing.cut("the user list was not read to its end")
+        elif self._user_list_end_unsaid:
+            listing.cut("the user list did not say it ended")
+        else:
+            listing.finish()
+        return listing
+
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """When the read cannot tell, look the authenticator up by email, active or not: found, they are
+        PRESENT; ABSENT only when no row of the answer may hide them. A failed lookup leaves them UNKNOWN."""
+        email = await self.authenticator_email()
+        if not email or listing.presence(email) is not Presence.UNKNOWN:
+            return
+        wanted = email.strip().lower()
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_user_search_v2(username=email, includeInactive=True, maxResults=50)
+            if response.status != HttpStatusCode.OK.value:
+                return
+            rows = self._safe_json_parse(response, "authenticator lookup")
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return
+        if not isinstance(rows, list):
+            return
+        if any(isinstance(r, dict) and (r.get("emailAddress") or "").strip().lower() == wanted for r in rows):
+            listing.settle(email, Presence.PRESENT)
+        # A malformed row or one with its email hidden may be the authenticator, and a full page may hide the match.
+        elif all(isinstance(r, dict) and r.get("emailAddress") for r in rows) and len(rows) < 50:
+            listing.settle(email, Presence.ABSENT)
 
     async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
         """
@@ -1949,11 +2012,14 @@ class JiraDataCenterConnector(BaseConnector):
                 self._user_read_unfinished = True
                 break
             batch_users, next_cursor = page
-            if not batch_users and not next_cursor:
-                break
-
             users.extend(batch_users)
             if not next_cursor:
+                is_last = payload.get("isLast") if isinstance(payload, dict) else None
+                if is_last is False:
+                    self.logger.error("/user/list says more users follow but gave no cursor")
+                    self._user_read_unfinished = True
+                elif is_last is not True:
+                    self._user_list_end_unsaid = True
                 break
             cursor = next_cursor
 
@@ -2085,6 +2151,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_forbidden = False
         self._user_bulk_refused = False
         self._user_bulk_incomplete = False
+        self._user_list_end_unsaid = False
 
         list_users = await self._fetch_users_via_list() if self._dc_profile.user_list else None
         if list_users is not None:

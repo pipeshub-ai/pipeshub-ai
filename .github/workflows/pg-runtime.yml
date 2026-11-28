@@ -32,6 +32,11 @@ on:
       - 'backend/python/app/api/routes/skills.py'
       - 'backend/python/app/modules/pipeline/parser_identity.py'
       - 'backend/python/app/services/graph_db/**'
+      # The startup removal of the creator-to-admin link, and the connectors whose credentials act as an admin account: their real-store tests.
+      - 'backend/python/app/migrations/workspace_admin_link_migration.py'
+      - 'backend/python/app/connectors/sources/google/gmail/team/**'
+      - 'backend/python/app/connectors/sources/google/drive/team/**'
+      - 'backend/python/app/connectors/sources/dropbox/**'
       - 'backend/python/app/schema/**'
       - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/app/modules/indexing/vector_membership_backfill.py'
@@ -52,12 +57,15 @@ on:
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
       - 'backend/python/tests/integration/graph_db/sync_point_contract.py'
+      # The authenticator link cases postgres/test_authenticator_link_pg.py runs.
+      - 'backend/python/tests/integration/graph_db/authenticator_link_support.py'
       # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
       - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
       - 'backend/python/app/modules/indexing/record_diagnostics.py'
       - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
       - 'backend/python/app/scripts/record_diagnostics_contract.py'
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       # publish_with_commit: record events written by the graph transaction (test_record_events_with_commit.py)
       - 'backend/python/app/connectors/core/base/data_store/graph_data_store.py'
       - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
@@ -86,6 +94,7 @@ on:
       - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
       - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
 

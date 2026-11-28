@@ -30,7 +30,12 @@ from helper.authenticated_identity import _authenticator, _linked_user_keys
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.local_auth import jwt_claims, obtain_user_session_token
 from helper.record_access import record_access_status, wait_for_record_access
-from helper.second_user import NO_ACCESS_STATUSES, SecondUser
+from helper.second_user import (
+    NO_ACCESS_STATUSES,
+    SecondUser,
+    log_in_existing_user,
+    log_out_existing_user,
+)
 from retrieval.ranking import virtual_id_of
 
 if TYPE_CHECKING:
@@ -262,6 +267,82 @@ async def verify_lent_link_grants_access(
     )
 
 
+async def verify_listed_authenticator_has_no_link(
+    *,
+    connector_id: str,
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    config_service: Any,
+    authenticator_user_id: str,
+    admin_mailbox_record_ids: set[str],
+    sync_timeout: int,
+) -> None:
+    """The user who authenticated the connector is one of the source's own users: no link, no extra access.
+
+    The records are the ones only the account the credentials act as holds. The authenticator
+    has their own account at the source, so their session must be refused every one of them,
+    find none in search and see none in the knowledge hub.
+    """
+    await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=sync_timeout)
+    assert admin_mailbox_record_ids, "no record to check the authenticator is refused"
+    authenticator = await graph_provider.get_user_by_user_id(authenticator_user_id)
+    assert authenticator, f"the authenticator {authenticator_user_id} is not in the graph"
+    org_id = authenticator.get("orgId") or pipeshub_client.org_id
+    links = await _connector_links(graph_provider, connector_id)
+    assert links == 0, f"connector {connector_id} has {links} authenticatedAs link(s), expected none"
+
+    await _invalidate_search_cache(config_service, Link(connector_id, org_id, authenticator, {}))
+    session = log_in_existing_user(pipeshub_client, authenticator_user_id, authenticator.get("email") or "")
+    try:
+        ids = sorted(admin_mailbox_record_ids)
+        for rid in ids:
+            wait_for_record_access(
+                session, rid, expect_access=False, timeout=SEARCH_SETTLE_TIMEOUT_SEC,
+                description=f"a record only the account the credentials act as holds ({session.email} is listed at the source)",
+            )
+        listed = _listed_among(session, connector_id, set(ids), "for the listed authenticator")
+        assert not listed, f"the knowledge hub listed {len(listed)} of them to {session.email}: {sorted(listed)[:10]}"
+        # A miss on a record not yet indexed proves nothing: wait until search can return each one.
+        records = await _wait_until_indexed(graph_provider, connector_id, set(ids), timeout=SEARCH_SETTLE_TIMEOUT_SEC)
+        shared = Counter(r.get("virtualRecordId") for r in records.values())
+        for rid in ids:
+            record = records[rid]
+            virtual_id, name = record["virtualRecordId"], (record.get("recordName") or "").strip()
+            # A virtual id another record shares could come back through that record
+            if shared[virtual_id] > 1 or len(name) < 3:
+                continue
+            refused, seen = _poll_search(
+                session, connector_id, SearchCandidate(rid, virtual_id, (name,)), want_found=False,
+            )
+            assert refused, f"search returned record {rid} to {session.email} ({seen})"
+    finally:
+        log_out_existing_user(pipeshub_client, session)
+
+
+async def authenticator_session(
+    pipeshub_client: PipeshubClient, graph_provider: GraphProviderProtocol, connector_id: str,
+) -> SecondUser:
+    """A password login for the user who authenticated the connector, which must be the harness user."""
+    link = await _resolve_link(graph_provider, connector_id)
+    return _creator_session(pipeshub_client, link)
+
+
+async def _connector_links(graph_provider: GraphProviderProtocol, connector_id: str) -> int:
+    """How many authenticatedAs links this connector has, whoever they start from."""
+    if os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower() == "arango":
+        rows = await graph_provider.execute_query(
+            "FOR e IN @@links FILTER e.connectorId == @connector_id OR e._key == @connector_id "
+            "RETURN e._key",
+            bind_vars={"@links": CollectionNames.AUTHENTICATED_AS.value, "connector_id": connector_id},
+        )
+        return len(rows or [])
+    rows = await graph_provider.client.execute_query(
+        "MATCH ()-[r:AUTHENTICATED_AS {connectorId: $connector_id}]->() RETURN count(r) AS n",
+        {"connector_id": connector_id},
+    )
+    return int((rows or [{}])[0].get("n") or 0)
+
+
 async def _reached_only_by_source(
     graph_provider: GraphProviderProtocol, link: Link, user: SecondUser,
 ) -> dict[str, str]:
@@ -332,6 +413,26 @@ def _creator_session(client: PipeshubClient, link: Link) -> SecondUser:
         base_url=client.base_url,
         timeout=client.timeout_seconds,
     )
+
+
+async def _wait_until_indexed(
+    graph_provider: GraphProviderProtocol, connector_id: str, record_ids: set[str], *, timeout: float,
+) -> dict[str, dict[str, Any]]:
+    """The connector's live records once every one of ``record_ids`` is indexed (COMPLETED, with a
+    virtualRecordId); fails the test if any is not within ``timeout``."""
+    deadline = time.monotonic() + timeout
+    while True:
+        records = await _live_records(graph_provider, connector_id)
+        pending = sorted(
+            rid for rid in record_ids
+            if (records.get(rid) or {}).get("indexingStatus") != "COMPLETED"
+            or not (records.get(rid) or {}).get("virtualRecordId")
+        )
+        if not pending:
+            return records
+        if time.monotonic() >= deadline:
+            pytest.fail(f"{len(pending)} record(s) not indexed after {timeout}s: {pending[:10]}")
+        await asyncio.sleep(SEARCH_POLL_SEC)
 
 
 async def _live_records(

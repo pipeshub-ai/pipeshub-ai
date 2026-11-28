@@ -85,6 +85,13 @@ def current_or_system() -> OrgContext:
     return ctx
 
 
+def require_system(site: str) -> None:
+    """Refuse unless the ambient context is an explicit cross-org (system) scope: for a method that acts on every org's data."""
+    ctx = _ctx.get()
+    if ctx is None or ctx.kind != "system":
+        raise SystemContextNotAllowed(f"{site} acts on every org and needs a system context")
+
+
 def current() -> OrgContext:
     ctx = current_or_system()
     if ctx.kind == "system":

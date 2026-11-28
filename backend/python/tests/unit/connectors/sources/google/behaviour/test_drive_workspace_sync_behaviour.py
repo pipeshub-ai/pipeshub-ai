@@ -167,7 +167,19 @@ async def test_service_account_sign_in_uses_delegated_tokens_and_writes_no_setti
     assert "credentials" not in ws.config
 
 
-async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Workspace) -> None:
+async def test_a_listed_creator_is_never_linked_to_the_admin(ws: Workspace) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+    assert ws.records.app_users[ADMIN].source_user_id == ws.world.users[ADMIN].user_id
+
+
+async def test_an_unlisted_creator_is_linked_to_the_admin(ws: Workspace) -> None:
+    ws.records.authenticator_emails["admin-user"] = "vendor@elsewhere.com"
+
     await ws.sync()
 
     admin_id = ws.world.users[ADMIN].user_id
@@ -175,9 +187,38 @@ async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authen
     assert ws.records.app_users[ADMIN].source_user_id == admin_id
 
 
+async def test_a_stale_link_goes_on_the_next_sync(ws: Workspace) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+    ws.records.authenticator_links[CONNECTOR_ID] = ("admin-user", ADMIN, ws.world.users[ADMIN].user_id)
+
+    await ws.sync()
+
+    assert ws.records.authenticator_links == {}
+
+
+async def test_an_alias_creator_is_not_linked(ws: Workspace) -> None:
+    ws.world.aliases["alice.a@example.com"] = ALICE
+    ws.records.authenticator_emails["admin-user"] = "Alice.A@example.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+
+
+async def test_an_admin_alias_creator_keeps_the_link(ws: Workspace) -> None:
+    ws.world.aliases["root@example.com"] = ADMIN
+    ws.records.authenticator_emails["admin-user"] = "root@example.com"
+
+    await ws.sync()
+
+    assert ws.records.authenticator_links[CONNECTOR_ID][1] == ADMIN
+
+
 async def test_an_admin_email_configured_as_an_alias_registers_the_primary_account(ws: Workspace) -> None:
     ws.world.aliases["it@example.com"] = ADMIN
     ws.config["auth"]["adminEmail"] = "it@example.com"
+    ws.records.authenticator_emails["admin-user"] = "vendor@elsewhere.com"
 
     await ws.sync()
 

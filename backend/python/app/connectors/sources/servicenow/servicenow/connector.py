@@ -50,6 +50,10 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
     oauth_app_not_linked_error,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -320,6 +324,9 @@ _FEEDBACK_FIELDS = [
     ServiceNowFields.USER_DISPLAY_NAME,
     ServiceNowFields.SYS_CREATED_ON,
 ]
+
+
+_AUTHENTICATOR_LOOKUP_LIMIT = 50
 
 
 @dataclass
@@ -612,6 +619,8 @@ class ServiceNowConnector(BaseConnector):
         # Set when this run skipped something after an error it did not raise, so a full
         # sync's cleanup unlinks nothing (see full_sync_coverage).
         self._sync_read_incomplete = False
+        # This run's user listing, for the authenticator's link; None until the user sync builds one.
+        self._user_listing: SourceUserListing | None = None
         # The run that moves attachments stored under their sys_id to their key (see _attachment_keys)
         self._rekey_attachments = False
         # What this run could not do, reported once when it ends (see _report_sync_problems):
@@ -1325,6 +1334,8 @@ class ServiceNowConnector(BaseConnector):
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self._user_listing)
         email, source_user_id = None, None
         try:
             response = await self._table_get(
@@ -1343,7 +1354,8 @@ class ServiceNowConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated ServiceNow user: %s", e)
             return
         await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, source_user_id
+            email.strip() if isinstance(email, str) else None, source_user_id,
+            listing=self._user_listing,
         )
 
     async def run_sync(self) -> None:
@@ -1505,6 +1517,8 @@ class ServiceNowConnector(BaseConnector):
         4. Categories
         5. KB Articles and their attachments
         """
+        self._user_listing = None
+        await self.drop_authenticator_link_if_listed()
         try:
             self._app_users = None  # user listing is read once per run, after the user sync
             self._email_by_source_id = None
@@ -1529,7 +1543,6 @@ class ServiceNowConnector(BaseConnector):
 
             # Before anything is written: a run with the wrong scope would write, then remove, the wrong things.
             await self._load_filters()
-            await self._register_authenticated_identity()
 
             access = await self._read_access_state()
             # No table behind access changed since the last pass, and none is due: memberships,
@@ -1545,6 +1558,7 @@ class ServiceNowConnector(BaseConnector):
                 self._groups = {g.sys_id: g for g in await self._fetch_all_groups()}
             else:
                 await self._sync_users_and_groups()
+            await self._register_authenticated_identity()
 
             # Step 2: Get admin users from ServiceNow
             self.logger.info("Step 2/5: Fetching admin users from ServiceNow...")
@@ -2224,6 +2238,10 @@ class ServiceNowConnector(BaseConnector):
         latest_update_time = None
         inactive: set[str] = set()
         no_email = 0
+        # A full read lists every user whatever the status; a delta lists only the changed ones, so it
+        # proves no one absent on its own.
+        listing = self._user_listing = SourceUserListing(includes_inactive=query is None)
+        users_listing = _Listing()
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2243,12 +2261,14 @@ class ServiceNowConnector(BaseConnector):
             ],
             page=ServiceNowDefaults.ID_PAGE_SIZE,
             narrow=query is not None,  # a delta of hidden users only moves on
+            listing=users_listing,
         ):
             # Pages come oldest first, so the last row is the newest seen
             latest_update_time = users_data[-1].sys_updated_on
 
             app_users = []
             for user_data in users_data:
+                listing.add_row(user_data.email or None, user_data.sys_id)
                 # The anonymous guest signs in to no PipesHub account. Synced, it would turn the
                 # default knowledge bases' Guest User deny into a grant per user (_fetch_deny_records).
                 if not self._is_active(user_data) or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME:
@@ -2302,9 +2322,50 @@ class ServiceNowConnector(BaseConnector):
                 f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "
                 "address and could not be synced, so they get no access in PipesHub", persistent=True,
             )
+        if users_listing.partial:
+            listing.cut("an ACL hid some users")  # a hidden row may be the authenticator
+        if self._sync_read_incomplete:
+            listing.row_failed("a user row could not be read")
+        listing.finish()
+        if not listing.is_cut:
+            # A delta lists only changed users, and a user without an email may be anyone.
+            await self._settle_authenticator(listing)
         self.logger.info(
             f"User sync complete, Total synced: {total_synced}, inactive: {len(inactive)}, no email: {no_email}"
         )
+
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """Look the authenticator's sys_user row up by email, active or not, when ``listing`` cannot
+        tell: found, they are PRESENT; ABSENT only when nothing matching may be hidden. A failed
+        lookup leaves them UNKNOWN."""
+        email = await self.authenticator_email()
+        if not email or "\n" in email or "\r" in email or listing.presence(email) is not Presence.UNKNOWN:
+            return
+        wanted = email.lower()
+        try:
+            response = await self._table_get(
+                ServiceNowTables.SYS_USER,
+                # ^ separates conditions: a literal one is doubled
+                sysparm_query=f"{ServiceNowFields.EMAIL}LIKE{email.replace('^', '^^')}",
+                sysparm_fields=CommonStrings.COMMA.join([ServiceNowFields.SYS_ID, ServiceNowFields.EMAIL]),
+                sysparm_limit=str(_AUTHENTICATOR_LOOKUP_LIMIT),
+                sysparm_no_count=None,  # X-Total-Count counts the matching rows before ACLs remove any
+            )
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the ServiceNow users: %s", e)
+            return
+        rows = response.result or []
+        if any((r.get(ServiceNowFields.EMAIL) or "").strip().lower() == wanted for r in rows):
+            listing.settle(wanted, Presence.PRESENT)
+            return
+        # Absent only when every matching row shows, with its email: a row an ACL hid, a hidden email
+        # field, or a full page of near matches may be the authenticator.
+        total = response.total_count
+        if (
+            isinstance(total, int) and total == len(rows) < _AUTHENTICATOR_LOOKUP_LIMIT
+            and all((r.get(ServiceNowFields.EMAIL) or "").strip() for r in rows)
+        ):
+            listing.settle(wanted, Presence.ABSENT)
 
     async def _users_gone(self, stored: set[str]) -> set[str]:
         """The ``stored`` user sys_ids that are no active user with an email at the source (nor the guest): deleted,

@@ -499,10 +499,15 @@ class TestConnectorGuards:
         c.runtime.ds_call = AsyncMock(return_value=ok_response(SimpleNamespace(email=public_email, id=77)))
         c.users = MagicMock()
         c.users.resolved_email = MagicMock(return_value=bound)
+        c.users.listing = listing = MagicMock()
         c.register_authenticated_source_user = AsyncMock()
+        c.drop_authenticator_link_if_listed = AsyncMock()
         await c._register_authenticated_identity()
+        c.drop_authenticator_link_if_listed.assert_awaited_once_with(listing)
         c.users.resolved_email.assert_called_once_with(77)
-        c.register_authenticated_source_user.assert_awaited_once_with(linked, "77")
+        c.register_authenticated_source_user.assert_awaited_once_with(
+            linked, "77", listing=listing,
+        )
 
 
 async def test_a_code_prune_that_fails_holds_the_checkpoint_back() -> None:

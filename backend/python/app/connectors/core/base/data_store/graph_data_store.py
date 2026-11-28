@@ -455,9 +455,11 @@ class GraphTransactionStore(TransactionStore):
             key, CollectionNames.RECORDS.value, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
+    async def get_app_by_id(self, connector_id: str, *, raise_on_error: bool = False) -> Optional[AppMetadata]:
         """Get app metadata by connector ID."""
-        doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=self.txn)
+        doc = await self.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, transaction=self.txn, raise_on_error=raise_on_error,
+        )
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(

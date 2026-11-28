@@ -1076,6 +1076,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
 
+    # Before syncs resume: earlier syncs linked the creator of a Gmail/Drive Workspace or Dropbox team connector to the admin account its credentials act as.
+    try:
+        from app.migrations.workspace_admin_link_migration import (
+            run_workspace_admin_link_migration,
+        )
+
+        await run_workspace_admin_link_migration(graph_provider, app_container.config_service(), logger)
+    except Exception as e:
+        logger.error(f"Workspace admin link migration failed: {e}", exc_info=True)
+
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
         from app.migrations.web_browser_identity_migration import (

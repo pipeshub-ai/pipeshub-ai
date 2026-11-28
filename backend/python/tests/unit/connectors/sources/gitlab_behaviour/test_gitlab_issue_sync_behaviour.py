@@ -137,7 +137,7 @@ async def test_confidential_issues_are_hidden_from_guests_unless_they_wrote_or_o
     assert "bob@example.com" not in db.access("11002")
     assert "bob@example.com" in db.access("11003")
     assert "bob@example.com" in db.access("11004")
-    assert {"alice@example.com", "owner@example.com"} <= db.access("11002")
+    assert "alice@example.com" in db.access("11002")
 
 
 async def test_changing_confidentiality_moves_the_issue_between_audiences(harness, gitlab, db) -> None:

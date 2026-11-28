@@ -384,6 +384,8 @@ class GitHubTeamsConnector(BaseConnector):
         Runs after user sync: the email that sync bound the account to is the one its grants
         carry. ``GET /user`` gives only the public profile email, which is empty for most
         accounts and may be a personal address that holds no grant."""
+        # First: a read below that fails must not keep a link this sync's listing rules out.
+        await self.drop_authenticator_link_if_listed(self.users.listing)
         if not self.data_source:
             return
         email, source_user_id = None, None
@@ -400,12 +402,16 @@ class GitHubTeamsConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
+            listing=self.users.listing,
         )
 
     @reports_failed_sync("GitHub")
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            # First, with no source call, so a sync that fails early still removes a link
+            # the creator should not hold.
+            await self.drop_authenticator_link_if_listed()
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
