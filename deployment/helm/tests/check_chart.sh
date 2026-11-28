@@ -91,6 +91,9 @@ VARIANTS=(
   "external-daemon-max-total-float|${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=4.0"
   "external-daemon-1-pod|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=false"
   "external-daemon-autoscaled|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=3"
+  "broker-dind-3-pods|--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set replicaCount=3 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=12 --set sandbox.capacity.minTotal=3"
+  "broker-external-2-pods|--set config.sandboxMode=broker ${EXTERNAL[*]} --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=10"
+  "broker-dind-1-pod|--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set replicaCount=1 --set autoscaling.enabled=false"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-hardened|--set hardened=true -f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
   "eks-single-az|--set hardened=true -f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
@@ -574,6 +577,53 @@ expect_env dind-capacity-zeros SANDBOX_MAX_PER_ORG '"0"'
 expect_env defaults-dind SANDBOX_SLOT_WAIT_S missing
 expect_env external-daemon-autoscaled SANDBOX_CAPACITY_DIVISOR '"3"'
 
+# ADR-CAP-02: on the broker paths the broker enforces the ceiling on every sandbox of its daemon, sized from that
+# daemon with the app's variables, so sandbox.capacity.maxTotal and the sizing knobs reach the broker; each app pod
+# sharing that daemon takes its share (the divisor, with the broker's memory share), never a ceiling of its own.
+broker_env() { # variant name, variable -> "missing" or the env entry as JSON
+  python3 - "$OUT/$1.yaml" "$2" <<'PY'
+import json, sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Deployment"]
+pod = next(d for d in docs if d["metadata"]["name"] == "ci-pipeshub-ai-sandbox-broker")["spec"]["template"]["spec"]
+broker = next(c for c in pod["containers"] if c["name"] == "sandbox-broker")
+entry = next((e for e in broker.get("env") or [] if e["name"] == sys.argv[2]), None)
+if entry is not None:
+    ref = (entry.get("valueFrom") or {}).get("resourceFieldRef")
+    if ref is not None and ref["containerName"] not in {c["name"] for c in pod["containers"]}:
+        print(f"no {ref['containerName']} container in the broker pod")
+        sys.exit(0)
+print("missing" if entry is None else json.dumps(entry.get("value", entry.get("valueFrom")), sort_keys=True))
+PY
+}
+expect_broker_env() { # variant, name, expected
+  local doc="$OUT/$1.yaml" got
+  [[ -f "$doc" ]] || return 0
+  got="$(broker_env "$1" "$2")"
+  if [[ "$got" == "$3" ]]; then echo "ok $1: broker $2 = $3"; else echo "!! $1: broker $2 is $got, expected $3"; failed=1; fi
+}
+expect_broker_env broker-dind-3-pods SANDBOX_HOST_MEMORY_BYTES '{"resourceFieldRef": {"containerName": "dind", "divisor": "1", "resource": "limits.memory"}}'
+expect_broker_env broker-dind-3-pods SANDBOX_HOST_CPU_MILLIS '{"resourceFieldRef": {"containerName": "dind", "divisor": "1m", "resource": "limits.cpu"}}'
+expect_broker_env broker-dind-3-pods SANDBOX_MEMORY_SHARE '"0.9"'
+expect_broker_env broker-dind-3-pods SANDBOX_MAX_TOTAL '"12"'
+expect_broker_env broker-dind-3-pods SANDBOX_MIN_TOTAL '"3"'
+expect_broker_env broker-dind-3-pods SANDBOX_CAPACITY_DIVISOR missing
+expect_env broker-dind-3-pods SANDBOX_CAPACITY_DIVISOR '"3"'
+expect_env broker-dind-3-pods SANDBOX_MEMORY_SHARE '"0.9"'
+expect_env broker-dind-3-pods SANDBOX_MAX_TOTAL missing
+expect_env broker-dind-3-pods SANDBOX_HOST_MEMORY_BYTES missing
+expect_env broker-dind-3-pods SANDBOX_MIN_TOTAL '"3"'
+expect_broker_env broker-external-2-pods SANDBOX_MAX_TOTAL '"10"'
+expect_broker_env broker-external-2-pods SANDBOX_HOST_MEMORY_BYTES missing
+expect_broker_env broker-external-2-pods SANDBOX_MEMORY_SHARE missing
+expect_env broker-external-2-pods SANDBOX_CAPACITY_DIVISOR '"2"'
+expect_env broker-external-2-pods SANDBOX_MAX_TOTAL missing
+expect_env broker-external-2-pods SANDBOX_MEMORY_SHARE missing
+expect_broker_env broker-dind-1-pod SANDBOX_MAX_TOTAL missing
+expect_env broker-dind-1-pod SANDBOX_CAPACITY_DIVISOR missing
+# The chart's defaults autoscale up to 6 pods: each takes a sixth.
+expect_env broker-netpol SANDBOX_CAPACITY_DIVISOR '"6"'
+expect_broker_env broker-netpol SANDBOX_MAX_TOTAL missing
+
 # Live limit: on the dind sidecar the app reads the sidecar's own cgroup,
 # exported by a loop in the dind container and served by docker-proxy; never
 # the node. Turned off, the dind container is exactly as without it.
@@ -760,6 +810,7 @@ REFUSED=(
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "external daemon shared by more pods than the capacity split allows|splits its capacity at most 64 ways|${EXTERNAL[*]} --set replicaCount=1 --set autoscaling.enabled=true --set autoscaling.maxReplicas=65"
+  "broker daemon shared by more pods than the capacity split allows|share the sandbox broker's Docker daemon|--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set autoscaling.maxReplicas=65"
   "run-time cap set through extraEnv|Set config.sandboxMaxRunTimeoutS instead|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set extraEnv[0].name=SANDBOX_MAX_RUN_TIMEOUT_S --set-string extraEnv[0].value=900"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
   "harness metrics with nowhere to write|needs metrics.harness.remoteWrite.url|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany} --set metrics.harness.enabled=true"
@@ -892,6 +943,10 @@ check_notes "external 2 pods" has "each pod uses 1/2 of its capacity" "${EXTERNA
 check_notes "external 2 pods maxTotal 0" has "each pod uses 1/2 of its capacity" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set-string sandbox.capacity.maxTotal=0
 check_notes "external 2 pods maxTotal 4" lacks "each pod uses 1/2" "${EXTERNAL[@]}" --set replicaCount=2 --set autoscaling.enabled=false --set sandbox.capacity.maxTotal=4
 check_notes "external run cap" has "SANDBOX_MAX_RUN_TIMEOUT_S=900" "${EXTERNAL[@]}" --set config.sandboxMaxRunTimeoutS=900
+BROKER=(--set config.sandboxMode=broker --set sandbox.dind.enabled=true --set replicaCount=3 --set autoscaling.enabled=false)
+check_notes "broker sized" has "The broker sizes its ceiling on sandboxes from the \`dind\` sidecar's limits" "${BROKER[@]}"
+check_notes "broker maxTotal 12" has "The broker runs at most 12 sandboxes at once" "${BROKER[@]}" --set sandbox.capacity.maxTotal=12
+check_notes "broker 3 pods" has "Each application pod runs at most 1/3 of it, and never fewer than one" "${BROKER[@]}"
 
 # The eksctl config: it parses, and the parsing node group carries the taint and label and
 # a max that fits the pods the chart sizes for it.

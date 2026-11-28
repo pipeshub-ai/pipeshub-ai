@@ -292,25 +292,63 @@ def test_sec_iso_06_no_value_turns_the_workspace_quota_off(raw: str, monkeypatch
         _ = workspace_quota_mb()
 
 
-@pytest.mark.parametrize(("raw", "ceiling"), [(None, 50), ("", 50), (" 7 ", 7), ("0", None), ("-3", None)])
-def test_c2_19_the_install_sandbox_ceiling(raw: str | None, ceiling: int | None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """SANDBOX_MAX_TOTAL as the legacy governor reads it: default 50, zero or less is no ceiling."""
-    from app.sandbox_broker_main import max_sandboxes
+class _SizedProvider:
+    """A daemon of 16 GiB and 8 CPUs, on a kernel that is not this host's."""
 
+    class client:
+        @staticmethod
+        def info() -> dict[str, object]:
+            return {"MemTotal": 16 * 2**30, "NCPU": 8, "KernelVersion": "0.0.0-not-this-host"}
+
+    async def run_blocking(self, fn: Any) -> Any:  # noqa: ANN401 - docker-py is untyped
+        return fn()
+
+
+# Unset is sized from the daemon (min(16 GiB x 0.25 / 512 MiB, 8 x 0.75 / 0.5) = 8), as the app sizes it; zero or
+# less is the app's largest ceiling, never none; a value that is not a number is ignored with a warning, as the app
+# ignores it.
+@pytest.mark.parametrize(
+    ("raw", "ceiling"), [(None, 8), ("", 8), (" 7 ", 7), ("0", 1024), ("-3", 1024), ("lots", 8), ("1.5", 8)]
+)
+async def test_c2_19_cap02_the_install_sandbox_ceiling_is_sized_from_the_brokers_daemon(
+    raw: str | None, ceiling: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.agent_loop_lib.sandbox import capacity as capacity_module
+    from app.sandbox_broker_main import sandbox_capacity
+
+    # The settings warn once per process: this test must not use up a warning another test expects.
+    monkeypatch.setattr(capacity_module, "_warned", set())
     if raw is None:
         monkeypatch.delenv("SANDBOX_MAX_TOTAL", raising=False)
     else:
         monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
-    assert max_sandboxes() == ceiling
+    for name in ("SANDBOX_HOST_MEMORY_BYTES", "SANDBOX_HOST_CPU_MILLIS", "SANDBOX_CAPACITY_DIVISOR"):
+        monkeypatch.delenv(name, raising=False)
+    capacity = await sandbox_capacity(_SizedProvider())  # type: ignore[arg-type]
+    assert capacity.measured
+    assert capacity.ceiling() == ceiling
 
 
-@pytest.mark.parametrize("raw", ["lots", "1.5"])
-def test_c2_19_a_malformed_sandbox_ceiling_refuses_to_start(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.sandbox_broker_main import InvalidMaxSandboxes, max_sandboxes
+async def test_cap02_the_broker_reports_its_ceiling_and_host_on_its_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.agent_loop_lib.sandbox.capacity import machine_from_broker
+    from app.harness.sandbox.docker_broker import DockerSandboxBroker
+    from app.sandbox_broker_main import sandbox_capacity
 
-    monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
-    with pytest.raises(InvalidMaxSandboxes):
-        _ = max_sandboxes()
+    monkeypatch.setenv("SANDBOX_MAX_TOTAL", "6")
+    capacity = await sandbox_capacity(_SizedProvider())  # type: ignore[arg-type]
+    caps = DockerCapabilities(reachable=True, engine_version="28.0.4", runtimes=frozenset({"runc"}), exec_transport="unix")
+    with patch("app.harness.sandbox.docker_broker.probe", return_value=caps):
+        broker = await DockerSandboxBroker.create(
+            provider=_SizedProvider(),  # type: ignore[arg-type]
+            clock=ManualClock(),
+            ids=RandomIds(),
+            capacity=capacity,
+        )
+        health = await broker.health()
+    machine = machine_from_broker(health.detail)
+    assert machine is not None
+    assert (machine.ceiling, machine.memory_bytes, machine.cpus) == (6, 16 * 2**30, 8.0)
+    assert broker._cap.limit == 6  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize(("raw", "withheld"), [(None, set()), ("", set()), (" runsc ", {"runsc"}), ("runsc,", {"runsc"})])

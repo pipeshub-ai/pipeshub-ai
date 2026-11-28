@@ -75,7 +75,10 @@ interactive runs borrow slots from scheduled ones.
 
 **Sandboxes per host** (the broker, `backend/python/harness_core/sandbox/pool.py`): the host holds
 `floor(host memory × 0.75 ÷ the largest sandbox's memory)` sandboxes, keeping a quarter of memory for the app,
-the stores and Docker, and never more than `SANDBOX_MAX_TOTAL` (50 by default; 0 or less is no ceiling). A sandbox
+the stores and Docker, and never more than the broker's ceiling: `SANDBOX_MAX_TOTAL`, or empty (the default) sized
+from the broker's daemon exactly as the code sandbox cap is sized (the smallest of 25 % of memory ÷ 512 MiB, 75 % of
+CPUs ÷ 0.5 and 25 % of the process limit ÷ 256; 0 or less is 1024; [ADR-CAP-02](../adr/ADR-CAP-02-one-sandbox-ceiling-sized-from-the-daemon.md)).
+That count weighs every sandbox as a code sandbox, so a host that runs mostly engine sessions sets it lower. A sandbox
 gets 1 CPU, 1,024 MiB of memory, 256 processes and 512 MiB of scratch (`Resources` in
 `backend/python/harness_core/sandbox/types.py`), except that opencode sandboxes get 2 CPUs (its `cpus` in
 `backend/python/harness_engines/allowlist.json`) and Qwen Code sandboxes at least
@@ -94,8 +97,8 @@ leaves an org at most half of it while another org is waiting.
 | Host | Harness processes | Sandboxes the broker allows | What to expect |
 |---|---|---|---|
 | Laptop, 16 GB Docker VM, `eval` profile | Harness on costs about 0.6 GB idle over harness off | `floor(16,384 × 0.75 ÷ 1,024)` = 12, but the stack already uses about 6 GB | One or two engine sessions at a time. Keep the warm pool off. The release keeps coding engines off by default (`HARNESS_ENGINE_RUNS`) |
-| One Compose host, 8 vCPU / 32 GB | One Node, one worker (64 slots), Model Gateway | 24 by memory | Chat runs are bounded by the model provider and Node, not by slots. Engine sessions are CPU-bound first: eight 1-CPU sandboxes (or four opencode ones) fill the CPUs before memory runs out. Start with `SANDBOX_MAX_TOTAL` near the CPU count and raise it while watching CPU |
-| One Compose host, 32 vCPU / 128 GB | as above | 96 by memory, 50 by `SANDBOX_MAX_TOTAL` | Raise `SANDBOX_MAX_TOTAL` only after watching Node: one Node process is the first shared bottleneck near 62 commits/s |
+| One Compose host, 8 vCPU / 32 GB | One Node, one worker (64 slots), Model Gateway | 24 by memory; the ceiling is 12 by CPU | Chat runs are bounded by the model provider and Node, not by slots. Engine sessions are CPU-bound first: eight 1-CPU sandboxes (or four opencode ones) fill the CPUs before memory runs out. Start with `SANDBOX_MAX_TOTAL` near the CPU count and raise it while watching CPU |
+| One Compose host, 32 vCPU / 128 GB | as above | 96 by memory, 48 by the ceiling (CPU) | Raise `SANDBOX_MAX_TOTAL` only after watching Node: one Node process is the first shared bottleneck near 62 commits/s |
 | Helm, several app pods | One Node and one worker per pod; the HPA scales on Node's event-loop use (`deployment/helm/pipeshub-ai/templates/hpa.yaml`) | per sandbox node | Add app pods for commit rate; use a three-member MongoDB set (`values-cloud.yaml`, `values-eks.yaml`). The sandbox broker is one replica by design |
 
 For the knowledge side (vector store and indexing), see

@@ -4,7 +4,9 @@
 #  1. With an empty environment each variable has its default.
 #  2. A value in the env file reaches every service that reads it.
 # The app service is the one that sets SANDBOX_MODE; the proxy is
-# docker-socket-proxy, in the files that have one.
+# docker-socket-proxy and the broker sandbox-broker, in the files that have one.
+# The broker reads the capacity variables exactly as the app does (ADR-CAP-02),
+# so each must reach it with the app's default: empty, sized from the daemon.
 # Set DOCKER="sudo -n docker" if the daemon socket needs it.
 set -euo pipefail
 
@@ -23,21 +25,21 @@ FILES=(
   docker-compose.integration.neo4j.yml
 )
 
-# variable|default|override|where ("app", "proxy" or "app proxy")
+# variable|default|override|where (any of "app", "proxy", "broker")
 VARS=(
   "SANDBOX_MAX_RUN_TIMEOUT_S|300|900|app proxy"
   "DOCKER_PROXY_INSTANCE|compose:sandbox-env-test|stack-a|proxy"
   "DOCKER_PROXY_REAP_UNLABELED|false|true|proxy"
-  "SANDBOX_MAX_TOTAL||7|app"
+  "SANDBOX_MAX_TOTAL||7|app broker"
   "SANDBOX_MAX_PER_ORG||3|app"
   "SANDBOX_MAX_PER_REQUEST||4|app"
   "SANDBOX_EGRESS_DNS_SERVERS||10.0.0.53|app"
-  "SANDBOX_MIN_TOTAL||2|app"
-  "SANDBOX_MEMORY_SHARE||0.5|app"
-  "SANDBOX_CPU_FACTOR||1.0|app"
+  "SANDBOX_MIN_TOTAL||2|app broker"
+  "SANDBOX_MEMORY_SHARE||0.5|app broker"
+  "SANDBOX_CPU_FACTOR||1.0|app broker"
   "SANDBOX_SLOT_WAIT_S||30|app"
-  "SANDBOX_HOST_MEMORY_BYTES||17179869184|app"
-  "SANDBOX_HOST_CPU_MILLIS||4000|app"
+  "SANDBOX_HOST_MEMORY_BYTES||17179869184|app broker"
+  "SANDBOX_HOST_CPU_MILLIS||4000|app broker"
   "SANDBOX_LIVE_LIMIT||off|app"
   "SANDBOX_LIVE_INTERVAL_S||30|app"
   "SANDBOX_HOST_MEM_FLOOR_MB||2048|app"
@@ -86,7 +88,7 @@ render() {
     --env-file "$envf" --profile '*' config --format json > "$out"
 }
 
-# value <json> <role> <variable> -> the variable's value, "<unset>", or "<no proxy>"
+# value <json> <role> <variable> -> the variable's value, "<unset>", or "<no proxy>" when the file has no such service
 value() {
   python3 - "$1" "$2" "$3" <<'PY'
 import json, sys
@@ -102,7 +104,7 @@ if role == "app":
     assert len(found) == 1, f"expected one app service with SANDBOX_MODE, found {len(found)}"
     svc = found[0]
 else:
-    svc = services.get("docker-socket-proxy")
+    svc = services.get({"proxy": "docker-socket-proxy", "broker": "sandbox-broker"}[role])
     if svc is None:
         print("<no proxy>")
         sys.exit(0)

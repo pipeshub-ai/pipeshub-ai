@@ -805,7 +805,7 @@ the table says.
 
 ## Code sandbox capacity
 
-Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on.
+Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on. With the sandbox broker, the same wait covers a broker that is full, engine sandboxes included.
 
 The cap is sized from the Docker host when the app starts (the app asks the Docker proxy, which answers a filtered `/info`). It is the smallest of:
 
@@ -817,11 +817,13 @@ The cap is sized from the Docker host when the app starts (the app asks the Dock
 
 It is never below `SANDBOX_MIN_TOTAL` (2). A 16 GB / 4 CPU host gets 6, 64 GB / 16 CPU gets 24, 192 GB / 48 CPU gets 72. The query log shows the result as one `sandbox capacity:` line. If Docker does not answer at startup, the app uses the minimum and retries (after 5 s, 15 s, 30 s, then every minute).
 
+With `SANDBOX_MODE=broker` the sandbox broker starts every sandbox, so it holds the ceiling: it reads these variables the same way and sizes from its own Docker daemon, counting every sandbox it runs there (code runs and coding engine sessions alike). The app then asks the broker for the daemon's size and its ceiling, and never runs more code sandboxes than that ceiling. Both log one `sandbox capacity:` line. Before this, the broker defaulted to 50 and read 0 as no ceiling; it now reads them as the app does (ADR-CAP-02).
+
 Sandboxes are marked first to be killed if the host runs out of memory, ahead of the databases and the app.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDBOX_MAX_TOTAL` | sized | Replaces the computed cap (up to 1024; 0 or less means 1024). |
+| `SANDBOX_MAX_TOTAL` | sized | Replaces the computed cap (up to 1024; 0 or less means 1024). With the broker, the broker's ceiling on every sandbox of its daemon. |
 | `SANDBOX_MAX_PER_ORG` | none | The most sandboxes one org may hold at once. |
 | `SANDBOX_MAX_PER_REQUEST` | 2 | The most sandboxes one request (a chat turn and its sub-agents) runs at once; its other calls wait for one of them, as above, without holding a sandbox. Never above the cap; 0 or unset means 2. Applies to chat requests; the agent library's own `ControlPlane` server shares one sandbox manager across its requests and is bounded by the cap only. |
 | `SANDBOX_MIN_TOTAL` | 2 | The floor, and the cap until the host has been read. Once it has, a value above what the host supports is lowered to that (with a warning). |

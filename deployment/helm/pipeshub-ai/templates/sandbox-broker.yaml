@@ -128,6 +128,8 @@ spec:
             # The daemon volume for workspaces and other persistent sandbox folders.
             - name: SANDBOX_DATA_VOLUME
               value: {{ .Values.sandboxBroker.dataVolume | default "pipeshub_sandbox_data" | quote }}
+            # The install's ceiling on live sandboxes, sized from this pod's daemon (sandbox.capacity).
+            {{- include "pipeshub-ai.brokerCapacityEnv" . | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /healthz

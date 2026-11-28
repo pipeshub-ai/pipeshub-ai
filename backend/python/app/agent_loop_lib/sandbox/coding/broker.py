@@ -24,9 +24,11 @@ import tempfile
 import uuid
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.sandbox.capacity_wait import retry_while_full
 from app.agent_loop_lib.sandbox.coding.base import (
     OUT_OF_MEMORY_EXIT,
     CodeOutOfMemory,
+    CodingSandboxBusy,
     CodingSandboxError,
     memory_limit_end,
 )
@@ -47,7 +49,11 @@ from app.harness.sandbox.egress_credentials import (
     required_sealer,
 )
 from harness_core.activity import current_command_recorder
-from harness_core.sandbox.errors import SandboxError, SandboxPathNotFound
+from harness_core.sandbox.errors import (
+    SandboxCapacityReached,
+    SandboxError,
+    SandboxPathNotFound,
+)
 from harness_core.sandbox.ports import memory_exhausted
 from harness_core.sandbox.streams import collect, iter_bytes, spool
 from harness_core.sandbox.types import (
@@ -136,12 +142,22 @@ class BrokerCodingSandbox(DockerCodingSandbox):
         self, mounts: Sequence[str], *, network: bool, egress: EgressPolicy | None = None
     ) -> tuple[SandboxBroker, SandboxHandle]:
         broker = await self._broker()
-        try:
-            handle = await broker.acquire(
-                self._spec(mounts, network=network, egress=egress),
-                lease=LeaseRef(_HOLDER, 1),
-                idempotency_key=f"run_code:{self.sandbox_id}:{uuid.uuid4().hex}",
+        spec = self._spec(mounts, network=network, egress=egress)
+
+        async def attempt() -> SandboxHandle:
+            return await broker.acquire(
+                spec, lease=LeaseRef(_HOLDER, 1), idempotency_key=f"run_code:{self.sandbox_id}:{uuid.uuid4().hex}",
             )
+
+        try:
+            # A full install (engine sandboxes count too) waits out the call's slot wait, as a full governor does.
+            handle = await retry_while_full(
+                attempt,
+                lambda exc: isinstance(exc, SandboxCapacityReached),
+                release=lambda acquired: release_quietly(broker, acquired),
+            )
+        except SandboxCapacityReached as exc:
+            raise CodingSandboxBusy(f"no sandbox came free in time: {exc}") from exc
         except SandboxError as exc:
             raise CodingSandboxError(f"sandbox broker refused the run: {exc}") from exc
         return broker, handle
@@ -155,64 +171,68 @@ class BrokerCodingSandbox(DockerCodingSandbox):
         staged_inputs: dict[str, _StagedFile],
         egress_network: str | None,
     ) -> _RunOutcome:
-        # Bounded on the host as the Docker backend's run is; the sandbox is released on the way out.
-        return await asyncio.wait_for(
-            self._run_in_broker(command, src_dir, timeout, network_enabled, staged_inputs), timeout + 30,
-        )
-
-    async def _run_in_broker(
-        self,
-        command: list[str],
-        src_dir: str,
-        timeout: float,
-        network_enabled: bool,
-        staged_inputs: dict[str, _StagedFile],
-    ) -> _RunOutcome:
         has_py_deps, has_node_deps = self._has_deps()
         mounts = ["/src", "/output"]
         if has_py_deps:
             mounts.append("/deps")
         if has_node_deps:
             mounts.append("/node_modules")
+        # Acquired before the clock starts: a wait for a free sandbox is not the code's run time.
         broker, handle = await self._acquire(mounts, network=network_enabled)
         try:
-            if staged_inputs:
-                await handle.put_tar("/src", iter_bytes(_tar_files(self._staged_bytes(staged_inputs))))
-            await handle.put_tar("/src", iter_bytes(_tar_directory(src_dir)))
-            if os.path.isdir(self._output_dir) and os.listdir(self._output_dir):
-                await handle.put_tar("/output", iter_bytes(_tar_directory(self._output_dir)))
-            if has_py_deps:
-                await handle.put_tar("/deps", iter_bytes(_tar_directory(self._deps_python_dir)))
-            if has_node_deps:
-                await handle.put_tar("/node_modules", iter_bytes(_tar_directory(self._deps_node_dir)))
-            env = {**self._run_env(has_py_deps=has_py_deps, has_node_deps=has_node_deps), "HOME": _HOME}
-            try:
-                exit_code, stdout, stderr = await run_command(handle, command, env, timeout)
-            except SandboxError:
-                # Under gVisor the memory limit ends the whole sandbox, which reads as the sandbox gone.
-                if await memory_exhausted(handle):
-                    raise CodeOutOfMemory(self._memory_limit_mb) from None
-                raise
-            # Under runc the kernel killed the code's process; the sandbox stands, so its files are kept below.
-            out_of_memory = memory_limit_end(
-                exit_code,
-                oom_killed=exit_code == OUT_OF_MEMORY_EXIT and await memory_exhausted(handle),
-                memory_mb=self._memory_limit_mb, stdout=stdout, stderr=stderr,
+            # Bounded on the host as the Docker backend's run is.
+            return await asyncio.wait_for(
+                self._run_in_broker(handle, command, src_dir, timeout, staged_inputs, has_py_deps, has_node_deps),
+                timeout + 30,
             )
-            os.makedirs(self._output_dir, exist_ok=True)
-            # One budget for both directories, as the Docker backend collects a run's files.
-            budget = ExtractBudget.for_output()
-            await extract_dir(handle, "/output", self._output_dir, budget)
-            await extract_dir(handle, "/src", src_dir, budget)
-            logger.info(
-                "BrokerCodingSandbox.run: sandbox=%s broker_sandbox=%s exit_code=%d stdout_len=%d stderr_len=%d",
-                self.sandbox_id, handle.id, exit_code, len(stdout), len(stderr),
-            )
-            if out_of_memory is not None:
-                raise out_of_memory
-            return _RunOutcome(exit_code, stdout, stderr, collection_note=budget.note())
         finally:
             await release_quietly(broker, handle)
+
+    async def _run_in_broker(
+        self,
+        handle: SandboxHandle,
+        command: list[str],
+        src_dir: str,
+        timeout: float,
+        staged_inputs: dict[str, _StagedFile],
+        has_py_deps: bool,
+        has_node_deps: bool,
+    ) -> _RunOutcome:
+        if staged_inputs:
+            await handle.put_tar("/src", iter_bytes(_tar_files(self._staged_bytes(staged_inputs))))
+        await handle.put_tar("/src", iter_bytes(_tar_directory(src_dir)))
+        if os.path.isdir(self._output_dir) and os.listdir(self._output_dir):
+            await handle.put_tar("/output", iter_bytes(_tar_directory(self._output_dir)))
+        if has_py_deps:
+            await handle.put_tar("/deps", iter_bytes(_tar_directory(self._deps_python_dir)))
+        if has_node_deps:
+            await handle.put_tar("/node_modules", iter_bytes(_tar_directory(self._deps_node_dir)))
+        env = {**self._run_env(has_py_deps=has_py_deps, has_node_deps=has_node_deps), "HOME": _HOME}
+        try:
+            exit_code, stdout, stderr = await run_command(handle, command, env, timeout)
+        except SandboxError:
+            # Under gVisor the memory limit ends the whole sandbox, which reads as the sandbox gone.
+            if await memory_exhausted(handle):
+                raise CodeOutOfMemory(self._memory_limit_mb) from None
+            raise
+        # Under runc the kernel killed the code's process; the sandbox stands, so its files are kept below.
+        out_of_memory = memory_limit_end(
+            exit_code,
+            oom_killed=exit_code == OUT_OF_MEMORY_EXIT and await memory_exhausted(handle),
+            memory_mb=self._memory_limit_mb, stdout=stdout, stderr=stderr,
+        )
+        os.makedirs(self._output_dir, exist_ok=True)
+        # One budget for both directories, as the Docker backend collects a run's files.
+        budget = ExtractBudget.for_output()
+        await extract_dir(handle, "/output", self._output_dir, budget)
+        await extract_dir(handle, "/src", src_dir, budget)
+        logger.info(
+            "BrokerCodingSandbox.run: sandbox=%s broker_sandbox=%s exit_code=%d stdout_len=%d stderr_len=%d",
+            self.sandbox_id, handle.id, exit_code, len(stdout), len(stderr),
+        )
+        if out_of_memory is not None:
+            raise out_of_memory
+        return _RunOutcome(exit_code, stdout, stderr, collection_note=budget.note())
 
     async def _install_in_sandbox(
         self, to_install: list[str], language: CodingLanguage, network_name: str | None,

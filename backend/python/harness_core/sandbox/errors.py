@@ -98,6 +98,13 @@ class BrokerUnavailable(SandboxError):
     code: ClassVar[str] = "unavailable"
 
 
+class SandboxCapacityReached(BrokerUnavailable):
+    """The install's sandbox ceiling is full: the one ``BrokerUnavailable`` a caller waits out for a released sandbox.
+    On the wire it is ``unavailable`` with reason ``capacity``, so a client that predates it still reads an outage."""
+
+    reason_code: ClassVar[str] = "capacity"
+
+
 class BrokerUnauthorized(SandboxError):
     code: ClassVar[str] = "unauthorized"
 
@@ -132,6 +139,7 @@ __all__ = [
     "LeaseFenced",
     "PolicyUnenforceable",
     "SandboxConnectError",
+    "SandboxCapacityReached",
     "SandboxError",
     "SandboxNotFound",
     "SandboxOutOfMemory",

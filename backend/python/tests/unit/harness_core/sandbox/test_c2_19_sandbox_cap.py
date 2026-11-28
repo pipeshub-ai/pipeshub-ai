@@ -103,3 +103,16 @@ async def test_c2_19_a_failed_create_gives_its_place_back() -> None:
 def test_c2_19_a_ceiling_is_positive(limit: int) -> None:
     with pytest.raises(ValueError, match="positive"):
         _ = SandboxCap(limit, _Live(0))
+
+
+async def test_cap02_a_ceiling_sized_later_is_read_at_each_admission() -> None:
+    """A ceiling sized from the daemon starts at its minimum and rises once the daemon has been read."""
+    ceiling = [2]
+    cap = SandboxCap(lambda: ceiling[0], _Live(2))
+    with pytest.raises(BrokerUnavailable, match="2 of 2"):
+        async with cap.admit():
+            pytest.fail("admitted past the minimum")
+    ceiling[0] = 8
+    async with cap.admit():
+        pass
+    assert cap.limit == 8

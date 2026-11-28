@@ -2346,7 +2346,7 @@
     {
       "name": "SANDBOX_MAX_TOTAL",
       "kind": "env",
-      "reason": "tuning: governor cap"
+      "reason": "tuning: the sandbox ceiling on the daemon that runs them, one meaning for the governor and the broker (ADR-CAP-02)"
     },
     {
       "name": "SANDBOX_SLOT_WAIT_S",

@@ -855,8 +855,11 @@ sandbox:
   # so many pods on a small daemon together can admit more runs than it fits.
   # Set maxTotal to cap each pod exactly.
   capacity:
-    # Replaces the computed cap per pod (up to 1024). Empty or 0: sized
-    # automatically (and split between pods sharing config.dockerHost).
+    # Replaces the computed cap (up to 1024). Empty or 0: sized automatically
+    # from the daemon that runs the sandboxes. With config.sandboxMode=docker
+    # it is per pod, and an empty one is split between pods sharing
+    # config.dockerHost. With the sandbox broker it is the broker's ceiling on
+    # every sandbox of its daemon, and the app pods split it (ADR-CAP-02).
     maxTotal: ""
     # The most sandboxes one org may hold at once in a pod (empty: no cap).
     maxPerOrg: ""
@@ -865,7 +868,8 @@ sandbox:
     maxPerRequest: ""
     minTotal: ""
     # Share of the dind sidecar's memory limit sandboxes may claim. Only used
-    # with the dind sidecar, which runs nothing else.
+    # with the dind sidecar (the app pod's, or the sandbox broker's), which
+    # runs nothing else.
     memoryShare: "0.9"
     # Share of the CPUs sandboxes may claim (default 0.75).
     cpuFactor: ""

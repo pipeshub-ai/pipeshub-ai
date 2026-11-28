@@ -185,9 +185,19 @@ spec:
             - name: SANDBOX_CAPACITY_DIVISOR
               value: {{ . | quote }}
             {{- end }}
+            {{- $brokerPath := hasPrefix "broker" (include "pipeshub-ai.sandboxPath" .) }}
+            {{- if $brokerPath }}
+            # The broker enforces sandbox.capacity.maxTotal (or its daemon's size) on every sandbox and reports it;
+            # this pod sizes its share from that (ADR-CAP-02), with the broker's memory share.
+            {{- if and .Values.sandbox.dind.enabled (not .Values.config.dockerHost) }}
+            - name: SANDBOX_MEMORY_SHARE
+              value: {{ .Values.sandbox.capacity.memoryShare | default "0.9" | quote }}
+            {{- end }}
+            {{- else }}
             {{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
             - name: SANDBOX_MAX_TOTAL
               value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             {{- range $name, $key := dict "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MAX_PER_REQUEST" "maxPerRequest" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" "SANDBOX_MEMORY_OVERCOMMIT" "memoryOvercommit" }}
             {{- /* Not `with`: a numeric 0 is a setting, not an empty value. */}}

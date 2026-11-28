@@ -144,17 +144,25 @@ and 240 s, about 8 minutes in all); `sandbox.capacity_reached` (`sandbox_capacit
    exhausted" means it ran out of sandbox networks.
 2. How many sandboxes exist: `docker ps --filter label=io.pipeshub.sandbox-broker.managed=1`; and their
    networks: `docker network ls --filter label=io.pipeshub.sandbox-broker.managed=1`.
-3. The host's memory and CPU against the limits in [sizing.md](sizing.md#how-the-code-shares-a-host-out): the
-   broker holds at most `floor(memory × 0.75 ÷ 1,024 MiB)` sandboxes and never more than `SANDBOX_MAX_TOTAL`.
+3. The host's memory and CPU against the limits in [sizing.md](sizing.md#how-the-code-shares-a-host-out). The
+   broker admits by count only: a new sandbox is refused once the live ones reach its ceiling, which its log's
+   `sandbox capacity:` line shows. That ceiling is `SANDBOX_MAX_TOTAL` when set; when it is empty, the broker sizes
+   it from the daemon as the smallest of its memory term, `floor(memory × SANDBOX_MEMORY_SHARE ÷ one run's memory
+   limit)` (the share is 0.25 by default, 0.05 to 0.95 allowed), and its CPU and process terms, but never below 2
+   (the default `SANDBOX_MIN_TOTAL`; a larger minimum is held to what the machine supports), so on a small host
+   those 2 can exceed what memory allows. An explicit
+   `SANDBOX_MAX_TOTAL` is not checked against memory at all, so size it for the engine sandboxes' memory as well as
+   the code runs'.
 4. Warm pool: the dashboard's "Pool depth (warm pool)" and "Warm sandbox claims" panels
    (`pipeshub_harness_sandbox_warm_pool_depth`, `pipeshub_harness_sandbox_warm_claims_total{outcome}`; outcome
    `org_capped` means one org used its share while another waited).
 
 **Act.**
 
-- At `SANDBOX_MAX_TOTAL` with memory and CPU to spare: raise it and recreate the broker
-  (`docker compose --profile sandbox up -d sandbox-broker`). At the memory limit: add memory or a host; do not
-  raise the limit past what the host holds.
+- At the ceiling with memory and CPU to spare: raise `SANDBOX_MAX_TOTAL` and recreate the broker
+  (`docker compose --profile sandbox up -d sandbox-broker`). The app re-reads the broker every minute, so its code
+  runs follow the new ceiling within a minute without a restart (its `sandbox capacity:` log line shows the new
+  plan). At the memory limit: add memory or a host; do not raise the limit past what the host holds.
 - Sandboxes left over from a crash: restarting the broker reconciles what it owns, removing orphan sandboxes and
   networks (`broker.reconciled`, with `orphanNetworks`):
   `docker compose --profile sandbox restart sandbox-broker`.

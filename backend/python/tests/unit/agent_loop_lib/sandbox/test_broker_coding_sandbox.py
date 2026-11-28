@@ -9,11 +9,16 @@ import pytest
 
 from app.agent_loop_lib.sandbox.coding.base import (
     CodeRequest,
+    CodingSandboxBusy,
     CodingSandboxError,
     SandboxContext,
 )
 from app.agent_loop_lib.sandbox.coding.broker import BrokerCodingSandbox
-from harness_core.sandbox.errors import IsolationUnavailable
+from harness_core.sandbox.errors import (
+    BrokerUnavailable,
+    IsolationUnavailable,
+    SandboxCapacityReached,
+)
 from harness_core.sandbox.types import EgressDefault, SandboxSpec
 from harness_core.testing.clock import ManualClock
 from harness_core.testing.sandbox import FAKE_PROGRAMS, FakeSandboxBroker
@@ -156,6 +161,80 @@ async def test_a_broker_refusal_is_an_infrastructure_error(tmp_path: Path) -> No
     broker.acquire = refuse  # type: ignore[method-assign]
     with pytest.raises(CodingSandboxError):
         await _sandbox(broker, tmp_path).execute(CodeRequest(code="x", language="python"))
+
+
+async def test_a_full_broker_is_waited_out_inside_the_slot_wait(tmp_path: Path) -> None:
+    import time
+
+    from app.agent_loop_lib.sandbox.capacity_wait import CapacityWait, capacity_wait
+
+    broker = RecordingBroker()
+
+    async def ok(_context: FakeProcessContext) -> int:
+        return 0
+
+    broker.programs["sh"] = ok
+    real_acquire = broker.acquire
+    refusals = [SandboxCapacityReached("sandbox capacity reached: 4 of 4 live")]
+
+    async def acquire(spec: SandboxSpec, **kwargs: object) -> FakeSandboxHandle:
+        if refusals:
+            raise refusals.pop()
+        return await real_acquire(spec, **kwargs)
+
+    broker.acquire = acquire  # type: ignore[method-assign]
+    notes: list[bool] = []
+
+    async def note(waiting: bool) -> None:
+        notes.append(waiting)
+
+    with capacity_wait(CapacityWait(deadline=time.monotonic() + 10, note=note)):
+        result = await _sandbox(broker, tmp_path).execute(CodeRequest(code="print(1)", language="python"))
+    assert result.exit_code == 0
+    assert notes == [True, False]
+    assert broker.sandboxes == {}
+
+
+async def test_a_broker_full_past_the_wait_is_busy_not_a_failure(tmp_path: Path) -> None:
+    import time
+
+    from app.agent_loop_lib.sandbox.capacity_wait import CapacityWait, capacity_wait
+
+    broker = RecordingBroker()
+
+    async def full(*_: object, **__: object) -> None:
+        raise SandboxCapacityReached("sandbox capacity reached: 4 of 4 live")
+
+    async def note(_waiting: bool) -> None:
+        return None
+
+    broker.acquire = full  # type: ignore[method-assign]
+    with capacity_wait(CapacityWait(deadline=time.monotonic() + 0.2, note=note)), pytest.raises(CodingSandboxBusy):
+        await _sandbox(broker, tmp_path).execute(CodeRequest(code="x", language="python"))
+
+
+async def test_an_outage_is_not_waited_for_as_if_the_broker_were_full(tmp_path: Path) -> None:
+    from app.agent_loop_lib.sandbox.capacity_wait import CapacityWait, capacity_wait
+
+    broker = RecordingBroker()
+    calls: list[int] = []
+
+    async def broken(*_: object, **__: object) -> None:
+        calls.append(1)
+        raise BrokerUnavailable("could not create sandbox: APIError")
+
+    notes: list[bool] = []
+
+    async def note(waiting: bool) -> None:
+        notes.append(waiting)
+
+    broker.acquire = broken  # type: ignore[method-assign]
+    # No deadline at all (a negative SANDBOX_SLOT_WAIT_S): an outage must still come back at once, as the outage.
+    with capacity_wait(CapacityWait(deadline=None, note=note)), pytest.raises(CodingSandboxError) as raised:
+        await _sandbox(broker, tmp_path).execute(CodeRequest(code="x", language="python"))
+    assert not isinstance(raised.value, CodingSandboxBusy)
+    assert "could not create sandbox" in str(raised.value)
+    assert (calls, notes) == ([1], [])
 
 
 async def test_sandbox_mode_broker_builds_the_broker_backend(monkeypatch: pytest.MonkeyPatch) -> None:
