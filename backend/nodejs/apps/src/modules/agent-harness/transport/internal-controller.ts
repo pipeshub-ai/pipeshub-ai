@@ -10,11 +10,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ERROR_CODES } from '../contracts/generated/ext/pipeshub/errors';
-import {
-  STORE_UNAVAILABLE_MESSAGE,
-  storeTransient,
-} from '../../../libs/repositories/agent-harness/journal-startup/mongo';
-import { dependencyHealth } from '../ops/dependency-health';
+import { transportError as publicTransportError } from './errors';
 import { ExecutionService } from '../application/execution-service';
 import { HarnessAuthority } from '../application/harness-authority';
 import { AttemptClaims } from '../domain/authority';
@@ -127,11 +123,9 @@ export function transportError(error: unknown): unknown {
       HTTP_STATUS.CONFLICT,
     );
   }
-  if (storeTransient(error)) {
-    dependencyHealth.report('mongo');
-    return new ServiceUnavailableError(STORE_UNAVAILABLE_MESSAGE);
-  }
-  return error;
+  // A refusal the worker routes share with the public ones (a child's model access, groups, engine profile),
+  // and a transient store error.
+  return publicTransportError(error);
 }
 
 export class AgentHarnessInternalController {

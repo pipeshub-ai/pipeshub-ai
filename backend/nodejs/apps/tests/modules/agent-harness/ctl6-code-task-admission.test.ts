@@ -17,6 +17,7 @@ import { childEngineAuthority, ChildRunService } from '../../../src/modules/agen
 import { runSpecSchema } from '../../../src/modules/agent-harness/contracts/generated/core/run-spec';
 import { capabilitySnapshot, LEAST_CAPABILITIES } from '../../../src/modules/agent-harness/domain/capabilities';
 import { HarnessRun } from '../../../src/modules/agent-harness/domain/execution';
+import { HarnessModelAccessRefusedError } from '../../../src/modules/agent-harness/domain/errors';
 import { profileExecutor, resolveRunSpec, runSpecResolver } from '../../../src/modules/agent-harness/domain/run-spec';
 import { EngineProfileCeilings } from '../../../src/modules/agent-harness/ports/engine-profiles';
 import { agentDefinition, grantingAccess } from './support/agent-definition';
@@ -224,6 +225,42 @@ describe('CTL-6: a coder agent turn runs on the loop with code_task', () => {
     if (spec.executor?.kind !== 'engine') return expect.fail('expected an engine child');
     expect(spec.executor.engine.kind).to.equal('opencode');
     expect(spec.executor.engine.profile?.limits.maxSteps).to.equal(25);
+  });
+
+  it("API1-P8 F1: a coder agent that does not grant the asked model refuses the code_task child as model access, not forbidden", async () => {
+    const run = await admit();
+    const claimed = await service.claim({
+      orgId: run.orgId,
+      runId: run.runId,
+      workerId: 'w',
+      attemptId: 'a-1',
+      leaseDurationMs: 60_000,
+    });
+    const other = { modelKey: 'model-2', modelName: 'gpt-y', provider: 'openAI', isReasoning: false };
+    const refused = await new ChildRunService({
+      runs: store,
+      children: store,
+      journals: new JournalService(new InMemoryPayloadStore(), testCipher()),
+      workspaces: null,
+      engineAuthority: childEngineAuthority(settings),
+      logger,
+      // The real decision, for an agent that lists only another model (grantedModel refuses it).
+      engineAccess: (subject) =>
+        testModelAccess().decide({ ...subject, definition: { ...subject.definition!, models: [other] } }),
+    })
+      .spawn(
+        { orgId: 'org-1', runId: run.runId, workerId: 'w', attemptId: 'a-1', fence: claimed.run.fence },
+        { invocationId: 't1.0', goal: 'write the travel policy file', grants: {}, executor: { kind: 'engine' } },
+      )
+      .then(
+        () => expect.fail('expected a refusal'),
+        (error: unknown) => error,
+      );
+    expect(refused).to.be.instanceOf(HarnessModelAccessRefusedError);
+    expect(refused).to.include({ code: 'route_unavailable', message: 'The agent does not grant this model' });
+    const line = lines.find(([event]) => event === 'child.refused');
+    expect(line?.[1]).to.deep.include({ reason: 'route_unavailable', dimension: 'access' });
+    expect(await store.openChildren('org-1', run.runId), 'nothing written').to.deep.equal([]);
   });
 
   const spawnEngineChild = async (run: HarnessRun, executor: boolean) => {

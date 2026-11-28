@@ -87942,15 +87942,35 @@ paths:
                 properties:
                   childRunId: { type: string, maxLength: 128 }
                   created: { type: boolean }
-        '400': { description: Invalid body }
+        '400':
+          description: |
+            Invalid body, or the child's access refused as written, nothing written:
+            `AGENT_HARNESS_ENGINE_PROFILE_WIDENING` (the child's engine profile is wider
+            than its parent's; `dimension` and `layer` name where),
+            `AGENT_HARNESS_ENGINE_PROFILE_INVALID`, `AGENT_HARNESS_ACCESS_POLICY_INVALID`.
         '401': { description: "Missing, invalid, expired or superseded attempt token, or one for another run or attempt" }
+        '403':
+          description: |
+            The child's model is not allowed for the run's actor, nothing written:
+            `AGENT_HARNESS_MODEL_GROUP_REQUIRED` (none of the actor's groups may use it), or a
+            model access or model account refusal (`AGENT_HARNESS_VENDOR_PROHIBITED`,
+            `AGENT_HARNESS_ORG_POLICY_REFUSED`, `AGENT_HARNESS_ACCOUNT_MISSING`,
+            `AGENT_HARNESS_ROUTE_UNAVAILABLE` when a coder agent does not grant the model, ...). The
+            worker reports it to the model as a refused call; the run goes on.
         '404': { description: Run not found in the token tenant }
         '409':
           description: |
             Refused, nothing written. `AGENT_HARNESS_STALE_ATTEMPT` (the attempt
             no longer owns the run), `AGENT_HARNESS_CHILDREN_NOT_GRANTED`,
             `AGENT_HARNESS_CHILD_LIMIT_REACHED`, `AGENT_HARNESS_CHILD_GRANT_TOO_LARGE`,
-            `AGENT_HARNESS_CHILD_DEPTH_EXCEEDED`, `AGENT_HARNESS_IDEMPOTENCY_CONFLICT`.
+            `AGENT_HARNESS_CHILD_DEPTH_EXCEEDED`, `AGENT_HARNESS_CHILD_BUDGET_EXCEEDS_REMAINING`,
+            `AGENT_HARNESS_CHILD_OPERATOR_STOPPED`, `AGENT_HARNESS_ENGINE_OFF`,
+            `AGENT_HARNESS_ENGINE_SIGNIN_UNAVAILABLE`, `AGENT_HARNESS_IDEMPOTENCY_CONFLICT`.
+        '503':
+          description: |
+            Nothing written. `AGENT_HARNESS_VENDOR_RULES_INVALID` (the vendor rules do not
+            verify) or `AGENT_HARNESS_ACCESS_POLICY_UNAVAILABLE`, or a dependency Node could
+            not read just now (the configured models, the actor's groups, the store).
 
   /agent-harness/internal/runs/{runId}/commit:
     post:
