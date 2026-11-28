@@ -167,7 +167,8 @@ def test_a_role_whose_name_extends_the_administrators_is_still_in_the_surface(ma
     with psycopg.connect(host="127.0.0.1", port=cluster.port, user=ADMIN, dbname=name, autocommit=True) as c:
         c.execute('CREATE ROLE "platform_admin extra" LOGIN')
     found = _violations(cluster, name)
-    assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith("role platform_admin extra login=")], found
+    # the line is compared, under whatever token its first word gets: what matters is that it is not dropped
+    assert [v for v in found if v[0] == "50 surface: unexpected" and v[1].startswith("role ") and " extra login=" in v[1]], found
 
 
 @pytest.mark.parametrize("attrs", ["LOGIN", "NOLOGIN CREATEDB"])
@@ -180,4 +181,4 @@ def test_a_held_role_that_can_log_in_or_holds_an_attribute_is_still_in_the_surfa
         su.execute(f"CREATE ROLE probe_actor {attrs}; GRANT probe_actor TO {ADMIN} WITH INHERIT TRUE")
     found = {v[1] for v in _violations(cluster, name) if v[0] == "50 surface: unexpected"}
     assert any(x.startswith("role probe_actor login=") for x in found), found
-    assert any(x.startswith(f"member {ADMIN} -> probe_actor ") for x in found), found
+    assert any(x.startswith(f"member {surface.BOOTSTRAP_SUPERUSER} -> probe_actor ") for x in found), found

@@ -912,5 +912,11 @@ def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
 
 def test_normalise_leaves_field_labels_that_match_a_name():
     from db import surface
-    assert surface.normalise(["database owner=owner", "role owner login=true", "member owner -> x admin=true"], "postgres", "owner") == {
-        "database owner=<bootstrap-superuser>", "role <bootstrap-superuser> login=true", "member <bootstrap-superuser> -> x admin=true"}
+    lines = ["database owner=owner", "role owner login=true", "member owner -> x admin=true", "column kernel.settings.owner type=name",
+             "policy t p cmd=r permissive=true roles=owner,pipeshub_app using=(owner = CURRENT_USER) check=-",
+             "column t.c type=text notnull=false identity= generated= default=owner"]
+    assert surface.normalise(lines, "postgres", "owner") == {
+        "database owner=<bootstrap-superuser>", "role <bootstrap-superuser> login=true", "member <bootstrap-superuser> -> x admin=true",
+        "column kernel.settings.owner type=name",
+        "policy t p cmd=r permissive=true roles=<bootstrap-superuser>,pipeshub_app using=(owner = CURRENT_USER) check=-",
+        "column t.c type=text notnull=false identity= generated= default=owner"}

@@ -267,13 +267,25 @@ _PLATFORM_ROLES = f"""SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON
       AND {_PLATFORM_ROLE}"""
 
 
+# Role names are values: a whole token after the start, a space, '=' or ',', and before a space, ',' or the end, never followed by
+# '=' (a field label such as owner= or admin=) or preceded by '.' (a column, table.owner). Expression fields (a policy's using= and
+# check=, a column's default=) come last in their lines and hold SQL, not role values, so the replacement stops before them.
+_EXPRESSION = re.compile(r" (?:using|check|default)=")
+
+
 def normalise(lines: Iterable[str], superuser: str, *also: str) -> set[str]:
-    """Replace the bootstrap superuser's name (whatever the deployment calls it), and each name in ``also``, by a fixed token, in
-    one pass: a token written for one name is never read again for another (an administrator called ``bootstrap``)."""
+    """Replace the bootstrap superuser's name (whatever the deployment calls it), and each name in ``also``, by a fixed token where
+    it is a role value, in one pass: a token written for one name is never read again for another (an administrator called
+    ``bootstrap``), and a field label or a column that happens to share the name is left alone (an administrator called ``owner``)."""
     names = sorted({superuser, *also}, key=len, reverse=True)
-    # (?!=): a name followed by '=' is a field label (owner=, admin=), never a role value
-    token = re.compile(r'(?<![\w"])(?:' + "|".join(re.escape(n) for n in names) + r')(?![\w"=])')
-    return {token.sub(BOOTSTRAP_SUPERUSER, x) for x in lines}
+    token = re.compile(r'(?:^|(?<=[ =,]))(?:' + "|".join(re.escape(n) for n in names) + r')(?=[ ,]|$)')
+
+    def one(line: str) -> str:
+        m = _EXPRESSION.search(line)
+        head, tail = (line[:m.start()], line[m.start():]) if m else (line, "")
+        return token.sub(BOOTSTRAP_SUPERUSER, head) + tail
+
+    return {one(x) for x in lines}
 
 
 def bootstrap_admin(conn: psycopg.Connection) -> tuple[str, str] | None:
