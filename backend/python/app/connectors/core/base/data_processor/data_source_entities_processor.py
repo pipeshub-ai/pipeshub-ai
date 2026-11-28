@@ -3698,13 +3698,17 @@ class DataSourceEntitiesProcessor:
         records_with_permissions: list[tuple[Record, list[Permission]]],
         *,
         replace_permissions: bool = False,
-    ) -> None:
+    ) -> list[Record]:
+        """Returns the records it saved: written, or found already up to date. A record it
+        quarantined (schema rejection) or skipped (in the trash, owned elsewhere, not content)
+        is left out, so a caller that removes what a record replaces keeps it for those."""
         # Records this attempt committed or quarantined: the rest count failed if it fails for good.
         settled = 0
+        saved: list[Record] = []
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
-                return
+                return saved
 
             narrowed_connectors: set[str] = set()
             for start in range(0, len(records_with_permissions), _RECORDS_PER_TRANSACTION):
@@ -3730,12 +3734,15 @@ class DataSourceEntitiesProcessor:
                         # before the next record is written, so an error on a later record (a
                         # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
                         *written_slice, published = one
+                        saved.extend(written_slice[0])
                         await self._after_slice_committed(*written_slice, published=published)
                 # Before the next slice starts: a re-run finds this slice's records
                 # unchanged and would redo none of it. A slice that rolled back
                 # does not get here.
                 for *written_slice, published in written:
+                    saved.extend(written_slice[0])
                     await self._after_slice_committed(*written_slice, published=published)
+            return saved
         except Exception as e:
             if not will_retry(self, e):
                 # A retry re-runs the whole call, so after a partial commit this also counts
