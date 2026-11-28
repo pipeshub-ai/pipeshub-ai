@@ -449,7 +449,7 @@ jobs:
     needs: [oracle, graph, kh-browse-cost, nightly]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 245
     permissions:
       actions: read
       contents: read
@@ -465,3 +465,4 @@ jobs:
           heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db'))) }}
           needs: ${{ toJSON(needs) }}
           job: permission-conformance-result
+          wait-minutes: 240

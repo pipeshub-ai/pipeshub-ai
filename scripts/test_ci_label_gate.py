@@ -150,7 +150,21 @@ def result_problems(name: str, stem: str, jobs: dict[str, Any], allowed: list[st
         problems.append(f"{name}:{rid}: its heavy input must be the workflow's heavy flag")
     if inputs.get("needs") != "${{ toJSON(needs) }}" or inputs.get("job") != rid:
         problems.append(f"{name}:{rid}: must pass toJSON(needs) and its own name")
+    # It waits at most as long as the longest heavy job can run, then fails and asks for a re-run.
+    wait = max((job_timeout(j) for j_id, j in jobs.items() if j_id != rid and _is_gated(j)), default=360)
+    if inputs.get("wait-minutes") != wait or job.get("timeout-minutes") != wait + 5:
+        problems.append(f"{name}:{rid}: wait-minutes must be the longest heavy-job timeout ({wait}), timeout-minutes {wait + 5}")
     return problems
+
+
+def job_timeout(job: Any) -> int:
+    """A job's timeout in minutes: the largest number in its timeout-minutes, else GitHub's default 360."""
+    nums = [int(n) for n in re.findall(r"\b\d+\b", str(job.get("timeout-minutes", "")))]
+    return max(nums) if nums else 360
+
+
+def _is_gated(job: Any) -> bool:
+    return isinstance(job, dict) and bool(_ALLOWED.search(" ".join(str(job.get("if", "")).split())))
 
 
 def _has_top_level_or(cond: str) -> bool:
@@ -263,7 +277,9 @@ class CiLabelGateTest(unittest.TestCase):
     def _workflow(
         self, jobs: dict[str, list[str] | None], acted_on: list[str] | None = None,
         types: str = "[labeled, unlabeled]", name: str = "x", group: bool = True, result: bool = True,
+        timeout: int | None = None,
     ) -> str:
+        wait = timeout or 360
         text = (
             f"name: {name}\non:\n  pull_request:\n    types: {types}\n  schedule:\n    - cron: '0 1 * * *'\n  workflow_dispatch:\n"
         )
@@ -276,15 +292,18 @@ class CiLabelGateTest(unittest.TestCase):
         text += "jobs:\n"
         for job_id, allowed in jobs.items():
             text += f"  {job_id}:\n    runs-on: ubuntu-latest\n"
+            if timeout:
+                text += f"    timeout-minutes: {timeout}\n"
             if allowed:
                 t = gate_terms(allowed, _merge(allowed, acted_on or []))
                 text += f"    if: {_PR_CHECK} || {t[0]} || {t[1]}\n"
         if result:
             text += (
                 f"  x-result:\n    name: x-result\n    needs: [{', '.join(jobs)}]\n    if: always()\n    runs-on: ubuntu-latest\n"
+                f"    timeout-minutes: {wait + 5}\n"
                 "    steps:\n      - uses: ./.github/actions/heavy-result\n        with:\n"
                 f"          heavy: ${{{{ {_PR_CHECK} || {heavy_flag(allowed_all, acted_all)} }}}}\n"
-                "          needs: ${{ toJSON(needs) }}\n          job: x-result\n"
+                f"          needs: ${{{{ toJSON(needs) }}}}\n          job: x-result\n          wait-minutes: {wait}\n"
             )
         return text
 
@@ -384,6 +403,15 @@ class CiLabelGateTest(unittest.TestCase):
             bad = good.replace(old, new)
             self.assertNotEqual(bad, good, want)
             self.assertTrue(any(want in p for p in gate_problems("x.yml", bad)), want)
+
+    def test_the_result_job_waits_no_longer_than_a_heavy_job_runs(self) -> None:
+        good = self._workflow({"a": ["ci:full", "ci:db"]}, timeout=45)
+        self.assertIn("          wait-minutes: 45\n", good)
+        self.assertEqual(gate_problems("x.yml", good), [])
+        for old, new in (("wait-minutes: 45", "wait-minutes: 110"), ("    timeout-minutes: 50\n", "    timeout-minutes: 120\n")):
+            bad = good.replace(old, new)
+            self.assertNotEqual(bad, good, new)
+            self.assertTrue(any("wait-minutes must be" in p for p in gate_problems("x.yml", bad)), new)
 
     def test_a_label_the_jobs_read_must_be_in_the_gate(self) -> None:
         text = self._workflow({"a": ["ci:full", "ci:db"]}) + (

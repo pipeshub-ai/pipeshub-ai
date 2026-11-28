@@ -73,7 +73,7 @@ jobs:
     needs: [graph-explorer]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: read
@@ -89,3 +89,4 @@ jobs:
           heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full'))) }}
           needs: ${{ toJSON(needs) }}
           job: graph-explorer-tests-result
+          wait-minutes: 20

@@ -289,7 +289,7 @@ jobs:
     needs: [e2e, es-matrix]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 365
     permissions:
       actions: read
       contents: read
@@ -305,3 +305,4 @@ jobs:
           heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness'))) }}
           needs: ${{ toJSON(needs) }}
           job: harness-e2e-result
+          wait-minutes: 360

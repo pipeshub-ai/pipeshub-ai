@@ -93,7 +93,7 @@ jobs:
     needs: [crash-points]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 65
     permissions:
       actions: read
       contents: read
@@ -109,3 +109,4 @@ jobs:
           heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:harness","harness-fault"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness') || contains(github.event.pull_request.labels.*.name, 'harness-fault'))) }}
           needs: ${{ toJSON(needs) }}
           job: harness-fault-result
+          wait-minutes: 60

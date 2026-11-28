@@ -18,6 +18,9 @@ inputs:
   job:
     description: The calling job's name, as earlier runs report it
     required: true
+  wait-minutes:
+    description: How long to wait for an earlier run still going; the workflow's longest heavy-job timeout
+    required: true
 
 runs:
   using: composite
@@ -29,5 +32,6 @@ runs:
         HEAVY: ${{ inputs.heavy }}
         NEEDS: ${{ inputs.needs }}
         RESULT_JOB: ${{ inputs.job }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       run: python3 scripts/heavy_result.py

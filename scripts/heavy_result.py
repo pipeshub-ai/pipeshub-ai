@@ -11,7 +11,9 @@ instead of the heavy jobs:
   label may merge).
 
 Env: GH_TOKEN (actions: read), GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_API_URL, HEAVY, NEEDS
-(toJSON(needs)), RESULT_JOB (this job's name), HEAD_SHA. WAIT_SECONDS bounds the wait (default 110 min).
+(toJSON(needs)), RESULT_JOB (this job's name), HEAD_SHA, WAIT_MINUTES: how long to wait, polling every
+30 s, for an earlier run still going (the workflow's longest heavy-job timeout, as no run outlives it); past
+that it fails and asks for a re-run.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def decide(
         if verdict is not None:
             return verdict[0], f"run {prev['id']}: {verdict[1]}"
         if clock() >= deadline:
-            return (False, f"run {prev['id']} is still running; re-run this job when it finishes")
+            return (False, f"run {prev['id']} is still running after the wait; re-run this job once it finishes")
         sleep(30)
 
 
@@ -91,7 +93,7 @@ def main() -> int:
 
     ok, why = decide(
         os.environ["HEAVY"] == "true", json.loads(os.environ.get("NEEDS") or "{}"), run_id,
-        list_runs, result_of, float(os.environ.get("WAIT_SECONDS", 110 * 60)),
+        list_runs, result_of, float(os.environ.get("WAIT_MINUTES") or 360) * 60,
     )
     print(why if ok else f"::error::{why}")
     return 0 if ok else 1
