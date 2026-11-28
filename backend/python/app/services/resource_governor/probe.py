@@ -248,7 +248,16 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
         _read_text(stat_path) if stat_path else None, "file"
     )
 
-    working_set = None if current is None else max(0, current - file_cache)
+    # Anonymous memory the kernel has pushed out to swap is no longer in
+    # ``memory.current`` but is still this container's demand: a container
+    # that is swapping reads *lower* exactly when it is under the most
+    # pressure, and the governor never brakes. Count it as used.
+    swap_path = _resolve_cgroup_path("memory", "memory.swap.current")
+    swapped = _read_int(swap_path) if swap_path else None
+
+    working_set = (
+        None if current is None else max(0, current - file_cache) + (swapped or 0)
+    )
     return limit, working_set
 
 

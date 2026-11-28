@@ -98,6 +98,31 @@ class TestCgroupV2Memory:
         # pinned at its floor.
         assert (old_convention - working_set) / limit > 0.12
 
+    def test_swapped_out_memory_counts_toward_working_set(self, tmp_path: Path) -> None:
+        """``memory.current`` excludes pages already swapped out, so a container
+        that is thrashing swap would read as having plenty of headroom. The
+        swapped bytes are still live memory and must count."""
+        gib = 1024 ** 3
+        _write(tmp_path / "memory.max", str(4 * gib))
+        _write(tmp_path / "memory.current", str(2 * gib))
+        _write(tmp_path / "memory.swap.current", str(1 * gib))
+        _write(tmp_path / "memory.stat", f"file {int(0.5 * gib)}\n")
+
+        _, working_set, source = probe_mod._resolve_memory()
+
+        assert source == "cgroup_v2"
+        assert working_set == 2 * gib - int(0.5 * gib) + 1 * gib
+
+    def test_missing_swap_file_adds_nothing(self, tmp_path: Path) -> None:
+        gib = 1024 ** 3
+        _write(tmp_path / "memory.max", str(4 * gib))
+        _write(tmp_path / "memory.current", str(2 * gib))
+        _write(tmp_path / "memory.stat", f"file {int(0.5 * gib)}\n")
+
+        _, working_set, _ = probe_mod._resolve_memory()
+
+        assert working_set == 2 * gib - int(0.5 * gib)
+
     def test_max_sentinel_falls_through(self, tmp_path: Path) -> None:
         _write(tmp_path / "memory.max", "max")
         _write(tmp_path / "memory.current", "1073741824")
