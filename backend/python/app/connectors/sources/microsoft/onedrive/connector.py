@@ -78,6 +78,9 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FileContentValidationRule, ValidationRuleType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.microsoft.common.account_check import (
+    withdraw_unconfirmed_accounts,
+)
 from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.expired_group_delta import (
     GROUPS_READ_AGAIN,
@@ -87,6 +90,7 @@ from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
+    UserListing,
     map_msgraph_roles_to_permission_type,
 )
 from app.connectors.sources.microsoft.common.outlook_constants import (
@@ -2978,52 +2982,35 @@ class OneDriveConnector(BaseConnector):
         self.logger.error(f"Deleting the records of OneDrive {drive_id} failed; it is retried on the next run")
         return False
 
-    async def _withdraw_unlisted_app_users(self, users: list[AppUser]) -> None:
-        """Take the connector away from stored users (guest accounts included) that the
-        complete user read lists as disabled, and from those it does not list that Microsoft
-        then confirms are gone (a 404 on the user itself) or disabled; a stale listing
-        cannot withdraw anyone, nor can a failed or throttled read of the user. Only called
-        after a complete read; an empty list withdraws nobody (the directory always has
-        users), and so does a failed read of the stored users."""
-        enabled = {u.source_user_id for u in users if u.is_active is not False}
-        if not enabled:
-            return
-        listed = {u.source_user_id for u in users}
-        try:
-            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
-        except Exception as e:
-            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
-            return
-        gone = []
-        for u in stored:
-            if not u.source_user_id or u.source_user_id in enabled:
-                continue
-            if u.source_user_id not in listed:
-                try:
-                    if await self.msgraph_client.get_user_status(u.source_user_id) == "present":
-                        continue
-                except Exception as e:
-                    self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
-                    continue
-            gone.append(u)
-        if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+    async def _withdraw_unlisted_app_users(self, users: UserListing) -> None:
+        """Take the connector away from stored users (guest accounts included) that are disabled
+        or gone, by this listing or by a read of the account (``withdraw_unconfirmed_accounts``).
+        Enabling or restoring the account saves the user, and the access, again."""
+        await withdraw_unconfirmed_accounts(
+            self, self.user_sync_point, self.msgraph_client.get_user_status,
+            {u.source_user_id for u in users if u.source_user_id},
+            {u.source_user_id for u in users if u.source_user_id and u.is_active is False},
+            complete=getattr(users, "complete", True),
+        )
 
     async def _sync_users(self) -> List[AppUser]:
         """
         Syncs OneDrive users.
         """
         try:
-            users = await self.msgraph_client.get_all_users()
+            try:
+                users = await self.msgraph_client.get_all_users()
+            except Exception:
+                # A listing that answered nothing vouches for nobody: the stored accounts are read one by one.
+                await self._withdraw_unlisted_app_users(UserListing())
+                raise
             # A disabled account is not saved, so it has no connector access (enabling it
             # saves the user, and the access, again); its drive is still synced, because
             # what it shared with others stays visible to them.
             enabled = [u for u in users if u.is_active is not False]
             await self.data_entities_processor.on_new_app_users(enabled)
-            if getattr(users, "complete", True):
-                await self._withdraw_unlisted_app_users(users)
-            else:
-                self.logger.warning("User listing is incomplete; no user loses access this run")
+            await self._withdraw_unlisted_app_users(users)
+            if not getattr(users, "complete", True):
                 # The unlisted users' drives are not synced, so a full sync must not unlink them.
                 self._full_sync_incomplete = True
             self.logger.info(f"✅ Successfully synced {len(users)} users")

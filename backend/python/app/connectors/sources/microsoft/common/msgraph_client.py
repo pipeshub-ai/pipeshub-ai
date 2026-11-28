@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
 
@@ -152,12 +153,22 @@ class UserListing(list):
     complete: bool = True
 
 
+class EmptyGraphAnswer(Exception):
+    """Microsoft answered a read with no body. Counted like a refusal, never taken as an answer."""
+
+
 async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
     """Read one user by id: ``gone`` only when it answers 404 three times, 2 s and then 4 s
     apart, ``disabled`` when the account is found with ``accountEnabled`` false, ``present``
-    otherwise. Any other failure (throttling, a server error), on any attempt, raises, so the
-    caller keeps the user."""
-    query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled"])
+    otherwise. Any other failure (throttling, a server error, an answer with no body), on any attempt,
+    raises. The account check counts that as a refused read: the user keeps access until
+    ``UNCONFIRMED_SYNCS_BEFORE_CLOSE`` refusals are counted (``withdraw_unconfirmed_accounts``).
+
+    Get user: "If a user with the ID doesn't exist, this method returns a ``404 Not Found``"; ``accountEnabled``
+    "Requires ``$select`` to retrieve" (learn.microsoft.com/en-us/graph/api/user-get, .../resources/user). A deleted
+    user "moves to the deleted items container" (.../resources/directory); the docs do not say that Get user then
+    answers 404, so a user returned with ``deletedDateTime`` set counts as gone too."""
+    query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled", "deletedDateTime"])
     waits = iter((2, 4))
     while True:
         try:
@@ -174,7 +185,11 @@ async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
             # deployments show this happening.
             await asyncio.sleep(wait)
         else:
-            return "disabled" if user is not None and user.account_enabled is False else "present"
+            if user is None:
+                raise EmptyGraphAnswer(f"Get user {user_id} answered with no body")
+            if isinstance(user.deleted_date_time, datetime):
+                return "gone"
+            return "disabled" if user.account_enabled is False else "present"
 
 
 class MSGraphClient:
@@ -273,7 +288,8 @@ class MSGraphClient:
         Returns:
             The users with their details. ``complete`` is False when the list may be cut
             (a next page with no data, fewer users than the
-            directory counts, or no count at all); callers then must not withdraw anyone.
+            directory counts, or no count at all); such a list vouches only for the users it
+            holds, and every other stored account is read by id (``withdraw_unconfirmed_accounts``).
         """
         try:
             users = []

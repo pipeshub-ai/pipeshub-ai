@@ -83,6 +83,9 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.core.registry.types import FieldType
+from app.connectors.sources.microsoft.common.account_check import (
+    withdraw_unconfirmed_accounts,
+)
 from app.connectors.sources.microsoft.common.apps import OutlookApp
 from app.connectors.sources.microsoft.common.content_type_utils import (
     attachment_metadata_from_graph,
@@ -174,8 +177,8 @@ class AttachmentListingError(Exception):
 
 
 class OutlookUserListing(UserListing):
-    """The users of one read. The id sets are filled only when the read was complete, so a
-    withdrawal that uses them can never act on a cut list."""
+    """The users of one read, with the ids it listed and those it listed as disabled. A cut read
+    has them too: ``withdraw_unconfirmed_accounts`` reads every other stored account by id."""
 
     listed_ids: frozenset[str] | set[str] = frozenset()
     disabled_ids: frozenset[str] | set[str] = frozenset()
@@ -364,6 +367,12 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=self.data_store_provider
+        )
+        self.user_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=self.data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.USERS,
             data_store_provider=self.data_store_provider
         )
 
@@ -631,8 +640,13 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         try:
             self.logger.info("Syncing organization users...")
 
-            # Get all users from Microsoft Graph
-            all_enterprise_users = await self._get_all_users_external()
+            try:
+                all_enterprise_users = await self._get_all_users_external()
+            except Exception:
+                # A listing that answered nothing vouches for nobody: the stored accounts are read one by one.
+                if self.external_users_client:
+                    await self._withdraw_disabled_app_users(OutlookUserListing())
+                raise
 
             # Get active users from database
             all_active_users = await self.data_entities_processor.get_all_active_users()
@@ -684,48 +698,14 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             raise
 
     async def _withdraw_disabled_app_users(self, listing: OutlookUserListing) -> bool:
-        """Take the connector away from stored users (guest accounts included) whose account
-        is disabled, and from those the complete user read of this sync does not list that
-        Microsoft confirms are gone (a 404 on the user itself) or disabled. Enabling or
-        restoring the account saves the user, and the access, again. The id sets are those of
-        this sync's own read and are empty unless it was complete, so an incomplete or empty
-        read withdraws nobody (the directory always has users); neither does a stale listing,
-        a failed or throttled read of the user, or a failed read of the stored users.
-
-        Returns whether the listing can be trusted: every stored account it does not list was
-        confirmed gone. An incomplete or empty listing, a failed read of the stored users, and
-        an unlisted account that was found (disabled included) or whose read failed make it
-        untrusted."""
-        listed, disabled = listing.listed_ids, listing.disabled_ids
-        if not listed:
-            self.logger.warning("User listing is incomplete or empty; no user loses access this run")
-            return False
-        try:
-            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
-        except Exception as e:
-            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
-            return False
-        gone = []
-        trusted = True
-        for u in stored:
-            sid = u.source_user_id
-            if not sid or (sid in listed and sid not in disabled):
-                continue
-            if sid not in listed:
-                try:
-                    status = await read_user_status(self.external_users_client.client, sid)
-                except Exception as e:
-                    self.logger.error(f"Could not confirm user {sid} is gone; keeping the access: {e}")
-                    trusted = False
-                    continue
-                if status != "gone":
-                    trusted = False
-                if status == "present":
-                    continue
-            gone.append(u)
-        if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
-        return trusted
+        """Take the connector away from stored users (guest accounts included) that are disabled
+        or gone, by this read or by a read of the account (``withdraw_unconfirmed_accounts``).
+        Enabling or restoring the account saves the user, and the access, again. Returns whether
+        the listing can be trusted."""
+        return await withdraw_unconfirmed_accounts(
+            self, self.user_sync_point, lambda sid: read_user_status(self.external_users_client.client, sid),
+            set(listing.listed_ids), set(listing.disabled_ids), complete=listing.complete,
+        )
 
     async def _get_all_users_external(self) -> OutlookUserListing:
         """Get all users using external Users Groups API with pagination."""
@@ -813,8 +793,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 complete = False
             listing = OutlookUserListing(all_users)
             listing.complete = complete
-            listing.listed_ids = listed_ids if complete else set()
-            listing.disabled_ids = disabled_ids if complete else set()
+            listing.listed_ids = listed_ids
+            listing.disabled_ids = disabled_ids
 
             self.logger.info(f"Retrieved {len(all_users)} total users across {page_num} page(s) (complete: {complete})")
             return listing
