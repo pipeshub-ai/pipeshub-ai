@@ -15,6 +15,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -83,22 +84,73 @@ def gate_terms(allowed: list[str], acted_on: list[str]) -> list[str]:
     ]
 
 
-def group_key(allowed: list[str], acted_on: list[str]) -> str:
-    """The concurrency group after its static prefix, the same in every heavy workflow.
-
-    A pull request is `pr-<number>-heavy` for an event the gate acts on and `pr-<number>-other` for the
-    rest, so a push cancels a run a label started and an unrelated label never cancels a running suite.
-    Anything else is `<event>-<ref>-<run id>`: a schedule, a manual run and a push never cancel each
-    other or a pull request run.
-    """
-    heavy = (
+def heavy_flag(allowed: list[str], acted_on: list[str]) -> str:
+    """True for a pull request event the gate acts on: a label it acts on, or a push with an allowed label on."""
+    return (
         f"contains(fromJSON('{_arr(acted_on)}'), github.event.label.name) || "
         f"(github.event.action != 'labeled' && github.event.action != 'unlabeled' && ({_has_any(allowed)}))"
     )
+
+
+def group_key(allowed: list[str], acted_on: list[str]) -> str:
+    """The concurrency group after its static prefix, the same in every heavy workflow.
+
+    A pull request is `pr-<number>-heavy` for an event the gate acts on, so a push cancels a run a label
+    started, and `pr-<number>-other-<run id>` for the rest, so an unrelated label never cancels a run (nor
+    another unrelated label's run, whose result check is waiting on an earlier run). Anything else is
+    `<event>-<ref>-<run id>`: a schedule, a manual run and a push never cancel each other or a pull request run.
+    """
     return (
-        f"github.event_name == 'pull_request' && format('pr-{{0}}-{{1}}', github.event.pull_request.number, ({heavy}) && 'heavy' || 'other') || "
+        f"github.event_name == 'pull_request' && format('pr-{{0}}-{{1}}', github.event.pull_request.number, "
+        f"({heavy_flag(allowed, acted_on)}) && 'heavy' || format('other-{{0}}', github.run_id)) || "
         "format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id)"
     )
+
+
+def _merge(into: list[str], labels: list[str]) -> list[str]:
+    return into + [label for label in labels if label not in into]
+
+
+def _result_job_id(jobs: dict[str, Any]) -> str | None:
+    """The job that uses ./.github/actions/heavy-result (a copy of the workflow may live under another file name)."""
+    for job_id, job in jobs.items():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if any(str(st.get("uses", "")).startswith("./.github/actions/heavy-result") for st in steps or []):
+            return job_id
+    return None
+
+
+def result_problems(name: str, stem: str, jobs: dict[str, Any], allowed: list[str], acted_on: list[str]) -> list[str]:
+    """The `<workflow>-result` job: needs every other job, always runs, and gets the workflow's heavy flag.
+
+    An unrelated label starts a run whose heavy jobs skip, and a skip reports success; this job instead
+    reports the latest earlier result on the commit (scripts/heavy_result.py), so branch protection
+    requires it rather than the heavy jobs.
+    """
+    rid = f"{stem}-result" if stem else (_result_job_id(jobs) or "<workflow>-result")
+    job = jobs.get(rid)
+    if not isinstance(job, dict):
+        return [f"{name}: no {rid} job, so an unrelated label's skipped run could replace a failed result"]
+    problems = []
+    needs = job.get("needs") or []
+    missing = sorted(set(jobs) - {rid} - set(needs if isinstance(needs, list) else [needs]))
+    if missing:
+        problems.append(f"{name}:{rid}: must need every other job, missing {missing}")
+    if str(job.get("if", "")).strip() != "always()":
+        problems.append(f"{name}:{rid}: must run with if: always()")
+    if job.get("name") != rid:
+        problems.append(f"{name}:{rid}: its check name must be {rid}")
+    steps = job.get("steps") or []
+    use = next((st for st in steps if str(st.get("uses", "")).startswith("./.github/actions/heavy-result")), None)
+    if use is None:
+        return problems + [f"{name}:{rid}: must use ./.github/actions/heavy-result"]
+    inputs = use.get("with") or {}
+    want = f"${{{{ github.event_name != 'pull_request' || {heavy_flag(allowed, acted_on)} }}}}"
+    if " ".join(str(inputs.get("heavy", "")).split()) != want:
+        problems.append(f"{name}:{rid}: its heavy input must be the workflow's heavy flag")
+    if inputs.get("needs") != "${{ toJSON(needs) }}" or inputs.get("job") != rid:
+        problems.append(f"{name}:{rid}: must pass toJSON(needs) and its own name")
+    return problems
 
 
 def _has_top_level_or(cond: str) -> bool:
@@ -129,7 +181,7 @@ def gate_is_mandatory(cond: str, allowed: list[str], acted_on: list[str]) -> boo
     return False
 
 
-def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
+def gate_problems(name: str, text: str, area: str | None = None, stem: str | None = None) -> list[str]:
     """Problems with a gated workflow. With `area`, every job not in UNGATED must carry the gate with that label."""
     workflow = yaml.safe_load(text)
     on = workflow.get(True, workflow.get("on")) or {}
@@ -143,8 +195,11 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
     ungated = UNGATED.get(workflow.get("name"), set())
     allowed: list[str] = []
     acted_on: list[str] = []
+    union_allowed: list[str] = []
+    union_acted: list[str] = []
+    rid = f"{stem}-result" if stem else _result_job_id(workflow.get("jobs") or {})
     for job_id, job in (workflow.get("jobs") or {}).items():
-        if job_id in ungated:
+        if job_id in ungated or job_id == rid:
             continue
         cond = " ".join(str(job.get("if", "")).split())
         m, n = _ALLOWED.search(cond), _ACTED_ON.search(cond)
@@ -153,6 +208,7 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
                 problems.append(f"{name}:{job_id}: a heavy job without the ci: label gate runs on every pull request")
             continue
         allowed, acted_on = json.loads(m.group(1)), json.loads(n.group(1)) if n else []
+        union_allowed, union_acted = _merge(union_allowed, allowed), _merge(union_acted, acted_on)
         if area is not None and area not in allowed:
             problems.append(f"{name}:{job_id}: its gate does not accept the workflow's area label {area}")
         if allowed[:1] != ["ci:full"]:
@@ -170,7 +226,7 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
     if not allowed:
         problems.append(f"{name}: no job carries the ci: label gate")
         return problems
-    unread = sorted({label for label in _READS.findall(text) if not label.startswith("ci:")} - set(acted_on))
+    unread = sorted({label for label in _READS.findall(text) if not label.startswith("ci:")} - set(union_acted))
     # A generated copy may add a start label of its own for its other jobs; its generator's tests cover that.
     if unread and not text.startswith("# Generated from"):
         problems.append(f"{name}: labels its jobs read are not in the gate, so adding or removing them skips the run: {unread}")
@@ -178,8 +234,10 @@ def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
     group = str(concurrency.get("group") or "") if isinstance(concurrency, dict) else ""
     if group:
         m = _GROUP.fullmatch(group)
-        if not m or m.group(1) != group_key(allowed, acted_on):
+        # Built from every gated job's labels: a label only one job starts on must still be `heavy`.
+        if not m or m.group(1) != group_key(union_allowed, union_acted):
             problems.append(f"{name}: the concurrency group must be <prefix>-${{{{ <the shared key> }}}} (group_key)")
+    problems += result_problems(name, stem or "", workflow.get("jobs") or {}, union_allowed, union_acted)
     return problems
 
 
@@ -191,7 +249,7 @@ class CiLabelGateTest(unittest.TestCase):
             if not path.exists():
                 continue
             text = path.read_text(encoding="utf-8")
-            problems += gate_problems(name, text, area)
+            problems += gate_problems(name, text, area, name[: -len(".yml")])
         self.assertEqual(problems, [])
 
     def test_every_gated_workflow_uses_the_same_gate(self) -> None:
@@ -204,20 +262,30 @@ class CiLabelGateTest(unittest.TestCase):
 
     def _workflow(
         self, jobs: dict[str, list[str] | None], acted_on: list[str] | None = None,
-        types: str = "[labeled, unlabeled]", name: str = "x", group: bool = True,
+        types: str = "[labeled, unlabeled]", name: str = "x", group: bool = True, result: bool = True,
     ) -> str:
         text = (
             f"name: {name}\non:\n  pull_request:\n    types: {types}\n  schedule:\n    - cron: '0 1 * * *'\n  workflow_dispatch:\n"
         )
-        gated = [labels for labels in jobs.values() if labels]
-        if group and gated:
-            text += f"concurrency:\n  group: x-${{{{ {group_key(gated[0], acted_on or gated[0])} }}}}\n"
+        allowed_all: list[str] = []
+        for labels in jobs.values():
+            allowed_all = _merge(allowed_all, labels or [])
+        acted_all = _merge(allowed_all, acted_on or [])
+        if group and allowed_all:
+            text += f"concurrency:\n  group: x-${{{{ {group_key(allowed_all, acted_all)} }}}}\n"
         text += "jobs:\n"
         for job_id, allowed in jobs.items():
             text += f"  {job_id}:\n    runs-on: ubuntu-latest\n"
             if allowed:
-                t = gate_terms(allowed, acted_on or allowed)
+                t = gate_terms(allowed, _merge(allowed, acted_on or []))
                 text += f"    if: {_PR_CHECK} || {t[0]} || {t[1]}\n"
+        if result:
+            text += (
+                f"  x-result:\n    name: x-result\n    needs: [{', '.join(jobs)}]\n    if: always()\n    runs-on: ubuntu-latest\n"
+                "    steps:\n      - uses: ./.github/actions/heavy-result\n        with:\n"
+                f"          heavy: ${{{{ {_PR_CHECK} || {heavy_flag(allowed_all, acted_all)} }}}}\n"
+                "          needs: ${{ toJSON(needs) }}\n          job: x-result\n"
+            )
         return text
 
     def test_a_good_workflow_passes(self) -> None:
@@ -290,6 +358,32 @@ class CiLabelGateTest(unittest.TestCase):
         for bad in bad_groups:
             text = good.replace(f"x-${{{{ {key} }}}}", bad)
             self.assertTrue(any("concurrency group" in p for p in gate_problems("x.yml", text)), bad)
+
+    def test_the_group_is_built_from_every_gated_job(self) -> None:
+        jobs = {"a": ["ci:full", "ci:db", "db-wide"], "b": ["ci:full", "ci:db"]}
+        good = self._workflow(jobs)
+        self.assertEqual(gate_problems("x.yml", good), [])
+        # Built from the last job only, adding db-wide would start job a in an `other` group.
+        last_only = group_key(["ci:full", "ci:db"], ["ci:full", "ci:db"])
+        union = group_key(["ci:full", "ci:db", "db-wide"], ["ci:full", "ci:db", "db-wide"])
+        bad = good.replace(union, last_only)
+        self.assertNotEqual(bad, good)
+        self.assertTrue(any("concurrency group" in p for p in gate_problems("x.yml", bad)))
+
+    def test_an_unrelated_label_cannot_replace_a_failure(self) -> None:
+        good = self._workflow({"a": ["ci:full", "ci:db"], "lint": None}, name="Helm chart")
+        missing = self._workflow({"a": ["ci:full", "ci:db"]}, result=False)
+        self.assertTrue(any("-result job, so an unrelated label" in p for p in gate_problems("x.yml", missing)))
+        cases = {
+            "if: always()": ("    if: always()\n", "    if: success()\n"),
+            "need every other job": ("    needs: [a, lint]\n", "    needs: [a]\n"),
+            "heavy flag": ("          heavy: ${{ github.event_name != 'pull_request' || ", "          heavy: ${{ "),
+            "toJSON(needs)": ("          needs: ${{ toJSON(needs) }}\n", "          needs: '{}'\n"),
+        }
+        for want, (old, new) in cases.items():
+            bad = good.replace(old, new)
+            self.assertNotEqual(bad, good, want)
+            self.assertTrue(any(want in p for p in gate_problems("x.yml", bad)), want)
 
     def test_a_label_the_jobs_read_must_be_in_the_gate(self) -> None:
         text = self._workflow({"a": ["ci:full", "ci:db"]}) + (

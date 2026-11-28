@@ -38,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: arm64-smoke-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || 'other') || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
+  group: arm64-smoke-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 env:
@@ -113,3 +113,27 @@ jobs:
           name: arm64-smoke-slim
           path: ${{ runner.temp }}/diag
           if-no-files-found: ignore
+
+  # The check branch protection requires for this workflow, not its label-gated jobs: an unrelated label
+  # starts a run whose heavy jobs skip, and this reports the latest earlier result instead (CONTRIBUTING.md).
+  arm64-smoke-result:
+    name: arm64-smoke-result
+    needs: [slim]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - uses: ./.github/actions/heavy-result
+        with:
+          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e'))) }}
+          needs: ${{ toJSON(needs) }}
+          job: arm64-smoke-result

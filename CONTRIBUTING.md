@@ -384,7 +384,11 @@ The workflows' own labels still start them too (`harness-fault`; `it-all`, `it-a
 `it-both` and `it-parallel` on the integration tests). Other labels do not re-run anything and do not cancel a
 running suite. Add the label that matches what you changed, or `ci:full` for a
 change that crosses areas, before asking for a merge. A maintainer adds labels on pull requests from forks.
-`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate.
+Each heavy workflow also has a `<workflow>-result` job (for example `pg-runtime-result`) that always runs.
+Branch protection should require that check, not the heavy jobs. An unrelated label starts a run whose heavy
+jobs skip, and a skipped job reports success, so `<workflow>-result` reports the latest earlier result on the
+same commit instead (`scripts/heavy_result.py`). A label can never turn a failure into a pass.
+`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate and that the result job is there.
 
 ## Contributor License Agreement
 

@@ -238,7 +238,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: backend-matrix-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || 'other') || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
+  group: backend-matrix-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -753,3 +753,27 @@ jobs:
           fi
           docker compose -f "$COMPOSE_FILE" --profile vhost down -v
           (cd deployment/docker-compose && docker compose -f docker-compose.integration.graph-db.yml down -v)
+
+  # The check branch protection requires for this workflow, not its label-gated jobs: an unrelated label
+  # starts a run whose heavy jobs skip, and this reports the latest earlier result instead (CONTRIBUTING.md).
+  backend-matrix-result:
+    name: backend-matrix-result
+    needs: [changes, backend, storage]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - uses: ./.github/actions/heavy-result
+        with:
+          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db'))) }}
+          needs: ${{ toJSON(needs) }}
+          job: backend-matrix-result

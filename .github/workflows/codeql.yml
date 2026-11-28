@@ -152,3 +152,27 @@ jobs:
       uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v3
       with:
         category: "/language:${{matrix.language}}"
+
+  # The check branch protection requires for this workflow, not its label-gated jobs: an unrelated label
+  # starts a run whose heavy jobs skip, and this reports the latest earlier result instead (CONTRIBUTING.md).
+  codeql-result:
+    name: codeql-result
+    needs: [changes, analyze]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - uses: ./.github/actions/heavy-result
+        with:
+          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:security"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:security'))) }}
+          needs: ${{ toJSON(needs) }}
+          job: codeql-result
