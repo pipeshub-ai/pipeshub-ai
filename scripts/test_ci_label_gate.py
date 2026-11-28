@@ -274,6 +274,35 @@ def required_check_problems(listed: list[str], workflows: dict[str, str]) -> lis
     return problems
 
 
+def ungated_copy_problems(workflows: dict[str, str]) -> list[str]:
+    """A generated copy of a heavy workflow runs its UNGATED jobs on the same condition as the source.
+
+    `workflows` maps file name to text. A copy may start on more label events than its source; a label condition
+    added to a cheap ungated job there would record a skip that replaces its last real result on the commit.
+    Each job's `if` is parsed and compared, whitespace aside, with the source's (no `if` on both counts).
+    """
+    sources: dict[str, dict] = {}
+    copies: list[tuple[str, dict]] = []
+    for file, text in workflows.items():
+        workflow = yaml.safe_load(text) or {}
+        if text.startswith("# Generated from"):
+            copies.append((file, workflow))
+        else:
+            sources.setdefault(str(workflow.get("name")), workflow)
+    problems = []
+    for file, copy in copies:
+        name = str(copy.get("name"))
+        source = sources.get(name)
+        if source is None:
+            continue
+        for job_id in UNGATED.get(name, set()):
+            want = " ".join(str(((source.get("jobs") or {}).get(job_id) or {}).get("if", "")).split())
+            got = " ".join(str(((copy.get("jobs") or {}).get(job_id) or {}).get("if", "")).split())
+            if got != want:
+                problems.append(f"{file}:{job_id}: an ungated job's condition must match its source's ({want or 'none'}), not {got}")
+    return problems
+
+
 class CiLabelGateTest(unittest.TestCase):
     def test_the_required_checks_run_on_every_pull_request(self) -> None:
         workflows = {p.name: p.read_text(encoding="utf-8") for p in sorted(WORKFLOWS.glob("*.yml"))}
@@ -305,6 +334,19 @@ class CiLabelGateTest(unittest.TestCase):
         target = fast.replace("pull_request:", "pull_request_target:\n    types: [opened, synchronize, reopened]")
         self.assertEqual(required_check_problems(["Lint"], {"f.yml": target}), [])
         self.assertEqual(listed_checks("# comment\n\nLint\n"), ["Lint"])
+
+    def test_a_copy_keeps_its_ungated_jobs_ungated(self) -> None:
+        workflows = {p.name: p.read_text(encoding="utf-8") for p in sorted(WORKFLOWS.glob("*.yml"))}
+        self.assertEqual(ungated_copy_problems(workflows), [])
+        source = self._workflow({"install": ["ci:full", "ci:e2e"]}, name="Helm chart").replace(
+            "jobs:\n", "jobs:\n  check:\n    runs-on: ubuntu-latest\n", 1
+        )
+        same = "# Generated from x.yml\n" + source
+        self.assertEqual(ungated_copy_problems({"x.yml": source, "x-copy.yml": same}), [])
+        gated = same.replace(
+            "  check:\n", "  check:\n    if: github.event_name != 'pull_request' || github.event.label.name == 'run-checks'\n", 1
+        )
+        self.assertTrue(ungated_copy_problems({"x.yml": source, "x-copy.yml": gated}))
 
     def test_an_ungated_job_never_skips_on_a_label_event(self) -> None:
         allowed = ["ci:full", "ci:e2e"]
