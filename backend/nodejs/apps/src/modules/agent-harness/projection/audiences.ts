@@ -29,6 +29,11 @@ export interface AudienceView {
    * D-MCP-ASK, D-SLACK-ASK): a reader that takes one stream to its end would otherwise wait for the person's decision.
    */
   handsOff: boolean;
+  /**
+   * It is someone else's view of the run: why the run failed is its asker's alone, so a failure reads to it as
+   * `FAILED_FOR_OTHERS`, live and in the final frames.
+   */
+  othersRun: boolean;
 }
 
 export type NonOwnerAudience = Exclude<Audience, 'owner'>;
@@ -54,6 +59,7 @@ export const AUDIENCE_VIEWS: Readonly<Record<NonOwnerAudience, AudienceView>> =
       retractions: false,
       // A viewer of someone else's run reads on in the web app, which shows the wait (UXINT-5).
       handsOff: false,
+      othersRun: true,
     },
     // Legacy MCP's tool result is the finished conversation or the error; it never carried the question card.
     external: {
@@ -64,6 +70,7 @@ export const AUDIENCE_VIEWS: Readonly<Record<NonOwnerAudience, AudienceView>> =
       artifacts: 'owner',
       retractions: false,
       handsOff: true,
+      othersRun: false,
     },
     // Exactly the fields the legacy bot reads (`integrations/slack-bot/src/utils/agui-stream.ts`):
     // its activity timeline (tool status, narration, reasoning) and the streamed answer.
@@ -99,6 +106,7 @@ export const AUDIENCE_VIEWS: Readonly<Record<NonOwnerAudience, AudienceView>> =
       artifacts: 'owner',
       retractions: true,
       handsOff: true,
+      othersRun: false,
     },
   };
 
@@ -123,12 +131,19 @@ const OWNER_ARTIFACTS: ArtifactView = {
   completion: (completion) => completion,
 };
 
-/** A shared viewer's access to a run's answer: shown only when every record behind it is readable to them. */
-export type AnswerAccess = 'undecided' | 'shown' | 'withheld';
+/**
+ * A shared viewer's access to a run's answer: shown only when every record behind it is readable to them; `failed`
+ * when the run failed, whose reason is its asker's alone.
+ */
+export type AnswerAccess = 'undecided' | 'shown' | 'withheld' | 'failed';
 
 /** What a viewer reads in place of an answer they may not see. */
 export const WITHHELD_ANSWER =
   "This answer uses sources you don't have access to.";
+
+/** What anyone but its asker reads of a failed run: the reader check's words for it (`FAILED_FOR_OTHERS`). */
+export const FAILED_FOR_OTHERS =
+  "This question couldn't be answered. Only the person who asked can see why.";
 
 /** What the projector knows that a frame alone does not say. */
 export interface AudienceContext {
@@ -241,6 +256,11 @@ function shape(
       return context.asksUser(frame['toolCallId']) ? frame : null;
     case AGUI.RUN_FINISHED:
       return sharedRunFinished(frame, citations(), artifacts());
+    case AGUI.RUN_ERROR:
+      // A sub-agent's failure is passed on as its lifecycle and decides nothing; the run's own says only that it failed.
+      return view.othersRun && frame['parentRunId'] === undefined
+        ? failedForOthers(frame)
+        : frame;
     case AGUI.STATE_DELTA: {
       const sent = Array.isArray(frame['delta'])
         ? (frame['delta'] as Array<{ path?: string; value?: unknown }>)
@@ -269,6 +289,9 @@ function shape(
     case AGUI.STATE_SNAPSHOT: {
       const snapshot = frame['snapshot'] as Record<string, unknown>;
       if (snapshot['final'] === true) {
+        if (view.othersRun && context.answer() === 'failed') {
+          return { ...frame, snapshot: failedCompletion(snapshot) };
+        }
         return {
           ...frame,
           snapshot: sharedCompletion(
@@ -294,10 +317,11 @@ function answerOps(ops: DeltaOp[], answer: AnswerAccess): DeltaOp[] {
   if (answer === 'shown') return ops;
   const cards = ops.filter((op) => op.path === '/artifacts/-');
   if (answer === 'undecided') return cards;
+  const notice = answer === 'failed' ? FAILED_FOR_OTHERS : WITHHELD_ANSWER;
   return ops.flatMap((op): DeltaOp[] => {
     switch (op.path) {
       case '/normalizedAnswer':
-        return [{ ...op, value: op.value === '' ? '' : WITHHELD_ANSWER }];
+        return [{ ...op, value: op.value === '' ? '' : notice }];
       case '/rawLength':
         return [{ ...op, value: 0 }];
       case '/citations':
@@ -309,6 +333,31 @@ function answerOps(ops: DeltaOp[], answer: AnswerAccess): DeltaOp[] {
         return [];
     }
   });
+}
+
+/**
+ * Someone else's failed run as a viewer reads it, live (`RUN_ERROR`) and in its final snapshot: that it failed, never
+ * why (its message, code, servers, details or typed outcome).
+ */
+function failedForOthers(frame: AguiFrame): AguiFrame {
+  return {
+    type: frame.type,
+    ...pick(frame, ['runId']),
+    message: FAILED_FOR_OTHERS,
+    reasonWithheld: true,
+  };
+}
+
+function failedCompletion(
+  completion: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...pick(completion, ['final', 'status']),
+    answer: FAILED_FOR_OTHERS,
+    parts: [{ type: 'text', content: FAILED_FOR_OTHERS, isFinal: true }],
+    citations: [],
+    reasonWithheld: true,
+  };
 }
 
 /** A finished answer withheld from a viewer: how it ended, and the notice. */

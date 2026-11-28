@@ -5555,6 +5555,7 @@ export async function readerView<M extends object>(
       rows: withoutLabels(viewer, asRows, shown, verdicts, {
         ownerId,
         before,
+        agentThread: session?.agentRoomId != null,
         now,
       }),
       verdicts,
@@ -5795,7 +5796,8 @@ async function hiddenBefore(
  * person's answer is shown only while no answer before it is hidden from the reader: after one that is, it is hidden as
  * built on it (`parent`), or as unchecked while that one could not be checked. `before` says how the answers before the
  * rows stand. Someone else's answer the per-record view hid says why as the label rule says it (`hiddenRowFor`): sources
- * the reader can't open, which only its asker had and lost. The reader's own answers are the per-record view's alone.
+ * the reader can't open, which only its asker had and lost. Someone else's failed run says only that it failed, as the
+ * label rule says it (`failedRowFor`). The reader's own answers are the per-record view's alone.
  */
 function withoutLabels<M extends object>(
   viewer: Reader,
@@ -5805,6 +5807,8 @@ function withoutLabels<M extends object>(
   ctx: {
     ownerId: string | undefined;
     before: Extract<Verdict, 'hidden' | 'unchecked'> | undefined;
+    /** The chat read is an agent's thread, where another person's failed run hides as any answer does. */
+    agentThread: boolean;
     now: number;
   },
 ): M[] {
@@ -5842,6 +5846,9 @@ function withoutLabels<M extends object>(
           validUntil: ctx.now + UNCHECKED_TTL_MS,
         });
     }
+    // Why someone else's run failed is theirs alone, however its row would read.
+    if (another && row.messageType === 'error' && !ctx.agentThread)
+      out = failedRowFor(row) as M;
     // An answer hidden from the reader, whoever asked it, went to every later run as history.
     if (hidden === 'hidden' || (hidden === 'unchecked' && before === undefined))
       before = hidden;

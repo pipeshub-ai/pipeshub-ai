@@ -27,6 +27,7 @@ import { InMemoryRecordReadAccess } from '../../../../src/modules/agent-harness/
 import { RunConversationView } from '../../../../src/modules/agent-harness/ports/conversation-reader';
 import { redactRunConversationFor } from '../../../../src/modules/enterprise_search/utils/utils';
 import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility';
+import { FAILED_FOR_OTHERS } from '../../../../src/modules/agent-harness/projection/audiences';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
 import { SharedCitationService } from '../../../../src/modules/agent-harness/application/shared-citations';
 import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access';
@@ -940,6 +941,55 @@ describe('agent-harness projection: RunStreamService', () => {
       const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
       // Both answers are hidden from the viewer: the earlier one for its record, the run's own as built on it.
       expect(rows.filter((row) => row['messageType'] === 'bot_response').map((row) => row['answerHidden'] !== undefined)).to.deep.equal([true, true]);
+    });
+
+    describe("another person's failed run", () => {
+      const REASON = "The AI model's provider isn't responding right now. Please try again in a minute.";
+      /** A run whose answer the worker classified as a failure: it ends as answered runs do, and is stored as an error row. */
+      const failedWorld = (): World => {
+        const world = new World('agent_quick_final_answer');
+        const finalized = world.journal.events.find((e) => e.type === 'x.pipeshub.answer.finalized')!;
+        finalized.data = { ...finalized.data, answer: REASON, partTexts: [REASON], errorCode: 'provider_unavailable', answerMatchType: 'Error' };
+        return world;
+      };
+      const failedRow = (world: World) =>
+        conversation(world, { answer: { messageType: 'error', content: REASON, parts: [{ type: 'text', content: REASON }], errorCode: 'provider_unavailable', tools: [], reasoning: [] } });
+      const finalOf = (sink: Sink): Record<string, unknown> =>
+        sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>).find((snap) => snap['final'] === true)!;
+
+      it('reads to a viewer as failed, never why: in the final snapshot and in RUN_FINISHED', async () => {
+        const world = failedWorld();
+        readable([]);
+        const sink = await watch(world, failedRow(world));
+        for (const leaked of [REASON, 'provider_unavailable']) expect(sink.body, leaked).to.not.include(leaked);
+        const final = finalOf(sink);
+        expect(final).to.deep.include({ answer: FAILED_FOR_OTHERS, citations: [], reasonWithheld: true });
+        expect(final['parts']).to.deep.equal([{ type: 'text', content: FAILED_FOR_OTHERS, isFinal: true }]);
+        const finished = sink.frames().at(-1)!;
+        expect(finished.type).to.equal('RUN_FINISHED');
+        const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+        expect(rows.find((row) => row['messageType'] === 'error')).to.deep.include({ content: FAILED_FOR_OTHERS, reasonWithheld: true });
+      });
+
+      it('a run that fails outright reads to a viewer as failed, its message, code and servers left out', async () => {
+        const world = new World('chat_llm_unavailable');
+        readable([]);
+        const sink = await watch(world, conversation(world, { answer: { messageType: 'error', content: 'No AI model is set up' } }));
+        const error = sink.frames().find((f) => f.type === 'RUN_ERROR')!;
+        expect(error).to.deep.equal({ type: 'RUN_ERROR', message: FAILED_FOR_OTHERS, reasonWithheld: true });
+        expect(sink.body).to.not.include('No AI model');
+      });
+
+      it('its asker keeps the reason', async () => {
+        const world = failedWorld();
+        readable([]);
+        const sink = await watch(world, failedRow(world), { audience: 'owner' });
+        expect(finalOf(sink)['answer']).to.equal(REASON);
+        expect(sink.body).to.not.include(FAILED_FOR_OTHERS);
+        const outright = new World('chat_llm_unavailable');
+        const own = await watch(outright, conversation(outright, { answer: { messageType: 'error', content: 'x' } }), { audience: 'owner' });
+        expect(own.frames().find((f) => f.type === 'RUN_ERROR')).to.deep.include({ code: 'llm_initialization_failed' });
+      });
     });
 
     it('a viewer nobody named, or a run whose stored answer is gone, reads no answer', async () => {

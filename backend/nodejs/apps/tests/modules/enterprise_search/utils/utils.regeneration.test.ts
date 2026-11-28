@@ -708,7 +708,8 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       stubSessionWrite()
       const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, initiator: 'author-1', title: 'Reloaded', nextSeq: 3 }) }
       const findConversation = sinon.stub(ChatSession, 'findById').resolves(reloaded)
-      stubMessagesQuery([{ _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o' }])
+      // The failed answer names who regenerated it, as its write stamps it.
+      stubMessagesQuery([{ _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o', requestedBy: 'u' }])
       const error = Object.assign(new Error('connect ECONNREFUSED 10.0.0.7:8000'), { code: 'ECONNREFUSED' })
 
       await handleRegenerationError(

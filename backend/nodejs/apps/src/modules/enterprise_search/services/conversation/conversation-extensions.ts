@@ -47,7 +47,10 @@ export interface ConversationViewExtension {
   viewMessage<T extends object>(message: T, viewerId?: string): T;
   /** A stored conversation, without its messages, as `viewerId` may see it; left out, as anyone may. */
   viewConversation<T extends object>(conversation: T, viewerId?: string): T;
-  /** Its copy of why runs failed (`failReason`, `conversationErrors`) as `viewerId` may see it; left out, as stored. */
+  /**
+   * Its copy of why runs failed (`failReason`, `conversationErrors`, `failedRunBy`) as `viewerId` may see it; left out,
+   * the owner's alone (`ownersRunFailures`).
+   */
   viewRunFailures<T extends object>(conversation: T, viewerId?: string): T;
   /**
    * Rows on their way to `reader`, with the sources other people's messages name (in their filters and their text)
@@ -309,13 +312,58 @@ export interface ConversationExtensions {
   lifecycle: PrincipalLifecycleExtension;
 }
 
+/** An id as stored (a string, or an ObjectId) as text; undefined when there is none. */
+const idText = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value === '' ? undefined : value;
+  if (value === null || typeof value !== 'object') return undefined;
+  const text = (value as { toString(): string }).toString();
+  return text === '' || text === '[object Object]' ? undefined : text;
+};
+
+/**
+ * A chat's own copy of why its runs failed, as one viewer may see it. Only the owner's own runs copy their reason onto
+ * the chat (`failReason`, `conversationErrors`: `failsOnConversation`, and the harness's writer alike), so those go to
+ * the owner alone; whose run failed (`failedRunBy`) goes to that person alone. Anyone else reads a failed run as its
+ * error row tells them, which says only that it failed. With no viewer named, as stored.
+ */
+export const ownersRunFailures = <T extends object>(
+  conversation: T,
+  viewerId?: string,
+): T => {
+  if (viewerId === undefined) return conversation;
+  const fields = conversation as T & {
+    initiator?: unknown;
+    userId?: unknown;
+    failReason?: unknown;
+    conversationErrors?: unknown;
+    failedRunBy?: unknown;
+  };
+  // The owner as the writes tell it (`isOwnersTurn`).
+  const owner = idText(fields.userId) ?? idText(fields.initiator);
+  const ownsChat = owner !== undefined && owner === viewerId;
+  const ranIt = idText(fields.failedRunBy) === viewerId;
+  const hidesReason =
+    !ownsChat && ('failReason' in fields || 'conversationErrors' in fields);
+  const hidesAsker = !ranIt && 'failedRunBy' in fields;
+  if (!hidesReason && !hidesAsker) return conversation;
+  // A copy without them, the rest in the order it has.
+  const shown: Record<string, unknown> = { ...fields };
+  if (hidesReason) {
+    delete shown['failReason'];
+    delete shown['conversationErrors'];
+  }
+  if (hidesAsker) delete shown['failedRunBy'];
+  return shown as T;
+};
+
 const defaults = (): ConversationExtensions => ({
   turns: defaultTurnExtension,
   views: {
     displayTitle: (title) => title,
     viewMessage: (message) => message,
     viewConversation: (conversation) => conversation,
-    viewRunFailures: (conversation) => conversation,
+    viewRunFailures: (conversation, viewerId) =>
+      ownersRunFailures(conversation, viewerId),
     viewSources: (rows) => Promise.resolve(rows),
     rowShownTo: () => Promise.resolve(true),
     viewOthersRow: (view) => view,

@@ -405,17 +405,25 @@ class RunStream implements StreamHandle {
     );
     const view = await this.visible(conversation);
     this.finished = { conversation: view };
-    const rows = (view?.['messages'] ?? []) as Array<Record<string, unknown>>;
-    const answer = rows.find(
+    // The run's answer as the watcher reads it, by its place among the stored rows: a row they may not read whole
+    // keeps neither its run nor its text.
+    const at = (
+      (conversation?.['messages'] ?? []) as Array<Record<string, unknown>>
+    ).findIndex(
       (row) =>
         row['runId'] === run.runId &&
         (row['messageType'] === 'bot_response' ||
           row['messageType'] === 'error'),
     );
+    const rows = (view?.['messages'] ?? []) as Array<Record<string, unknown>>;
+    const answer = at === -1 ? undefined : rows[at];
+    // Another person's failed run reads to the watcher as failed, its reason left with its asker.
     this.answer =
-      answer !== undefined && answer['answerHidden'] === undefined
-        ? 'shown'
-        : 'withheld';
+      answer === undefined || answer['answerHidden'] !== undefined
+        ? 'withheld'
+        : answer['reasonWithheld'] === true
+          ? 'failed'
+          : 'shown';
   }
 
   /** `conversation` as whoever watches this stream may read it: another person's turns are re-checked for them. */
