@@ -194,6 +194,23 @@ class E2BBackendConfig(BaseModel):
     allow_internet_access: bool = True
 
 
+class BoxdBackendConfig(BaseModel):
+    """`backend="boxd"`-only knobs: one isolated boxd VM per sandbox (see
+    `sandbox/coding/boxd.py::BoxdCodingSandbox`, optional dependency
+    `pip install boxd`). Mirrors `BoxdFactoryConfig`; `org`, `region` and
+    `snapshot` fall back to `BOXD_ORG`, `BOXD_REGION` and `BOXD_SNAPSHOT`."""
+
+    api_key: str | None = None  # falls back to the BOXD_API_KEY env var
+    org: str | None = None
+    region: str | None = None
+    size: str | None = None  # "1x4", "2x8", "4x16" or "8x32"; None = the organisation's default
+    snapshot: str | None = None
+    boxd_timeout: int = 1800  # the machine's provider-side lifetime in seconds
+    allow_network: bool = False
+    name_prefix: str = "pipeshub-sandbox"
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
 class DockerBackendConfig(BaseModel):
     """`backend="docker"`-only knobs — two-phase container execution (see
     `sandbox/coding/docker.py::DockerCodingSandbox`): an offline run
@@ -237,17 +254,18 @@ class CodingSandboxConfig(BaseModel):
     `run_code`/`install_packages`/`read_sandbox_file` tools over a
     `CodingSandboxBackend`, provisioned through the generic
     `sandbox/manager.py::SandboxManager`. `backend` is a config switch, not
-    a code change (Open/Closed) — "local", "e2b", and "docker" are
+    a code change (Open/Closed) — "local", "e2b", "boxd" and "docker" are
     implemented; "daytona"/"aio" are documented future work (see
     `sandbox/coding/base.py::CodingSandboxBackend`). Backend-specific knobs
     live on `local`/`e2b`/`docker` (Interface Segregation) — fields below
     are shared across every backend."""
 
     enabled: bool = False
-    backend: str = "local"  # "local" | "e2b" | "docker" | future: "daytona" | "aio"
+    backend: str = "local"  # "local" | "e2b" | "boxd" | "docker" | future: "daytona" | "aio"
 
     local: LocalBackendConfig = Field(default_factory=LocalBackendConfig)
     e2b: E2BBackendConfig = Field(default_factory=E2BBackendConfig)
+    boxd: BoxdBackendConfig = Field(default_factory=BoxdBackendConfig)
     docker: DockerBackendConfig = Field(default_factory=DockerBackendConfig)
 
     # Per-backend config overrides — validated by each factory's
@@ -301,6 +319,7 @@ class CodingSandboxConfig(BaseModel):
         merged: dict[str, dict[str, Any]] = {
             "local": local,
             "e2b": self.e2b.model_dump(),
+            "boxd": self.boxd.model_dump(),
             "docker": self.docker.model_dump(),
             # The broker runs the same containers, so the Docker knobs configure it too.
             "broker": self.docker.model_dump(),

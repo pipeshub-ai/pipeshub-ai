@@ -16,7 +16,7 @@ which is the Docker host when the daemon runs on the same machine.
   proxy, or failing that the summed stats of the proxy's containers. The
   node's ``/proc`` would pass the boot id check there but describe the whole
   node, so this mode never reads it;
-- E2B runs elsewhere: no reading.
+- E2B and boxd run elsewhere: no reading.
 
 Every reader returns a ``HostSample`` and never raises; a field it cannot
 read is ``None``.
@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from app.agent_loop_lib.sandbox.capacity import fingerprint_same_machine
+from app.agent_loop_lib.sandbox.capacity import fingerprint_same_machine, is_remote
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -416,7 +416,7 @@ def resolve_live_mode(
     Blocking: it may ask the Docker proxy. Never raises."""
     if not settings.enabled:
         return LiveMode.off("disabled", "disabled by SANDBOX_LIVE_LIMIT")
-    if capacity.mode == "e2b":
+    if is_remote(capacity.mode):
         return LiveMode.off("remote", "remote backend")
     if capacity.mode == "local":
         return LiveMode(mode="on:cgroup", reader=cgroup_reader(), profile="cgroup", note="own cgroup")

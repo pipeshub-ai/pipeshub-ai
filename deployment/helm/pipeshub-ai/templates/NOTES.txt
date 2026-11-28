@@ -172,6 +172,16 @@ one.
 run_code executes OFF-CLUSTER on E2B. Nothing runs on this pod. Set E2B_API_KEY
 in the application's configuration, or run_code will fail at provision.
 
+{{- else if eq $path "boxd" }}
+
+run_code executes OFF-CLUSTER on boxd, one isolated VM per sandbox. Nothing
+runs on this pod. Set BOXD_API_KEY in the application's configuration (see
+extraEnv), and use an image with the boxd Python SDK installed, or run_code
+will fail at provision. With sandboxAllowNetwork off the VMs have no network:
+set BOXD_SNAPSHOT to a snapshot built with
+`python -m app.agents.agent_loop.boxd_snapshot`, which holds the packages
+run_code offers and the TypeScript runtime.
+
 {{- else if eq $path "dind" }}
 
 run_code executes in throwaway containers on the `dind` sidecar. The

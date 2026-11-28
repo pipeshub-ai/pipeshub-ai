@@ -88,6 +88,8 @@ def off_reason(settings: AlertSettings) -> str | None:
         return "no code sandbox is configured"
     if backend == "e2b":
         return "E2B sandboxes run elsewhere"
+    if backend == "boxd":
+        return "boxd sandboxes run elsewhere"
     return None
 
 

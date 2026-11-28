@@ -21,7 +21,7 @@ count above. ``SANDBOX_MAX_TOTAL`` replaces it. The machine is read once at
 startup: in docker mode from the daemon's ``/info`` (through the Docker
 proxy, which answers a filtered copy), or from ``SANDBOX_HOST_*`` when a
 deployment passes the sandbox runner's limits in; in local mode from this
-container's cgroup. E2B runs elsewhere and has a fixed ceiling of 100. Until
+container's cgroup. E2B and boxd run elsewhere and have a fixed ceiling of 100. Until
 the machine answers, the ceiling is the minimum.
 """
 
@@ -97,6 +97,9 @@ PID_SHARE = 0.25
 # E2B runs on the provider's machines; its plans cap concurrent sandboxes
 # themselves (100 on Pro). Smaller plans set SANDBOX_MAX_TOTAL.
 E2B_DEFAULT_TOTAL = 100
+# boxd runs each sandbox as a machine of the organisation, which holds 100
+# machines unless its limit was raised. SANDBOX_MAX_TOTAL sets another.
+BOXD_DEFAULT_TOTAL = 100
 MAX_CAPACITY_DIVISOR = 64
 # Slot files every worker opens. The count must be the same in every worker
 # (one that opened fewer would not see the others' high slots), so it comes
@@ -107,7 +110,14 @@ MAX_SLOT_FILES = 1024
 _SIZING_RETRY_S = (5.0, 15.0, 30.0)
 _SIZING_RETRY_EVERY_S = 60.0
 
-Mode = Literal["compose", "helm_dind", "local", "e2b"]
+Mode = Literal["compose", "helm_dind", "local", "e2b", "boxd"]
+
+# Modes whose sandboxes run on the provider's machines: nothing here to size or read.
+REMOTE_DEFAULT_TOTAL: dict[str, int] = {"e2b": E2B_DEFAULT_TOTAL, "boxd": BOXD_DEFAULT_TOTAL}
+
+
+def is_remote(mode: str) -> bool:
+    return mode in REMOTE_DEFAULT_TOTAL
 
 _warned: set[tuple[str, str]] = set()
 
@@ -351,8 +361,8 @@ def compute_plan(
 ) -> CapacityPlan:
     """The ceiling and floor for *machine*. Pure."""
     explicit = settings.max_total
-    if mode == "e2b":
-        ceiling = min(explicit or E2B_DEFAULT_TOTAL, slot_files)
+    if is_remote(mode):
+        ceiling = min(explicit or REMOTE_DEFAULT_TOTAL[mode], slot_files)
         return CapacityPlan(
             ceiling=ceiling, floor=min(settings.min_total, ceiling), slot_files=slot_files,
             explicit=explicit is not None, terms={"memory": None, "cpu": None, "pids": None},
@@ -397,7 +407,7 @@ def fingerprint_same_machine(info: DockerInfo | None, own_mem_total: int | None)
 
 def run_size(mode: Mode) -> RunSize | None:
     """One run's limits, from the backend's own config so they cannot drift."""
-    if mode == "e2b":
+    if is_remote(mode):
         return None
     if mode == "local":
         from app.agent_loop_lib.sandbox.coding.factories.local import LocalFactoryConfig
@@ -460,7 +470,7 @@ async def read_machine_size(
     """The machine the sandboxes of *mode* run on, and the daemon's filtered
     ``/info`` when it was read. Raises ``DockerUnreachable`` when Docker does
     not answer."""
-    if mode == "e2b":
+    if is_remote(mode):
         return MachineSize(None, None, None, "fixed"), None
     if mode == "local":
         from app.services.resource_governor.probe import SystemResourceProbe
@@ -529,13 +539,13 @@ class SandboxCapacity:
         self._reader = machine_reader or (lambda: read_machine_size(self.mode, self._settings))
         self._sleep = sleep
         self.docker_info: DockerInfo | None = None
-        self._machine = MachineSize(None, None, None, "fixed") if mode == "e2b" else UNKNOWN_MACHINE
+        self._machine = MachineSize(None, None, None, "fixed") if is_remote(mode) else UNKNOWN_MACHINE
         self.plan = compute_plan(mode, self._machine, self._run, self._settings, self._slot_files)
-        self.sized = mode == "e2b" or self._settings.max_total is not None
+        self.sized = is_remote(mode) or self._settings.max_total is not None
         self._listeners: list[weakref.WeakMethod[Callable[[], None]]] = []
         self._task: asyncio.Task[None] | None = None
         self._first_attempt: asyncio.Event | None = None
-        self._measured = mode == "e2b"
+        self._measured = is_remote(mode)
         self._share: object = _UNREAD
 
     @classmethod
@@ -732,7 +742,7 @@ class SandboxCapacity:
                     "%s=%d exceeds what this machine supports by %s (%d)",
                     ENV_MAX_TOTAL, plan.ceiling, name, known[name],
                 )
-        elif plan.binding == "unknown" and self.mode != "e2b":
+        elif plan.binding == "unknown" and not is_remote(self.mode):
             logger.warning(
                 "sandbox capacity: the machine size is unknown; using the minimum of %d",
                 plan.ceiling,
@@ -776,8 +786,8 @@ def _resolve_mode() -> Mode:
         backend = resolve_sandbox_mode()
     except Exception:
         return "compose"
-    if backend == "e2b":
-        return "e2b"
+    if backend in ("e2b", "boxd"):
+        return backend
     if backend == "local":
         return "local"
     return _docker_mode(os.environ)

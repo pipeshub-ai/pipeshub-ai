@@ -48,6 +48,7 @@ from app.agent_loop_lib.sandbox.capacity import (
     SandboxCapacity,
     get_sandbox_capacity,
     hold_reason,
+    is_remote,
     org_tag,
     reset_sandbox_capacity,
     sandbox_state_directory,
@@ -692,9 +693,9 @@ def get_default_governor(
 
 
 def _default_observers(capacity: SandboxCapacity) -> list[AcquireObserver]:
-    """The load ledger behind the admin load alerts. E2B runs elsewhere and
-    has no alerts, so its runs are not recorded."""
-    if capacity.mode == "e2b":
+    """The load ledger behind the admin load alerts. E2B and boxd run
+    elsewhere and have no alerts, so their runs are not recorded."""
+    if is_remote(capacity.mode):
         return []
     from app.agent_loop_lib.sandbox.load_ledger import get_default_load_ledger
 

@@ -27,6 +27,7 @@ Each row below adds one.
 | Model provider (Anthropic, OpenAI, Azure OpenAI, Azure AI, Bedrock, Gemini, Vertex AI, Mistral, Cohere, Together, OpenRouter, xAI, Groq, MiniMax, Fireworks, and others) | An admin adds a model under AI models | Yes, when the provider is a hosted service. Ollama, LM Studio and a self-hosted OpenAI-compatible server stay on your network | The provider list is `backend/python/app/config/ai_models/providers/`; see [ai-models.md](../../ai-models.md) |
 | LLM gateway (LiteLLM Proxy, OpenRouter, an OpenAI-compatible gateway) | An admin adds it as a model connection | Yes, if hosted. With identity forwarding on, it also gets the user id and, where an edition provides them, group names | [llm-gateway-identity.md](../../llm-gateway-identity.md) |
 | SaaS sandbox (E2B) | The operator sets `SANDBOX_MODE=e2b` and `E2B_API_KEY` | Yes: the code and files `run_code` runs on | [FLAGS.md](../FLAGS.md) (`SANDBOX_MODE`, `E2B_API_KEY`). The default, `broker`, runs sandboxes on your own Docker host |
+| SaaS sandbox (boxd) | The operator sets `SANDBOX_MODE=boxd` and `BOXD_API_KEY` | Yes: the code and files `run_code` runs on | [FLAGS.md](../FLAGS.md) (`SANDBOX_MODE`, `BOXD_API_KEY`, `BOXD_REGION`) |
 | Coding engine vendor (Claude Code by Anthropic, Codex by OpenAI, opencode, Gemini CLI by Google through ACP) | The operator sets `HARNESS_ENGINE_RUNS=true`; an admin makes an agent an engine agent | Not through the engine itself, in the default setup (see below) | `backend/python/harness_engines/allowlist.json`, `backend/python/harness_engines/acp_agents.json` |
 | Anthropic, for personal Claude accounts in Claude Code | The operator starts the egress tunnels overlay, and an admin allows personal accounts | Yes: that person's Claude Code traffic goes straight to Anthropic under their own account | `deployment/docker-compose/docker-compose.egress-tunnels.yml`; [GVISOR.md](../../../deployment/docker-compose/GVISOR.md), "Personal Claude accounts" |
 | Opik (Opik Cloud, or your own Opik server) | The operator sets `OPIK_API_KEY` (Opik Cloud) or `OPIK_URL_OVERRIDE` (self-hosted) | Yes, when it is Opik Cloud | `deployment/docker-compose/docker-compose.yml` (the Opik variables), `backend/python/app/utils/opik.py` |
@@ -86,6 +87,22 @@ include document text and tool results.
 - [ ] Whether vendor staff can reach a running sandbox.
 - [ ] If any of this is not acceptable, keep the default, `SANDBOX_MODE=broker`, which runs sandboxes on your own
       hosts.
+
+## SaaS sandbox: boxd
+
+Used only when the operator sets `SANDBOX_MODE=boxd`. It serves the `run_code` tool, like E2B. Engine runs never use
+it. Each sandbox is its own isolated VM in the boxd organisation the API key belongs to (or `BOXD_ORG`), labelled with
+the PipesHub org, user, conversation and run ids so it can be traced, and deleted when the sandbox ends.
+
+What PipesHub sends: the code `run_code` runs, and the files and data the run puts into the sandbox. That can
+include document text and tool results. The code runs with root inside its own VM; with `SANDBOX_ALLOW_NETWORK`
+off, that VM has no network at all.
+
+- [ ] DPA and sub-processors, as above.
+- [ ] The region the machines run in: set `BOXD_REGION` to pin it.
+- [ ] What the vendor keeps after a machine is deleted (disk, logs, snapshots), and for how long.
+- [ ] Whether vendor staff can reach a running machine.
+- [ ] If any of this is not acceptable, keep the default, `SANDBOX_MODE=broker`.
 
 ## Coding engine vendors
 

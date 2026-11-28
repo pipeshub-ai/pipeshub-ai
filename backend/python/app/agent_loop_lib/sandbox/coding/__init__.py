@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         SandboxContext,
         SandboxRef,
     )
+    from app.agent_loop_lib.sandbox.coding.boxd import BoxdCodingSandbox
     from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
     from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
     from app.agent_loop_lib.sandbox.coding.environment import EnvironmentManager
@@ -52,6 +53,7 @@ _EXPORTS = {
     "SandboxCapabilities": "base",
     "SandboxContext": "base",
     "SandboxRef": "base",
+    "BoxdCodingSandbox": "boxd",
     "DockerCodingSandbox": "docker",
     "E2BCodingSandbox": "e2b",
     "EnvironmentManager": "environment",
@@ -89,6 +91,7 @@ __all__ = [
     "LocalCodingSandbox",
     "E2BCodingSandbox",
     "DockerCodingSandbox",
+    "BoxdCodingSandbox",
     "ReflectionEngine",
     "BackendHealth",
     "SandboxBackendFactory",

@@ -72,6 +72,14 @@ class TestWorkedExamples:
         plan = _plan(MachineSize(None, None, None, "fixed"), None, mode="e2b", max_total=20)
         assert (plan.ceiling, plan.binding, plan.explicit) == (20, "explicit", True)
 
+    def test_boxd_is_fixed_at_100(self) -> None:
+        plan = _plan(MachineSize(None, None, None, "fixed"), None, mode="boxd")
+        assert (plan.ceiling, plan.binding, plan.explicit) == (100, "fixed", False)
+
+    def test_boxd_takes_an_explicit_value(self) -> None:
+        plan = _plan(MachineSize(None, None, None, "fixed"), None, mode="boxd", max_total=20)
+        assert (plan.ceiling, plan.binding, plan.explicit) == (20, "explicit", True)
+
 
 class TestExplicitAndBounds:
     @pytest.mark.parametrize("total", [3, 40])
@@ -229,3 +237,6 @@ class TestRunSize:
 
     def test_e2b_has_none(self) -> None:
         assert run_size("e2b") is None
+
+    def test_boxd_has_none(self) -> None:
+        assert run_size("boxd") is None

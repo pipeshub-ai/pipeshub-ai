@@ -130,7 +130,8 @@
         "broker",
         "docker",
         "e2b",
-        "local"
+        "local",
+        "boxd"
       ],
       "parse": "trimmed, case-insensitive; unset or blank: no backend (fail closed, SandboxUnavailableError); an unknown value is refused, never guessed",
       "changedBy": "operator (install.sh wizard, Compose .env, Helm config.sandboxMode)",
@@ -164,7 +165,7 @@
           "docker-compose.build.neo4j.yml": "docker",
           "docker-compose.prod-legacy.yml": "docker"
         },
-        "installSh": "broker (slim and full; an existing broker|docker|e2b|local is kept); blank for eval"
+        "installSh": "broker (slim and full; an existing broker|docker|e2b|local|boxd is kept); blank for eval"
       },
       "notes": "The legacy executor toolsets (app/sandbox/manager.py, through the same resolver) accept only local and docker: under broker they are hidden. query_main's health report echoes the raw value.",
       "parser": "resolve_sandbox_mode"
@@ -1706,7 +1707,7 @@
       "requires": [
         {
           "flag": "SANDBOX_MODE",
-          "on": "broker|docker|e2b|local",
+          "on": "broker|docker|e2b|local|boxd",
           "whenNot": "hidden",
           "reason": "SandboxUnavailableError: the sandbox tools are dropped, the chat still answers"
         }
@@ -2522,6 +2523,26 @@
       "name": "E2B_API_KEY",
       "kind": "env",
       "reason": "secret: the E2B account key for SANDBOX_MODE=e2b"
+    },
+    {
+      "name": "BOXD_API_KEY",
+      "kind": "env",
+      "reason": "secret: the boxd API key for SANDBOX_MODE=boxd"
+    },
+    {
+      "name": "BOXD_ORG",
+      "kind": "env",
+      "reason": "address: the boxd organisation SANDBOX_MODE=boxd creates machines in (unset: the API key's own)"
+    },
+    {
+      "name": "BOXD_REGION",
+      "kind": "env",
+      "reason": "address: the boxd region SANDBOX_MODE=boxd creates machines in (unset: the account's default)"
+    },
+    {
+      "name": "BOXD_SNAPSHOT",
+      "kind": "env",
+      "reason": "tuning: the boxd snapshot SANDBOX_MODE=boxd starts each sandbox from (python -m app.agents.agent_loop.boxd_snapshot builds it; unset: a new machine)"
     },
     {
       "name": "ARTIFACT_CLEANUP_INTERVAL_MINUTES",

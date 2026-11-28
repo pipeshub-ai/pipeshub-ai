@@ -409,7 +409,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 
 `config.sandboxMode` picks where `run_code` executes: `broker` (the default with `hardened=true`), `docker` (the default
 otherwise),
-`e2b` (off-cluster), or `local` (no isolation, development only, needs
+`e2b` (off-cluster), `boxd` (off-cluster), or `local` (no isolation, development only, needs
 `config.sandboxAllowLocal=true`). `docker` needs a daemon, and the chart
 refuses to install without one:
 
