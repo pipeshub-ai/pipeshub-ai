@@ -5,6 +5,7 @@ import { useChatStore } from '@/chat/store';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useAuthStore } from '@/config';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { SIDEBAR_LISTS_STALE_MS } from '../../constants';
 import {
   loadSidebarConversations,
@@ -19,6 +20,13 @@ vi.mock('@/chat/api', () => ({
     fetchConversations: (...args: unknown[]) => fetchConversations(...args),
   },
 }));
+
+// The org switch refetches the flags (onSessionEnd); answer it as the server would. An unmocked request does not
+// settle under fake timers, so the flags stayed null and Your chats waited on them.
+vi.mock('@/lib/api/axios-instance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/axios-instance')>();
+  return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn(async () => ({ data: { featureFlags: {} } })) } };
+});
 
 const PAGINATION = {
   page: 1,
@@ -593,5 +601,148 @@ describe('signing out', () => {
 
     expect(useChatStore.getState().conversations).toEqual([]);
     expect(useChatStore.getState().conversationsLoadedAt).toBeNull();
+  });
+});
+
+/** The rail's lists over time, as main pinned them: edits kept on a remount, the newest answer kept, failures. */
+describe('the rail over time: a remount, a late older answer, a server that keeps failing', () => {
+  const titled = (id: string, title: string) => ({ ...(row(id) as object), title }) as never;
+  /** Answers Your chats with `owned`, Shared chats with nothing. */
+  const answerOwned = (...owned: unknown[]) =>
+    fetchConversations.mockImplementation(async (_p: number, _l: number, opts: { source: string }) => ({
+      conversations: opts.source === 'owned' ? owned : [],
+      pagination: PAGINATION,
+    }));
+  const titles = () => useChatStore.getState().conversations.map((c) => c.title);
+
+  /** Lets the loads settle while `ms` pass. */
+  async function settle(ms = 20) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  async function mount() {
+    const view = renderHook(() => useSidebarConversations());
+    await settle();
+    return view;
+  }
+
+  async function focusWindow() {
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await settle();
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
+    useServicesHealthStore.setState({ apiServerReachable: true });
+    useFeatureFlagsStore.setState({ flags: {} } as never);
+    answerOwned(titled('a', 'A'));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('keeps edits made since the last fetch when it remounts within the window', async () => {
+    const first = await mount();
+    act(() => useChatStore.getState().renameConversation('a', 'Renamed'));
+    first.unmount();
+    await settle(5_000);
+    await mount();
+
+    expect(fetchConversations).toHaveBeenCalledTimes(2);
+    expect(titles()).toEqual(['Renamed']);
+  });
+
+  it('keeps the newest answer when an older request lands after it', async () => {
+    const older = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? older.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    await mount();
+
+    answerOwned(titled('new', 'New'));
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    await settle();
+    await act(async () => older.answer([titled('old', 'Old')]));
+    await settle();
+
+    expect(titles()).toEqual(['New']);
+  });
+
+  it('asks again at most once per focus while the server keeps failing, and never on its own', async () => {
+    fetchConversations.mockRejectedValue(new Error('500'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await mount();
+    expect(useChatStore.getState().conversationsError).toBeTruthy();
+    await settle(60_000);
+    expect(fetchConversations).toHaveBeenCalledTimes(2);
+
+    await focusWindow();
+    expect(fetchConversations).toHaveBeenCalledTimes(4);
+    await focusWindow();
+    expect(fetchConversations).toHaveBeenCalledTimes(4);
+
+    await settle(5_000);
+    await focusWindow();
+    expect(fetchConversations).toHaveBeenCalledTimes(6);
+  });
+
+  it('shows no failure while the API server is unreachable', async () => {
+    useServicesHealthStore.setState({ apiServerReachable: false });
+    fetchConversations.mockRejectedValue(new Error('Network Error'));
+    await mount();
+
+    expect(useChatStore.getState().conversationsError).toBeNull();
+  });
+
+  it('clears the failure once a later fetch succeeds', async () => {
+    fetchConversations.mockRejectedValueOnce(new Error('500'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const first = await mount();
+    expect(useChatStore.getState().conversationsError).toBeTruthy();
+    first.unmount();
+
+    await mount();
+    expect(useChatStore.getState().conversationsError).toBeNull();
+    expect(titles()).toEqual(['A']);
+  });
+
+  it("drops an answer still out at the org switch, and shows the next org's lists", async () => {
+    const older = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? older.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    await mount();
+
+    answerOwned(titled('next', 'Next org'));
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+    await act(async () => older.answer([titled('last', 'Last org')]));
+    await settle();
+
+    expect(titles()).toEqual(['Next org']);
+  });
+
+  it('still refreshes after a write once the org was switched on this screen', async () => {
+    await mount();
+    answerOwned(titled('b', 'B'));
+    act(() => clearSessionCache({ refetch: true }));
+    await settle();
+    expect(titles()).toEqual(['B']);
+
+    answerOwned(titled('c', 'C'), titled('b', 'B'));
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    await settle();
+
+    expect(fetchConversations).toHaveBeenCalledTimes(6);
+    expect(titles()).toEqual(['C', 'B']);
   });
 });

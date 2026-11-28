@@ -6,6 +6,7 @@ import { useChatStore } from '@/chat/store';
 import { getCurrentUserId } from '@/chat/utils/current-user-id';
 import { startListRead, withHeldTitles } from '@/chat/utils/held-titles';
 import { useAuthStore } from '@/config';
+import { captureSession, onSessionEnd } from '@/lib/api/session-cache';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { RAIL_UNPINNED_ROWS, SIDEBAR_CONVERSATIONS_PAGE_SIZE, SIDEBAR_LISTS_STALE_MS } from '../constants';
@@ -21,6 +22,16 @@ let ownedReadWithProjects: boolean | null = null;
 
 /** Longest the first read of Your chats waits for the feature flags before going with Projects off. */
 const FLAGS_WAIT_MS = 3000;
+
+/**
+ * While the lists stay stale (a server that keeps failing), the window coming back into focus asks again at most this
+ * often: SWR's focus throttle, which these lists had when SWR kept them.
+ */
+const FOCUS_THROTTLE_MS = 5_000;
+/** When focus may next ask again. */
+let nextFocusLoadAt = 0;
+/** Rails on screen that keep these lists; an org switch reads them again only while one is shown. */
+let railsShown = 0;
 
 /**
  * Whether Projects is on, once the flags are known: Your chats leaves project chats out while it is, so reading it
@@ -78,6 +89,9 @@ async function loadListsOnce(): Promise<void> {
   const first = store.conversationsLoadedAt === null;
   const version = store.conversationsVersion;
   const userId = getCurrentUserId();
+  const sameSession = captureSession();
+  // Signed out, someone else signed in, or the session ended (an org switch) while this was in flight: not their chats.
+  const current = () => sameSession() && getCurrentUserId() === userId;
   const quiet = first ? {} : { suppressErrorToast: true };
   const read = startListRead();
   if (first) store.setIsConversationsLoading(true);
@@ -93,8 +107,7 @@ async function loadListsOnce(): Promise<void> {
       flags.flags !== null ? readOwned(selectProjectsEnabled(flags)) : projectsEnabledOnceKnown().then(readOwned),
       readRailList('shared', quiet),
     ]);
-    // Signed out, or someone else signed in, while this was in flight: these are not their chats.
-    if (getCurrentUserId() !== userId) return;
+    if (!current()) return;
     loadedVersion = version;
     ownedReadWithProjects = projectsEnabled;
     useChatStore.setState({
@@ -107,7 +120,7 @@ async function loadListsOnce(): Promise<void> {
     });
   } catch (error) {
     // A refresh that fails keeps the rows on screen; only a rail with nothing to show says it failed.
-    if (first && getCurrentUserId() === userId && useServicesHealthStore.getState().apiServerReachable) {
+    if (first && current() && useServicesHealthStore.getState().apiServerReachable) {
       console.error('Failed to fetch conversations:', error);
       useChatStore
         .getState()
@@ -116,7 +129,7 @@ async function loadListsOnce(): Promise<void> {
   } finally {
     // Only this person's load ends their skeleton: the last person's, landing late, leaves the next person's on. A
     // sign-out already turned it off.
-    if (first && getCurrentUserId() === userId) useChatStore.getState().setIsConversationsLoading(false);
+    if (first && current()) useChatStore.getState().setIsConversationsLoading(false);
   }
 }
 
@@ -152,6 +165,7 @@ const listFlights: Record<SidebarList, { promise: Promise<void> | null; again: b
 async function loadOneList(list: SidebarList): Promise<void> {
   watchSidebarSession();
   const userId = getCurrentUserId();
+  const sameSession = captureSession();
   const projectsEnabled = selectProjectsEnabled(useFeatureFlagsStore.getState());
   const read = startListRead();
   try {
@@ -159,7 +173,7 @@ async function loadOneList(list: SidebarList): Promise<void> {
       ...(list === 'owned' ? { excludeProjectChats: projectsEnabled } : {}),
       suppressErrorToast: true,
     });
-    if (getCurrentUserId() !== userId) return;
+    if (!sameSession() || getCurrentUserId() !== userId) return;
     if (list === 'owned') ownedReadWithProjects = projectsEnabled;
     // The server lists a chat in one of the two only: one that moved here leaves the other list.
     const ids = new Set(result.conversations.map((c) => c.id));
@@ -217,6 +231,14 @@ function refreshIfStale(): void {
   if (!sidebarListsAreFresh()) void loadSidebarConversations();
 }
 
+/** The window back in focus, or the tab shown again: stale lists load, at most once every FOCUS_THROTTLE_MS. */
+function refreshOnFocus(): void {
+  const now = Date.now();
+  if (sidebarListsAreFresh(now) || now < nextFocusLoadAt) return;
+  nextFocusLoadAt = now + FOCUS_THROTTLE_MS;
+  void loadSidebarConversations();
+}
+
 /**
  * Keeps the rail's lists for whatever page shows it (chat, agents, artifacts). They live in the store, so a rail that
  * mounts again shows them at once: it loads when nothing is loaded yet, and refreshes in the background when they are
@@ -233,11 +255,12 @@ export function useSidebarConversations(enabled = true): void {
   useEffect(() => watchSidebarSession(), []);
   useEffect(() => {
     if (!enabled) return undefined;
+    railsShown += 1;
     refreshIfStale();
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refreshIfStale();
+      if (document.visibilityState === 'visible') refreshOnFocus();
     };
-    window.addEventListener('focus', refreshIfStale);
+    window.addEventListener('focus', refreshOnFocus);
     document.addEventListener('visibilitychange', onVisible);
     const stopVersion = useChatStore.subscribe((state, prev) => {
       if (state.conversationsVersion !== prev.conversationsVersion) void loadSidebarConversations({ again: true });
@@ -251,7 +274,8 @@ export function useSidebarConversations(enabled = true): void {
     // These lists are not SWR's: a job that moved (refreshJobLists) reads them again here.
     const stopJobs = onJobListsRefresh(() => void loadSidebarConversations({ again: true }));
     return () => {
-      window.removeEventListener('focus', refreshIfStale);
+      railsShown -= 1;
+      window.removeEventListener('focus', refreshOnFocus);
       document.removeEventListener('visibilitychange', onVisible);
       stopVersion();
       stopProjects();
@@ -275,26 +299,35 @@ export function watchSidebarSession(): void {
     const userId = getCurrentUserId();
     if (userId === watchedUserId) return;
     watchedUserId = userId;
-    loadedVersion = -1;
-    ownedReadWithProjects = null;
-    inFlight = null;
-    loadAgain = false;
-    for (const flight of Object.values(listFlights)) {
-      flight.promise = null;
-      flight.again = false;
-    }
+    forgetLoads();
     useChatStore.getState().clearSidebarLists();
+  });
+  // The session ended: the chat store's own reset empties the rails, and loads still out are dropped as they land.
+  // Switched to another org with the app open (`refetch`), a rail on screen reads its lists again at once, once every
+  // reset has run, as SWR did for them.
+  onSessionEnd(({ refetch }) => {
+    forgetLoads();
+    if (!refetch) return;
+    void Promise.resolve().then(() => {
+      if (railsShown > 0) void loadSidebarConversations();
+    });
   });
 }
 
-/** Tests only: forget the loads in flight and what was loaded. */
-export function resetSidebarConversationsForTests(): void {
+/** Forgets the loads in flight and what was loaded: they were the last person's, or the last session's. */
+function forgetLoads(): void {
   inFlight = null;
   loadAgain = false;
   loadedVersion = -1;
   ownedReadWithProjects = null;
+  nextFocusLoadAt = 0;
   for (const flight of Object.values(listFlights)) {
     flight.promise = null;
     flight.again = false;
   }
+}
+
+/** Tests only: forget the loads in flight and what was loaded. */
+export function resetSidebarConversationsForTests(): void {
+  forgetLoads();
 }
