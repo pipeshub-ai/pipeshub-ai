@@ -627,7 +627,7 @@ class IdentityMixin(PgBase):
             ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = graph.edges.doc""", org, principal_collection, principal_id, connector_id, _j(props)), transaction, write=True)
 
     async def lock_external_app_memberships(self, grants: list[tuple[str, str, str, str]],
-                                            transaction: str | None = None) -> list[tuple[str, str, str]]:
+                                            transaction: str | None = None, *, lock: bool = True) -> list[tuple[str, str, str]]:
         """Row-locks, until the transaction ends, the flagged (external-collaborator) app memberships that the grants ``(holder collection, holder,
         target collection, target)`` would keep: the lock the reaper takes before it decides (``reap_stale_external_app_relations``). Returns them as
         ``(principal collection, principal, app)``; nothing is locked or written for a principal without one."""
@@ -639,16 +639,19 @@ class IdentityMixin(PgBase):
                 SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),
               a AS (SELECT g.hc, g.hi, t.doc->>'connectorId' AS app FROM g JOIN graph.nodes t ON t.org_id = $1 AND t.coll = g.tc AND t.id = g.ti
                     WHERE g.tc IN ('records', 'recordGroups')),
-              k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person')
+              k AS (SELECT a.hc AS c, a.hi AS i, a.app FROM a WHERE a.hc IN ('users', 'person') AND a.app IS NOT NULL      -- NULL marks every app: the membership hop only
                 UNION SELECT m.from_coll, m.from_id, a.app FROM a
                   JOIN graph.edges f ON f.org_id = $1 AND f.coll = 'userAppRelation' AND f.to_id = a.app AND f.to_coll = 'apps' AND f.doc->>'isExternalUser' = 'true'
                   JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = f.from_coll AND m.from_id = f.from_id
                     AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER'
                   WHERE a.hc IN ('groups', 'roles', 'teams')
-                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams'))
-            SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
-            WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
-            ORDER BY 1, 2, 3 FOR UPDATE OF u""", org, *(list(c) for c in cols)), transaction, write=True)
+                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams')),
+              locked AS (SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+                WHERE $6::boolean AND u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
+                ORDER BY 1, 2, 3 FOR UPDATE OF u),
+              seen AS (SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+                WHERE NOT $6::boolean AND u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true')
+            SELECT * FROM locked UNION ALL SELECT * FROM seen""", org, *(list(c) for c in cols), lock), transaction, write=True)
         return sorted({(r["from_coll"], r["from_id"], r["to_id"]) for r in rows})
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str, transaction: str | None = None) -> None:
@@ -1029,8 +1032,9 @@ class IdentityMixin(PgBase):
                     ends = {"from_collection": k[0], "from_id": k[1], "to_collection": "users", "to_id": keep_key} if incoming else {
                         "from_collection": "users", "from_id": keep_key, "to_collection": k[0], "to_id": k[1]}
                     moved.append({**props, **ends})
-            if moved:
-                await self.batch_create_edges(moved, coll, tid)
+            if moved:      # a moved grant is a grant of its app like any other: written under the app's lock (common.grant_locks)
+                await self.batch_create_edges(moved, coll, tid, lock_grants=[
+                    (e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in moved] if coll == "permission" else ())
         await self.delete_nodes([stub_key], "users", tid)
 
 

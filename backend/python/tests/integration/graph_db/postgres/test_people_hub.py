@@ -9,6 +9,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 
 import asyncpg
@@ -187,6 +188,39 @@ async def merge_world(w: World) -> None:
     await w.edge("permission", ("users", "login"), ("records", "r2"), type="USER", role="WRITER")
     await w.edge("permission", ("users", "stub1"), ("users", "login"), type="USER", role="READER")            # an edge between the two goes with the stub
     await w.edge("permission", ("users", "bystander"), ("records", "r"), type="USER", role="READER")
+
+
+async def test_a_merged_stub_s_grants_are_moved_under_their_app_s_lock(w: World) -> None:
+    """The merge moves stub1's grant on only_stub to the login user: a grant of APP like any other, so it waits for a reaper of APP deciding in
+    an open transaction (the reaper holds APP's lock), and goes through once the reaper has committed."""
+    await merge_world(w)
+    p = w.p
+    rid = await p.begin_transaction([], [])
+    merging = None
+    try:
+        reaper = await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), rid)
+        await p.reap_stale_external_app_relations(APP, transaction=rid)
+        merging = asyncio.create_task(p.apply_verified_user_email(LOGIN, w.org, "new@x.io"))
+        for _ in range(200):
+            assert not merging.done(), "the merge moved the grants without waiting for the reaper's lock"
+            if await p._q(lambda tx: tx.fetchval("SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", reaper), None):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError("the merge never waited for the reaper")
+        await p.commit_transaction(rid)
+        rid = None
+        got = await asyncio.wait_for(merging, 10)
+    finally:
+        if merging is not None and not merging.done():
+            merging.cancel()
+            with contextlib.suppress(BaseException):
+                await merging
+        if rid is not None:
+            with contextlib.suppress(Exception):
+                await p.rollback_transaction(rid)
+    assert sorted(got["mergedStubKeys"]) == ["stub1", "stub2"]
+    assert await role(w, "login", "only_stub") is not None
 
 
 async def role(w: World, user: str, rec_id: str) -> str | None:

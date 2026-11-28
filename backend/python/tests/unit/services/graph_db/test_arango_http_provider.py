@@ -19107,9 +19107,8 @@ class TestArangoPersonMigrationAndReaper:
             assert coll in grantees
         assert "n.connectorId == @connector_id" in reaper
 
-        # Soft-deleted grants must not keep membership alive — browse already drops them.
-        assert "n.isDeleted != true" in reaper
-        assert "n2.isDeleted != true" in reaper
+        # A grant in the trash keeps the membership (browse drops it): a restore brings the grant back and needs the membership.
+        assert "isDeleted" not in reaper
 
     # -- executing tests -----------------------------------------------------------
     #

@@ -11,9 +11,10 @@ A team, or a group or role without a connector, can keep memberships of any app 
 membership holds the org's lock instead, exclusively, and every reaper holds the org's lock (shared where the store has a shared lock) before
 its app's. Locks are taken in that order: the org's, then the apps' by key.
 
-So the reaper decides once every writer holding the lock has committed (its chain is read) or rolled back, and a writer that comes after it
-waits, its chain then newer than the reaper's decision (the membership is made again by the writer's membership step, as for a reaper that
-decided first). PostgreSQL holds the lock as an advisory lock; Neo4j and ArangoDB, without a shared lock, hold it exclusively on the app's node
+So the reaper decides once every writer holding the lock has committed (its chain is read) or rolled back. A writer that comes after it waits
+(or, on ArangoDB, conflicts and runs again) and may find a flagged membership its chain needs removed: it read the memberships its grants keep
+before its grant statement, and makes again, before it commits and while it holds the lock, each one that is gone
+(``GraphTransactionStore._make_held_again``). PostgreSQL holds the lock as an advisory lock; Neo4j and ArangoDB, without a shared lock, hold it exclusively on the app's node
 or document, so writers of one app take turns.
 
 A lock is held until the transaction ends, so each transaction's store remembers the ones it took (``lock_held``) and a later grant statement

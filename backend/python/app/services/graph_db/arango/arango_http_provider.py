@@ -9656,6 +9656,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """Touch the flagged (external-collaborator) app memberships the grants ``(holder
         collection, holder, target collection, target)`` would keep, as
@@ -9684,14 +9686,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN u._key)
                             : [])
             ))
-            FOR k IN keys
-                UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar}
-                RETURN {{ principal: NEW._from, app: NEW._to }}
+            {f"FOR k IN keys UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar} RETURN {{ principal: NEW._from, app: NEW._to }}" if lock else
+             f"FOR k IN keys LET u = DOCUMENT({uar}, k) RETURN {{ principal: u._from, app: u._to }}"}
             """,
             bind_vars={"grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
                        "record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
                        "people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
-                       "now": get_epoch_timestamp_in_ms()},
+                       **({"now": get_epoch_timestamp_in_ms()} if lock else {})},
             txn_id=transaction,
         )
         return sorted({(*r["principal"].split("/", 1), r["app"].split("/", 1)[1]) for r in rows or []})
@@ -9699,6 +9700,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
         external collaborator on this app?
+
+        A grant on a record in the trash counts: a restore brings it back, and the membership it needs must still be there.
 
         **Must stay in step with the grants browse lists from
         (`get_knowledge_hub_access_v3`)**. The reaper deletes the `isExternalUser`
@@ -9722,7 +9725,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER STARTS_WITH(perm._to, "{rec}/") OR STARTS_WITH(perm._to, "{rg}/")
                     LET n = DOCUMENT(perm._to)
                     FILTER n != null AND n.connectorId == {app_key_expr}
-                    FILTER n.isDeleted != true
                     LIMIT 1
                     RETURN 1
             ) > 0
@@ -9738,7 +9740,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER STARTS_WITH(perm2._to, "{rec}/") OR STARTS_WITH(perm2._to, "{rg}/")
                         LET n2 = DOCUMENT(perm2._to)
                         FILTER n2 != null AND n2.connectorId == {app_key_expr}
-                        FILTER n2.isDeleted != true
                         LIMIT 1
                         RETURN 1
             ) > 0
@@ -9945,8 +9946,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # and nothing is removed on a stale view (the next pass decides again). The removed edges' principals are what the person cleanup needs.
             stale_rows = await self.http_client.execute_aql(
                 f"""
+                // an app with no org (one a backfill left unset) cannot take the org's lock a writer of a team's membership holds: nothing is
+                // removed for it until its org is known
+                LET app_org = DOCUMENT(@app_id).orgId
                 LET removed = (
                     FOR uar IN {CollectionNames.USER_APP_RELATION.value}
+                        FILTER app_org != null
                         FILTER uar._to == @app_id AND uar.isExternalUser == true
                         FILTER NOT {grant_exists}
                         REMOVE uar IN {CollectionNames.USER_APP_RELATION.value}

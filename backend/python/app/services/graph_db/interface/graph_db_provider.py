@@ -4533,10 +4533,12 @@ class IGraphDBProvider(ABC):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """
         Hold, until the transaction ends, the flagged (``isExternalUser``) app memberships
-        that the grants would keep: the lock ``reap_stale_external_app_relations`` takes
+        that the grants would keep (with ``lock=False``, only read them): the lock ``reap_stale_external_app_relations`` takes
         before it decides. A grant writer calls it before writing the grants, so a reaper
         either waits for them to commit and sees them, or decided before they existed.
 

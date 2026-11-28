@@ -963,7 +963,7 @@ class LookupsMixin(PgBase):
             return (0, False)
 
     async def reap_stale_external_app_relations(self, connector_id: str, transaction: str | None = None) -> int:
-        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a live record or group of the connector, directly or
+        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a record or group of the connector, in the trash too: a restore brings the grant back and needs the membership, directly or
         through a group, role or team that exists), then the persons left with no edge at all; returns how many persons went. A member who is not flagged external is never touched."""
         org = current_org_id()
 
@@ -981,13 +981,13 @@ class LookupsMixin(PgBase):
                     AND u.doc->>'isExternalUser' = 'true'
                     AND NOT EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
                                     WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = u.from_coll AND g.from_id = u.from_id AND g.doc->>'type' = 'USER'
-                                      AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+                                      AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2)
                     AND NOT EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
                                       AND g.to_coll IN ('records', 'recordGroups')
                                     JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
                                     JOIN graph.nodes mg ON mg.org_id = m.org_id AND mg.coll = m.to_coll AND mg.id = m.to_id
                                     WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
-                                      AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) s
+                                      AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2)) s
                 WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
                   AND d.doc->>'isExternalUser' = 'true'      -- on the target too: a row changed since the snapshot is checked again on it, never on s
                 RETURNING d.from_coll, d.from_id""", org, connector_id)

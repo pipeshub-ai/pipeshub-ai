@@ -19350,6 +19350,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """Write-lock, until the transaction ends, the flagged (external-collaborator) app
         memberships the grants ``(holder collection, holder, target collection, target)``
@@ -19383,11 +19385,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $rows AS row
                 {match}
                 WITH DISTINCT p, r, app WHERE r.isExternalUser = true
-                SET r.{_MATCH_LOCK} = true
-                REMOVE r.{_MATCH_LOCK}
+                FOREACH (_ IN CASE WHEN $lock THEN [1] ELSE [] END | SET r.{_MATCH_LOCK} = true REMOVE r.{_MATCH_LOCK})
                 RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
+                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)], "lock": lock},
                 txn_id=transaction,
             )
             for row in rows or []:
@@ -19399,6 +19400,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _external_grant_exists_cypher(self, principal_var: str, app_var: str) -> str:
         """Predicate: does this principal still hold a grant that would make it an
         external collaborator on this app?
+
+        A grant on a record in the trash counts: a restore brings it back, and the membership it needs must still be there.
 
         This must stay in step with the grants browse reads
         (`_kh_v3_connector_grants_cypher`). The reaper deletes the `isExternalUser`
@@ -19415,14 +19418,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(granted)
                 WHERE (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
-                  AND coalesce(granted.isDeleted, false) = false
             }}
             OR EXISTS {{
                 MATCH ({principal_var})-[:PERMISSION {{type: 'USER'}}]->(via)-[:PERMISSION]->(granted)
                 WHERE (via:Group OR via:Role OR via:Teams)
                   AND (granted:Record OR granted:RecordGroup)
                   AND granted.connectorId = {app_var}.id
-                  AND coalesce(granted.isDeleted, false) = false
             }}
         )"""
 
@@ -19567,6 +19568,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             query = f"""
             MATCH (app:{app_label} {{id: $connector_id}})
+            WHERE app.orgId IS NOT NULL      // without an org it cannot take the org's lock a writer of a team's membership holds: nothing is removed
             MATCH (principal)-[uar:{app_rel}]->(app)
             WHERE uar.isExternalUser = true
             // The edges' write lock first (a property set and removed: nothing kept): a writer of a membership writes its flag, so it has committed

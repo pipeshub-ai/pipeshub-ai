@@ -5477,8 +5477,8 @@ class TestPersonMigrationAndReaper:
         assert "granted.connectorId = app.id" in reaper
         assert "kh_g.connectorId = $connector_id" in browse
 
-        # Soft-deleted grants must not keep membership alive — browse already drops them.
-        assert "coalesce(granted.isDeleted, false) = false" in reaper
+        # A grant in the trash keeps the membership (browse drops it): a restore brings the grant back and needs the membership.
+        assert "isDeleted" not in reaper
         assert "NOT coalesce(kh_g.isDeleted, false)" in browse
 
     # -- rendered-query assertions -------------------------------------------------

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.connectors.core.base.data_store import graph_data_store
 from app.connectors.core.base.data_store.graph_data_store import GraphTransactionStore
 from tests.integration.graph_permissions.fixture_graph import (
     DRIVE,
@@ -464,39 +465,71 @@ async def test_a_grant_through_the_store_keeps_its_holder_s_membership_from_a_re
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
 
 
-async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World) -> None:
-    """The reverse order: the reaper's transaction has removed ext-own-gone's membership (no grant then) and is still open when a grant to it is
-    written through the store. The grant waits for the reaper or conflicts and is run again after it, as its caller does; the membership is gone."""
+@pytest.mark.parametrize("holder", ["direct", "group"])
+async def test_a_grant_in_the_trash_keeps_its_membership_for_the_restore(world: _World, holder: str) -> None:
+    """r-own-live is in the trash with the holder's only grant (ext-direct's own, or own-live's for ext-own-live, whose grant on g-own-live is
+    removed) and the reaper runs and commits: a grant in the trash still counts, so the collaborator keeps the App, and the restore brings back a
+    grant whose membership is there (if the reaper had removed it, nothing would make it again)."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+    kept = "ext-direct" if holder == "direct" else "ext-own-live"
+    if holder == "group":
+        assert await g.batch_delete_edges([{"from_id": w.sid("own-live"), "from_collection": coll, "to_id": w.sid("g-own-live"),
+                                            "to_collection": "recordGroups"}], collection="permission")
+    await g.soft_delete_records([w.sid("r-own-live")], w.sid(APP), delete_source="CONNECTOR", batch_id=f"trash-{w.run}")
+    await g.reap_stale_external_app_relations(w.sid(APP))
+    assert kept in await _edges_to_app(w)
+    assert await g.restore_records([{"id": w.sid("r-own-live")}], f"trash-{w.run}") == [w.sid("r-own-live")]
+    assert kept in await _edges_to_app(w)
+
+
+async def test_a_grant_queued_behind_a_reaper_makes_the_membership_it_removed_again(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reaper's transaction has removed ext-own-gone's membership (no grant then) and is still open when a connector writes a grant to it
+    through the store, in a retried call. The grant's statement waits for the reaper (Neo4j) or conflicts with it and the call runs again after
+    it (ArangoDB). The writer read the membership before its grant, so once it holds the App's lock it makes it again before it commits, and
+    ext-own-gone keeps the App (without that, the reaper's removal stood under a committed grant)."""
+    from app.connectors.core.base.data_store import graph_data_store
+    from app.connectors.core.base.data_store.graph_data_store import (
+        GraphDataStore,
+        retry_on_deadlock,
+    )
     w, g = world, world.graph
     ext = w.sid("ext-own-gone")
+    conflicted = asyncio.Event()
+    monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: conflicted.set() or 0.5)
+    store = GraphDataStore(logging.getLogger("live-group-it"), g)
+
+    class Writer:
+        data_store_provider = store
+
+        @retry_on_deadlock()
+        async def grant(self) -> None:
+            async with store.transaction() as tx:
+                assert await tx.batch_create_edges([{"from_id": ext, "from_collection": "users", "to_id": w.sid("r-own-live"), "to_collection": "records",
+                                                     "type": "USER", "role": "READER", "createdAtTimestamp": TS}], "permission")
     rid = await g.begin_transaction(["users", "records", "apps", "person"], ["apps", "organizations", "userAppRelation", "person"])
-    grant = tid = None
+    granting = None
     try:
         await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
-        grant = asyncio.create_task(_grant_through_the_store(w, ext))
-        await _until_it_meets(g, grant)
+        assert "ext-own-gone" in await _edges_to_app(w)      # the removal is not committed yet
+        granting = asyncio.create_task(Writer().grant())
+        if hasattr(g, "client"):
+            await _until_it_meets(g, granting)      # the grant waits on the App's lock
+            assert not granting.done()
+        else:
+            await asyncio.wait_for(conflicted.wait(), 10)      # the grant conflicted with the reaper and waits to run again
         await g.commit_transaction(rid)
         rid = None
-        try:
-            tid = await grant
-        except Exception as e:
-            if not g.is_write_conflict(e):
-                raise
-            tid = await _grant_through_the_store(w, ext)
-        await g.commit_transaction(tid)
-        tid = None
-    finally:      # a failed overlap leaves nothing open to lock what the world's removal deletes
-        if grant is not None and not grant.done():
-            grant.cancel()
+        await asyncio.wait_for(granting, 30)
+    finally:
+        if granting is not None and not granting.done():
+            granting.cancel()
             with contextlib.suppress(BaseException):
-                tid = await grant
-        elif grant is not None and tid is None and not grant.cancelled() and grant.exception() is None and rid is not None:
-            tid = grant.result()      # the grant's transaction, open when a step after it failed
-        for t in (rid, tid):
-            if t is not None:
-                with contextlib.suppress(Exception):
-                    await g.rollback_transaction(t)
-    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct"}
+                await granting
+        if rid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(rid)
+    assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
 
 
 @pytest.mark.parametrize("how", ["batch", "replace"])
@@ -571,19 +604,22 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
     conflicted, t1_ended = asyncio.Event(), asyncio.Event()
 
     async def add() -> None:
-        """T2, run again after a conflict once T1 is no longer open, as its caller does."""
+        """T2, run again after a conflict once T1 is no longer open, as its caller does (retry_on_deadlock: what a rolled-back attempt read is
+        carried to the next), and committed through the store, which makes again a membership a reaper removed while T2 waited."""
+        graph_data_store._CARRIED_MEMBERSHIPS.set(set())      # this task's context: one retried call
         while True:
             t2 = await g.begin_transaction(*collections)
             open_.append(t2)
+            st = GraphTransactionStore(g, t2, explicit=True)
             try:
-                assert await GraphTransactionStore(g, t2, explicit=True).batch_create_edges([membership], "permission")
-                await g.commit_transaction(t2)
+                assert await st.batch_create_edges([membership], "permission")
+                await st.commit()
                 open_.remove(t2)
                 return
             except Exception as e:
                 open_.remove(t2)
                 with contextlib.suppress(Exception):
-                    await g.rollback_transaction(t2)
+                    await st.rollback()
                 if not g.is_write_conflict(e):
                     raise
                 conflicted.set()
@@ -603,21 +639,22 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
             await asyncio.wait_for(asyncio.wait([adding, conflict_seen], return_when=asyncio.FIRST_COMPLETED), 10)
         if records == 2:
             await store.replace_record_permissions(w.sid("r-own-gone"), [{**grant, "to_id": w.sid("r-own-gone")}], None, inherit=False)
-        if adding.done():      # T2's membership committed while T1's grant is open: the reaper must wait for T1 (or conflict with it)
-            reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
-            await _until_it_meets(g, reaping, marker=REAPER_MARK)
-        # else T2 waits for T1 (or runs again after it): its membership cannot commit before T1's grant, so no reaper sees the one without the other
+        # the reaper while T1 is open, whatever T2 does: it waits for T1 (Neo4j: its own statement is the one blocked) or conflicts with it
+        reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        await _until_it_meets(g, reaping, marker=REAPER_MARK)
+        if hasattr(g, "client"):
+            assert not reaping.done(), "the reaper decided while T1's grant was open"
+        else:
+            with pytest.raises(Exception) as lost:
+                await reaping
+            assert g.is_write_conflict(lost.value)
         await g.commit_transaction(t1)
         open_.remove(t1)
         t1_ended.set()
         await adding
-        if reaping is not None:
-            try:
-                await reaping
-            except Exception as e:
-                if not g.is_write_conflict(e):
-                    raise
-        await g.reap_stale_external_app_relations(w.sid(APP))      # a reaper that runs after both decides on the committed chain
+        if hasattr(g, "client"):
+            await reaping      # after T1; before or after T2, whose commit makes again what it removed
+        await g.reap_stale_external_app_relations(w.sid(APP))      # the control: a reaper that runs after both decides on the committed chain
     finally:
         for task in (adding, reaping, conflict_seen):
             if task is not None and not task.done():
@@ -662,9 +699,8 @@ async def _commit_with_reaper_between(w: _World, write: Any, collections: tuple[
 @pytest.mark.parametrize("holder", ["direct", "group"])
 async def test_a_restored_record_s_grant_locks_its_membership_though_the_edge_was_there(world: _World, holder: str) -> None:
     """r-own-live is in the trash with one grant on it, ext-direct's own or own-live's (ext-own-live's group, role or team; its grant on
-    g-own-live is removed, so r-own-live's is its only one): the reaper reads no live grant of that holder's. A transaction restores the record
-    and writes its grant again: the restore holds the App's lock first, so the reaper waits for it or conflicts with it and runs again, and the
-    collaborator keeps the App (without the lock, the reaper removed the membership before the restore committed)."""
+    g-own-live is removed, so r-own-live's is its only one). A transaction restores the record and writes its grant again: the restore holds the
+    App's lock first, so the reaper waits for it or conflicts with it and runs again, and the collaborator keeps the App."""
     w, g = world, world.graph
     coll = NODE_TARGETS[w.kind]
     kept, grants = ("ext-direct", [e for e in _r_own_live_grants(w) if e["from_id"] == w.sid("ext-direct")]) if holder == "direct" else \
@@ -739,22 +775,22 @@ async def test_a_team_member_added_while_an_app_is_added_keeps_its_membership_of
     team, ext = _node("Teams", "late-team", name="late team"), _node("User", "ext-team", email="ext-team@example.com", fullName="Ext team")
     other, record = app("other", "Mail", connector="MAIL", app_group="M"), rec("r-other", "r other", connector_id="other")
     w.nodes += [team, ext, other, record]      # removed with the world
-    assert await g.batch_upsert_nodes([org_node["props"]], collection="organizations")
-    for n in (team, ext):
-        assert await g.batch_upsert_nodes([{**n["props"], "id": w.sid(n["id"]), "orgId": w.org}], collection=NODE_TARGETS[n["kind"]])
-    assert await g.batch_upsert_nodes([{**other["props"], "id": w.sid("other"), "orgId": w.org}], collection="apps")
-    assert await g.batch_upsert_nodes([{**record["props"], "id": w.sid("r-other"), "orgId": w.org, "connectorId": w.sid("other")}], collection="records")
-    assert await g.batch_create_edges([{"from_id": w.sid("late-team"), "from_collection": "teams", "to_id": w.sid("r-other"), "to_collection": "records",
-                                        "type": "TEAM", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
-    async def flag() -> None:
-        assert await g.batch_create_edges([{"from_id": w.sid("ext-team"), "from_collection": "users", "to_id": w.sid("other"), "to_collection": "apps",
-                                            "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
-    if hasattr(g, "client"):
-        await flag()
-    collections = (["users", "records", "apps", "teams"], ["apps", "organizations", "permission", "userAppRelation", "teams"])
-    tid = await g.begin_transaction(*collections)
-    reaping = None
-    try:
+    tid = reaping = None
+    try:      # the org is not the world's: written inside, so the cleanup below removes it whatever fails
+        assert await g.batch_upsert_nodes([org_node["props"]], collection="organizations")
+        for n in (team, ext):
+            assert await g.batch_upsert_nodes([{**n["props"], "id": w.sid(n["id"]), "orgId": w.org}], collection=NODE_TARGETS[n["kind"]])
+        assert await g.batch_upsert_nodes([{**other["props"], "id": w.sid("other"), "orgId": w.org}], collection="apps")
+        assert await g.batch_upsert_nodes([{**record["props"], "id": w.sid("r-other"), "orgId": w.org, "connectorId": w.sid("other")}], collection="records")
+        assert await g.batch_create_edges([{"from_id": w.sid("late-team"), "from_collection": "teams", "to_id": w.sid("r-other"), "to_collection": "records",
+                                            "type": "TEAM", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
+        async def flag() -> None:
+            assert await g.batch_create_edges([{"from_id": w.sid("ext-team"), "from_collection": "users", "to_id": w.sid("other"), "to_collection": "apps",
+                                                "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
+        if hasattr(g, "client"):
+            await flag()
+        collections = (["users", "records", "apps", "teams"], ["apps", "organizations", "permission", "userAppRelation", "teams"])
+        tid = await g.begin_transaction(*collections)
         assert await GraphTransactionStore(g, tid, explicit=True).batch_create_edges(
             [{"from_id": w.sid("ext-team"), "from_collection": "users", "to_id": w.sid("late-team"), "to_collection": "teams", "type": "USER",
               "role": "READER", "createdAtTimestamp": TS}], "permission")
@@ -810,7 +846,8 @@ async def test_writers_of_one_app_take_turns(world: _World) -> None:
         async def write() -> None:
             t2 = await g.begin_transaction(*collections)
             open_.append(t2)
-            assert await GraphTransactionStore(g, t2, explicit=True).batch_create_edges([grant("ext-own-live", "r-src-live")], "permission")
+            # another record of the App: the App is the only node the two writers share
+            assert await GraphTransactionStore(g, t2, explicit=True).batch_create_edges([grant("ext-own-live", "r-own-gone")], "permission")
             await g.commit_transaction(t2)
             open_.remove(t2)
         second = asyncio.create_task(write())
@@ -892,3 +929,22 @@ async def test_within_a_transaction_an_app_s_lock_is_written_once(world: _World)
         if tid is not None:
             with contextlib.suppress(Exception):
                 await g.rollback_transaction(tid)
+
+
+async def test_an_app_without_an_org_is_not_reaped(world: _World) -> None:
+    """An app a backfill left without orgId cannot take the org's lock a writer of a team's membership holds: its reaper removes nothing (the
+    next pass, once the org is known, decides), not a flagged membership whose chain such a writer may be committing."""
+    w, g = world, world.graph
+    lone, ext = app("no-org", "Lone", connector="MAIL", app_group="M"), _node("User", "ext-lone", email="ext-lone@example.com", fullName="Ext lone")
+    w.nodes += [lone, ext]      # removed with the world
+    assert await g.batch_upsert_nodes([{**lone["props"], "id": w.sid("no-org"), "orgId": None}], collection="apps")
+    assert await g.batch_upsert_nodes([{**ext["props"], "id": w.sid("ext-lone"), "orgId": w.org}], collection="users")
+    assert await g.batch_create_edges([{"from_id": w.sid("ext-lone"), "from_collection": "users", "to_id": w.sid("no-org"), "to_collection": "apps",
+                                        "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
+    assert await g.reap_stale_external_app_relations(w.sid("no-org")) == 0
+    if hasattr(g, "client"):
+        rows = await g.client.execute_query("MATCH (u:User)-[:USER_APP_RELATION]->(:App {id: $app}) RETURN u.id AS id", parameters={"app": w.sid("no-org")})
+    else:
+        rows = await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._to == @app RETURN {id: PARSE_IDENTIFIER(e._from).key}",
+                                               {"app": f"apps/{w.sid('no-org')}"})
+    assert [w.plain(r["id"]) for r in rows] == ["ext-lone"]
