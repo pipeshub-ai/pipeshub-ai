@@ -504,6 +504,72 @@ describe('a 401 from the server', () => {
   });
 });
 
+describe('a refresh that hands over another account', () => {
+  // Someone else signed in to this browser while the refresh was out: the cookie now names them.
+  const assign = vi.fn();
+  beforeEach(() => {
+    assign.mockReset();
+    vi.stubGlobal('location', { ...window.location, assign });
+  });
+
+  it('keeps the token out of the store, reloads the page and answers account-changed', async () => {
+    const mine = tokenFor('u1', 20);
+    useAuthStore.setState({ accessToken: mine });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    expect(await refreshOrSignOut()).toBe('account-changed');
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('does not send a request made as one account with the token of another', async () => {
+    const mine = tokenFor('u1', 20);
+    useAuthStore.setState({ accessToken: mine });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    const sent = fakeServer({ status: 200 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
+    expect(sent).toHaveLength(0);
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
+    expect(errorToasts()).toHaveLength(0);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a 401 as another account, and the next request is not sent as them either', async () => {
+    const mine = tokenFor('u1');
+    useAuthStore.setState({ accessToken: mine });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: tokenFor('u2') }));
+    const sent = fakeServer({ status: 401 }, { status: 200 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ type: ErrorType.REQUEST_CANCELLED });
+    expect(sent).toHaveLength(1);
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
+    expect(errorToasts()).toHaveLength(0);
+  });
+
+  it('answers account-changed to a caller whose request was made as another account than the store holds now', async () => {
+    const now = tokenFor('u2', 20);
+    useAuthStore.setState({ accessToken: now });
+    const fresh = tokenFor('u2', 7200);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    expect(await refreshOrSignOut(tokenFor('u1'))).toBe('account-changed');
+    // The store's own account did not change: its token is kept and nothing reloads.
+    expect(useAuthStore.getState().accessToken).toBe(fresh);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('still sends and replays for the same account', async () => {
+    useAuthStore.setState({ accessToken: tokenFor('u1') });
+    const fresh = tokenFor('u1', 7200);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    const sent = fakeServer({ status: 401 }, { status: 200 });
+    await expect(apiClient.get('/api/v1/users')).resolves.toMatchObject({ status: 200 });
+    expect(sent).toHaveLength(2);
+    expect(bearer(sent[1])).toBe(`Bearer ${fresh}`);
+    expect(assign).not.toHaveBeenCalled();
+  });
+});
+
 describe('error toasts', () => {
   it("shows the server's own words with the reference an admin can look up", async () => {
     fakeServer({ status: 500, data: { error: { message: 'The export could not be created. Try again in a minute.', requestId: 'req-42' } } });
@@ -602,6 +668,47 @@ describe('the proactive refresh timer', () => {
     await vi.advanceTimersByTimeAsync(600_000);
     expect(fetchMock).toHaveBeenCalledTimes(1 + REFRESH_MAX_COOLDOWN_CYCLES);
     expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('tries at once when the tab comes back while it waits to try again', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(503, {}));
+    // A 401 got no answer from its refresh; the token in the store is not due, so only the retry would refresh.
+    const sent = fakeServer({ status: 401 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ statusCode: 503 });
+    expect(sent).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    scheduler.initTokenRefreshScheduler();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('refreshes once when the tab comes back while the proactive timer is still pending', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    const token = jwtExpiringIn(600);
+    useAuthStore.setState({ accessToken: token });
+    scheduler.initTokenRefreshScheduler();
+    scheduler.scheduleFromToken(token);
+    // A 401 whose refresh got no answer: a retry is waiting, and the proactive timer (at 510 s) is still armed.
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+    fakeServer({ status: 401 });
+    await expect(apiClient.get('/api/v1/users')).rejects.toMatchObject({ statusCode: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValue(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Past the old timer's 510 s; the new token's timer is not due until 3510 s.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('re-arms a very long-lived token instead of firing early', async () => {

@@ -5,6 +5,7 @@ import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
   sessionOver,
+  accountChanged,
   isTokenExpired,
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
@@ -52,6 +53,12 @@ const sessionUnavailable = (error?: AxiosError): ProcessedError => ({
   message: sessionUnavailableMessage(),
   originalError: error,
 });
+
+/** What a request made as one account gets instead of being sent as another: a quiet cancel (no toast). */
+const cancelledForAccount = (): Promise<never> => {
+  const cancelled: ProcessedError = { type: ErrorType.REQUEST_CANCELLED, message: 'Request was cancelled.' };
+  return Promise.reject(cancelled);
+};
 
 /** Safe methods (RFC 9110 9.2.1): sending one again cannot repeat a change. */
 const REPLAYABLE_METHODS = new Set(['get', 'head', 'options']);
@@ -138,9 +145,15 @@ apiClient.interceptors.request.use(
     if (accessToken && isTokenExpired(accessToken)) {
       // A session that is over (signed out now, or earlier) drops the request: none of its
       // handlers may write into the reset stores.
-      const outcome = await refreshOrSignOut();
+      const outcome = await refreshOrSignOut(accessToken);
       if (sessionOver(outcome)) return dropped();
-      if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
+      if (outcome === 'account-changed') return cancelledForAccount();
+      if (outcome === 'refreshed') {
+        // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+        const refreshed = useAuthStore.getState().accessToken;
+        if (accountChanged(accessToken, refreshed)) return cancelledForAccount();
+        accessToken = refreshed;
+      }
       // No answer: send with the token we have and let the server decide, unless it has run out.
       else if (isTokenExpired(accessToken, 0)) return rejectShown(sessionUnavailable(), config);
     }
@@ -199,14 +212,19 @@ apiClient.interceptors.response.use(
 
       // If a refresh is already running (timer or another 401), this just
       // awaits the existing promise; otherwise it kicks off a new one.
-      const outcome = await refreshOrSignOut();
+      const sentAuth = originalRequest.headers?.Authorization;
+      const sentWith = typeof sentAuth === 'string' && sentAuth.startsWith('Bearer ') ? sentAuth.substring(7) : null;
+      const outcome = await refreshOrSignOut(sentWith);
       if (outcome === 'unreachable') return rejectShown(sessionUnavailable(error), originalRequest);
+      if (outcome === 'account-changed') return cancelledForAccount();
       if (outcome !== 'refreshed') return dropped();
       // A write is never sent twice: the server may have acted on it before it answered 401.
       if (!REPLAYABLE_METHODS.has(originalRequest.method ?? 'get')) {
         return rejectShown(refusedWithSession(error), originalRequest);
       }
       const newToken = useAuthStore.getState().accessToken;
+      // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+      if (accountChanged(sentWith, newToken)) return cancelledForAccount();
       if (newToken) {
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
       }

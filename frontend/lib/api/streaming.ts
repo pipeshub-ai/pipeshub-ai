@@ -40,6 +40,7 @@ import {
   isTokenExpired,
   isRefreshInProgress,
   refreshOrSignOut,
+  accountChanged,
   sessionOver,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
@@ -147,7 +148,9 @@ async function readUploadHttpError(response: Response): Promise<UploadHttpError>
  *
  * Returns the token (possibly refreshed), or `{ sessionExpired: true }` when
  * the refresh failed (the person has been signed out) or the session ended
- * while it was out. Caller should `onError` and bail.
+ * while it was out. Caller should `onError` and bail. Throws an `AbortError`
+ * (a quiet stop) when the refresh handed over another account's token: the
+ * stream is never sent as them.
  */
 async function ensureFreshToken(): Promise<
   { token: string | null; sessionExpired: false } | { token: null; sessionExpired: true }
@@ -158,13 +161,20 @@ async function ensureFreshToken(): Promise<
   }
 
   if (isRefreshInProgress() || isTokenExpired(token)) {
-    const outcome = await refreshOrSignOut();
+    const outcome = await refreshOrSignOut(token);
     if (sessionOver(outcome)) {
       return { token: null, sessionExpired: true };
     }
     // No answer keeps the token we have; one that has run out fails this stream, not the session.
     if (outcome === 'unreachable' && isTokenExpired(token, 0)) throw new StreamError(sessionUnavailableMessage());
-    token = useAuthStore.getState().accessToken;
+    // Read and checked in one step: the store may have changed since refreshOrSignOut checked it.
+    const refreshed = useAuthStore.getState().accessToken;
+    if (outcome === 'account-changed' || accountChanged(token, refreshed)) {
+      const stop = new Error('The signed-in account changed.');
+      stop.name = 'AbortError';
+      throw stop;
+    }
+    token = refreshed;
   }
 
   return { token, sessionExpired: false };

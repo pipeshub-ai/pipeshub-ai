@@ -67,9 +67,17 @@ export function registerReconnectingNotice(listener: ReconnectingListener): void
   reconnectingListener = listener;
 }
 
+let reconnectingNow = false;
+
 /** Show (or clear) the one non-destructive notice that the session cannot be checked right now. */
 export function setSessionReconnecting(reconnecting: boolean): void {
+  reconnectingNow = reconnecting;
   reconnectingListener?.(reconnecting);
+}
+
+/** True while the session could not be checked and the notice says so. */
+export function isSessionReconnecting(): boolean {
+  return reconnectingNow;
 }
 
 /**

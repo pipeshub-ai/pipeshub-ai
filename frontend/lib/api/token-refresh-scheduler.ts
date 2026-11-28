@@ -17,7 +17,8 @@
  *    in while this one was signed out (this one restores from the session).
  * 3. `visibilitychange` — when the tab returns to foreground (e.g. after
  *    laptop sleep, where setTimeout firing is unreliable) the scheduler
- *    re-checks expiry and refreshes immediately if needed.
+ *    re-checks expiry and refreshes immediately if needed, or at once while
+ *    the session could not be checked (the Reconnecting… notice shows).
  */
 
 import { restoreSession } from '@/lib/store/auth-store';
@@ -29,7 +30,7 @@ import {
   getTokenExpirySeconds,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
-import { createCooldownRetrier, setSessionReconnecting } from '@/lib/api/refresh-retry';
+import { createCooldownRetrier, isSessionReconnecting, setSessionReconnecting } from '@/lib/api/refresh-retry';
 // Registers the Reconnecting… notice the refresh retries show.
 import '@/lib/api/session-notice';
 /**
@@ -59,10 +60,9 @@ const cooldownRetry = createCooldownRetrier(() => {
 });
 
 async function refreshNow(): Promise<void> {
-  // Clear before awaiting so a second timer cannot stack on top of this one.
-  // The post-success setTokens will re-arm the timer via the zustand subscription.
-  timerId = null;
-  scheduledForToken = null;
+  // Cancel before awaiting: a pending timer (this refresh came from the tab returning) would fire a
+  // second refresh. The post-success setTokens will re-arm the timer via the zustand subscription.
+  clearTimer();
 
   // A refusal logs the user out, unless the session already ended meanwhile; then the timer may
   // already belong to the next person, so it is left alone.
@@ -187,7 +187,8 @@ function handleVisibilityChange(): void {
   }
   const token = useAuthStore.getState().accessToken;
   if (!token) return;
-  if (isTokenExpired(token)) {
+  // Back in front while the session could not be checked: try now rather than wait out the cooldown.
+  if (isTokenExpired(token) || isSessionReconnecting()) {
     // Back in front of the person: a refresh that was waiting out the outage can go now.
     cooldownRetry.reset();
     void refreshNow();

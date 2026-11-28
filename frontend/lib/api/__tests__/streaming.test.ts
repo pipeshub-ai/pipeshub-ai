@@ -256,6 +256,27 @@ describe('token handshake before a stream', () => {
     expect(sink.errors.map((e) => e.message)).toEqual([STREAM_ERROR_MESSAGES.sessionExpired]);
   });
 
+  it.each([
+    ['streamSSERequest', (sink: ReturnType<typeof collect>) => streamSSERequest('/s', {}, sink)],
+    ['streamSSEUpload', (sink: ReturnType<typeof collect>) => streamSSEUpload('/s', new FormData(), sink)],
+    ['streamSSEGet', (sink: ReturnType<typeof collect>) => streamSSEGet('/s', sink)],
+  ])('%s does not stream as another account when the refresh hands one over', async (_name, start) => {
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    const mine = jwtExpiringIn(30, { userId: 'u1', orgId: 'o1' });
+    useAuthStore.setState({ accessToken: mine });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: jwtExpiringIn(3600, { userId: 'u2', orgId: 'o1' }) }));
+
+    const sink = collect();
+    await start(sink);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the refresh only; the stream was never requested
+    expect(sink.errors).toEqual([]);
+    expect(useAuthStore.getState().accessToken).toBe(mine);
+    expect(assign).toHaveBeenCalledWith('/chat/');
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
   it('keeps the person signed in and streams with the token it has when the refresh gets no answer', async () => {
     const old = jwtExpiringIn(30);
     useAuthStore.setState({ accessToken: old });
