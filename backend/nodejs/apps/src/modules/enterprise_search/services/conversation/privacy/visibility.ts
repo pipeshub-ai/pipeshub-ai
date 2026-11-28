@@ -5726,6 +5726,14 @@ const hiddenByView = (
 };
 
 /**
+ * Whether a stored answer's run was given what earlier turns' tools returned (`earlierResults`, written when a turn is
+ * given them): nothing names the records those came from, so only its asker may read it. A row written before the mark
+ * was recorded carries none and is judged by its own sources alone.
+ */
+const givenEarlierResults = (row: object): boolean =>
+  (row as Plain).earlierResults === true;
+
+/**
  * Whether an answer before the first of `rows` in their chat is hidden from the reader by the per-record view: `hidden`,
  * `unchecked` while one could not be checked (or the rows before are too many to read), else undefined. Rows that
  * carry no place in their chat (a page as a response gives it) are placed by their stored ids; rows the store cannot
@@ -5819,7 +5827,12 @@ async function hiddenBefore(
   viewed.forEach((view, i) => {
     const row = judged[i];
     if (!row || !isLabelledType(row)) return;
-    const hidden = hiddenByView(view as Plain);
+    // Another person's answer given what earlier turns' tools returned is hidden from the reader as `withoutLabels` hides it.
+    const hidden =
+      hiddenByView(view as Plain) ??
+      (givenEarlierResults(row) && answerOfAnother(row, viewer, ctx.ownerId)
+        ? 'hidden'
+        : undefined);
     if (hidden === 'hidden' || (hidden === 'unchecked' && out === undefined))
       out = hidden;
   });
@@ -5830,8 +5843,9 @@ async function hiddenBefore(
  * The per-record view's rows as the reader is given them when no answer carries a label (the label rule is off). No
  * label says what an answer's run was given, and every earlier row of its chat went to it as history, so another
  * person's answer is shown only while no answer before it is hidden from the reader: after one that is, it is hidden as
- * built on it (`parent`), or as unchecked while that one could not be checked. `before` says how the answers before the
- * rows stand. Someone else's answer the per-record view hid says why as the label rule says it (`hiddenRowFor`): sources
+ * built on it (`parent`), or as unchecked while that one could not be checked. Another person's answer whose run was
+ * given what earlier turns' tools returned is hidden as its sources are (`givenEarlierResults`), and hides what follows
+ * it the same way. `before` says how the answers before the rows stand. Someone else's answer the per-record view hid says why as the label rule says it (`hiddenRowFor`): sources
  * the reader can't open, which only its asker had and lost. Someone else's failed run says only that it failed, as the
  * label rule says it (`failedRowFor`). The reader's own answers are the per-record view's alone.
  */
@@ -5868,6 +5882,19 @@ function withoutLabels<M extends object>(
           { verdict: hidden, reason: 'sources' },
           hiddenFor,
         ) as M;
+    } else if (another && givenEarlierResults(row)) {
+      hidden = 'hidden';
+      out = hiddenRowFor(
+        row,
+        { verdict: 'hidden', reason: 'sources' },
+        hiddenFor,
+      ) as M;
+      if (id !== undefined)
+        verdicts.set(id, {
+          verdict: 'hidden',
+          reason: 'sources',
+          validUntil: ctx.now + UNCHECKED_TTL_MS,
+        });
     } else if (another && before !== undefined) {
       hidden = before;
       out = hiddenRowFor(
@@ -6261,11 +6288,23 @@ export async function includableRows<R extends object>(
     return stored !== undefined && tree.covered(stored, versionOf(stored));
   };
   const deps: VisibilityDeps = { ...configured, ...opts.deps };
-  // No label rule: the history the sender's own filter built goes as it is, marked.
+  // No label rule: the history the sender's own filter built, marked, with another person's answers given as the
+  // reader's own view gives them (`withoutLabels`): never one whose run was given what earlier turns' tools returned,
+  // and none after an answer the sender may not read, which went to every later run as history.
   if (judged.perRecord) {
+    let before = false;
     return rows.map((m) => {
-      const type = (m as Plain).messageType;
-      return type === 'system' || type === 'feedback' ? m : sealed(m);
+      const row = m as unknown as ReaderRow & Plain;
+      const type = row.messageType;
+      if (type === 'system' || type === 'feedback') return m;
+      if (!isLabelledType(row)) return sealed(m);
+      const withheld = isWithheld(row);
+      const cut =
+        !withheld &&
+        answerOfAnother(row, reader, ownerId) &&
+        (before || givenEarlierResults(row));
+      if (withheld || cut) before = true;
+      return cut ? blank(m) : sealed(m);
     });
   }
   /** A row read with no id has no stored label: shown before labels to its asker and to readers from then. */

@@ -19,6 +19,8 @@ export interface TurnRun {
   readonly replaces?: string;
   /** A regeneration that edits its question: the new question, saved with the new answer and shown with it meanwhile. */
   readonly editedQuestion?: string;
+  /** The turn's model was given what earlier turns' tools returned (`givesEarlierResults`): every row it writes says so. */
+  readonly earlierResults?: true;
 }
 
 /** Stamps a row a turn produces (`bot_response`, `error`, `tool_call`) with who asked, what it answers and which run wrote it. */
@@ -33,6 +35,7 @@ export const stampTurnRow = (message: IMessage, run?: TurnRun): IMessage =>
         ...(run.respondingAgentKey && {
           respondingAgentKey: run.respondingAgentKey,
         }),
+        ...(run.earlierResults === true && { earlierResults: true }),
       };
 
 /** Runs a turn write fenced on the lease, or plainly on `dbSession` when the turn holds none. */

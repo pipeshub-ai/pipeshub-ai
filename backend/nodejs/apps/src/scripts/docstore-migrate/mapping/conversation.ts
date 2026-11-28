@@ -88,6 +88,7 @@ export const MESSAGE_HARNESS_FIELDS = [
   'notFound',
   'limits',
   'command',
+  'earlierResults',
 ];
 
 const jsonArray = (col: string, path: string): FieldMap => ({

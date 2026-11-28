@@ -238,6 +238,56 @@ describe('a follow-up built on answers hidden from a reader, in a build whose an
     expect(JSON.stringify(messages)).to.not.contain('CANARY')
     expect(answersOf(messages)[3].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
   })
+
+  /** The owner's chat: an open answer, then one their run wrote from what the first one's search returned. */
+  const givenChat = (marked: boolean): any[] =>
+    [
+      question('What does the open handbook say about launches?'),
+      answer('Launches go out on Tuesdays [1].', [citation(REC_OPEN, 'Tuesdays')]),
+      question('Without searching, what else did that search find?'),
+      { ...answer(`It also found ${FIRST_SECRET}.`), ...(marked && { earlierResults: true }) },
+      question('Anything else?'),
+      answer('That is all.'),
+    ].map((row, i) => ({ _id: nextId(), sessionId: SESSION, orgId: ORG, seq: i + 1, createdAt: new Date(Date.UTC(2026, 10, 27, 13, i)), ...row }))
+
+  it('an answer whose run was given what earlier turns returned is hidden from every reader, even one who opens every record, and so is what follows', async () => {
+    stubAccess()
+    stubChat(givenChat(true))
+
+    for (const reader of [READER_A, READER_B, READER_C]) {
+      const messages = await readAs(reader)
+      const [open, given, after] = answersOf(messages)
+      expect(open.content, reader).to.equal('Launches go out on Tuesdays [1].')
+      expect(given.answerHidden, reader).to.deep.equal({ redacted: true, reason: 'no_access' })
+      expect(after.answerHidden, reader).to.deep.equal({ redacted: true, reason: 'no_access' })
+      expect(JSON.stringify(messages), reader).to.not.contain(FIRST_SECRET)
+    }
+    expect(answersOf(await readAs(OWNER)).map((m) => m.content)).to.deep.equal([
+      'Launches go out on Tuesdays [1].',
+      `It also found ${FIRST_SECRET}.`,
+      'That is all.',
+    ])
+  })
+
+  it('stays hidden when it is on an earlier page than the answers that follow it', async () => {
+    stubAccess()
+    stubChat(givenChat(true))
+
+    // The last page holds only the last turn: the marked answer before it still hides it.
+    const [after] = answersOf(await readAs(READER_C, { page: '1', limit: '2' }))
+    expect(after.answerHidden).to.deep.equal({ redacted: true, reason: 'no_access' })
+  })
+
+  it('an answer stored before the mark was recorded is judged by its own citations alone', async () => {
+    stubAccess()
+    stubChat(givenChat(false))
+
+    expect(answersOf(await readAs(READER_C)).map((m) => m.content)).to.deep.equal([
+      'Launches go out on Tuesdays [1].',
+      `It also found ${FIRST_SECRET}.`,
+      'That is all.',
+    ])
+  })
 })
 
 /**

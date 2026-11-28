@@ -159,6 +159,7 @@ export interface MessageDto {
   notFound?: IMessage['notFound'];
   limits?: IMessage['limits'];
   command?: IMessage['command'];
+  earlierResults?: IMessage['earlierResults'];
   label?: IMessage['label'];
 }
 

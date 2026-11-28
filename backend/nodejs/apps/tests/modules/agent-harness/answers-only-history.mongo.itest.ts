@@ -174,6 +174,24 @@ describe('a chat others read, as admission on a MongoDB replica set decides it',
     expect((history[1]?.['tool_results'] as Array<{ tool_name: string }>).map((r) => r.tool_name)).to.deep.equal(['search']);
   });
 
+  it('the turns first, then the share: an answer whose run was given the search says so, and no other does', async () => {
+    const sessionId = await adaSearched();
+    const second = await send(sessionId, 'and its budget?');
+    expect(second.run.earlierResults, 'admitted with the search in its history').to.equal(true);
+    await answer(second.run, 'It is 4.2M.');
+    await shareConversation(sessionId, ben, 'read');
+    const third = await send(sessionId, 'and the rest?');
+    expect(third.run).to.not.have.property('earlierResults');
+    await answer(third.run, 'I would search again for that.');
+
+    const answers = await ChatSessionMessage.find({ sessionId, messageType: 'bot_response' }).sort({ seq: 1 }).lean();
+    expect(answers.map((a) => [a.content, a.earlierResults])).to.deep.equal([
+      [PUBLIC, undefined],
+      ['It is 4.2M.', true],
+      ['I would search again for that.', undefined],
+    ]);
+  });
+
   it('each run follows the chat as it is when it starts: shared, then unshared again', async () => {
     const sessionId = await adaSearched();
     const second = await send(sessionId, 'one');

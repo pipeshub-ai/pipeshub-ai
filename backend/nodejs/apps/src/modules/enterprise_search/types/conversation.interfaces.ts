@@ -309,6 +309,11 @@ export interface IMessage {
   /** Copied from another conversation by a fork: it names none of that conversation's runs (FORKFIX). */
   copied?: boolean;
   /**
+   * The run that wrote the row was given what earlier turns' tools returned, which name no record: the reader check
+   * hides such an answer from everyone but its asker. Absent on rows written before it was recorded.
+   */
+  earlierResults?: boolean;
+  /**
    * The run that wrote the row: the activity panel finds a durable run after a reload (UX5), the row's archived label
    * keeps it, and a file the run wrote names it.
    */

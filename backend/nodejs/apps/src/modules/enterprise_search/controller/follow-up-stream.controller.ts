@@ -50,6 +50,7 @@ import {
   streamFrameOf,
 } from '../utils/utils';
 import { viewerOf } from '../utils/viewer-redaction';
+import { givesEarlierResults } from '../utils/earlier-turns';
 import { callerIdentityOf } from '../../../libs/types/caller-identity';
 
 const logger = Logger.getInstance({ service: 'Follow-up stream' });
@@ -185,6 +186,8 @@ export const followUpStream = (
         userId,
       });
       const context = await followUpContext(req, turn, deps);
+      if (givesEarlierResults(context.previousConversations))
+        pump.markEarlierResults();
       const aiRequest = buildAiChatRequest(
         responder.target,
         aiRequestBody(body, attachments, turn.run),

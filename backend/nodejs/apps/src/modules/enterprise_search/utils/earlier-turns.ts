@@ -32,6 +32,22 @@ const isAskResult = (row: unknown): boolean => {
 };
 
 /**
+ * Whether history turns give a model what earlier turns' tools returned: a tool result other than a question card the
+ * person answered, or the reference data an earlier answer's tools returned. Nothing records which records those came
+ * from, so the rows a turn given them writes are marked (`earlierResults`), and the reader check hides that answer from
+ * everyone but its asker. In a chat others read a turn is given none (`answersOnlyTurns`).
+ */
+export const givesEarlierResults = (
+  turns: ReadonlyArray<Record<string, unknown>>,
+): boolean =>
+  turns.some(
+    (turn) =>
+      (Array.isArray(turn.tool_results) &&
+        turn.tool_results.some((row) => !isAskResult(row))) ||
+      (Array.isArray(turn.referenceData) && turn.referenceData.length > 0),
+  );
+
+/**
  * History turns as a turn in a chat others read is given them: each earlier answer without the tool results replayed
  * under it (`tool_results`, except the question cards the person answered) and without the reference data its tools
  * returned (`referenceData`). Questions, their attachments and the answers' text are unchanged.

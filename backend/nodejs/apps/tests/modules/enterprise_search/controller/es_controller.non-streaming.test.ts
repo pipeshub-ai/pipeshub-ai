@@ -523,6 +523,44 @@ describe('es_controller non-streaming chat routes', () => {
       })
     }
 
+    it('a follow-up given what an earlier turn found, in a chat nobody else reads, writes its answer marked so', async () => {
+      const store = new InMemoryChatStore()
+      const ai = new FakeAIBackend()
+      store.install()
+      ai.install()
+      const send = async (handler: Handler, params: Record<string, string>, query: string) => {
+        const res = new FakeSSEResponse()
+        const next = sinon.stub()
+        await handler(
+          {
+            headers: { authorization: 'Bearer user-token' },
+            params,
+            body: { query },
+            query: {},
+            user: { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
+            context: { requestId: 'req-earlier-results' },
+          } as never,
+          res as never,
+          next as never,
+        )
+        expect(next.called, String(next.firstCall?.args[0]?.message)).to.equal(false)
+        return res
+      }
+      ai.reply(exactPath('/api/v1/chat'), 200, answer('A1', { referenceData: [{ name: 'Alpha plan', id: 'a1', type: 'record', app: 'drive' }] }))
+      const first = await send(controller.createConversation(appConfig, turnDeps()) as Handler, {}, 'Q1')
+      const conversationId = first.headers[CONVERSATION_ID_HEADER.toLowerCase()]!
+      ai.resetReplies()
+      ai.reply(exactPath('/api/v1/chat'), 200, answer('A2'))
+      await send(behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler), { conversationId }, 'Q2')
+
+      expect(ai.calls[1]!.body.previousConversations).to.satisfy((turns: Array<{ referenceData?: unknown[] }>) => turns.some((t) => (t.referenceData?.length ?? 0) > 0))
+      const answers = store.messagesOf(conversationId).filter((m) => m.messageType === 'bot_response')
+      expect(answers.map((m) => [m.content, m.earlierResults])).to.deep.equal([
+        ['A1', undefined],
+        ['A2', true],
+      ])
+    })
+
     it('a follow-up continues a conversation that was created by the streaming route', async () => {
       const flow = flows.find((f) => f.name === 'addMessage')!
       // seedConversation writes the same session/message shape the streaming handlers persist.

@@ -261,6 +261,8 @@ export class PgHarnessConversationWriter implements ConversationWriter<Tx> {
           ? { senderId: run.actorId }
           : {}),
         ...(label !== undefined ? { label } : {}),
+        // Its run was given what earlier turns' tools returned: shown to its asker alone.
+        ...(run.earlierResults === true ? { earlierResults: true } : {}),
       });
     }
     const change = classifiedFailureChange(data);

@@ -83,6 +83,7 @@ export function shapeHarnessFields(m: unknown): Obj | null {
     'runOutcome',
     'notFound',
     'limits',
+    'earlierResults',
   ]);
   const v = isObj(m) ? m : {};
   if (isObj(v.errorStop))

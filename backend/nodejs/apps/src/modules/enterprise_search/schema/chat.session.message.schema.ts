@@ -374,6 +374,8 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     unavailableTools: { type: [unavailableToolSchema], default: undefined },
     // `bot_response` / `error`: the version of the stored content, new on every write of it.
     labelVer: { type: String },
+    // Its run was given what earlier turns' tools returned: shown to its asker alone (`givesEarlierResults`).
+    earlierResults: { type: Boolean },
     // What the model calls behind the answer were given, stored whole. A read gets it only by asking for it, so a
     // read that forgets it gets no label, and a row without a label is shown only to its asker.
     provenance: { type: Schema.Types.Mixed, select: false },

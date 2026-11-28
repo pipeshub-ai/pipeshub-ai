@@ -914,6 +914,14 @@ export class TurnStreamPump {
     tellLiveAnswer(tell, this.o.conversation._id);
   }
 
+  /**
+   * The turn's model was given what earlier turns' tools returned (`givesEarlierResults`): every row the pump writes
+   * from now on says so. Called once its history is built, before the stream it pumps is attached.
+   */
+  markEarlierResults(): void {
+    this.o.run = { ...this.o.run, earlierResults: true };
+  }
+
   private claim(): boolean {
     if (this.finished) return false;
     this.finished = true;

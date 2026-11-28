@@ -255,6 +255,7 @@ import {
 import { refuseRunWhileShuttingDown, trackRun } from '../utils/active-runs';
 import { catchAsync } from '../../../libs/middlewares/catch-async.middleware';
 import { regenerateQuery } from '../utils/chat-command';
+import { givesEarlierResults } from '../utils/earlier-turns';
 import { keepsTypedOnly } from '../../agent-harness/domain/commands';
 import { getCurrentOrgId } from '../../../libs/context/orgContext';
 const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
@@ -3008,7 +3009,7 @@ async function regenerateAnswersInternal(
     // Set only once the request is accepted: an error that reaches the catch below with a
     // conversation in hand replaces the stored answer, which a refused edit must not do.
     existingConversation = validationResult.conversation;
-    const turnRun: TurnRun = {
+    let turnRun: TurnRun = {
       lease: gate.lease,
       requestedBy: new mongoose.Types.ObjectId(String(userId)),
       inReplyTo: userQuery._id,
@@ -3078,6 +3079,11 @@ async function regenerateAnswersInternal(
       gate,
     });
     const previousConversations = regenContext.previousConversations;
+    // Given what earlier turns' tools returned: the rows the new answer writes say so.
+    if (givesEarlierResults(previousConversations)) {
+      turnRun = { ...turnRun, earlierResults: true };
+      run = turnRun;
+    }
 
     // The title of a chat is its first question, so editing that question moves the title too,
     // unless the user already renamed the chat. Only the owner's edit does: where others may edit too,

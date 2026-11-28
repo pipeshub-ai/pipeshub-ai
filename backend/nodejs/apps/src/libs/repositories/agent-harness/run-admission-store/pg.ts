@@ -69,7 +69,10 @@ import {
   RunAudience,
   runAudience,
 } from '../../../../modules/agent-harness/domain/session-audience';
-import { answersOnlyTurns } from '../../../../modules/enterprise_search/utils/earlier-turns';
+import {
+  answersOnlyTurns,
+  givesEarlierResults,
+} from '../../../../modules/enterprise_search/utils/earlier-turns';
 import {
   LabelledTurn,
   MAX_VISIBLE_RUNS,
@@ -550,6 +553,10 @@ export class PgRunAdmissionStore
       }),
       activeSessionKey: activeSessionKey(command.orgId, sessionId),
       ...(audience !== null ? { sessionRole: audience.sessionRole } : {}),
+      // Given what earlier turns' tools returned (a chat nobody else reads): its answer is marked so.
+      ...(givesEarlierResults(previousConversations)
+        ? { earlierResults: true as const }
+        : {}),
     };
     const history = await this.historyContent.store(
       run,

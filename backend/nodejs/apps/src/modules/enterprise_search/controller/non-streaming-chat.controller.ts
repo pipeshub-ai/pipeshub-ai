@@ -65,6 +65,7 @@ import {
 } from '../services/conversation/turn/turn-lifecycle';
 import { TurnRun } from '../services/conversation/turn/turn-run';
 import { RUN_ID_HEADER } from '../utils/turn-stream';
+import { givesEarlierResults } from '../utils/earlier-turns';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 
@@ -212,6 +213,13 @@ const nonStreamingTurn =
           aiPayload,
           historyLabel: previousLabel,
         } = await followUpContext(req, turn, deps));
+        // Given what earlier turns' tools returned: the rows this turn writes say so.
+        if (
+          givesEarlierResults(
+            previousConversations as Array<Record<string, unknown>>,
+          )
+        )
+          run = { ...run, earlierResults: true };
       }
 
       const conversationId = String(conversation._id);

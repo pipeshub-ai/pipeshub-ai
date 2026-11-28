@@ -218,6 +218,19 @@ describe('durable follow-ups that reuse an earlier search without citing it, in 
     expect(messages[1].answerHidden).to.deep.equal(HIDDEN)
   })
 
+  it('run while nobody else read the chat, as the harness marks them, are hidden even from a reader who opens every record', async () => {
+    stubAccess()
+    // Each follow-up's run was given the searches before it: the harness stores that on its answer.
+    const rows = durableChat().map((row: any, i: number) => (row.messageType === 'bot_response' && i > 1 ? { ...row, earlierResults: true } : row))
+    stubChat(rows)
+
+    const forC = answersOf(await readAs(READER_C))
+    expect(forC[0].content).to.equal('Room 4 [1].')
+    expect(forC.slice(1).map((a) => a.answerHidden)).to.deep.equal([HIDDEN, HIDDEN, HIDDEN])
+    for (const word of [CLOSED_WORD, REUSED_WORD, AGAIN_WORD]) expect(JSON.stringify(forC)).to.not.contain(word)
+    expect(answersOf(await readAs(OWNER)).map((a) => a.answerHidden)).to.deep.equal([undefined, undefined, undefined, undefined])
+  })
+
   it('are shown, text only, to a reader who can see every answer before them; their asker reads them whole', async () => {
     stubAccess()
     stubChat(durableChat())

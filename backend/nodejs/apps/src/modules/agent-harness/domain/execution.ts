@@ -155,6 +155,11 @@ export interface HarnessRun {
    */
   sessionRole?: TurnRole;
   /**
+   * The run's model was given what earlier turns' tools returned (admitted in a chat nobody else read, after turns
+   * that used tools): the answer it writes is marked so (`earlierResults`). Absent otherwise.
+   */
+  earlierResults?: true;
+  /**
    * Who the run acts as, who started it and on whose authority (OWD-2),
    * from verified auth at admission; a child carries its parent's. Absent on
    * runs admitted before it was recorded.
