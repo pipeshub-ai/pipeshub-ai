@@ -330,8 +330,13 @@ The two paid features this repository ships, each in its own named `ee/` directo
 key: permission sync's readers (`backend/python/app/ee/permission_sync/`, tests in
 `backend/python/tests/unit/ee/permission_sync/`) and the licence check (`backend/nodejs/apps/src/ee/modules/license/`,
 tests in `backend/nodejs/apps/tests/ee/modules/license/`). The guard admits only these directories and imports that
-resolve into them (`OPEN_EE_ROOTS`). Every other `ee/` path fails as before, and so does every other import of an
-`ee/` directory, whether absolute or relative.
+resolve into them (`OPEN_EE_ROOTS`), plus the `LICENSE` file at the top of each of those `ee/` directories. Every
+other `ee/` path fails as before, and so does every other import of an `ee/` directory, whether absolute or relative.
+
+Code in these `ee/` directories is under the PipesHub Enterprise License (the `LICENSE` file in each), not Apache 2.0:
+it is free to develop, test, evaluate and prototype with, and production use needs a licence key. Each file there
+starts with a short header saying so. The root `NOTICE` explains the split. Contributions to it are accepted under the
+[Contributor License Agreement](#contributor-license-agreement), like the rest of the repository.
 
 `scripts/edition_guard.py` keeps the repository neutral (CI: `.github/workflows/edition-guard.yml`). It fails a
 change that adds a file under an `ee/` directory (other than those above) or an edition-only build file, adds an
