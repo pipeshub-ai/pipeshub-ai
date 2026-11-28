@@ -412,21 +412,26 @@ class CoreMixin(PgBase):
 
         async def go(tx: Tx) -> None:
             if collection == "permission":   # one grant per pair, the last type wins (as a MERGE does); the types written together stay together
-                # Probe each pair of the batch through the edge key (an index lookup per pair), then delete what was found: a statement that
-                # joins the batch to the table scans every permission edge of the org when there are no statistics.
+                # Read the grants among the batch's holders and targets as one set, each column bound to its distinct values, then match them
+                # to the pairs in memory: whatever the plan, the read is bounded by the grants of the batch's targets. A per-pair probe joined
+                # to the table was planned as a join over every permission edge of the org when a custom plan knew the batch size or the
+                # statistics were stale.
                 pairs = {}
                 for r in rows.values():
                     pairs.setdefault((r["fc"], r["fi"], r["tc"], r["ti"]), []).append(r["k"])
                 keys = list(pairs)
-                stale = await tx.fetch("""/* pipeshub:graph.batch_create_edges_retype_probe */ SELECT f.fc, f.fi, f.tc, f.ti, e.ekey
-                    FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS f(fc, fi, tc, ti, ks)
-                    CROSS JOIN LATERAL (SELECT x.ekey FROM graph.edges x WHERE x.org_id = $1 AND x.coll = 'permission' AND x.from_id = f.fi AND x.from_coll = f.fc
-                      AND x.to_id = f.ti AND x.to_coll = f.tc AND NOT (f.ks::jsonb ? x.ekey)) e""",
-                                       org, [k[0] for k in keys], [k[1] for k in keys], [k[2] for k in keys], [k[3] for k in keys], [_j(pairs[k]) for k in keys])
+                stale = await tx.fetch("""/* pipeshub:graph.batch_create_edges_retype_probe */ WITH c AS MATERIALIZED (SELECT x.from_coll, x.from_id, x.to_coll, x.to_id, x.ekey
+                    FROM graph.edges x WHERE x.org_id = $1 AND x.coll = 'permission' AND x.from_coll = ANY($7::text[]) AND x.from_id = ANY($8::text[])
+                      AND x.to_coll = ANY($9::text[]) AND x.to_id = ANY($10::text[]))
+                    SELECT f.fc, f.fi, f.tc, f.ti, c.ekey FROM c JOIN unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS f(fc, fi, tc, ti, ks)
+                      ON c.from_coll = f.fc AND c.from_id = f.fi AND c.to_coll = f.tc AND c.to_id = f.ti WHERE NOT (f.ks::jsonb ? c.ekey)""",
+                                       org, *([k[i] for k in keys] for i in range(4)), [_j(pairs[k]) for k in keys], *(sorted({k[i] for k in keys}) for i in range(4)))
                 if stale:
-                    await tx.execute("""/* pipeshub:graph.batch_create_edges_retype */ DELETE FROM graph.edges e USING unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS d(fc, fi, tc, ti, k)
-                        WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k""",
-                                     org, [r["fc"] for r in stale], [r["fi"] for r in stale], [r["tc"] for r in stale], [r["ti"] for r in stale], [r["ekey"] for r in stale])
+                    # custom plan: a generic one searched edges_by_target once per pair; the custom one reads the bound set once
+                    await tx.fetch_custom_plan("""/* pipeshub:graph.batch_create_edges_retype */ DELETE FROM graph.edges e USING unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS d(fc, fi, tc, ti, k)
+                        WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = ANY($7::text[]) AND e.from_id = ANY($8::text[]) AND e.to_coll = ANY($9::text[])
+                        AND e.to_id = ANY($10::text[]) AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k RETURNING 1""",
+                                               org, *([r[c] for r in stale] for c in ("fc", "fi", "tc", "ti", "ekey")), *(sorted({r[c] for r in stale}) for c in ("fc", "fi", "tc", "ti")))
             await tx.execute("""/* pipeshub:graph.batch_create_edges */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
