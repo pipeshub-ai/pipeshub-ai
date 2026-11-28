@@ -186,8 +186,13 @@ RUN cd /app/python && python -c 'from app.containers.query import QueryAppContai
 
 # Copy the process monitor script
 COPY deployment/process_monitor.sh /app/process_monitor.sh
+COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /app/process_monitor.sh && \
+# Windows Git (core.autocrlf=true) checks these scripts out as CRLF. A CR in
+# `#!/bin/bash` makes the kernel look for `/bin/bash\r`, and the container
+# then dies with: exec: /app/process_monitor.sh: not found.
+RUN sed -i 's/\r$//' /app/process_monitor.sh /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /app/process_monitor.sh && \
     install -d -o 1000 -g 1000 /app/python/logs /data/pipeshub && \
     chown 1000:1000 /app /app/backend
 
@@ -195,7 +200,6 @@ RUN chmod +x /app/process_monitor.sh && \
 # services create log and state files in, belong to the runtime user. The image
 # starts as root so the entrypoint can take over data from earlier root-running
 # releases; it drops to uid 1000 with no capabilities before any service starts.
-COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # A container logs to stdout and the platform keeps it (Compose's logging
 # driver, the kubelet). Node's file logs are opt-in to a declared, writable
