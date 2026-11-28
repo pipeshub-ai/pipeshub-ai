@@ -1,14 +1,13 @@
 # The checks branch protection requires: job check names (a job's `name:`, or its id when it has none) of jobs
 # that run on every pull request, with no label and no path filter, so they report on every pull request. Heavy
 # `ci:` suites are advisory and never listed. scripts/test_ci_label_gate.py checks each entry.
+# OpenAPI Spec Validation is left out while that workflow is disabled in the repository settings; it would never report.
 ruff-lint-pr
 pyright-type-check-pr
 validate-docker-compose
 Lint GitHub Actions workflows
 Supply chain (locks, installs, image pins)
 Connector integration coverage
-Lint the spec with Spectral
-Detect breaking changes
 Dependency review
 Edition guard
 integration-suite-guards
