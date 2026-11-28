@@ -41,6 +41,14 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
     IncompleteSyncError,
 )
+from app.connectors.core.base.connector.failure_notices import (
+    ReconnectRequiredError,
+    note_token_accepted,
+    notify_init_failed,
+    notify_reconnect,
+    renew_access_token,
+    switched_off_after_rejection,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -852,6 +860,53 @@ class JiraConnector(BaseConnector):
             # (return False only yields a generic "check credentials" message).
             raise ConnectorInitError(str(e)) from e
 
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        if isinstance(getattr(error, "__cause__", None), AtlassianMultiSiteError):
+            return  # init already told them
+        await notify_init_failed(self, "Jira", error)
+
+    async def _notify_if_signed_out(self, error: Exception) -> bool:
+        """Whether ``error`` ended the run because Jira no longer accepts the sign-in, after telling its owner."""
+        if not isinstance(error, ReconnectRequiredError):
+            return False
+        if not await switched_off_after_rejection(self, error):
+            await notify_reconnect(self, str(error))
+        return True
+
+    async def _stop_if_signed_out(self) -> None:
+        """Raise when Jira no longer accepts the sign-in: a dead token reads as an anonymous
+        visitor, to whom projects and people look gone. An answer that does not say so is no reason to stop."""
+        why = await self._rejected_sign_in()
+        if why is None:
+            return
+        self.logger.error(
+            "Jira rejected the connector's credentials (HTTP 401) and they cannot be renewed (%s). The token was "
+            "revoked, expired or is wrong, or its app was removed. The sync stops until the connector is reconnected.",
+            why,
+        )
+        raise ReconnectRequiredError(
+            f"Jira rejected this connector's sign-in ({why}). It may have been revoked or expired, or its app or "
+            "account may have been removed. Syncing stopped and nothing was removed. Reconnect it, or replace its "
+            "token, in the connector's settings."
+        )
+
+    async def _rejected_sign_in(self) -> str | None:
+        if not await self._account_read_is_unauthorized():
+            return None
+        why = await renew_access_token(self)
+        if why is not None:
+            return why
+        return "also after a token refresh" if await self._account_read_is_unauthorized() else None
+
+    async def _account_read_is_unauthorized(self) -> bool:
+        try:
+            response = await self._call_with_retry(lambda ds: ds.get_current_user(), ctx="checking the sign-in")
+            # A live token without the scope for this read also gets a 401.
+            return response.status == HttpStatusCode.UNAUTHORIZED.value and "scope" not in response.text().lower()
+        except Exception as e:
+            self.logger.debug("Could not check the Jira sign-in: %s", e)
+            return False
+
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
         Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
@@ -1105,6 +1160,7 @@ class JiraConnector(BaseConnector):
                 init_error._notification_sent = True
                 raise init_error
 
+            await self._stop_if_signed_out()
             await self.register_authenticated_source_user(
                 self._authenticated_jira_email, self._authenticated_jira_account_id
             )
@@ -1249,6 +1305,7 @@ class JiraConnector(BaseConnector):
                     "⚠️ Jira sync: %s/%s project(s) failed to sync issues: %s",
                     len(failed_keys), len(projects), preview,
                 )
+                await self._stop_if_signed_out()
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -1278,7 +1335,9 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error during Jira sync: {e}", exc_info=True)
             # Skip if init/multi-site already notified for this failure
-            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+            if await self._notify_if_signed_out(e):
+                pass
+            elif not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
@@ -1290,6 +1349,8 @@ class JiraConnector(BaseConnector):
                     ),
                 )
             raise
+        else:
+            note_token_accepted(self)
         finally:
             self._app_roles_mapping = None
             self._synced_project_keys = None

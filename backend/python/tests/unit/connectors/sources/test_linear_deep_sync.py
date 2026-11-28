@@ -1052,6 +1052,7 @@ class TestFetchIssuesForTeamBatch:
     @pytest.mark.asyncio
     async def test_auth_error_on_resume_is_not_mistaken_for_a_bad_cursor(self) -> None:
         connector = _make_connector()
+        connector.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})  # a key is not renewed
         connector.sync_filters = None
         connector.indexing_filters = None
         connector.issues_sync_point.store["team_issues_v2_t1"] = {

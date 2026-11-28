@@ -53,7 +53,7 @@ def stopped_sync_notice(error: BaseException) -> Notice:
     if status == HttpStatusCode.UNAUTHORIZED.value or code == "invalid_grant" or mapped_401:
         return Notice(
             NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR, "needs to be reconnected",
-            f"Salesforce refused the connector's sign-in, also after a token refresh. {_KEPT} "
+            f"Salesforce refused the connector's sign-in and it could not be renewed. {_KEPT} "
             "Sign in to Salesforce again from the connector's settings.",
         )
     if code == "REQUEST_LIMIT_EXCEEDED" and status == HttpStatusCode.SERVICE_UNAVAILABLE.value:

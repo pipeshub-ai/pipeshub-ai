@@ -635,10 +635,12 @@ class DropboxConnector(BaseConnector):
             self._health.skipped("a delete", "could not be written; it is tried again on the next run")
 
     def _note_grant_emails(self, permissions: list[Permission]) -> None:
-        for permission in permissions:
-            email = (permission.email or "").lower()
-            if permission.entity_type == EntityType.USER and email and email not in self._team_emails:
-                self._external_emails.add(email)
+        self._external_emails |= self._external_grant_emails(permissions)
+
+    def _external_grant_emails(self, permissions: list[Permission]) -> set[str]:
+        """Emails of the user grants held by people outside the team."""
+        emails = {(p.email or "").lower() for p in permissions if p.entity_type == EntityType.USER}
+        return {e for e in emails if e and e not in self._team_emails}
 
     def _links(self) -> WebLinks:
         if self._web_links is None or self._web_links.data_source is not self.data_source:
@@ -3286,6 +3288,7 @@ class DropboxConnector(BaseConnector):
             # Write records that changed at source; their content events re-index them.
             if updated:
                 await self._write_updates(updated, "reindex")
+                await self._grant_external_membership([p for u in updated for p in (u.new_permissions or [])])
                 # A folder that moved is stored at its new path now, so no later listing sees the move: the
                 # paths below it are rewritten here.
                 await self._repath_moved_folders()
@@ -3299,6 +3302,23 @@ class DropboxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error during Dropbox reindex: {e}", exc_info=True)
             raise
+
+    async def _grant_external_membership(self, permissions: list[Permission]) -> None:
+        """App membership for the people outside the team that a reindex just granted, as a sync gives it.
+
+        Without it a first share made by a reindex is unreachable until the next sync, and a sync's reaper that
+        runs while the grant is written may drop the membership it already had. Non-fatal, like the sync's.
+        """
+        if not self._team_emails:
+            # A connector that has not listed the team since it started cannot tell outsiders apart.
+            return
+        emails = self._external_grant_emails(permissions)
+        if not emails:
+            return
+        try:
+            await self.data_entities_processor.on_external_app_users(sorted(emails), self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not give app membership to people outside the team: {e}", exc_info=True)
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record

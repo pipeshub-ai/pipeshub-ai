@@ -34,6 +34,11 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.failure_notices import (
+    note_token_accepted,
+    notify_init_failed,
+    switched_off_after_rejection,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -217,6 +222,10 @@ NOT_ADMIN_MESSAGE = (
 
 class ZendeskAuthError(Exception):
     """Zendesk answered 401 even after a token refresh; the message is user-facing."""
+
+
+class ZendeskNotAdminError(ZendeskAuthError):
+    """Zendesk accepts the sign-in, but its account is not an admin."""
 
 
 @ConnectorBuilder("Zendesk")\
@@ -415,6 +424,9 @@ class ZendeskConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Zendesk connector: {e}", exc_info=True)
             return False
 
+    async def on_background_init_failed(self, error: Exception | None) -> None:
+        await notify_init_failed(self, "Zendesk", error)
+
     async def _get_fresh_datasource(self) -> ZendeskDataSource:
         """Resolve the data source for every Zendesk API call.
 
@@ -453,12 +465,14 @@ class ZendeskConnector(BaseConnector):
         try:
             await self._run_sync()
         except ZendeskAuthError as e:
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=f"{self.display_name} connector needs to be re-authorized",
-                message=str(e),
-            )
+            # A non-admin account's sign-in still works, so it does not count towards turning sync off.
+            if isinstance(e, ZendeskNotAdminError) or not await switched_off_after_rejection(self, e):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_AUTH_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=f"{self.display_name} connector needs to be re-authorized",
+                    message=str(e),
+                )
             raise
         except Exception as e:
             await self.notify(
@@ -471,6 +485,7 @@ class ZendeskConnector(BaseConnector):
                 ),
             )
             raise
+        note_token_accepted(self)
         if self._skipped_this_sync:
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
@@ -519,7 +534,7 @@ class ZendeskConnector(BaseConnector):
                 role=user.get("role") or "unknown",
             )
             self.logger.error("Zendesk: %s", message)
-            raise ZendeskAuthError(message)
+            raise ZendeskNotAdminError(message)
 
     async def _run_sync(self) -> None:
         self.logger.info(f"Starting Zendesk sync for connector {self.connector_id}")
@@ -2409,6 +2424,8 @@ class ZendeskConnector(BaseConnector):
                     permissions,
                     refresh_permissions=True,
                 )
+            except ZendeskAuthError:
+                raise
             except Exception:
                 self.logger.exception(
                     "Zendesk: attachments of %s failed this sync", record.external_record_id

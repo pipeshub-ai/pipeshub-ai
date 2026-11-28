@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.core.base.connector.failure_notices import SyncRunState
+
 # ---------------------------------------------------------------------------
 # Connector mock factory
 # ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ def make_mock_connector() -> MagicMock:
     c._project_reader_ids = {}
     c.creator_email = None
     c.created_by = "test-user-1"
+    c.run_state = SyncRunState()
 
     # Bound logger
     c.logger = MagicMock()

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.base.connector.failure_notices import ReconnectRequiredError
 from app.connectors.sources.gitlab.users import UsersSync, _filter_op_val, _note_member
 
 from .conftest import make_mock_connector, paged_res, failed_res
@@ -759,3 +760,24 @@ def test_a_membership_awaiting_approval_never_replaces_an_active_one() -> None:
         for row in rows:
             _note_member(dict_member, row)
         assert dict_member[7] is active
+
+
+class TestSignedOutDuringUserSync:
+    async def test_members_are_not_saved_when_a_later_read_finds_the_sign_in_dead(self) -> None:
+        c = make_mock_connector()
+        c.run_state.reject("GitLab rejected this connector's sign-in.")
+        users = UsersSync(c)
+        with pytest.raises(ReconnectRequiredError):
+            await users._sync_users_from_projects_groups({1: _make_member()})
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        c.data_entities_processor.migrate_group_to_user_by_external_id.assert_not_called()
+
+    async def test_profile_reads_stop_once_the_sign_in_is_dead(self) -> None:
+        c = make_mock_connector()
+        c.run_state.reject("GitLab rejected this connector's sign-in.")
+        c.runtime.ds_call = AsyncMock()
+        member = _make_member()
+        member.attributes = {}
+        enriched = await UsersSync(c)._enrich_members_with_full_user({1: member})
+        c.runtime.ds_call.assert_not_awaited()
+        assert enriched == {1: member}

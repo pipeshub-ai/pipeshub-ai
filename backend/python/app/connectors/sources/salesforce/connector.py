@@ -30,6 +30,10 @@ from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.base.data_processor.source_accounts import grant_fence
+from app.connectors.core.base.connector.failure_notices import (
+    note_token_accepted,
+    switched_off_after_rejection,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -2629,8 +2633,11 @@ class SalesforceConnector(BaseConnector):
         try:
             await self._run_sync()
         except Exception as e:
-            await self._notify(stopped_sync_notice(e))
+            stopped = stopped_sync_notice(e)
+            if stopped.type is not NotificationType.CONNECTOR_AUTH_ERROR or not await switched_off_after_rejection(self, e):
+                await self._notify(stopped)
             raise
+        note_token_accepted(self)
         notice = self._problems.notice()
         if notice is not None:
             await self._notify(notice)
@@ -2644,7 +2651,7 @@ class SalesforceConnector(BaseConnector):
                 severity=notice.severity,
                 title=self._notification_title(notice.event),
                 message=notice.message,
-                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_user_ids=self._notification_recipients(None, None)[0] if self.created_by else None,
                 recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             if outcome == NotificationOutcome.FAILED:
