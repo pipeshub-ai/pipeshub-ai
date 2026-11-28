@@ -286,7 +286,7 @@ class TestCapabilitiesMatchTheirFactory:
     the instance answers it at run time. Two literals would drift apart
     silently — the middleware decision is made from the factory's copy."""
 
-    @pytest.mark.parametrize("backend_name", ["local", "docker", "e2b", "broker"])
+    @pytest.mark.parametrize("backend_name", ["local", "docker", "e2b", "broker", "boxd"])
     def test_factory_and_instance_agree(self, backend_name: str) -> None:
         from app.agent_loop_lib.sandbox.coding.factories import build_factory
 

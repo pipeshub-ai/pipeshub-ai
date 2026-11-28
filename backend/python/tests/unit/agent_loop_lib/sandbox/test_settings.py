@@ -149,7 +149,7 @@ class TestUnsetModeFailsClosed:
 
         message = str(excinfo.value)
         assert "SANDBOX_MODE is not set" in message
-        for supported in ("local", "docker", "e2b"):
+        for supported in ("local", "docker", "e2b", "boxd"):
             assert supported in message
 
     async def test_unavailable_is_a_value_error(self, monkeypatch) -> None:
@@ -219,13 +219,14 @@ class TestInvalidSandboxModeIsRejected:
         message = str(excinfo.value)
         assert value in message, "the rejected value should be echoed back"
         # And the operator needs to know what IS accepted.
-        for supported in ("local", "docker", "e2b"):
+        for supported in ("local", "docker", "e2b", "boxd"):
             assert supported in message.lower()
 
     @pytest.mark.parametrize(
         "value,expected",
         [("docker", "docker"), ("DOCKER", "docker"), ("Docker", "docker"),
          ("e2b", "e2b"), ("E2B", "e2b"),
+         ("boxd", "boxd"), ("BOXD", "boxd"),
          ("local", "local"), ("LOCAL", "local"),
          ("  docker  ", "docker")],
     )
@@ -263,7 +264,7 @@ class TestInvalidSandboxModeIsRejected:
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(errors) == 1
         assert "docekr" in errors[0].getMessage()
-        for supported in ("local", "docker", "e2b"):
+        for supported in ("local", "docker", "e2b", "boxd"):
             assert supported in errors[0].getMessage()
 
     async def test_explicit_local_is_accepted(self, monkeypatch) -> None:

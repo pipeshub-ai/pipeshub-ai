@@ -715,7 +715,7 @@ class TestM8WarmupAndHealthAreReachable:
         )
 
         health = await build_default_registry().available()
-        assert set(health) == {"local", "docker", "e2b", "broker"}
+        assert set(health) == {"local", "docker", "e2b", "broker", "boxd"}
         # A backend that cannot answer must report why, not vanish.
         for name, result in health.items():
             assert result.available or result.reason, name

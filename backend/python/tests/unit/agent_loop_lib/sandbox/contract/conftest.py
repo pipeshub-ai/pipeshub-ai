@@ -8,6 +8,9 @@ supports:
     docker       — always, against a fake `DockerClientProvider`
     docker_real  — only with a reachable daemon (`-m docker`)
     e2b          — always, against a mocked `AsyncSandbox`
+    boxd_real    — only with `BOXD_E2E=1`, `BOXD_API_KEY` and `BOXD_SNAPSHOT`
+                   (TypeScript needs its tsx): real boxd machines, one per
+                   test, deleted by its teardown
 
 Skips live in the fixtures, never in the test bodies: the test bodies are
 the contract, and a body that can skip itself is a body that can quietly
@@ -244,14 +247,44 @@ async def _broker_real_sandbox(working_dir: str) -> CodingSandboxBackend:
     return sandbox
 
 
-@pytest.fixture(params=["local", "docker_real", "broker_real"])
+BOXD_E2E_ENV = "BOXD_E2E"
+
+
+def _boxd_real_sandbox() -> CodingSandboxBackend:
+    """A `BoxdCodingSandbox` on a real machine, built through its factory as
+    `SANDBOX_MODE=boxd` builds it. `BOXD_ORG` and `BOXD_REGION` pick where;
+    `BOXD_E2E_NAME_PREFIX` and `BOXD_E2E_LABELS` (`k=v,k=v`) mark the
+    machines as test machines."""
+    if os.environ.get(BOXD_E2E_ENV, "").strip().lower() not in {"1", "true", "yes"}:
+        pytest.skip(f"{BOXD_E2E_ENV} is not set")
+    for name in ("BOXD_API_KEY", "BOXD_SNAPSHOT"):
+        if not os.environ.get(name):
+            pytest.skip(f"{name} is not set")
+    pytest.importorskip("boxd")
+    from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+    from app.agent_loop_lib.sandbox.coding.factories import build_factory
+
+    labels = dict(
+        pair.split("=", 1) for pair in os.environ.get("BOXD_E2E_LABELS", "").split(",") if "=" in pair
+    )
+    factory = build_factory("boxd", backend_options={
+        "name_prefix": os.environ.get("BOXD_E2E_NAME_PREFIX", "pipeshub-e2e"),
+        "labels": labels,
+    })
+    return factory.create(SandboxContext(conversation_id="contract-suite"))
+
+
+@pytest.fixture(params=["local", "docker_real", "broker_real", pytest.param("boxd_real", marks=pytest.mark.network)])
 async def backend(request, short_tmp_dir, tmp_path):
     """Every backend the environment can actually run.
 
     `docker_real` and `broker_real` skip without a daemon; `local` skips
-    without node. At least one always runs, and CI with Docker runs all.
+    without node; `boxd_real` skips without `BOXD_E2E=1`. At least one
+    always runs, and CI with Docker runs all.
     """
-    if request.param == "local":
+    if request.param == "boxd_real":
+        sb = _boxd_real_sandbox()
+    elif request.param == "local":
         if shutil.which("node") is None:
             pytest.skip("node not on PATH")
         # Short path: see `short_tmp_dir` for why pytest's own is unusable.

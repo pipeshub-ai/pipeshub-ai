@@ -562,6 +562,8 @@ config:
   # `dockerHost`. Kept for upgrades. The chart refuses a Docker socket mounted
   # into the application container through `extraVolumeMounts`.
   # "e2b": off-cluster microVMs (needs E2B_API_KEY).
+  # "boxd": off-cluster VMs, one isolated machine per sandbox (needs
+  # BOXD_API_KEY and the boxd Python SDK in the image).
   # "local": model-generated code runs as a subprocess of the query service —
   # no isolation; single-tenant development clusters only, and refused unless
   # `sandboxAllowLocal` is also true.

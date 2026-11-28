@@ -551,8 +551,8 @@ the same thing.
        the image has one. */ -}}
 {{- $mode = ternary "broker" "docker" (and $brokerImage (eq (include "pipeshub-ai.hardened" .) "true")) -}}
 {{- end -}}
-{{- if not (has $mode (list "local" "docker" "e2b" "broker")) -}}
-  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: broker, local, docker, e2b." $raw) -}}
+{{- if not (has $mode (list "local" "docker" "e2b" "broker" "boxd")) -}}
+  {{- fail (printf "config.sandboxMode=%q is not a supported coding sandbox. Use one of: broker, local, docker, e2b, boxd." $raw) -}}
 {{- end -}}
 {{- if and (eq $mode "broker") (not $brokerImage) -}}
   {{- fail (printf "config.sandboxMode=broker, but image.capabilities (%q) does not list sandbox-broker: the image is older than the sandbox broker. Use config.sandboxMode=docker, or an image that has it." (.Values.image.capabilities | default "none" | toString)) -}}
@@ -590,7 +590,7 @@ proxy binds 127.0.0.1 only, so "localhost" resolving to ::1 first would miss.
 {{- end -}}
 
 {{/*
-How run_code actually executes: local | e2b | dind | external.
+How run_code actually executes: local | e2b | boxd | dind | external.
 
 Deploying the sidecar and USING it are independent — `sandbox.dind.enabled`
 creates a privileged container whatever the backend is, while

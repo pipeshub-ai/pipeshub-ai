@@ -613,7 +613,7 @@ derive_compose_profiles() {
   [[ "${KV_STORE_TYPE:-}"  == "etcd"  ]] && p+=("kv-etcd")
   [[ "${MESSAGE_BROKER:-}" == "kafka" ]] && p+=("broker-kafka")
   # Code execution: the sandbox image and the Docker API proxy. Eval skips it
-  # (Neo4j stays: search ACLs live there; run_code is the cut); e2b/local need
+  # (Neo4j stays: search ACLs live there; run_code is the cut); e2b/boxd/local need
   # none of it. The broker and egress proxy run on the broker and while an install
   # migrates to it; an install that stays on docker starts neither, whatever the
   # harness switch says (its engines then report no sandbox).
@@ -672,7 +672,7 @@ docker_vm_mem_mb() {
 #   docker    the same under the compatibility profile otherwise, or when the app image cannot run the broker (an
 #             image older than it): the app keeps creating sandboxes through the Docker API proxy, as the release it
 #             came from did (ADR-OPS-07), even with the harness switch on by default
-#   keep      e2b, local or anything else the operator chose: left alone
+#   keep      e2b, boxd, local or anything else the operator chose: left alone
 sandbox_plan() { # args: deploy_type sandbox_mode [hardened] [harness_requested] [image_runs_broker] -> plan
   local deploy_type="$1" mode="$2" hardened="${3:-true}" harness="${4:-false}" broker_ok="${5:-true}"
   if [[ "$deploy_type" == "eval" && ( "$mode" == "__unset__" || -z "$mode" ) ]]; then
@@ -1918,7 +1918,7 @@ if ! ${SKIP_WIZARD:-false}; then
     # Hardened, a fresh install with the harness, or the harness asked for: the broker. Otherwise (an existing .env
     # under the compatibility profile) docker, as the release it comes from ran code.
     case "$SANDBOX_MODE" in
-      broker|docker|e2b|local) ;;
+      broker|docker|e2b|local|boxd) ;;
       *) if ! image_can sandbox-broker "$(app_image_capabilities)"; then SANDBOX_MODE=docker
          elif [[ "$PIPESHUB_HARDENED" == true || "$(agent_harness_requested)" == true ]] \
            || [[ "$AGENT_HARNESS_WORKER_ENABLED" == true && "$_env_existed" != true ]]; then SANDBOX_MODE=broker
