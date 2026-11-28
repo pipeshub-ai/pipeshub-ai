@@ -1,4 +1,5 @@
 from app.config.constants.arangodb import (
+    AccessLimit,
     AccessRule,
     Connectors,
     ConnectorScopes,
@@ -291,6 +292,11 @@ app_schema = {
                     None,
                 ],
             },
+            # Who reaches the connector while it is limited (see AccessLimit); absent or null: no limit.
+            "accessLimit": {
+                "type": ["string", "null"],
+                "enum": [AccessLimit.CREATOR.value, AccessLimit.ORG.value, None],
+            },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
@@ -319,7 +325,7 @@ app_schema = {
 
 # Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-APP_SCHEMA_GENERATION = 1
+APP_SCHEMA_GENERATION = 2
 app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
 
 # Record schema for ArangoDB

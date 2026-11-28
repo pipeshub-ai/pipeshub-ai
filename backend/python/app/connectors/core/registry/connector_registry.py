@@ -810,7 +810,14 @@ class ConnectorRegistry:
                     _KB_REGISTRY_KEY if is_kb else connector_type
                 )
                 if registered and doc_key:
-                    expected = self._permission_model_for(registered)
+                    # A limited instance (accessLimit, see AccessLimit) is held at
+                    # APP_LEVEL: putting its type's model back here would undo
+                    # the limit on every start.
+                    expected = (
+                        PermissionModel.APP_LEVEL.value
+                        if document.get('accessLimit')
+                        else self._permission_model_for(registered)
+                    )
                     if document.get('permissionModel') != expected:
                         stale_permission_models.append((doc_key, expected))
 

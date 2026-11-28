@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessLimit,
     AccessRule,
     AppStatus,
     CollectionNames,
@@ -22,6 +23,7 @@ from app.config.constants.arangodb import (
     EventTypes,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
     RecordRelations,
 )
@@ -1737,6 +1739,42 @@ class DataSourceEntitiesProcessor:
             yield
         finally:
             await self._access_changed(connector_ids)
+
+    async def set_access_limit(self, connector_id: str, limit: AccessLimit) -> None:
+        """Limit who reaches this connector to ``limit``, whatever links exist.
+        ``accessLimit`` and ``permissionModel: APP_LEVEL`` go on the app in one
+        write, so whoever reaches the connector reads every record of it.
+        Nothing else is stored: no link or grant is touched, and the model the
+        connector had is not kept (``clear_access_limit`` is given it).
+
+        Raises when the write, or marking the knowledge-hub stamps, fails.
+        Writing a limit that is already there is safe."""
+        await self._write_access_limit(connector_id, limit.value, PermissionModel.APP_LEVEL)
+
+    async def clear_access_limit(self, connector_id: str, permission_model: PermissionModel) -> None:
+        """Remove the connector's access limit and put ``permission_model``
+        back: the model its connector type registers
+        (``ConnectorRegistry._permission_model_for``), which this processor
+        cannot look up. Raises like ``set_access_limit``."""
+        await self._write_access_limit(connector_id, None, permission_model)
+
+    async def _write_access_limit(
+        self, connector_id: str, access_limit: str | None, permission_model: PermissionModel
+    ) -> None:
+        """The one write behind both, and what makes it seen: the store bumps
+        the connector's structure generation in the same transaction, so a
+        search stamp computed before it is not current; the knowledge-hub scope
+        stamps are marked changed and the search cache's access lists dropped
+        once it has ended. Both run when the write raised too: a commit that
+        failed may still have landed, and neither costs more than a recompute."""
+        async with self._drop_access_after({connector_id}):
+            try:
+                await self.data_store_provider.execute_in_transaction(
+                    lambda tx_store: tx_store.set_app_access_limit(connector_id, access_limit, permission_model.value),
+                    explicit=True,
+                )
+            finally:
+                await self.data_store_provider.graph_provider.kh_scope_mark_changed(connector_id)
 
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]

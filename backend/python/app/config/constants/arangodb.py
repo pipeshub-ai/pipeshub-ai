@@ -123,6 +123,20 @@ class PermissionModel(Enum):
     RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
+class AccessLimit(Enum):
+    """Who reaches a connector while it is limited, whatever links exist: the
+    App's ``accessLimit``. Absent means no limit. While it is set the App's
+    ``permissionModel`` is written ``APP_LEVEL``, so whoever reaches the
+    connector reads every record of it.
+
+    ``CREATOR``: only the user in the App's ``createdBy``.
+    ``ORG``: every user of the App's org.
+    """
+
+    CREATOR = "CREATOR"
+    ORG = "ORG"
+
+
 class AccessRule(Enum):
     """How a node's own permissions combine with its ancestors'.
 
