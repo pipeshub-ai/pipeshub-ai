@@ -18,6 +18,7 @@ vi.mock('@/chat/api', () => ({ ChatApi: api }));
 import { ChatSearch } from '../search-view';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ErrorType } from '@/lib/api/api-error';
+import { formatConversationDateForSearch } from '@/lib/utils/formatters';
 
 // jsdom has no layout: report every element as on screen, as a browser would.
 beforeEach(() => {
@@ -245,6 +246,30 @@ describe('ChatSearch list size and keys', () => {
     fireEvent.keyDown(first, { key: 'ArrowUp' });
     fireEvent.keyDown(newChat, { key: 'ArrowUp' });
     expect(document.activeElement).toBe(input);
+  });
+
+  it('a chat someone shared says who, in the browse list and among the matches of a typed search alike', async () => {
+    const shared = { ...chat('s1', 'Launch plan'), isOwner: false, sharedBy: { id: 'u9', name: 'Dana Shah' } };
+    api.fetchConversations.mockImplementation((_page: number, _limit: number, opts: { source: string }) =>
+      Promise.resolve({ conversations: opts.source === 'shared' ? [shared] : [chat('c1', 'Budget review')] }),
+    );
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'opener' }));
+    const browsed = await screen.findByRole('button', { name: /^Launch plan/ });
+    expect(browsed.textContent).toBe(`Launch plan${en.chat.sharedBy.replace('{{name}}', 'Dana Shah')}`);
+    expect(screen.getByRole('button', { name: /^Budget review/ }).textContent).toBe('Budget review');
+
+    fireEvent.change(screen.getByRole('textbox', { name: en.nav.searchChats }), { target: { value: 'plan' } });
+    // A match is the browse row over its date.
+    const date = formatConversationDateForSearch(now, now);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^Launch plan/ }).textContent).toBe(
+        `Launch plan${en.chat.sharedBy.replace('{{name}}', 'Dana Shah')}${date}`,
+      ),
+    );
+    expect(api.fetchConversations.mock.calls.some((c) => c[2].search === 'plan')).toBe(true);
+    // Its own chat names nobody.
+    expect(screen.getByRole('button', { name: /^Budget review/ }).textContent).toBe(`Budget review${date}`);
   });
 
   it('a row that takes focus is scrolled into view by the least amount', async () => {
