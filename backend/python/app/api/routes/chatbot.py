@@ -44,7 +44,10 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
-from app.api.middlewares.identified_caller import require_identified_caller
+from app.api.middlewares.identified_caller import (
+    require_identified_caller,
+    require_live_person,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -2174,6 +2177,7 @@ async def resolved_turn_or_401(
 async def _parse_chat_query(
     request: Request,
     cancellation_registry: RunCancellationRegistry,
+    graph_provider: IGraphDBProvider,
     *,
     streaming: bool,
 ) -> tuple["ChatQuery", ResolvedTurn | None]:
@@ -2191,6 +2195,8 @@ async def _parse_chat_query(
         raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
     _chat_user = getattr(request.state, "user", {}) or {}
+    # The auth layer may still accept a session for a short while after the account is switched off.
+    require_live_person(await get_user_or_503(graph_provider, _chat_user.get("userId")))
     _chat_email = _chat_user.get("email")
     _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
     record_event("chat_session_started", {
@@ -2223,7 +2229,7 @@ async def askAI(
     Called by Node's `POST /api/v1/conversations/create` and
     `POST /api/v1/conversations/:id/messages`.
     """
-    query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    query_info, resolved = await _parse_chat_query(request, cancellation_registry, graph_provider, streaming=False)
     await assert_identity_allowed(
         _chat_principal(request),
         Workload.CHAT,
@@ -2261,7 +2267,7 @@ async def askAIStream(
     agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
     for the mode → tool/prefetch behavior.
     """
-    query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=True)
+    query_info, resolved = await _parse_chat_query(request, cancellation_registry, graph_provider, streaming=True)
     await assert_identity_allowed(
         _chat_principal(request),
         Workload.CHAT,

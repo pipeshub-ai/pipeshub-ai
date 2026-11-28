@@ -25,8 +25,8 @@ from app.api.middlewares.auth import (
     _normalize_regular_payload,
     _normalize_scoped_payload,
 )
+from app.api.middlewares.identified_caller import UNIDENTIFIED_CALLER_DETAIL
 from app.api.middlewares.token_policy import AuthTokenType
-from app.api.routes.agent import UNIDENTIFIED_CALLER_DETAIL
 from app.harness.credentials.tool_credentials import toolset_reference
 from tests.support.agent_routes import (
     AGENTS,

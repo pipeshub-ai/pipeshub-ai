@@ -31,6 +31,7 @@ from app.api.middlewares.principal_kind import PERSON_KINDS
 from app.api.middlewares.token_policy import is_service_token
 from app.utils.request_context import RequestContext
 from app.utils.request_context import get_context as get_request_context
+from app.utils.user_lookup import is_live_identity
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -98,6 +99,18 @@ async def require_identified_caller(request: Request) -> None:
     refuse_unidentified_caller(user)
     user_id, org_id = _person(user)
     _verified_caller.set(_VerifiedCaller(user_id, org_id, get_request_context()))
+
+
+def require_live_person(user_doc: Mapping[str, Any] | None) -> None:
+    """403 unless the caller's own record exists and is a live human account.
+
+    A service account is not a person, and a removed, switched-off or missing
+    account must not keep answering through a session that has not expired yet.
+    Read the record with `get_user_or_503`, so a failed read is a 503 and never
+    reaches this check as a missing or live person.
+    """
+    if not user_doc or user_doc.get("kind") == "service" or not is_live_identity(user_doc):
+        raise _refuse()
 
 
 def loop_caller_refusal(user_info: Mapping[str, Any] | None) -> str | None:

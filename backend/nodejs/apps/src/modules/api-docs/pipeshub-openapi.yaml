@@ -18490,6 +18490,8 @@ components:
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
             (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -18708,6 +18710,8 @@ components:
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
             (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19148,6 +19152,8 @@ components:
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
             (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19410,6 +19416,8 @@ components:
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
             (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
@@ -19597,6 +19605,8 @@ components:
           description: |
             API toolset operations the agent may call, each `<toolsetId>:<operation>`
             (see `/api-toolsets`). A call uses the connection of the person asking.
+            A toolset set to use a shared credential always uses that credential
+            instead, for every kind of agent.
           items:
             type: string
             pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'

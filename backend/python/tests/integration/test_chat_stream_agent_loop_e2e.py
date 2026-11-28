@@ -71,6 +71,13 @@ def _mock_config_service() -> AsyncMock:
     return config_service
 
 
+def _live_graph() -> MagicMock:
+    """A graph whose caller record is a live person, as the route checks before it runs."""
+    graph = MagicMock()
+    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1", "email": "u@example.com"})
+    return graph
+
+
 def _mock_cancellation_registry() -> AsyncMock:
     """A stand-in for the run-cancellation registry.
 
@@ -206,7 +213,7 @@ class TestChatStreamAgentLoopEndToEnd:
         response = await askAIStream(
             request=request,
             retrieval_service=_mock_retrieval_service(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=_mock_config_service(),
             cancellation_registry=_mock_cancellation_registry(),
         )
@@ -227,7 +234,7 @@ class TestChatStreamAgentLoopEndToEnd:
         response = await askAIStream(
             request=request,
             retrieval_service=_mock_retrieval_service(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=config_service,
             cancellation_registry=_mock_cancellation_registry(),
         )
@@ -243,7 +250,7 @@ class TestChatStreamAgentLoopEndToEnd:
         response = await askAIStream(
             request=request,
             retrieval_service=_mock_retrieval_service(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=_mock_config_service(),
             cancellation_registry=_mock_cancellation_registry(),
         )
@@ -264,7 +271,7 @@ class TestChatStreamAgentLoopEndToEnd:
         response = await askAIStream(
             request=request,
             retrieval_service=_mock_retrieval_service(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=_mock_config_service(),
             cancellation_registry=_mock_cancellation_registry(),
         )
@@ -359,7 +366,7 @@ class TestChatStreamAgentLoopEndToEnd:
             response = await askAIStream(
                 request=request,
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=_live_graph(),
                 config_service=_mock_config_service(),
                 cancellation_registry=_mock_cancellation_registry(),
             )
@@ -432,7 +439,7 @@ class TestWebSearchCitationEndToEnd:
             response = await askAIStream(
                 request=request,
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=_live_graph(),
                 config_service=_mock_config_service(),
                 cancellation_registry=_mock_cancellation_registry(),
             )
@@ -466,7 +473,7 @@ class TestChatNonStreamingAgentLoopEndToEnd:
         response = await askAI(
             request=_non_streaming_request({"query": "What is our refund policy?", "chatMode": chat_mode}),
             retrieval_service=_mock_retrieval_service(),
-            graph_provider=MagicMock(),
+            graph_provider=_live_graph(),
             config_service=_mock_config_service(),
             cancellation_registry=_mock_cancellation_registry(),
         )
@@ -483,7 +490,7 @@ class TestChatNonStreamingAgentLoopEndToEnd:
             response = await askAI(
                 request=_non_streaming_request({"query": "hello"}),
                 retrieval_service=_mock_retrieval_service(),
-                graph_provider=MagicMock(),
+                graph_provider=_live_graph(),
                 config_service=_mock_config_service(),
                 cancellation_registry=_mock_cancellation_registry(),
             )

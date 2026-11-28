@@ -70,9 +70,9 @@ from app.api.middlewares.auth import (
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.identified_caller import (
-    UNIDENTIFIED_CALLER_DETAIL,
     refuse_unidentified_caller,
     require_identified_caller,
+    require_live_person,
 )
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -475,14 +475,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     }
 
 
-def _require_live_person(user_doc: dict[str, Any]) -> None:
-    """403 unless the caller's own record is a live human account.
-
-    A service account is not a person, and a removed or switched-off account
-    must not keep answering through a session that has not expired yet.
-    """
-    if user_doc.get("kind") == "service" or not _is_live_identity(user_doc):
-        raise HTTPException(status_code=403, detail=UNIDENTIFIED_CALLER_DETAIL)
+_require_live_person = require_live_person
 
 
 def _apply_user_context_gate(user_info: dict[str, Any], *, enabled: bool) -> None:
@@ -3935,6 +3928,7 @@ async def _assistant_run_definition(
         is_mcp_enabled(config_service),
         _get_user_document(user_context["userId"], graph_provider, logger),
     )
+    _require_live_person(user_doc)
     assistant, _ = await get_assistant_agent(
         user_context["userId"], current_org_id(), config_service, graph_provider,
         getattr(request.app.state, "toolset_registry", None), logger,
@@ -5292,6 +5286,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 _get_user_document(user_context["userId"], graph_provider, logger),
                 is_user_context_enabled(config_service),
             )
+            _require_live_person(user_doc)
             # Built inside the stream below: this is the expensive half of the
             # request (toolset + MCP + knowledge fan-out) and nothing above it
             # needs the result, so it must not delay the response headers.
