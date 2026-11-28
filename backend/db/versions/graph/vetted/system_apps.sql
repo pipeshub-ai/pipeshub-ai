@@ -16,6 +16,7 @@ BEGIN
   IF length(p_after_org) NOT BETWEEN 0 AND 200 THEN RAISE EXCEPTION 'system_apps: p_after_org length must be 0..200' USING ERRCODE = '22023'; END IF;
   IF p_limit IS NULL THEN RAISE EXCEPTION 'system_apps: p_limit is required' USING ERRCODE = '22023'; END IF;
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'system_apps: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
+  IF current_setting('app.org_id', true) <> '' THEN RETURN; END IF;
   RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n
     WHERE n.coll = 'apps' AND (NOT p_only_active OR n.doc @> '{"isActive": true}')
     AND (n.id, n.org_id) > (p_after_id, p_after_org) ORDER BY n.id, n.org_id LIMIT p_limit;

@@ -11,6 +11,7 @@ AS $fn$
 BEGIN
   IF p_id IS NULL THEN RAISE EXCEPTION 'system_app: p_id is required' USING ERRCODE = '22023'; END IF;
   IF length(p_id) NOT BETWEEN 1 AND 200 THEN RAISE EXCEPTION 'system_app: p_id length must be 1..200' USING ERRCODE = '22023'; END IF;
+  IF current_setting('app.org_id', true) <> '' THEN RETURN; END IF;
   RETURN QUERY SELECT n.org_id, n.id, n.doc::text FROM graph.nodes n WHERE n.coll = 'apps' AND n.id = p_id ORDER BY n.org_id LIMIT 1;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.system_app(text) FROM PUBLIC;
