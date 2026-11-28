@@ -614,6 +614,42 @@ const ROOT_ROW: React.CSSProperties = {
   cursor: 'pointer',
 };
 
+const SHIMMER: React.CSSProperties = {
+  flexShrink: 0,
+  backgroundColor: 'var(--olive-4)',
+  animation: 'shimmer-pulse 1.4s ease-in-out infinite',
+};
+const ROOT_SKELETON_WIDTHS = [168, 112, 204, 136, 180];
+
+/**
+ * Placeholder top-level rows while a picker's list loads: the same box, spacing
+ * and parts (expand arrow slot, checkbox, icon, name) as KnowledgeTreeRoot, so
+ * nothing moves when the real rows arrive. `withGroupLabel` adds the date
+ * label row the connector list groups under.
+ */
+export function KnowledgeTreeRootSkeleton({ rows = 5, withGroupLabel = false }: { rows?: number; withGroupLabel?: boolean }) {
+  return (
+    <Flex direction="column" gap="1" role="status" aria-busy="true" style={{ width: '100%', minWidth: 0 }}>
+      {withGroupLabel && (
+        <Flex align="center" style={{ height: 28, paddingLeft: 'var(--space-1)' }}>
+          <Box style={{ ...SHIMMER, width: 56, height: 8, borderRadius: 4 }} />
+        </Flex>
+      )}
+      {ROOT_SKELETON_WIDTHS.slice(0, rows).map((width, i) => {
+        const delay = { animationDelay: `${i * 80}ms` };
+        return (
+          <Flex key={i} align="center" gap="2" style={{ ...ROOT_ROW, cursor: 'default' }}>
+            <span style={{ width: CHEVRON_BOX_PX, flexShrink: 0 }} aria-hidden />
+            <Box style={{ ...SHIMMER, ...delay, width: 16, height: 16, borderRadius: 4 }} />
+            <Box style={{ ...SHIMMER, ...delay, width: 20, height: 20, borderRadius: 4 }} />
+            <Box style={{ ...SHIMMER, ...delay, width, maxWidth: '60%', height: 10, borderRadius: 4 }} />
+          </Flex>
+        );
+      })}
+    </Flex>
+  );
+}
+
 /**
  * A top-level row of a picker (an app, a collection, or a node a scope is
  * limited to) with its checkbox, and under it, once expanded, what it holds.

@@ -1008,6 +1008,8 @@
     "connectorsCollectionsTitle": "连接器与收藏集",
     "connectorsTooltip": "连接器与收藏集",
     "connectorsDefaultScopeHint": "默认会搜索所有连接器和收藏集。如需缩小范围，请在下方选择特定项目。",
+    "actionsDefaultScopeHint": "默认可以使用所有已连接的操作。如需缩小范围，请在下方选择特定项目。",
+    "mcpDefaultScopeHint": "默认可以使用所有已连接的 MCP 服务器。如需缩小范围，请在下方选择特定项目。",
     "agentResourcesTooltip": "连接器、收藏集与操作",
     "agentResources": {
       "sheetTitle": "连接器、收藏集与操作",
@@ -1072,6 +1074,7 @@
     "treeExpand": "显示 {{name}} 中的内容",
     "treeCollapse": "隐藏 {{name}} 中的内容",
     "noCollectionsAvailable": "没有可用的收藏集",
+    "noConnectorsAvailable": "没有可用的连接器",
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",
@@ -1952,7 +1955,18 @@
       "namedFile": "附件 {{name}}",
       "unnamedFile_other": "其中 {{count}} 个附件"
     },
-    "archiveChatTitle": "归档此对话？"
+    "archiveChatTitle": "归档此对话？",
+    "quickFilters": {
+      "tab": "快速筛选",
+      "title": "快速筛选",
+      "description": "将一组来源、操作和 MCP 工具保存为一个名称，在任何对话中使用，并与他人和团队共享。"
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "查看从 {{name}} 选择的工具",
+      "remove": "移除从 {{name}} 选择的工具",
+      "unknown": "工具"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -7233,7 +7247,25 @@
     "alreadyRemoved": "已移除",
     "alreadyRemovedDescription": "{{name}} 此前已失去访问权限",
     "removeConfirmTitle": "移除访问权限？",
-    "removeConfirmDescription": "{{name}} 将立即失去访问权限。您之后可以再次共享。"
+    "removeConfirmDescription": "确定要移除 {{name}} 对{{target}}的访问权限吗？您之后可以再次与其共享。",
+    "removeConfirmTeamDescription": "确定要移除 {{name}} 对{{target}}的访问权限吗？只有您直接共享过的成员才会保留访问权限。您之后可以再次与该团队共享。",
+    "removeTargetNamed": "“{{entityName}}”",
+    "removeTarget": {
+      "collection": "此集合",
+      "conversation": "此聊天",
+      "search": "此搜索",
+      "connector": "此连接器",
+      "agent": "此智能体",
+      "project": "此项目",
+      "artifact": "此工件",
+      "default": "此项"
+    },
+    "removeConfirmCurrentAccess": "当前权限：{{role}}",
+    "checking": "正在检查访问权限…",
+    "checkOk": "可以共享",
+    "checkBlocked": "无法共享",
+    "checkWarning": "可以共享，共享前请确认",
+    "checkFailed": "无法检查访问权限，请重试。"
   },
   "demoData": {
     "badge": {

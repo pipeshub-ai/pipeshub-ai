@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -31,6 +31,8 @@ interface ShareSearchInputProps {
   onRemoveLastSelection?: () => void;
   /** Callback when user presses Enter/comma with an email-like value */
   onEmailSubmit?: (email: string) => void;
+  /** Chips wrap onto new lines and the box grows with them, then scrolls, instead of one sideways-scrolling line. */
+  multiline?: boolean;
 }
 
 export function ShareSearchInput({
@@ -46,9 +48,16 @@ export function ShareSearchInput({
   onRoleChange,
   onRemoveLastSelection,
   onEmailSubmit,
+  multiline = false,
 }: ShareSearchInputProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
+  // Once the chips scroll, keep the input (the last row) in view as people are added.
+  useEffect(() => {
+    const box = chipsRef.current;
+    if (multiline && box) box.scrollTop = box.scrollHeight;
+  }, [multiline, selections.length]);
   const hasRoleSelection = selections.some((s) => s.type === 'user' || (teamsHaveRoles && s.type === 'team'));
 
   return (
@@ -69,13 +78,17 @@ export function ShareSearchInput({
       <Flex
         align="center"
         gap="2"
-        className="no-scrollbar"
+        ref={chipsRef}
+        className={multiline ? undefined : 'no-scrollbar'}
         style={{
           flex: 1,
           minWidth: 0,
-          overflowX: 'auto',
-          overflowY: 'hidden',
-          flexWrap: 'nowrap',
+          overflowX: multiline ? 'hidden' : 'auto',
+          overflowY: multiline ? 'auto' : 'hidden',
+          flexWrap: multiline ? 'wrap' : 'nowrap',
+          // About four rows of chips, then the box scrolls.
+          maxHeight: multiline ? 136 : undefined,
+          rowGap: multiline ? 6 : undefined,
           paddingLeft: 8,
           paddingRight: 4,
         }}

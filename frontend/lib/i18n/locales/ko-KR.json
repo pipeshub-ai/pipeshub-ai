@@ -1008,6 +1008,8 @@
     "connectorsCollectionsTitle": "커넥터 및 컬렉션",
     "connectorsTooltip": "커넥터 및 컬렉션",
     "connectorsDefaultScopeHint": "기본적으로 모든 커넥터와 컬렉션이 검색됩니다. 범위를 좁히려면 아래에서 특정 항목을 선택하세요.",
+    "actionsDefaultScopeHint": "기본적으로 연결된 모든 작업을 사용할 수 있습니다. 범위를 좁히려면 아래에서 특정 항목을 선택하세요.",
+    "mcpDefaultScopeHint": "기본적으로 연결된 모든 MCP 서버를 사용할 수 있습니다. 범위를 좁히려면 아래에서 특정 항목을 선택하세요.",
     "agentResourcesTooltip": "커넥터, 컬렉션 및 액션",
     "agentResources": {
       "sheetTitle": "커넥터, 컬렉션 및 액션",
@@ -1072,6 +1074,7 @@
     "treeExpand": "{{name}}의 내용 표시",
     "treeCollapse": "{{name}}의 내용 숨기기",
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
+    "noConnectorsAvailable": "사용 가능한 커넥터가 없습니다",
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
@@ -1952,7 +1955,18 @@
       "namedFile": "첨부 파일 {{name}}",
       "unnamedFile_other": "첨부 파일 중 {{count}}개"
     },
-    "archiveChatTitle": "이 채팅을 보관할까요?"
+    "archiveChatTitle": "이 채팅을 보관할까요?",
+    "quickFilters": {
+      "tab": "빠른 필터",
+      "title": "빠른 필터",
+      "description": "소스, 작업, MCP 도구 묶음을 이름으로 저장해 어느 채팅에서나 사용하고 사람과 팀에 공유하세요."
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "{{name}}에서 선택한 도구 보기",
+      "remove": "{{name}}에서 선택한 도구 제거",
+      "unknown": "도구"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -7233,7 +7247,25 @@
     "alreadyRemoved": "이미 제거됨",
     "alreadyRemovedDescription": "{{name}} 님은 이미 액세스 권한이 없었습니다",
     "removeConfirmTitle": "액세스 권한을 제거할까요?",
-    "removeConfirmDescription": "{{name}} 님은 즉시 액세스 권한을 잃습니다. 나중에 다시 공유할 수 있습니다."
+    "removeConfirmDescription": "{{target}}에 대한 {{name}} 님의 액세스 권한을 삭제하시겠습니까? 나중에 다시 공유할 수 있습니다.",
+    "removeConfirmTeamDescription": "{{target}}에 대한 {{name}}의 액세스 권한을 삭제하시겠습니까? 구성원은 직접 공유한 경우에만 액세스 권한이 유지됩니다. 나중에 팀과 다시 공유할 수 있습니다.",
+    "removeTargetNamed": "“{{entityName}}”",
+    "removeTarget": {
+      "collection": "이 컬렉션",
+      "conversation": "이 채팅",
+      "search": "이 검색",
+      "connector": "이 커넥터",
+      "agent": "이 에이전트",
+      "project": "이 프로젝트",
+      "artifact": "이 아티팩트",
+      "default": "이 항목"
+    },
+    "removeConfirmCurrentAccess": "현재 액세스: {{role}}",
+    "checking": "액세스 확인 중…",
+    "checkOk": "공유할 수 있음",
+    "checkBlocked": "공유할 수 없음",
+    "checkWarning": "공유할 수 있음, 공유 전에 확인하세요",
+    "checkFailed": "액세스를 확인하지 못했습니다. 다시 시도하세요."
   },
   "demoData": {
     "badge": {

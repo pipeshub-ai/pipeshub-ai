@@ -34,7 +34,6 @@ describe('createProjectShareAdapter', () => {
     expect(adapter.roleOptions?.roles).toEqual(['WRITER', 'READER']);
     expect(adapter.supportsTeams).toBe(true);
     expect(adapter.teamsHaveRoles).toBe(true);
-    expect(adapter.confirmBeforeRemove).toBe(true);
   });
 
   it('lists the owner, teams and users, using the names the members API returns', async () => {

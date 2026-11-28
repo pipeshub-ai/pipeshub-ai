@@ -1011,6 +1011,8 @@
     "connectorsCollectionsTitle": "Connectors and collections",
     "connectorsTooltip": "Connectors and collections",
     "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",
+    "actionsDefaultScopeHint": "All connected actions can be used by default. Select specific ones below if you want to narrow the scope.",
+    "mcpDefaultScopeHint": "All connected MCP servers can be used by default. Select specific ones below if you want to narrow the scope.",
     "agentResourcesTooltip": "Connectors, collections & actions",
     "agentResources": {
       "sheetTitle": "Connectors, collections & actions",
@@ -1075,6 +1077,7 @@
     "treeExpand": "Show what is in {{name}}",
     "treeCollapse": "Hide what is in {{name}}",
     "noCollectionsAvailable": "No collections available",
+    "noConnectorsAvailable": "No connectors available",
     "answer": "Answer",
     "sources": "Sources",
     "citation": "Citation",
@@ -1963,7 +1966,18 @@
       "unnamedFile_one": "one of the attached files",
       "unnamedFile_other": "{{count}} of the attached files"
     },
-    "archiveChatTitle": "Archive this chat?"
+    "archiveChatTitle": "Archive this chat?",
+    "quickFilters": {
+      "tab": "Quick filters",
+      "title": "Quick filters",
+      "description": "Save a set of sources, actions and MCP tools under a name, use it in any chat, and share it with people and teams."
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "Show the tools picked from {{name}}",
+      "remove": "Remove the tools picked from {{name}}",
+      "unknown": "Tools"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -7344,7 +7358,25 @@
     "alreadyRemoved": "Already removed",
     "alreadyRemovedDescription": "{{name}} had already lost access",
     "removeConfirmTitle": "Remove access?",
-    "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later."
+    "removeConfirmDescription": "Are you sure you want to remove {{name}}'s access to {{target}}? You can share with them again later.",
+    "removeConfirmTeamDescription": "Are you sure you want to remove {{name}}'s access to {{target}}? Its members keep access only if you shared with them directly. You can share with the team again later.",
+    "removeTargetNamed": "“{{entityName}}”",
+    "removeTarget": {
+      "collection": "this collection",
+      "conversation": "this chat",
+      "search": "this search",
+      "connector": "this connector",
+      "agent": "this agent",
+      "project": "this project",
+      "artifact": "this artifact",
+      "default": "this item"
+    },
+    "removeConfirmCurrentAccess": "Current access: {{role}}",
+    "checking": "Checking access…",
+    "checkOk": "Can be shared",
+    "checkBlocked": "Can't be shared",
+    "checkWarning": "Can be shared; check before sharing",
+    "checkFailed": "Couldn't check access. Try again."
   },
   "demoData": {
     "badge": {

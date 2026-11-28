@@ -922,6 +922,8 @@
     "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
     "connectorsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्टर्स और संग्रहों में खोज की जाती है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट कनेक्टर्स या संग्रह चुनें।",
+    "actionsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्ट की गई क्रियाओं का उपयोग किया जा सकता है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट क्रियाएँ चुनें।",
+    "mcpDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्ट किए गए MCP सर्वरों का उपयोग किया जा सकता है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट सर्वर चुनें।",
     "agentResourcesTooltip": "कनेक्टर, संग्रह और कार्य",
     "agentResources": {
       "sheetTitle": "कनेक्टर, संग्रह और कार्य",
@@ -986,6 +988,7 @@
     "treeExpand": "{{name}} की सामग्री दिखाएँ",
     "treeCollapse": "{{name}} की सामग्री छिपाएँ",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",
+    "noConnectorsAvailable": "कोई कनेक्टर उपलब्ध नहीं है",
     "answer": "उत्तर",
     "sources": "स्रोत",
     "citation": "उद्धरण",
@@ -1873,7 +1876,18 @@
       "unnamedFile_one": "संलग्न फ़ाइलों में से एक",
       "unnamedFile_other": "संलग्न फ़ाइलों में से {{count}}"
     },
-    "archiveChatTitle": "इस चैट को संग्रहित करें?"
+    "archiveChatTitle": "इस चैट को संग्रहित करें?",
+    "quickFilters": {
+      "tab": "क्विक फ़िल्टर",
+      "title": "क्विक फ़िल्टर",
+      "description": "स्रोतों, कार्रवाइयों और MCP टूल का एक सेट एक नाम से सहेजें, किसी भी चैट में उपयोग करें और लोगों व टीमों के साथ साझा करें।"
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "{{name}} से चुने गए टूल दिखाएँ",
+      "remove": "{{name}} से चुने गए टूल हटाएँ",
+      "unknown": "टूल"
+    }
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -7280,7 +7294,25 @@
     "alreadyRemoved": "पहले ही हटाया जा चुका है",
     "alreadyRemovedDescription": "{{name}} की पहुँच पहले ही हट चुकी थी",
     "removeConfirmTitle": "पहुँच हटाएँ?",
-    "removeConfirmDescription": "{{name}} की पहुँच तुरंत हट जाएगी। आप बाद में फिर से साझा कर सकते हैं।"
+    "removeConfirmDescription": "क्या आप वाकई {{target}} से {{name}} की पहुँच हटाना चाहते हैं? आप बाद में उनके साथ फिर से साझा कर सकते हैं।",
+    "removeConfirmTeamDescription": "क्या आप वाकई {{target}} से {{name}} की पहुँच हटाना चाहते हैं? इसके सदस्यों की पहुँच तभी बनी रहेगी जब आपने उनके साथ सीधे साझा किया हो। आप बाद में टीम के साथ फिर से साझा कर सकते हैं।",
+    "removeTargetNamed": "“{{entityName}}”",
+    "removeTarget": {
+      "collection": "इस संग्रह",
+      "conversation": "इस चैट",
+      "search": "इस खोज",
+      "connector": "इस कनेक्टर",
+      "agent": "इस एजेंट",
+      "project": "इस प्रोजेक्ट",
+      "artifact": "इस आर्टिफ़ैक्ट",
+      "default": "इस आइटम"
+    },
+    "removeConfirmCurrentAccess": "मौजूदा पहुँच: {{role}}",
+    "checking": "पहुँच जाँची जा रही है…",
+    "checkOk": "साझा किया जा सकता है",
+    "checkBlocked": "साझा नहीं किया जा सकता",
+    "checkWarning": "साझा किया जा सकता है; साझा करने से पहले जाँच लें",
+    "checkFailed": "पहुँच की जाँच नहीं हो सकी। फिर से कोशिश करें।"
   },
   "demoData": {
     "badge": {

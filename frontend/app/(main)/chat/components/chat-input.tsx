@@ -21,7 +21,7 @@ import {
   ModelSelectorPanel,
   getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
-import { SelectedCollections } from '@/chat/components/selected-collections';
+import { removeSelectedToolGroup, useSelectedToolGroups } from '@/chat/components/selected-tool-chips';
 import { useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
 import { useCompareStore } from '@/chat/compare/compare-store';
 import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
@@ -47,7 +47,7 @@ import {
   getModelDefaultReasoningEffort,
   projectCapabilitiesKey,
 } from '@/chat/store';
-import { chatModelOptions, useAuthStore } from '@/config';
+import { chatModelOptions, SelectedFiltersRow, useAuthStore } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useScrollEdges } from '@/lib/hooks/use-scroll-edges';
 import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
@@ -1148,8 +1148,12 @@ export function ChatInput({
     t,
   ]);
 
-  const showSelectedCollectionsRow =
-    selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen;
+  // Shown while a filter panel is open too, so what is chosen stays in view as it changes.
+  // The universal agent's hand-picked actions and MCP tools, shown beside the sources.
+  const selectedToolGroups = useSelectedToolGroups(
+    !isAgentChat && !isProjectChat && !isRegenerateMode && variant !== 'widget' && settings.queryMode === 'agent'
+  );
+  const showSelectedCollectionsRow = selectedCollections.length > 0 || selectedToolGroups.length > 0;
 
   const handleRemoveCollection = useCallback(
     (id: string) => {
@@ -2224,9 +2228,16 @@ export function ChatInput({
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
     function handleClickOutside(e: MouseEvent) {
       if (expansionViewMode === 'overlay') return;
-      // A dialog opened from a panel (an MCP server's key) is portaled outside the input; closing
-      // the panel on a click inside it would unmount the dialog under the person typing.
-      if ((e.target as Element | null)?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
+      // A dialog or menu opened from a panel (an MCP server's key, a row's actions) is portaled outside
+      // the input; closing the panel on a click inside it would unmount what it opened.
+      if (
+        (e.target as Element | null)?.closest?.(
+          '[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]'
+        )
+      )
+        return;
+      // While a modal opened from a panel is up, a click beside it only closes that modal.
+      if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')) return;
 
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         dismissExpansionPanelsRef.current();
@@ -2544,10 +2555,14 @@ export function ChatInput({
             padding: 8,
           }}
         >
-          <SelectedCollections
+          <SelectedFiltersRow
             collections={selectedCollections}
             removable={!isRegenerateMode}
             onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
+            selection={isRegenerateMode ? undefined : mentionSelection}
+            onSelectionChange={isRegenerateMode ? undefined : onMentionSelectionChange}
+            toolGroups={selectedToolGroups}
+            onRemoveToolGroup={removeSelectedToolGroup}
           />
         </Flex>
       )}
@@ -2961,7 +2976,7 @@ export function ChatInput({
             setExpansionViewMode('inline');
           }}
         >
-          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} onClose={dismissExpansionPanels} />
         </ChatInputExpansionPanel>
       ) : hubFilterQueryMode && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
@@ -2974,6 +2989,7 @@ export function ChatInput({
           <ConnectorsCollectionsPanel
             selection={composerFilters}
             onSelectionChange={variant === 'widget' ? setWidgetFilters : setFilters}
+            onClose={dismissExpansionPanels}
             viewMode="inline"
             onToggleView={handleToggleView}
           />
@@ -3702,7 +3718,7 @@ export function ChatInput({
           scope={isAgentChat ? 'agent' : 'project'}
         />
       ) : settings.queryMode === 'agent' ? (
-        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} onClose={dismissExpansionPanels} />
       ) : hubFilterQueryMode ? (
         <ConnectorsCollectionsPanel
           selection={composerFilters}

@@ -37,6 +37,7 @@ export function ChatInputOverlayPanel({
   children,
 }: ChatInputOverlayPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const pressedScrimRef = useRef(false);
   const { appearance } = useThemeAppearance();
   const [contentLeft, setContentLeft] = useState(0);
 
@@ -88,9 +89,13 @@ export function ChatInputOverlayPanel({
       radius="medium"
     >
       <div
+        onPointerDown={(e: React.PointerEvent) => {
+          pressedScrimRef.current = e.target === e.currentTarget;
+        }}
         onClick={(e: React.MouseEvent) => {
-          // Collapse on backdrop click (only if clicking the scrim itself)
-          if (e.target === e.currentTarget) onCollapse();
+          // Collapse on a click on the scrim itself. A press that began elsewhere does not count: a modal
+          // opened from the panel closes on that press, and the click then lands on the scrim.
+          if (e.target === e.currentTarget && pressedScrimRef.current) onCollapse();
         }}
         style={{
           position: 'fixed',

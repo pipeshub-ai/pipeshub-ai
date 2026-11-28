@@ -1065,6 +1065,8 @@
     "connectorsCollectionsTitle": "Konektory a kolekce",
     "connectorsTooltip": "Konektory a kolekce",
     "connectorsDefaultScopeHint": "Ve výchozím nastavení se prohledávají všechny konektory a kolekce. Pokud chcete rozsah zúžit, vyberte níže konkrétní položky.",
+    "actionsDefaultScopeHint": "Ve výchozím nastavení lze použít všechny připojené akce. Pokud chcete rozsah zúžit, vyberte níže konkrétní položky.",
+    "mcpDefaultScopeHint": "Ve výchozím nastavení lze použít všechny připojené servery MCP. Pokud chcete rozsah zúžit, vyberte níže konkrétní položky.",
     "agentResourcesTooltip": "Konektory, kolekce a akce",
     "agentResources": {
       "sheetTitle": "Konektory, kolekce a akce",
@@ -1129,6 +1131,7 @@
     "treeExpand": "Zobrazit obsah {{name}}",
     "treeCollapse": "Skrýt obsah {{name}}",
     "noCollectionsAvailable": "Nejsou k dispozici žádné kolekce",
+    "noConnectorsAvailable": "Nejsou k dispozici žádné konektory",
     "answer": "Odpověď",
     "sources": "Zdroje",
     "citation": "Citace",
@@ -2053,7 +2056,18 @@
       "unnamedFile_many": "{{count}} z přiložených souborů",
       "unnamedFile_other": "{{count}} z přiložených souborů"
     },
-    "archiveChatTitle": "Archivovat tento chat?"
+    "archiveChatTitle": "Archivovat tento chat?",
+    "quickFilters": {
+      "tab": "Rychlé filtry",
+      "title": "Rychlé filtry",
+      "description": "Uložte sadu zdrojů, akcí a nástrojů MCP pod jménem, použijte ji v libovolném chatu a sdílejte ji s lidmi a týmy."
+    },
+    "selectedTools": {
+      "chip": "{{name}} · {{count}}",
+      "show": "Zobrazit nástroje vybrané z {{name}}",
+      "remove": "Odebrat nástroje vybrané z {{name}}",
+      "unknown": "Nástroje"
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -7468,7 +7482,25 @@
     "alreadyRemoved": "Už odebráno",
     "alreadyRemovedDescription": "{{name}} už přístup neměl(a)",
     "removeConfirmTitle": "Odebrat přístup?",
-    "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet."
+    "removeConfirmDescription": "Opravdu chcete odebrat přístup uživatele {{name}} k {{target}}? Později s ním můžete znovu sdílet.",
+    "removeConfirmTeamDescription": "Opravdu chcete odebrat přístup týmu {{name}} k {{target}}? Jeho členové si přístup ponechají, jen pokud jste s nimi sdíleli přímo. Později můžete s týmem znovu sdílet.",
+    "removeTargetNamed": "„{{entityName}}“",
+    "removeTarget": {
+      "collection": "této kolekci",
+      "conversation": "tomuto chatu",
+      "search": "tomuto vyhledávání",
+      "connector": "tomuto konektoru",
+      "agent": "tomuto agentovi",
+      "project": "tomuto projektu",
+      "artifact": "tomuto artefaktu",
+      "default": "této položce"
+    },
+    "removeConfirmCurrentAccess": "Aktuální přístup: {{role}}",
+    "checking": "Kontrola přístupu…",
+    "checkOk": "Lze sdílet",
+    "checkBlocked": "Nelze sdílet",
+    "checkWarning": "Lze sdílet; před sdílením zkontrolujte",
+    "checkFailed": "Přístup se nepodařilo ověřit. Zkuste to znovu."
   },
   "demoData": {
     "badge": {
