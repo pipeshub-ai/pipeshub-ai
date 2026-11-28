@@ -43,6 +43,11 @@ env:
 jobs:
   check:
     name: Lint and validate every configuration
+    # Not label-gated: the chart lint runs on every push. An unrelated label's run skips it, so that run does no work.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

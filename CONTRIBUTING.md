@@ -387,19 +387,14 @@ change that crosses areas, before asking for a merge. A maintainer adds labels o
 On a pull request from a fork a label does not start the full integration suite, which needs repository
 secrets: it still runs only the helper tests, and a maintainer runs the suite on the reviewed commit with
 *Run workflow* on `integration-tests.yml`, as described above.
-**Which checks gate a merge.** The fast checks gate a merge and need no label. The heavy `ci:` suites are
-advisory on a pull request. A reviewer who needs one adds its label and reads its latest run; a newer run on
-the same commit is the one that counts. The nightly and `main` runs are authoritative. Don't make a heavy job
-a required check: a check that runs only when someone adds a label can't gate every merge. Required checks
-come only from these workflows, where this repository has them:
-
-<!-- required-checks -->
-`PR Validations`, `unit-test`, `Edition guard`, `OpenAPI Spec Validation`, `Contracts and Codegen`,
-`Dependency Review`, `integration-suite-guards`, `telemetry-stub-build`
-<!-- /required-checks -->
-
-`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate and that no heavy workflow
-or job is in that list.
+**Which checks gate a merge.** The checks listed in `.github/required-checks.txt` gate a merge: they run on
+every pull request with no label and no path filter. The heavy `ci:` suites are advisory on a pull request, so
+don't make a heavy job a required check; a check that runs only when someone adds a label can't gate every
+merge. A reviewer who needs a heavy suite adds its label and reads the run that label (or a push while it is
+on) started, where the suite's jobs actually ran. A later run on the same commit whose suite jobs were skipped,
+for example after an unrelated label, does not replace it. The nightly and `main` runs are authoritative.
+`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate, and that every listed check
+runs on every pull request and is not a heavy suite.
 
 ## Contributor License Agreement
 
