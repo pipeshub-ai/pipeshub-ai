@@ -697,6 +697,8 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'lock_external_app_memberships',
     # _held_cypher: the same lock, as the head of the statement that writes the grants
     '_held_cypher',
+    # _replace_held_cypher: the same lock in a replace, and the matchLock flag set and removed on a group whose grant it creates
+    '_replace_held_cypher',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
     'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',

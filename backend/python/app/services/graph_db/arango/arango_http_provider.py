@@ -5132,8 +5132,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         created = [g for g in lock_grants if (g[0], g[1]) not in kept and (g[0], g[1], app) not in done]
         if edges:
             await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
-        if lock_done is not None and app:
-            lock_done.update((g[0], g[1], app) for g in lock_grants)
+        if lock_done is not None and app:      # as on PostgreSQL: a group's pair only once its grant is committed
+            lock_done.update((g[0], g[1], app) for g in lock_grants if g[0] in ("users", "person") or (g[0], g[1]) in kept)
 
     async def delete_all_edges_for_node(
         self,
@@ -9667,6 +9667,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not grants:
             return "", {}
         uar = CollectionNames.USER_APP_RELATION.value
+        # A group's grant on a record and a membership of a group both write the group's document (an empty update): one of two such writers
+        # conflicts, and runs again in a snapshot that holds the other's commit, so a group's grant reads every member added before it commits.
+        vias = (CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value)
+        groups: dict[str, list[str]] = {}
+        for hc, hi, tc, ti in grants:
+            if hc in vias and tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
+                groups.setdefault(hc, []).append(hi)
+            elif hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value) and tc in vias:
+                groups.setdefault(tc, []).append(ti)
+        groups = {c: sorted(set(keys)) for c, keys in sorted(groups.items())}
+        touches = "".join(f"""
+            LET held_{c}_present = (FOR d IN {c} FILTER d._key IN @held_{c} RETURN d._key)
+            LET held_{c}_touched = (FOR k IN held_{c}_present UPDATE k WITH {{}} IN {c})""" for c in groups)
         return f"""
             LET held = (FOR k IN UNIQUE(FLATTEN(
                 FOR g IN @held_grants
@@ -9684,7 +9697,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             : [])
             ))
                 UPDATE k WITH {{ updatedAtTimestamp: @held_now }} IN {uar}
-                RETURN {{ principal: NEW._from, app: NEW._to }})""", {
+                RETURN {{ principal: NEW._from, app: NEW._to }}){touches}""", {
+            **{f"held_{c}": keys for c, keys in groups.items()},
             "held_grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
             "held_record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
             "held_people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],

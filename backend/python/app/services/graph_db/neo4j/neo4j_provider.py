@@ -2953,6 +2953,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     CALL {{
                         WITH member, t
                         WITH member, t WHERE NOT {people}
+                        SET member.{_MATCH_LOCK} = true      // the group first (_group_node_locks), then the members it has then
+                        REMOVE member.{_MATCH_LOCK}
+                        WITH member, t
                         MATCH (p)-[r:{rel} {{isExternalUser: true}}]->(:{app_label} {{id: t.connectorId}})
                         WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(member) }}
                         {lock}
@@ -19372,6 +19375,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f"WHERE EXISTS {{ (p)-[:{perm} {{type: 'USER'}}]->(:{holder} {{id: row.h}}) }}")
         return None
 
+    @staticmethod
+    def _group_node_locks(hc: str, tc: str) -> tuple[str, str]:
+        """The write locks of the group, role or team node in a grant of that kind, per ``row``, (before the members are read, after the
+        memberships are locked). A group's grant on a record locks the group before it reads the members, and a membership of a group locks the
+        group after the member's memberships: a member added while the group's grant is written waits for it, or the grant for the member, and
+        then reads it (a read sees what committed before it)."""
+        vias = (CollectionNames.GROUPS.value, CollectionNames.ROLES.value, CollectionNames.TEAMS.value)
+        lock = f"SET gn.{_MATCH_LOCK} = true REMOVE gn.{_MATCH_LOCK}"
+        if hc in vias and tc in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
+            return f"CALL {{ UNWIND $lock_rows AS row MATCH (gn:{collection_to_label(hc)} {{id: row.h}}) {lock} }}", ""
+        if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value) and tc in vias:
+            return "", f"CALL {{ UNWIND $lock_rows AS row MATCH (gn:{collection_to_label(tc)} {{id: row.t}}) {lock} }}"
+        return "", ""
+
     def _held_cypher(self, lock_grants: Sequence[tuple[str, str, str, str]], from_label: str, to_label: str) -> tuple[str, list[dict]]:
         """For the head of the statement that writes the grants from ``from_label`` to ``to_label`` nodes: a subquery that write-locks the flagged
         memberships those of ``lock_grants`` keep, as ``lock_external_app_memberships`` does, before the statement writes them; ("", []) when none."""
@@ -19380,14 +19397,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if match is None:
             return "", []
         rows = sorted({(hi, ti) for hc, hi, tc, ti in lock_grants if (hc, tc) in kinds})
+        before, after = self._group_node_locks(*next(iter(kinds)))
         return f"""
+                {before}
                 CALL {{
                     UNWIND $lock_rows AS row
                     {match}
                     WITH DISTINCT r WHERE r.isExternalUser = true
                     SET r.{_MATCH_LOCK} = true
                     REMOVE r.{_MATCH_LOCK}
-                }}""", [{"h": h, "t": t} for h, t in rows]
+                }}
+                {after}""", [{"h": h, "t": t} for h, t in rows]
 
     async def lock_external_app_memberships(
         self,
@@ -19410,16 +19430,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             match = self._held_match(hc, tc)
             if match is None:
                 continue
+            before, after = self._group_node_locks(hc, tc)
             rows = await self.client.execute_query(
                 f"""
-                UNWIND $rows AS row
+                {before}
+                {after}
+                UNWIND $lock_rows AS row
                 {match}
                 WITH DISTINCT p, r, app WHERE r.isExternalUser = true
                 SET r.{_MATCH_LOCK} = true
                 REMOVE r.{_MATCH_LOCK}
                 RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
+                parameters={"lock_rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
                 txn_id=transaction,
             )
             for row in rows or []:

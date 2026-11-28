@@ -464,17 +464,30 @@ async def test_a_reaper_that_decided_before_the_grant_still_reaps(world: _World)
     w, g = world, world.graph
     ext = w.sid("ext-own-gone")
     rid = await g.begin_transaction(["users", "records", "apps", "person"], ["userAppRelation", "person"])
-    await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
-    grant = asyncio.create_task(_grant_through_the_store(w, ext))
-    await _until_it_meets(g, grant)
-    await g.commit_transaction(rid)
+    grant = tid = None
     try:
-        tid = await grant
-    except Exception as e:
-        if not g.is_write_conflict(e):
-            raise
-        tid = await _grant_through_the_store(w, ext)
-    await g.commit_transaction(tid)
+        await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)
+        grant = asyncio.create_task(_grant_through_the_store(w, ext))
+        await _until_it_meets(g, grant)
+        await g.commit_transaction(rid)
+        rid = None
+        try:
+            tid = await grant
+        except Exception as e:
+            if not g.is_write_conflict(e):
+                raise
+            tid = await _grant_through_the_store(w, ext)
+        await g.commit_transaction(tid)
+        tid = None
+    finally:      # a failed overlap leaves nothing open to lock what the world's removal deletes
+        if grant is not None and not grant.done():
+            grant.cancel()
+            with contextlib.suppress(BaseException):
+                tid = await grant
+        for t in (rid, tid):
+            if t is not None:
+                with contextlib.suppress(Exception):
+                    await g.rollback_transaction(t)
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct"}
 
 
@@ -494,7 +507,7 @@ async def test_a_group_s_grant_through_the_store_keeps_its_member_s_membership_f
                                         "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
     assert await g.batch_create_edges([{"from_id": w.sid("ext-fresh"), "from_collection": "users", "to_id": w.sid("fresh"), "to_collection": coll,
                                         "type": "USER", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
-    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
     fresh = {"from_id": w.sid("fresh"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
              "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}
     try:
@@ -524,8 +537,8 @@ async def test_a_resync_that_keeps_the_grants_locks_nothing(world: _World) -> No
     they keep. It finishes without waiting (Neo4j) or conflicting (ArangoDB) while another transaction holds ext-own-live's and ext-direct's."""
     w, g = world, world.graph
     coll = NODE_TARGETS[w.kind]
-    hold = await g.begin_transaction(["users", "records", "apps", coll], ["userAppRelation"])
-    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    hold = await g.begin_transaction(["users", "records", "apps", coll], ["userAppRelation", coll])
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
     try:
         held = await g.lock_external_app_memberships([(coll, w.sid("own-live"), "records", w.sid("r-own-live")),
                                                       ("users", w.sid("ext-direct"), "records", w.sid("r-own-live"))], transaction=hold)
@@ -540,44 +553,122 @@ async def test_a_resync_that_keeps_the_grants_locks_nothing(world: _World) -> No
     assert set(await _edges_to_app(w)) == {"u", "ext-own-live", "ext-direct", "ext-own-gone"}
 
 
-async def test_a_group_s_new_grants_on_records_of_one_app_lock_its_members_once_a_transaction(world: _World) -> None:
-    """own-live's new grants on r-src-live and r-own-gone, both of the App, in one transaction: on ArangoDB the store records (own-live, App)
-    with the first, and the second replace is handed it, so it does not lock own-live's members again. Neo4j keeps no pair (its check that an
-    edge is created costs what the lock does): the second replace locks them again, which costs a lookup and changes nothing."""
+async def test_a_new_group_grant_reads_its_members_on_each_record_of_a_transaction(world: _World) -> None:
+    """own-live's new grants on r-src-live and r-own-gone, both of the App, in one transaction: the grant is not committed yet, so the store
+    records no (own-live, App) pair and the second record locks own-live's members again (a member may join between them); a kept grant's
+    pair is recorded (ArangoDB; Neo4j records none)."""
     w, g = world, world.graph
     coll = NODE_TARGETS[w.kind]
 
     def grant(holder: str, record: str) -> dict:
         return {"from_id": w.sid(holder), "from_collection": coll, "to_id": w.sid(record), "to_collection": "records", "type": GRANT_TYPE[w.kind],
                 "role": "WRITER", "createdAtTimestamp": TS}
-    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions"])
+    tid = await g.begin_transaction(["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
     try:
         store = GraphTransactionStore(g, tid, explicit=True)
         await store.replace_record_permissions(w.sid("r-src-live"), [grant("src-live", "r-src-live"), grant("own-live", "r-src-live")], None, inherit=False)
-        if hasattr(g, "client"):
-            assert store._lock_done == set()
-            await store.replace_record_permissions(w.sid("r-own-gone"), [grant("own-live", "r-own-gone")], None, inherit=False)
-            await g.commit_transaction(tid)
-            return
-        assert (coll, w.sid("own-live"), w.sid(APP)) in store._lock_done
-        handed, locked = [], []
-        replace, create = g.replace_record_permissions, g.batch_create_edges
-
-        async def spy_replace(*a, **k) -> object:
-            handed.append(set(k.get("lock_done") or ()))
-            return await replace(*a, **k)
+        assert (coll, w.sid("own-live"), w.sid(APP)) not in store._lock_done
+        assert ((coll, w.sid("src-live"), w.sid(APP)) in store._lock_done) is not hasattr(g, "client")      # kept: committed
+        locked = []
+        create = g.batch_create_edges
 
         async def spy_create(*a, **k) -> object:
             locked.append(list(k.get("lock_grants") or ()))
             return await create(*a, **k)
-        g.replace_record_permissions, g.batch_create_edges = spy_replace, spy_create
+        g.batch_create_edges = spy_create
         try:
             await store.replace_record_permissions(w.sid("r-own-gone"), [grant("own-live", "r-own-gone")], None, inherit=False)
         finally:
-            del g.replace_record_permissions, g.batch_create_edges
-        assert (coll, w.sid("own-live"), w.sid(APP)) in handed[0]
-        assert locked == [[]]      # its replace writes through batch_create_edges, handed no grant to lock
+            del g.batch_create_edges
+        if not hasattr(g, "client"):      # ArangoDB's replace writes through batch_create_edges (Neo4j's locks in its own statement)
+            assert locked == [[(coll, w.sid("own-live"), "records", w.sid("r-own-gone"))]]
         await g.commit_transaction(tid)
     finally:
         with contextlib.suppress(Exception):
             await g.rollback_transaction(tid)
+
+
+@pytest.mark.parametrize("records", [1, 2], ids=["one_record", "two_records"])
+async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_membership(world: _World, records: int) -> None:
+    """T1 writes the grant of late (a group, role or team with no member) on r-own-live and stays open. T2 makes ext-late, a flagged collaborator
+    of the App, a member of late and commits; the reaper runs; T1 commits. Both write late's node, so T2 waits for T1 (Neo4j) or conflicts and
+    runs again once T1 has committed (ArangoDB): the reaper never reads ext-late as a member of late whose grant is not committed, and ext-late
+    keeps the App (without that, the reaper removed it before T1 committed). With two records, T1 replaces r-own-live's grants and then
+    writes late's on r-own-gone after T2 has met it, in the same transaction: the second reads late's members again, its grant being
+    uncommitted. late has many members already: on Neo4j a dense node's
+    relationships are written without the node's own lock, so only the lock the grant writers take orders T1 and T2."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+    extra = {"Role": {"externalRoleId": "ext-late", "connectorName": DRIVE, "connectorId": w.sid(APP), "createdAtTimestamp": TS}}
+    late, member = _node(w.kind, "late", name="late", **extra.get(w.kind, {})), _node("User", "ext-late", email="ext-late@example.com", fullName="Ext late")
+    w.nodes += [late, member]      # removed with the world
+    others = [_node("User", f"late-{i}", email=f"late-{i}@example.com", fullName=f"Late {i}") for i in range(60)]
+    w.nodes += others
+    for n in (late, member, *others):
+        assert await g.batch_upsert_nodes([{**n["props"], "id": w.sid(n["id"]), "orgId": w.org}], collection=NODE_TARGETS[n["kind"]])
+    assert await g.batch_create_edges([{"from_id": w.sid(o["id"]), "from_collection": "users", "to_id": w.sid("late"), "to_collection": coll,
+                                        "type": "USER", "role": "READER", "createdAtTimestamp": TS} for o in others], collection="permission")
+    assert await g.batch_create_edges([{"from_id": w.sid("ext-late"), "from_collection": "users", "to_id": w.sid(APP), "to_collection": "apps",
+                                        "syncState": "COMPLETED", "lastSyncUpdate": TS, "isExternalUser": True}], collection="userAppRelation")
+    grant = {"from_id": w.sid("late"), "from_collection": coll, "to_id": w.sid("r-own-live"), "to_collection": "records",
+             "type": GRANT_TYPE[w.kind], "role": "READER", "createdAtTimestamp": TS}
+    membership = {"from_id": w.sid("ext-late"), "from_collection": "users", "to_id": w.sid("late"), "to_collection": coll,
+                  "type": "USER", "role": "READER", "createdAtTimestamp": TS}
+    collections = (["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
+    t1 = await g.begin_transaction(*collections)
+    open_ = [t1]
+    conflicted = asyncio.Event()
+
+    async def add() -> None:
+        """T2, run again after a conflict once T1 is no longer open, as its caller does."""
+        while True:
+            t2 = await g.begin_transaction(*collections)
+            open_.append(t2)
+            try:
+                assert await GraphTransactionStore(g, t2, explicit=True).batch_create_edges([membership], "permission")
+                await g.commit_transaction(t2)
+                open_.remove(t2)
+                return
+            except Exception as e:
+                open_.remove(t2)
+                with contextlib.suppress(Exception):
+                    await g.rollback_transaction(t2)
+                if not g.is_write_conflict(e):
+                    raise
+                conflicted.set()
+                while t1 in open_:
+                    await asyncio.sleep(0.05)
+    adding = reaping = None
+    try:
+        store = GraphTransactionStore(g, t1, explicit=True)
+        if records == 1:
+            assert await store.batch_create_edges([grant], "permission")
+        else:
+            await store.replace_record_permissions(w.sid("r-own-live"), [*_r_own_live_grants(w), grant], None, inherit=False)
+        adding = asyncio.create_task(add())
+        if hasattr(g, "client"):
+            await _until_it_meets(g, adding)
+        else:      # ArangoDB answers the second writer of late with a conflict at once
+            await asyncio.wait_for(asyncio.wait([adding, asyncio.ensure_future(conflicted.wait())], return_when=asyncio.FIRST_COMPLETED), 10)
+        assert not adding.done(), "the membership committed while the group's grant was open"
+        if records == 2:
+            await store.replace_record_permissions(w.sid("r-own-gone"), [{**grant, "to_id": w.sid("r-own-gone")}], None, inherit=False)
+        if hasattr(g, "client"):      # T2 holds ext-late's membership while it waits: the reaper waits for it (on ArangoDB T2 holds nothing yet)
+            reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+            await _until_it_meets(g, reaping)
+        await g.commit_transaction(t1)
+        open_.remove(t1)
+        await adding
+        if reaping is not None:
+            await reaping
+        await g.reap_stale_external_app_relations(w.sid(APP))      # a reaper that runs after both decides on the committed chain
+    finally:
+        for task in (adding, reaping):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+        for t in list(open_):
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(t)
+    assert "ext-late" in await _edges_to_app(w)

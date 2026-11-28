@@ -27,6 +27,7 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _field,
     _grant_columns,
+    _hold_groups,
     _hot,
     _j,
     _node,
@@ -413,6 +414,7 @@ class CoreMixin(PgBase):
         payload = _j(list(rows.values()))
 
         async def go(tx: Tx) -> None:
+            await _hold_groups(tx, org, lock_grants)
             if collection == "permission":   # one grant per pair, the last type wins (as a MERGE does); the types written together stay together
                 # Probe each pair of the batch through the edge key (an index lookup per pair), then delete what was found: a statement that
                 # joins the batch to the table scans every permission edge of the org when there are no statistics.
@@ -445,6 +447,10 @@ class CoreMixin(PgBase):
                         WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
                           AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
                       UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
+                  -- a membership of a group, role or team holds the group's node exclusively, after the member's memberships: it waits for a grant
+                    -- of the group being written, which holds the node shared (_hold_groups) before it reads the members
+                    gx AS (SELECT 1 FROM graph.nodes n JOIN g ON n.coll = g.tc AND n.id = g.ti WHERE n.org_id = $1 AND g.hc IN ('users', 'person')
+                           AND g.tc IN ('groups', 'roles', 'teams') ORDER BY n.coll, n.id FOR UPDATE OF n),
                   held AS (SELECT 1 FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
                     WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
                       AND cardinality($5::text[]) > 0      -- no grant to lock: nothing is read
@@ -452,7 +458,7 @@ class CoreMixin(PgBase):
                 INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
                 SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
                 FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-                WHERE (SELECT count(*) FROM held) >= 0      -- held is locked once, before the first row is written
+                WHERE (SELECT count(*) FROM held) + (SELECT count(*) FROM gx) >= 0      -- locked once, before the first row is written
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc, from_coll = EXCLUDED.from_coll, to_coll = EXCLUDED.to_coll""",
                              org, collection, payload, *_grant_columns(lock_grants))
         await self._q(go, transaction, write=True)
@@ -594,8 +600,10 @@ class CoreMixin(PgBase):
         created = [g for g in lock_grants if (g[0], g[1]) not in kept and (g[0], g[1], app) not in done]
         if edges:
             await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
-        if lock_done is not None and app:      # app is read only when a grant was created: a resync that kept them all records no pair
-            lock_done.update((g[0], g[1], app) for g in lock_grants)
+        # app is read only when a grant was created (a resync that kept them all records no pair). A user's or person's pair stands once its
+        # membership is locked; a group's only once its grant is committed (kept): until then its next grant reads its members again
+        if lock_done is not None and app:
+            lock_done.update((g[0], g[1], app) for g in lock_grants if g[0] in ("users", "person") or (g[0], g[1]) in kept)
 
     # ---- checks on documents and edges, and the update of an edge -------------------------------------------------------------------
     async def check_collection_has_document(self, collection_name: str, document_id: str, transaction: str | None = None) -> bool:

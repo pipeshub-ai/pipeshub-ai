@@ -29,6 +29,7 @@ from app.services.graph_db.postgres.base import (
     _edge_scope,
     _ekey,
     _grant_columns,
+    _hold_groups,
     _j,
 )
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
@@ -150,7 +151,9 @@ class HierarchyMixin(PgBase):
             key = _ekey(collection, props)
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
         # as batch_create_edges: the memberships lock_grants keep are locked before the first row is written
-        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ WITH g AS (SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) AS g(hc, hi, tc, ti)),
+        async def go(tx: Tx) -> None:
+            await _hold_groups(tx, org, lock_grants)
+            await tx.execute("""/* pipeshub:graph.create_edges_if_absent */ WITH g AS (SELECT * FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) AS g(hc, hi, tc, ti)),
                   -- a user's or person's grant counts only while its holder has a flagged membership (one probe of edges_external_by_holder): only then is its target read
                   hg AS (SELECT g.* FROM g WHERE g.hc IN ('users', 'person') AND EXISTS (SELECT 1 FROM graph.edges f WHERE f.org_id = $1 AND f.coll = 'userAppRelation'
                            AND f.from_coll = g.hc AND f.from_id = g.hi AND f.doc->>'isExternalUser' = 'true')
@@ -164,6 +167,10 @@ class HierarchyMixin(PgBase):
                       WHERE a.hc IN ('groups', 'roles', 'teams') AND EXISTS (SELECT 1 FROM graph.edges m WHERE m.org_id = $1 AND m.coll = 'permission'
                         AND m.from_coll = f.from_coll AND m.from_id = f.from_id AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER')
                     UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
+                -- a membership of a group, role or team holds the group's node exclusively, after the member's memberships: it waits for a grant
+                  -- of the group being written, which holds the node shared (_hold_groups) before it reads the members
+                  gx AS (SELECT 1 FROM graph.nodes n JOIN g ON n.coll = g.tc AND n.id = g.ti WHERE n.org_id = $1 AND g.hc IN ('users', 'person')
+                         AND g.tc IN ('groups', 'roles', 'teams') ORDER BY n.coll, n.id FOR UPDATE OF n),
                   held AS (SELECT 1 FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
                     WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
                       AND cardinality($5::text[]) > 0      -- no grant to lock: nothing is read
@@ -171,11 +178,12 @@ class HierarchyMixin(PgBase):
             INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, $2, x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
             FROM jsonb_to_recordset($3::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-            WHERE (SELECT count(*) FROM held) >= 0      -- held is locked once, before the first row is written
+            WHERE (SELECT count(*) FROM held) + (SELECT count(*) FROM gx) >= 0      -- locked once, before the first row is written
               AND EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
               AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
             ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO NOTHING""", org, collection, _j(list(rows.values())),
-                                            *_grant_columns(lock_grants)), transaction, write=True)
+                             *_grant_columns(lock_grants))
+        await self._q(go, transaction, write=True)
 
     async def copy_document_relationships(self, source_key: str, target_key: str, transaction: str | None = None) -> bool:
         """Copy a record's taxonomy edges (departments, categories, languages, topics) to another record; an edge the target has stays."""

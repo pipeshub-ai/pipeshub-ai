@@ -68,6 +68,16 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
     return fc, fi, tc, ti, props
 
 
+async def _hold_groups(tx: Tx, org: str, grants: Sequence[tuple[str, str, str, str]]) -> None:
+    """A grant from a group, role or team on a record or record group holds the group's node shared, in a statement of its own before the one
+    that reads the group's members: a membership of the group being written holds the node exclusively (``gx`` of the grant writers), so one
+    waits for the other, and the members read next include one whose membership committed first (a statement reads the snapshot it started with)."""
+    groups = sorted({(hc, hi) for hc, hi, tc, _ in grants if hc in ("groups", "roles", "teams") and tc in ("records", "recordGroups")})
+    if groups:
+        await tx.execute("""/* pipeshub:graph.hold_granting_groups */ SELECT 1 FROM graph.nodes n JOIN unnest($2::text[], $3::text[]) AS h(c, i)
+            ON n.coll = h.c AND n.id = h.i WHERE n.org_id = $1 ORDER BY n.coll, n.id FOR SHARE OF n""", org, [c for c, _ in groups], [i for _, i in groups])
+
+
 def _grant_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
     """Grants (holder collection, holder, target collection, target) as the four arrays the lock of the memberships they keep binds."""
     return [[g[i] for g in grants] for i in range(4)]

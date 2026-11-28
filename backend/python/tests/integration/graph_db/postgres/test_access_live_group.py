@@ -346,8 +346,9 @@ async def test_a_replace_that_creates_a_group_s_grant_waits_for_its_member_s_mem
                     await p.rollback_transaction(t)
 
 
-async def test_a_group_s_grants_on_records_of_one_app_lock_its_members_once_a_transaction(pg_db, monkeypatch) -> None:
-    """g's new grants on r1 and r2, both of app1, in one transaction: the first locks its members' memberships of app1, the second has none to lock."""
+async def test_a_user_is_locked_once_an_app_and_a_new_group_grant_reads_its_members_on_each_record(pg_db, monkeypatch) -> None:
+    """New grants on r1 and r2, both of app1, in one transaction. x2's membership, locked with the first, needs no lock again (the pair is
+    recorded); g's grant is not committed yet, so each record of g reads its members again (a member may join between them)."""
     p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
     asked: list[list] = []
     write = p.batch_create_edges
@@ -359,11 +360,98 @@ async def test_a_group_s_grants_on_records_of_one_app_lock_its_members_once_a_tr
         await _x2_flagged(p, org)
         await p.batch_upsert_nodes([{"_key": "r2", "recordName": "r2", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
         await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], "groups")
-        await write([_perm("x2", "users", "g", "groups")], "permission")
         monkeypatch.setattr(p, "batch_create_edges", spy)
         tid = await p.begin_transaction([], [])
         store = GraphTransactionStore(p, tid, explicit=True)
         for r in ("r1", "r2"):
-            await store.replace_record_permissions(r, [_perm("g", "groups", r, "records", "GROUP")], None, inherit=False)
+            await store.replace_record_permissions(r, [_perm("x2", "users", r, "records"), _perm("g", "groups", r, "records", "GROUP")], None, inherit=False)
         await p.commit_transaction(tid)
-    assert asked == [[("groups", "g", "records", "r1")], []]
+    assert asked == [[("groups", "g", "records", "r1"), ("users", "x2", "records", "r1")], [("groups", "g", "records", "r2")]]
+
+
+async def _until_blocked_or_done(pg_db, holder: int, task: asyncio.Task) -> None:
+    """Returns once ``task`` finished or a session waits on a lock the backend ``holder`` holds; fails if neither happens within 10 s."""
+    for _ in range(200):
+        if task.done() or await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", holder)):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("it neither finished nor waited on a lock")
+
+
+@pytest.mark.parametrize("member", ["groups", "roles", "teams"])
+async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_membership(pg_db, member) -> None:
+    """T1 writes g's grant on r1 while g has no member, and stays open. T2 makes x2, a flagged collaborator of app1, a member of g and commits;
+    the reaper runs; T1 commits. T2's membership holds g's node after T1's grant holds it, so it waits for T1: the reaper never reads x2 as a
+    member of g whose grant is not committed, and x2 keeps app1 once all three are done (without the wait, the reaper removed it)."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], member)
+        t1, t2 = await p.begin_transaction([], []), await p.begin_transaction([], [])
+        open_ = [t1, t2]
+
+        async def add() -> None:
+            await GraphTransactionStore(p, t2, explicit=True).batch_create_edges([_perm("x2", "users", "g", member)], "permission")
+            await p.commit_transaction(open_.pop(open_.index(t2)))
+        adding = reaping = None
+        try:
+            pid1, pid2 = [await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), t) for t in (t1, t2)]
+            await GraphTransactionStore(p, t1, explicit=True).batch_create_edges([_perm("g", member, "r1", "records", "GROUP")], "permission")
+            adding = asyncio.create_task(add())
+            await _until_blocked_or_done(pg_db, pid1, adding)
+            reaping = asyncio.create_task(p.reap_stale_external_app_relations("app1"))
+            await _until_blocked_or_done(pg_db, pid2, reaping)      # the reaper decides now, or waits on the membership T2 holds
+            await p.commit_transaction(open_.pop(open_.index(t1)))
+            await adding
+            await reaping
+        finally:
+            for task in (adding, reaping):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+            for t in open_:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(t)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}
+
+
+
+@pytest.mark.parametrize("member", ["groups", "roles", "teams"])
+async def test_a_member_added_between_two_records_of_a_new_group_grant_keeps_its_membership(pg_db, member) -> None:
+    """T1 writes g's new grant on r1, then on r2, in one transaction; T2 makes x2, a flagged collaborator of app1, a member of g in between; the
+    reaper runs before T1 commits. T2 waits for T1 (g's node), and r2's grant reads g's members again rather than taking g as locked: x2 keeps app1."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": "r2", "recordName": "r2", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
+        await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], member)
+        t1, t2 = await p.begin_transaction([], []), await p.begin_transaction([], [])
+        open_ = [t1, t2]
+        store = GraphTransactionStore(p, t1, explicit=True)
+
+        async def add() -> None:
+            await GraphTransactionStore(p, t2, explicit=True).batch_create_edges([_perm("x2", "users", "g", member)], "permission")
+            await p.commit_transaction(open_.pop(open_.index(t2)))
+        adding = reaping = None
+        try:
+            pid1, pid2 = [await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), t) for t in (t1, t2)]
+            await store.replace_record_permissions("r1", [_perm("g", member, "r1", "records", "GROUP")], None, inherit=False)
+            adding = asyncio.create_task(add())
+            await _until_blocked_or_done(pg_db, pid1, adding)
+            await store.replace_record_permissions("r2", [_perm("g", member, "r2", "records", "GROUP")], None, inherit=False)
+            reaping = asyncio.create_task(p.reap_stale_external_app_relations("app1"))
+            await _until_blocked_or_done(pg_db, pid2, reaping)
+            await p.commit_transaction(open_.pop(open_.index(t1)))
+            await adding
+            await reaping
+        finally:
+            for task in (adding, reaping):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+            for t in open_:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(t)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}

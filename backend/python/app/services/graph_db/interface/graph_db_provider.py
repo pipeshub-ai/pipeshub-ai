@@ -1468,8 +1468,10 @@ class IGraphDBProvider(ABC):
         """Delete every *collection* edge into the node, then create *edges* (locking as :meth:`batch_create_edges`).
 
         A provider may lock only the grants it creates: a holder's edge that was there is a committed grant the reaper reads. ``lock_done``
-        holds the transaction's (holder collection, holder, app) pairs already locked or kept on a record or record group; a provider may skip
-        those and adds the ones it locks or keeps (this default locks every grant and keeps no pair).
+        holds the transaction's (holder collection, holder, app) pairs on a record or record group that need no lock again: a user's or person's
+        it has locked, and any holder's whose grant was already committed (kept). A group, role or team whose grant this transaction created is
+        not one: its next grant reads its members again. A provider may skip those pairs and adds its own (this default locks every grant and
+        keeps no pair).
 
         Concrete by design: a provider with real transactions keeps the two calls.
         Neo4j overrides it with one statement, since with NEO4J_EXPLICIT_TRANSACTIONS
