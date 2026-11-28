@@ -1464,14 +1464,14 @@ class IGraphDBProvider(ABC):
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
         lock_done: set[tuple[str, str, str]] | None = None,
+        target_written: bool = False,
     ) -> None:
         """Delete every *collection* edge into the node, then create *edges* (locking as :meth:`batch_create_edges`).
 
-        A provider may lock only the grants it creates: a holder's edge that was there is a committed grant the reaper reads. ``lock_done``
-        holds the transaction's (holder collection, holder, app) pairs on a record or record group that need no lock again: a user's or person's
-        it has locked, and any holder's whose grant was already committed (kept). A group, role or team whose grant this transaction created is
-        not one: its next grant reads its members again. A provider may skip those pairs and adds its own (this default locks every grant and
-        keeps no pair).
+        A provider may lock only the grants it creates (``common.grant_locks.kept_holders``): a holder's edge that was there is a grant the
+        reaper reads, unless the node is a record or record group the reaper reads as deleted or this transaction wrote
+        (``target_written``). ``lock_done`` holds the transaction's (user or person, holder, app) pairs whose membership it has locked; a
+        provider may skip those and adds the ones it locks (``record_locked``). This default locks every grant and keeps no pair.
 
         Concrete by design: a provider with real transactions keeps the two calls.
         Neo4j overrides it with one statement, since with NEO4J_EXPLICIT_TRANSACTIONS
@@ -1491,6 +1491,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
         lock_done: set[tuple[str, str, str]] | None = None,
+        target_written: bool = False,
     ) -> None:
         """Replace the PERMISSION edges into the record and set whether it inherits from its group (locking as :meth:`replace_edges_to`).
 
@@ -1503,7 +1504,7 @@ class IGraphDBProvider(ABC):
         """
         await self.replace_edges_to(
             record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, transaction, lock_grants=lock_grants,
-            lock_done=lock_done,
+            lock_done=lock_done, target_written=target_written,
         )
         if not inherit:
             await self._stop_inheriting_from_record_groups(record_id, transaction)

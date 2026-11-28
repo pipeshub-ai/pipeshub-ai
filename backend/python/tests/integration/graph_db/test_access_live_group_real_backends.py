@@ -617,7 +617,7 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
     collections = (["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
     t1 = await g.begin_transaction(*collections)
     open_ = [t1]
-    conflicted = asyncio.Event()
+    conflicted, t1_ended = asyncio.Event(), asyncio.Event()
 
     async def add() -> None:
         """T2, run again after a conflict once T1 is no longer open, as its caller does."""
@@ -636,8 +636,7 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
                 if not g.is_write_conflict(e):
                     raise
                 conflicted.set()
-                while t1 in open_:
-                    await asyncio.sleep(0.05)
+                await t1_ended.wait()
     adding = reaping = None
     try:
         store = GraphTransactionStore(g, t1, explicit=True)
@@ -658,6 +657,7 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
             await _until_it_meets(g, reaping)
         await g.commit_transaction(t1)
         open_.remove(t1)
+        t1_ended.set()
         await adding
         if reaping is not None:
             await reaping
@@ -668,7 +668,96 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
                 task.cancel()
                 with contextlib.suppress(BaseException):
                     await task
-        for t in list(open_):
+        t1_ended.set()
+        while open_:
             with contextlib.suppress(Exception):
-                await g.rollback_transaction(t)
+                await g.rollback_transaction(open_.pop())
     assert "ext-late" in await _edges_to_app(w)
+
+
+async def _commit_with_reaper_between(w: _World, write: Any, collections: tuple[list, list]) -> None:  # noqa: ANN401
+    """Runs ``write(store)`` in a transaction, then the reaper while it is open, then commits: a reaper that waits for the writer (Neo4j) or
+    loses to it (ArangoDB: a conflict) runs again once the writer has committed, as its caller does."""
+    g = w.graph
+    tid = await g.begin_transaction(*collections)
+    reaping = None
+    try:
+        await write(GraphTransactionStore(g, tid, explicit=True))
+        reaping = asyncio.create_task(g.reap_stale_external_app_relations(w.sid(APP)))
+        await _until_it_meets(g, reaping)
+        await g.commit_transaction(tid)
+        tid = None
+        try:
+            await reaping
+        except Exception as e:
+            if not g.is_write_conflict(e):
+                raise
+            await g.reap_stale_external_app_relations(w.sid(APP))
+    finally:
+        if reaping is not None and not reaping.done():
+            reaping.cancel()
+            with contextlib.suppress(BaseException):
+                await reaping
+        if tid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(tid)
+
+
+async def test_a_restored_record_s_grant_locks_its_membership_though_the_edge_was_there(world: _World) -> None:
+    """r-own-live is in the trash with ext-direct's grant and own-live's on it: the reaper reads no live grant of ext-direct's or of
+    ext-own-live's. A transaction restores it and writes its grants again; the edges were there, but their node was dead for the reaper, so the
+    grants are not kept: the memberships are locked (Neo4j) or touched (ArangoDB), the reaper waits or loses and runs again, and both
+    collaborators keep the App (without the lock, the reaper removed them before the restore committed)."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+    await g.soft_delete_records([w.sid("r-own-live")], w.sid(APP), delete_source="CONNECTOR", batch_id=f"trash-{w.run}")
+
+    async def restore(store: GraphTransactionStore) -> None:
+        assert await store.restore_records([{"id": w.sid("r-own-live")}], f"trash-{w.run}") == [w.sid("r-own-live")]
+        await store.replace_record_permissions(w.sid("r-own-live"), _r_own_live_grants(w), None, inherit=False)
+    await _commit_with_reaper_between(w, restore, (["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", "records", coll]))
+    assert {"ext-direct", "ext-own-live"} <= set(await _edges_to_app(w))
+
+
+async def test_a_grant_kept_by_a_replace_while_another_removes_it_is_locked(world: _World) -> None:
+    """T0 removes ext-direct's grant on r-own-live and stays open; T1 writes r-own-live's grants with ext-direct's. T1 locks the record first
+    (Neo4j) or conflicts with T0's removal (ArangoDB), so it reads the edge gone: ext-direct's grant is created and locks its membership, the
+    reaper waits for T1 or loses to it, and ext-direct keeps the App (Neo4j kept the grant it read before T0 committed, without a lock)."""
+    w, g = world, world.graph
+    coll = NODE_TARGETS[w.kind]
+    collections = (["users", "records", "apps", coll], ["permission", "userAppRelation", "inheritPermissions", coll])
+    t0 = await g.begin_transaction(*collections)
+    others = [e for e in _r_own_live_grants(w) if e["from_id"] != w.sid("ext-direct")]
+    writing = None
+    try:
+        await GraphTransactionStore(g, t0, explicit=True).replace_record_permissions(w.sid("r-own-live"), others, None, inherit=False)
+
+        async def keep(store: GraphTransactionStore) -> None:
+            await store.replace_record_permissions(w.sid("r-own-live"), _r_own_live_grants(w), None, inherit=False)
+
+        async def after_t0() -> None:
+            """T1, run again after a conflict once T0 has committed, as its caller does."""
+            while True:
+                try:
+                    await _commit_with_reaper_between(w, keep, collections)
+                    return
+                except Exception as e:
+                    if not g.is_write_conflict(e):
+                        raise
+                    await t0_done.wait()
+        t0_done = asyncio.Event()
+        writing = asyncio.create_task(after_t0())
+        if hasattr(g, "client"):
+            await _until_it_meets(g, writing)      # T1 waits on the record T0 holds
+        await g.commit_transaction(t0)
+        t0_done.set()
+        await writing
+    finally:
+        if writing is not None and not writing.done():
+            writing.cancel()
+            with contextlib.suppress(BaseException):
+                await writing
+        if not t0_done.is_set():
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(t0)
+    assert "ext-direct" in await _edges_to_app(w)

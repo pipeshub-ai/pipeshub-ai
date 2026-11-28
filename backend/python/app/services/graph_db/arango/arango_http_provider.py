@@ -203,6 +203,12 @@ from app.services.graph_db.common.full_sync_unlink import (
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.grant_locks import (
+    GRANTED,
+    grants_to_lock,
+    kept_holders,
+    record_locked,
+)
 from app.services.graph_db.common.name_match import aql_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
@@ -5104,36 +5110,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
         lock_done: set[tuple[str, str, str]] | None = None,
+        target_written: bool = False,
     ) -> None:
-        """The interface's delete then create, locking only the grants it creates: a holder whose edge into the node was there is removed and
-        written again in this transaction, and a reaper's snapshot still holds the committed edge. ``lock_done`` as on PostgreSQL."""
+        """The interface's delete then create, locking only the grants it creates (``kept_holders``): a holder whose edge into the node was there
+        is removed and written again in this transaction, and a reaper's snapshot still holds the committed edge (a removal another transaction
+        committed since this one's snapshot conflicts with this one's). ``lock_done`` as on the interface."""
         if not lock_grants:
             await super().replace_edges_to(to_id, to_collection, edges, collection, transaction)
             return
         to_node = f"{to_collection}/{to_id}"
-        kept: set[tuple[str, str]] = set()
-        app = None
+        removed: set[tuple[str, str]] = set()
+        app, dead = None, False
         for coll in self._logical_edge_collections(collection):
             rows = await self.http_client.execute_aql(
                 f"""
-                LET app = DOCUMENT(@to_node).connectorId
+                LET target = DOCUMENT(@to_node)
                 LET gone = (FOR edge IN {coll} FILTER edge._to == @to_node REMOVE edge IN {coll} RETURN OLD._from)
-                RETURN {{ app, gone }}
+                RETURN {{ app: target.connectorId, dead: target.isDeleted == true, gone }}
                 """,
                 {"to_node": to_node},
                 txn_id=transaction,
             )
             for row in rows or []:
-                app = row.get("app") or app
-                kept.update(tuple(f.split("/", 1)) for f in row.get("gone") or [])
-        if to_collection not in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value):
-            app = None      # a grant on a group keeps the holder's memberships of every app: no pair stands for it
-        done = lock_done if lock_done is not None and app else set()
-        created = [g for g in lock_grants if (g[0], g[1]) not in kept and (g[0], g[1], app) not in done]
+                app, dead = row.get("app") or app, bool(row.get("dead")) or dead
+                removed.update(tuple(f.split("/", 1)) for f in row.get("gone") or [])
+        app = app if to_collection in GRANTED else None
+        kept = kept_holders(removed, to_collection, dead=dead, target_written=target_written)
+        created = grants_to_lock(lock_grants, kept, app, lock_done)
         if edges:
             await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
-        if lock_done is not None and app:      # as on PostgreSQL: a group's pair only once its grant is committed
-            lock_done.update((g[0], g[1], app) for g in lock_grants if g[0] in ("users", "person") or (g[0], g[1]) in kept)
+        record_locked(lock_done, created, app)
 
     async def delete_all_edges_for_node(
         self,

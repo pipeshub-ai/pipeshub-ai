@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
+from app.services.graph_db.common.grant_locks import (
+    GRANTED,
+    grants_to_lock,
+    kept_holders,
+    record_locked,
+)
 from app.services.graph_db.conditions import check_conditions
 from app.utils import error_class
 
@@ -574,36 +580,31 @@ class CoreMixin(PgBase):
                                                      org, colls, to_collection, to_id, kind), transaction, write=True)
 
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str, transaction: str | None = None, *,
-                               lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_done: set[tuple[str, str, str]] | None = None) -> None:
-        """The interface's delete then create, locking only the grants it creates: a holder whose edge into the node was there is deleted and
-        written again by this transaction, and until it commits the reaper reads the committed edge. ``lock_done`` holds the (holder collection,
-        holder, app) pairs this transaction has locked or kept: a pair already there is not locked again, so a group's grants lock its members'
-        memberships of an app once."""
+                               lock_grants: Sequence[tuple[str, str, str, str]] = (), lock_done: set[tuple[str, str, str]] | None = None,
+                               target_written: bool = False) -> None:
+        """The interface's delete then create, locking only the grants it creates (``kept_holders``): a holder whose edge into the node was there is
+        deleted and written again by this transaction, and until it commits the reaper reads the committed edge. ``lock_done`` as on the
+        interface: the user and person pairs locked here are added, and a pair there is not locked again."""
         if not lock_grants:
             await super().replace_edges_to(to_id, to_collection, edges, collection, transaction)
             return
         org = current_org_id()
         colls, kind = _edge_scope(collection)
+        # The delete waits for one of the node's edges that another transaction removes, and then finds it gone: what it removes was committed.
         row = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.replace_edges_to_delete */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
             AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> '')))
-            RETURNING e.from_coll, e.from_id)
+            RETURNING e.from_coll, e.from_id),
+              t AS MATERIALIZED (SELECT n.doc->>'connectorId' AS app, coalesce((n.doc->>'isDeleted')::boolean, false) AS dead FROM graph.nodes n
+                                 WHERE n.org_id = $1 AND n.coll = $3 AND n.id = $4)
             SELECT coalesce(array_agg(d.from_coll), '{}') AS cs, coalesce(array_agg(d.from_id), '{}') AS ids,
-                   -- the node's app, read only when a grant is created (a resync that keeps every grant reads nothing more)
-                   CASE WHEN EXISTS (SELECT 1 FROM unnest($6::text[], $7::text[]) AS h(c, i) WHERE NOT EXISTS (SELECT 1 FROM d WHERE d.from_coll = h.c AND d.from_id = h.i))
-                        THEN (SELECT t.doc->>'connectorId' FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = $3 AND t.id = $4) END AS app FROM d""",
-                                                   org, colls, to_collection, to_id, kind, [g[0] for g in lock_grants], [g[1] for g in lock_grants]),
-                            transaction, write=True)
-        kept = set(zip(row["cs"], row["ids"], strict=True))
-        # a pair means its app's membership only for a grant on a record or record group (one on a group keeps the holder's memberships of every app)
-        app = row["app"] if to_collection in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value) else None
-        done = lock_done if lock_done is not None and app else set()
-        created = [g for g in lock_grants if (g[0], g[1]) not in kept and (g[0], g[1], app) not in done]
+                   (SELECT t.app FROM t) AS app, coalesce((SELECT t.dead FROM t), false) AS dead FROM d""",
+                                                   org, colls, to_collection, to_id, kind), transaction, write=True)
+        app = row["app"] if to_collection in GRANTED else None
+        kept = kept_holders(set(zip(row["cs"], row["ids"], strict=True)), to_collection, dead=row["dead"], target_written=target_written)
+        created = grants_to_lock(lock_grants, kept, app, lock_done)
         if edges:
             await self.batch_create_edges(edges, collection, transaction, lock_grants=created)
-        # app is read only when a grant was created (a resync that kept them all records no pair). A user's or person's pair stands once its
-        # membership is locked; a group's only once its grant is committed (kept): until then its next grant reads its members again
-        if lock_done is not None and app:
-            lock_done.update((g[0], g[1], app) for g in lock_grants if g[0] in ("users", "person") or (g[0], g[1]) in kept)
+        record_locked(lock_done, created, app)
 
     # ---- checks on documents and edges, and the update of an edge -------------------------------------------------------------------
     async def check_collection_has_document(self, collection_name: str, document_id: str, transaction: str | None = None) -> bool:

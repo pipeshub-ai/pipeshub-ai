@@ -2963,8 +2963,44 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }}
             }}"""
 
+    def _replace_head_cypher(self, to_collection: str, lock_grants: Sequence[tuple[str, str, str, str]], parameters: dict[str, Any], *,
+                             target_written: bool) -> str:
+        """The head of a replace that locks: the target's node, then, when no grant into it can be kept, every grant's memberships. A grant into a
+        record or record group the reaper reads as deleted (committed), or that this transaction wrote (``target_written``: its committed
+        liveness is not known here), does not count for the reaper, so the edge it already has protects nothing."""
+        target = collection_to_label(to_collection)
+        on_records = to_collection in (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value)
+        parameters["lock_all"] = target_written and on_records
+        head = f"""
+            OPTIONAL MATCH (lock_t:{target} {{id: $to_id}})
+            CALL {{ WITH lock_t WITH lock_t WHERE lock_t IS NOT NULL SET lock_t.{_MATCH_LOCK} = true REMOVE lock_t.{_MATCH_LOCK} }}"""
+        if not on_records:
+            return head + "\n            WITH 0 AS lock_none"
+        for i, hc in enumerate(sorted({hc for hc, _, _, _ in lock_grants})):
+            match = self._held_match(hc, to_collection)
+            if match is None:
+                continue
+            parameters[f"lock_all_{i}"] = sorted({hi for c, hi, _, _ in lock_grants if c == hc})
+            group = "" if hc in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value) else f"""
+                MATCH (gn:{collection_to_label(hc)} {{id: row.h}})      // the group before its members (_group_node_locks)
+                SET gn.{_MATCH_LOCK} = true
+                REMOVE gn.{_MATCH_LOCK}
+                WITH row"""
+            head += f"""
+            CALL {{
+                WITH lock_t
+                WITH lock_t WHERE $lock_all OR coalesce(lock_t.isDeleted, false)
+                UNWIND [h IN $lock_all_{i} | {{h: h, t: $to_id}}] AS row{group}
+                {match}
+                WITH DISTINCT r WHERE r.isExternalUser = true
+                SET r.{_MATCH_LOCK} = true
+                REMOVE r.{_MATCH_LOCK}
+            }}"""
+        return head + "\n            WITH 0 AS lock_none"
+
     def _replace_edges_to_cypher(
-        self, to_id: str, to_collection: str, edges: list[dict], collection: str, lock_grants: Sequence[tuple[str, str, str, str]] = ()
+        self, to_id: str, to_collection: str, edges: list[dict], collection: str, lock_grants: Sequence[tuple[str, str, str, str]] = (),
+        *, target_written: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
 
@@ -3031,9 +3067,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     r.updatedAtTimestamp = edge.props.updatedAtTimestamp
             }}""")
         parameters["keep"] = keep
+        head = ""
+        if lock_grants:
+            # With grants to lock the target is locked first, so the edges read as kept are the ones committed by then: a replace that removes
+            # one waits here or has committed it (on the target, the union's first branch, it would be locked only after the read).
+            member_sources = member_sources[1:]
+            head = self._replace_head_cypher(to_collection, lock_grants, parameters, target_written=target_written)
         member_union = "\n                UNION".join(member_sources)
         held = self._replace_held_cypher(to_collection, lock_grants, parameters)
-        return f"""
+        return f"""{head}
             CALL {{{member_union}
             }}
             WITH DISTINCT member WHERE member IS NOT NULL
@@ -3057,9 +3099,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
         lock_done: set[tuple[str, str, str]] | None = None,
+        target_written: bool = False,
     ) -> None:
         """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again. It locks only the grants it creates
-        and keeps no (holder, app) pair in ``lock_done``: here the check that a member's edge is created costs no more than its lock."""
+        (``common.grant_locks.kept_holders``: every grant into a record or record group read as deleted or ``target_written``) and keeps no
+        (holder, app) pair in ``lock_done``: here the check that a member's edge is created costs no more than its lock."""
         if edge_collection_to_relationship(collection) in _KH_TREE_TYPES:
             # Its ``SET r = ...`` rewrites a kept edge whole, which would drop a hierarchy edge's children order stamps, and it keeps no
             # tree label: hierarchy and inherit edges go through the writers that keep both (batch_create_edges and the rest).
@@ -3068,7 +3112,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
         # which a separate delete would commit before the new edges were written,
         # and a group whose rewrite failed was left with no members.
-        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection, lock_grants)
+        statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection, lock_grants,
+                                                              target_written=target_written)
         await self.client.execute_query(
             f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
             **_bulk_rows("group replace", len(edges)),
@@ -3108,12 +3153,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         lock_grants: Sequence[tuple[str, str, str, str]] = (),
         lock_done: set[tuple[str, str, str]] | None = None,
+        target_written: bool = False,
     ) -> None:
         # One statement: written apart, a failure on the inherit edge left the new
         # permissions beside the old inheritance, so a group that had just lost the
         # record could still read it.
         statement, parameters = self._replace_edges_to_cypher(
-            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, lock_grants
+            record_id, CollectionNames.RECORDS.value, edges, CollectionNames.PERMISSION.value, lock_grants, target_written=target_written
         )
         if not inherit:
             # Every record group, not only the one passed: the record must not keep

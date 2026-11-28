@@ -455,3 +455,74 @@ async def test_a_member_added_between_two_records_of_a_new_group_grant_keeps_its
                 with contextlib.suppress(Exception):
                     await p.rollback_transaction(t)
         assert set(await _app_edges(pg_db, org)) == {"x2"}
+
+
+@pytest.mark.parametrize("holder", ["users", "groups"])
+async def test_a_restored_record_s_grant_locks_its_membership_though_the_edge_was_there(pg_db, holder) -> None:
+    """r1 is in the trash with x2's grant on it (its own, or through g): the reaper reads no live grant of x2's. T1 restores r1 and writes its
+    grants again; the edge was there, but its node was dead for the reaper, so the grant is not kept: T1 locks x2's membership, the reaper
+    waits for T1 and reads r1 live (without the lock, it removed x2's membership before the restore committed)."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    grant = _perm("x2", "users", "r1", "records") if holder == "users" else _perm("g", "groups", "r1", "records", "GROUP")
+    with ctx(org):
+        await _x2_flagged(p, org)
+        if holder == "groups":
+            await p.batch_upsert_nodes([{"_key": "g", "name": "g", "orgId": org, "connectorId": "app1"}], "groups")
+            await p.batch_create_edges([_perm("x2", "users", "g", "groups")], "permission")
+        await p.batch_create_edges([grant], "permission")
+        await p.soft_delete_records(["r1"], "app1", delete_source="CONNECTOR", batch_id="b-trash")
+        t1 = await p.begin_transaction([], [])
+        open_ = [t1]
+        reaping = None
+        try:
+            pid1 = await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), t1)
+            store = GraphTransactionStore(p, t1, explicit=True)
+            assert await store.restore_records([{"id": "r1"}], "b-trash") == ["r1"]
+            await store.replace_record_permissions("r1", [grant], None, inherit=False)
+            reaping = asyncio.create_task(p.reap_stale_external_app_relations("app1"))
+            await _until_blocked_or_done(pg_db, pid1, reaping)
+            await p.commit_transaction(open_.pop())
+            await reaping
+        finally:
+            if reaping is not None and not reaping.done():
+                reaping.cancel()
+                with contextlib.suppress(BaseException):
+                    await reaping
+            for t in open_:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(t)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}
+
+
+async def test_a_grant_kept_by_a_replace_while_another_removes_it_is_locked(pg_db) -> None:
+    """T0 removes x2's grant on r1 and stays open; T1 writes r1's grants with x2's. T1's delete waits for T0 and then finds the edge gone, so
+    x2's grant is created, not kept: T1 locks x2's membership, the reaper waits for T1, and x2 keeps app1."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission")
+        t0, t1 = await p.begin_transaction([], []), await p.begin_transaction([], [])
+        open_ = [t0, t1]
+        writing = reaping = None
+        try:
+            pid0, pid1 = [await p._q(lambda tx: tx.fetchval("SELECT pg_backend_pid()"), t) for t in (t0, t1)]
+            await GraphTransactionStore(p, t0, explicit=True).replace_record_permissions("r1", [], None, inherit=False)
+            writing = asyncio.create_task(GraphTransactionStore(p, t1, explicit=True).replace_record_permissions(
+                "r1", [_perm("x2", "users", "r1", "records")], None, inherit=False))
+            await _until_blocked_or_done(pg_db, pid0, writing)
+            await p.commit_transaction(open_.pop(open_.index(t0)))
+            await writing
+            reaping = asyncio.create_task(p.reap_stale_external_app_relations("app1"))
+            await _until_blocked_or_done(pg_db, pid1, reaping)
+            await p.commit_transaction(open_.pop(open_.index(t1)))
+            await reaping
+        finally:
+            for task in (writing, reaping):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await task
+            for t in open_:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(t)
+        assert set(await _app_edges(pg_db, org)) == {"x2"}
