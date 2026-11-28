@@ -430,7 +430,8 @@ class CoreMixin(PgBase):
                         WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = d.fi AND e.from_coll = d.fc AND e.to_id = d.ti AND e.to_coll = d.tc AND e.ekey = d.k""",
                                      org, [r["fc"] for r in stale], [r["fi"] for r in stale], [r["tc"] for r in stale], [r["ti"] for r in stale], [r["ekey"] for r in stale])
             await tx.execute("""/* pipeshub:graph.batch_create_edges */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = ANY($4::text[]) AND t.id = ANY($5::text[])
-                     AND cardinality($5::text[]) > 0),
+                     AND cardinality($5::text[]) > 0      -- the arrays an index takes, then the exact pairs
+                     AND EXISTS (SELECT 1 FROM unnest($4::text[], $5::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
                   -- the locks of the grants' targets (common.grant_locks), in one order: the org's, exclusively, for a team or a node without a connector,
                   -- then each app's, shared
                   held AS (SELECT (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0)))
@@ -448,16 +449,17 @@ class CoreMixin(PgBase):
 
     async def lock_grant_apps(self, targets: Sequence[tuple[str, str]], transaction: str | None = None) -> None:
         """Holds the app locks of ``targets`` shared until the transaction ends, as batch_create_edges does for its grants (common.grant_locks)."""
+        org = current_org_id()      # first: no org bound raises, whatever the targets
         if not targets:
             return
-        org = current_org_id()
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.lock_grant_apps */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t
-                WHERE t.org_id = $1 AND t.coll = ANY($2::text[]) AND t.id = ANY($3::text[])),
+                WHERE t.org_id = $1 AND t.coll = ANY($2::text[]) AND t.id = ANY($3::text[])
+                AND EXISTS (SELECT 1 FROM unnest($2::text[], $3::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
               o AS (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0))) AS n
                     FROM (SELECT 1 FROM lt WHERE lt.coll = 'teams' OR lt.app IS NULL LIMIT 1) x)
             SELECT (SELECT n FROM o) + (SELECT count(pg_advisory_xact_lock_shared(hashtextextended('grant_app:' || $1 || ':' || s.a, 0)))
                                         FROM (SELECT DISTINCT lt.app AS a FROM lt WHERE lt.app IS NOT NULL AND lt.coll <> 'teams' ORDER BY 1) s)""",
-                                            org, sorted({c for c, _ in targets}), [k for _, k in targets]), transaction)
+                                            org, [c for c, _ in targets], [k for _, k in targets]), transaction)
 
     async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
                        transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:

@@ -631,9 +631,9 @@ class IdentityMixin(PgBase):
         """Row-locks, until the transaction ends, the flagged (external-collaborator) app memberships that the grants ``(holder collection, holder,
         target collection, target)`` would keep: the lock the reaper takes before it decides (``reap_stale_external_app_relations``). Returns them as
         ``(principal collection, principal, app)``; nothing is locked or written for a principal without one."""
+        org = current_org_id()      # first: no org bound raises, whatever the grants
         if not grants:
             return []
-        org = current_org_id()
         cols = list(zip(*grants, strict=True))
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.lock_external_app_memberships */ WITH g AS (
                 SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS g(hc, hi, tc, ti)),

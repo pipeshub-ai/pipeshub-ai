@@ -73,7 +73,7 @@ def _target_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[st
     """The collections and keys of the nodes whose app locks a write of ``grants`` takes (``common.grant_locks.lock_targets``), as the two
     arrays the lock binds: arrays the primary key takes as index conditions (a join to unnest() can be planned as a scan of the org's nodes)."""
     targets = lock_targets(grants)
-    return [sorted({c for c, _ in targets}), [k for _, k in targets]]
+    return [[c for c, _ in targets], [k for _, k in targets]]      # parallel: the statement takes the exact pairs
 
 
 def _ekey(coll: str, props: dict) -> str:

@@ -730,7 +730,13 @@ class GraphTransactionStore(TransactionStore):
             gone = [k for k in known if not await self.graph_provider.get_document(
                 k, CollectionNames.PEOPLE.value, transaction=self.txn, raise_on_error=True)]
             if not gone:
-                kept = set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn))
+                try:
+                    kept = set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn))
+                except Exception:
+                    kept = set()      # the grant is committed: every membership it keeps is made again (create-only) before the failure is raised
+                    for coll, key, app in sorted(held):
+                        await self.ensure_app_membership(key, coll, app, is_external=True)
+                    raise
                 for coll, key, app in sorted(set(held) - kept):
                     await self.ensure_app_membership(key, coll, app, is_external=True)
                 return result

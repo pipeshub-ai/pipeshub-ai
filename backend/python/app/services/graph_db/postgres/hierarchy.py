@@ -151,7 +151,8 @@ class HierarchyMixin(PgBase):
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
         # as batch_create_edges: the app locks of lock_grants are taken before the first row is written
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ WITH lt AS (SELECT t.coll, t.doc->>'connectorId' AS app FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = ANY($4::text[]) AND t.id = ANY($5::text[])
-                     AND cardinality($5::text[]) > 0),
+                     AND cardinality($5::text[]) > 0      -- the arrays an index takes, then the exact pairs
+                     AND EXISTS (SELECT 1 FROM unnest($4::text[], $5::text[]) AS q(c, i) WHERE q.c = t.coll AND q.i = t.id)),
                   -- the locks of the grants' targets (common.grant_locks), in one order: the org's, exclusively, for a team or a node without a connector,
                   -- then each app's, shared
                   held AS (SELECT (SELECT count(pg_advisory_xact_lock(hashtextextended('grant_org:' || $1, 0)))

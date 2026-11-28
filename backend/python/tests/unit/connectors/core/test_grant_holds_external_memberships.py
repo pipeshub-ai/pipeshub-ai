@@ -2,7 +2,7 @@
 it comes from) are locked in the same transaction (the lock the external-collaborator reaper takes), so a reaper cannot remove a membership on
 the strength of a grant it could not see yet. In a transaction the statement that writes the grant takes the lock (``lock_grants``)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -211,3 +211,56 @@ async def test_in_a_transaction_the_lock_is_taken_once_and_nothing_is_made_again
     provider.lock_external_app_memberships.assert_not_awaited()      # the write's statement took it
     provider.batch_create_edges.assert_awaited_once()
     store.ensure_app_membership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_grant_whose_app_lock_conflicts_every_time_fails_after_the_bounded_retries(monkeypatch) -> None:
+    """ArangoDB answers a second writer of an app's lock with a write conflict: the writer runs again with jittered back-off, a bounded number
+    of times, and then the conflict is raised, never swallowed."""
+    import logging
+
+    from app.connectors.core.base.data_store import graph_data_store
+    from app.connectors.core.base.data_store.graph_data_store import (
+        _RETRY_ATTEMPTS,
+        GraphDataStore,
+        retry_on_deadlock,
+    )
+
+    class Conflict(Exception):
+        code = 1200
+    delays: list[float] = []
+    monkeypatch.setattr(graph_data_store, "_retry_delay", lambda attempt: delays.append(graph_data_store._RETRY_BASE_DELAY * 2 ** attempt) or 0)
+    provider = MagicMock(begin_transaction=AsyncMock(return_value="t"), rollback_transaction=AsyncMock(), commit_transaction=AsyncMock(),
+                         batch_create_edges=AsyncMock(side_effect=Conflict("write-write conflict")),
+                         is_write_conflict=MagicMock(return_value=True), is_transient_error=MagicMock(return_value=True),
+                         opens_explicit_transaction=MagicMock(return_value=True))
+    provider.logger = logging.getLogger("app-lock-conflict-test")
+    store = GraphDataStore(provider.logger, provider)
+
+    class Writer:
+        data_store_provider = store
+
+        @retry_on_deadlock()
+        async def run(self) -> None:
+            async with store.transaction() as tx:
+                await tx.batch_create_edges([_grant("users", "u1")], "permission")
+
+    with pytest.raises(Conflict):
+        await Writer().run()
+    assert provider.batch_create_edges.await_count == _RETRY_ATTEMPTS
+    assert provider.batch_create_edges.await_args.kwargs["lock_grants"] == [("users", "u1", "records", "r1")]
+    assert len(delays) == _RETRY_ATTEMPTS - 1 and delays == sorted(delays)      # back-off between attempts, none after the last
+    assert provider.rollback_transaction.await_count == _RETRY_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_without_a_transaction_a_failed_read_after_the_grant_makes_every_held_membership_again_and_raises() -> None:
+    """The grant is committed when the read after it fails: every membership held before it is made again (create-only), then the error is raised."""
+    store, provider, _ = _store()
+    store.explicit = False
+    provider.lock_external_app_memberships = AsyncMock(side_effect=[[("users", "u1", "app1"), ("users", "u1", "app2")], ConnectionError("down")])
+    store.ensure_app_membership = AsyncMock()
+    with pytest.raises(ConnectionError):
+        await store.batch_create_edges([_grant("users", "u1")], "permission")
+    assert store.ensure_app_membership.await_args_list == [
+        call("u1", "users", "app1", is_external=True), call("u1", "users", "app2", is_external=True)]
