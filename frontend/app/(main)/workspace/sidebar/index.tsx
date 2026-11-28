@@ -356,7 +356,7 @@ export default function WorkspaceSidebar() {
             );
           })}
 
-        {/* ── Usage & billing: an Enterprise Edition page, shown tagged ── */}
+        {/* ── Usage: a page shown with a tag ── */}
         {!isPersonalScope && showEnterprise && (
           <Flex direction="column" gap="1">
             <SectionHeader title={t('workspace.sidebar.sections.usageAndCredits')} />

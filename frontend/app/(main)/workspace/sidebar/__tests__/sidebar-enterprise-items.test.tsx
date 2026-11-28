@@ -110,7 +110,7 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     expect(before(linkTo(NAV.tenants), linkTo(NAV.scim))).toBe(true);
   });
 
-  it('lists Groups, Tenants and SCIM under Overview, Audit logs last under Security, and Usage & billing before Developer settings', () => {
+  it('lists Groups, Tenants and SCIM under Overview, Audit logs last under Security, and Usage before Developer settings', () => {
     renderSidebar();
 
     // The section and its one item share a name; the header is the one outside a link.
@@ -178,7 +178,7 @@ describe('WorkspaceSidebar: personal and workspace settings', () => {
     expect(linkTo(en.workspaceMenu.workspaceSettings).getAttribute('href')).toBe('/workspace/general');
   });
 
-  it('keeps the Enterprise Edition pages and card out of an admin\'s personal settings', () => {
+  it('keeps the tagged pages and the card out of an admin\'s personal settings', () => {
     pathname = '/workspace/profile/';
     renderSidebar();
     for (const { label } of LOCKED) expect(screen.queryByText(label), label).toBeNull();
