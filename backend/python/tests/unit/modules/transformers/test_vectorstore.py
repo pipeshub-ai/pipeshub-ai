@@ -374,6 +374,7 @@ class TestGetEmbeddingModelInstanceConfig:
             "embedding": [config],
         })
         vs._initialize_collection = AsyncMock()
+        vs.collection_registry.resolve_embedding_config = AsyncMock(side_effect=lambda c: c)
 
         mock_embed = MagicMock()
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)

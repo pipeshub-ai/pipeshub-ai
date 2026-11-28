@@ -760,6 +760,8 @@ class RetrievalService:
                     is_local = True
                 else:
                     provider = selected_config["provider"]
+                    if provider == "ollama":
+                        selected_config = await self.collection_registry.resolve_embedding_config(selected_config)
                     self.logger.info(f"Using embedding provider: {provider}")
                     dense_embeddings = await build_embeddings(self.config_service, selected_config)
                     is_local = is_local_cpu_embedding_provider(
