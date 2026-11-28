@@ -3898,7 +3898,14 @@
         "createError": "無法建立連接器",
         "createSuccess": "已成功建立連接器執行個體「{{name}}」",
         "authSaveError": "無法儲存驗證設定",
-        "configSaveError": "無法儲存設定"
+        "configSaveError": "無法儲存設定",
+        "syncTurningOn": "正在為 {{name}} 開啟同步",
+        "syncTurningOnDescription": "正在檢查與 {{source}} 的連線，可能需要幾秒鐘。",
+        "syncTurningOff": "正在為 {{name}} 關閉同步",
+        "syncTurnedOn": "{{name}} 的同步已開啟",
+        "syncTurnedOff": "{{name}} 的同步已關閉",
+        "syncToggleFailed": "無法變更 {{name}} 的同步",
+        "syncToggleFailedDescription": "請再試一次。如果仍然失敗，請檢查連接器的設定。"
       },
       "tabs": {
         "authenticate": "驗證執行個體",
@@ -4198,7 +4205,9 @@
         "removing": "正在移除此連接器。",
         "configureFirst": "請先完成設定，才能啟用同步。",
         "authenticateFirst": "請先驗證此連接器，才能啟用同步。",
-        "selected": "已選取 {{field}}"
+        "selected": "已選取 {{field}}",
+        "turningOn": "正在開啟…",
+        "turningOff": "正在關閉…"
       },
       "instanceStatus": {
         "setup": {

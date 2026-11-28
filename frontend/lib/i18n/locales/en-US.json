@@ -3930,7 +3930,14 @@
         "createError": "Failed to create connector",
         "createSuccess": "Connector instance '{{name}}' created successfully",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration"
+        "configSaveError": "Failed to save configuration",
+        "syncTurningOn": "Turning on sync for {{name}}",
+        "syncTurningOnDescription": "Checking the connection to {{source}}. This can take a few seconds.",
+        "syncTurningOff": "Turning off sync for {{name}}",
+        "syncTurnedOn": "Sync is on for {{name}}",
+        "syncTurnedOff": "Sync is off for {{name}}",
+        "syncToggleFailed": "Couldn't change sync for {{name}}",
+        "syncToggleFailedDescription": "Try again. If it keeps failing, check the connector's settings."
       },
       "tabs": {
         "authenticate": "Authenticate",
@@ -4230,7 +4237,9 @@
         "removing": "This connector is being removed.",
         "configureFirst": "Finish configuration before you can enable sync.",
         "authenticateFirst": "Authenticate this connector before you can enable sync.",
-        "selected": "{{field}} selected"
+        "selected": "{{field}} selected",
+        "turningOn": "Turning on…",
+        "turningOff": "Turning off…"
       },
       "instanceStatus": {
         "setup": {
