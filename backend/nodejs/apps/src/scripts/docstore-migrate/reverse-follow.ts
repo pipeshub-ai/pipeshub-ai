@@ -39,7 +39,7 @@ import {
   whileExclusive,
 } from './reverse';
 import { VerifyReport, verifyAll } from './verify';
-import { carriersFor, restoreCarried } from './carry/run';
+import { carriersFor, releaseCarried, restoreCarried } from './carry/run';
 import { carryMongo, carryPg } from './carry/steps';
 import { FINALISED, lastMilestone } from './finalize';
 import { refusedIds } from './refusals';
@@ -497,6 +497,8 @@ async function rollbackOnlineLocked(
       stage = 'before';
       throw new Error(h.why);
     }
+    // MongoDB is the store: the carriers let go of what only the move held (before the job ends, while its login still works)
+    const released = await releaseCarried(carryPg(rt), carriersFor());
     // the move is over: end the job (the import login's exemption closes with it) and leave no markers behind
     try {
       if (
@@ -522,7 +524,7 @@ async function rollbackOnlineLocked(
       verify: v,
       applied: r.applied,
       freezeMs: Date.now() - t0,
-      message: `MongoDB is the store again at a new epoch and PostgreSQL is closed: roll the application back to DOC_STORE=mongo now.${h.note}`,
+      message: `MongoDB is the store again at a new epoch and PostgreSQL is closed: roll the application back to DOC_STORE=mongo now.${h.note}${released}`,
     };
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);

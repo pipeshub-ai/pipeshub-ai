@@ -33,7 +33,7 @@ import {
 import { storeEpochOnFreshConnection } from './online';
 import { JobState } from './state';
 import { VerifyReport, verifyAll } from './verify';
-import { carriersFor, restoreCarried } from './carry/run';
+import { carriersFor, releaseCarried, restoreCarried } from './carry/run';
 import { carryMongo, carryPg } from './carry/steps';
 import { refusedIds } from './refusals';
 
@@ -503,11 +503,12 @@ async function rollbackLocked(
         throw new Error(`${h.why}.${note}`);
       }
       const cur = await JobState.latest(rt);
+      const released = await releaseCarried(carryPg(rt), carriersFor());
       return {
         ok: true,
         mode: 'no_pg_writes',
         verify: v,
-        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}`,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}${released}`,
       };
     }
     if (!o.reverse) {
@@ -544,12 +545,13 @@ async function rollbackLocked(
       const note = await release();
       throw new Error(`${h.why}.${note}`);
     }
+    const released = await releaseCarried(carryPg(rt), carriersFor());
     return {
       ok: true,
       mode: 'reverse',
       verify: after,
       ...r,
-      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}`,
+      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}${released}`,
     };
   } catch (e) {
     if (!state.released) {

@@ -91,4 +91,9 @@ export interface Carrier {
   check?(k: KernelTx, mongo: CarryMongo): Promise<string[]>;
   /** Removes everything it wrote (reset, and a resync before it copies again). */
   clear(k: KernelTx): Promise<void>;
+  /**
+   * After a rollback has made MongoDB the store again: lets go of what only the move held in PostgreSQL (a record PostgreSQL's readers
+   * would otherwise still act on). Not called while PostgreSQL may still be the store, so the verify of the reverse copy still sees it.
+   */
+  released?(k: KernelTx): Promise<void>;
 }
