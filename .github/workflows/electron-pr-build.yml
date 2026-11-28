@@ -2,22 +2,31 @@ name: PR Desktop Build
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:e2e label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
       - 'frontend/**'
       - '.github/workflows/electron-*.yml'
+  schedule:
+    - cron: '40 5 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # Cancel an in-progress build when the PR gets new commits.
 concurrency:
-  group: electron-pr-${{ github.event.pull_request.number }}
+  group: electron-pr-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   build:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')))
     uses: ./.github/workflows/electron-build-reusable.yml
     with:
       targets: '["linux"]'

@@ -8,6 +8,7 @@ name: Integration Tests
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Heavy: on a pull request its jobs run only with the ci:full, ci:e2e or it-all label (CONTRIBUTING.md).
     branches:
       - 'main'
   # Daily at 00:00 IST (Asia/Kolkata); Actions cron is UTC → 18:30 UTC.
@@ -126,7 +127,7 @@ permissions:
 # burn a runner alongside the labeled run. Non-PR events get a unique group per run so
 # a manual dispatch never cancels the nightly cron.
 concurrency:
-  group: integration-tests-${{ github.event.pull_request.number || github.run_id }}
+  group: integration-tests-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 env:
@@ -188,7 +189,9 @@ jobs:
     # request whose changes no shard tests runs none, and asks for no approval.
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
+      ((contains(fromJSON('["ci:full","ci:e2e","it-all"]'), github.event.label.name) ||
+        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e') || contains(github.event.pull_request.labels.*.name, 'it-all')))) &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
        !contains(github.event.pull_request.labels.*.name, 'skip-it') &&
        (needs.changes.outputs.integration_shards != '[]' ||
         contains(github.event.pull_request.labels.*.name, 'it-all')))

@@ -362,6 +362,27 @@ runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
 
+### Heavy CI and `ci:` labels
+
+Every pull request runs the fast checks: lint and type checks, unit tests, the edition guard, contract and
+OpenAPI validation, workflow lint, supply chain and dependency review. The heavy suites run on a pull request
+only when it carries one of these labels. They still run on their nightly or weekly schedule, from *Run
+workflow*, and (where the workflow has a push trigger) on every push to `main`.
+
+| Label | Runs |
+| --- | --- |
+| `ci:full` | Every heavy workflow below |
+| `ci:db` | pg-runtime, node-pg-runtime, pg-stores, pgvector-provider, db-migrations, docstore-migrate, permission-conformance, postgres-image, backend-matrix, storage-backends |
+| `ci:harness` | Agent harness infrastructure, harness E2E and the harness fault suite |
+| `ci:e2e` | E2E smoke, Published Hub and ARM64 first-run, integration and SDK tests, the Helm install, desktop and native bundle builds |
+| `ci:security` | CodeQL |
+| (only `ci:full`) | Graph explorer tests |
+
+Adding a label starts its workflows on the current commit; while it stays on the pull request, each push re-runs
+them. Other labels do not re-run anything. Add the label that matches what you changed, or `ci:full` for a
+change that crosses areas, before asking for a merge. A maintainer adds labels on pull requests from forks.
+`scripts/test_ci_label_gate.py` checks that every heavy job carries the same gate.
+
 ## Contributor License Agreement
 
 Before we can merge your first pull request, you need to sign our [Contributor License Agreement](CLA.md) (CLA). You keep the copyright to your work; the CLA gives PipesHub a license to use and distribute it.

@@ -15,6 +15,8 @@ name: permission-conformance
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -44,7 +46,7 @@ permissions:
 
 concurrency:
   # The event is part of the group, so a push to main cannot cancel the nightly run in progress.
-  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: permission-conformance-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -57,6 +59,10 @@ env:
 
 jobs:
   oracle:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
     runs-on: ubuntu-latest
     # the test step took 9 to 19 minutes with the default xdist split, which parks the heavy tests on one worker; worksteal needs about 4
     timeout-minutes: 30
@@ -102,7 +108,11 @@ jobs:
   graph:
     # named by the shard alone: by default a check's name lists every matrix value, the include keys too
     name: graph (shard ${{ matrix.shard }})
-    if: github.event_name != 'schedule'
+    if: >-
+      (github.event_name != 'pull_request' ||
+       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+      github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # A hosted runner can be twice as slow as another (one run of the adversarial worlds took 34 minutes, another passed 58), so the shards are
     # sized to take at most about half of this on the slowest runner seen
@@ -272,7 +282,11 @@ jobs:
           if-no-files-found: ignore
 
   kh-browse-cost:
-    if: github.event_name != 'schedule'
+    if: >-
+      (github.event_name != 'pull_request' ||
+       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+      github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # The tests take about 12 minutes on a 4-CPU machine; most of it is the real-graph files, whose legacy statements take seconds to plan.
     timeout-minutes: 30
@@ -351,7 +365,11 @@ jobs:
         run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/kh-cost-junit.xml" --collected "$RUNNER_TEMP/kh-cost.collected"
 
   nightly:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name != 'pull_request' ||
+       contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
+       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))) &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:

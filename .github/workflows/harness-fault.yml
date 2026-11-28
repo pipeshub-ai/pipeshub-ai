@@ -17,20 +17,24 @@ on:
         options: [all, redis, kafka]
         default: all
   pull_request:
-    types: [labeled, synchronize]
+    types: [labeled, synchronize, opened, reopened]
+    # Heavy: on a pull request its jobs run only with the ci:full, ci:harness or harness-fault label (CONTRIBUTING.md).
     branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: harness-fault-${{ github.event.pull_request.number || github.run_id }}
+  group: harness-fault-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 jobs:
   crash-points:
     name: Crash points (${{ matrix.broker }})
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'harness-fault')
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(fromJSON('["ci:full","ci:harness","harness-fault"]'), github.event.label.name) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness') || contains(github.event.pull_request.labels.*.name, 'harness-fault')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

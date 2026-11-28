@@ -3,6 +3,8 @@ name: node-pg-runtime
 # Integration tests of the Node PostgreSQL runtime against real PostgreSQL 17 and 18 and PgBouncer, and the generated-types drift check.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    # Heavy: on a pull request its jobs run only with the ci:full or ci:db label (CONTRIBUTING.md).
     branches:
       - 'main'
     paths:
@@ -11,12 +13,19 @@ on:
       - 'backend/nodejs/apps/package.json'
       - 'backend/db/**'
       - '.github/workflows/node-pg-runtime.yml'
+  schedule:
+    - cron: '10 10 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   pg-runtime:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) ||
+      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
