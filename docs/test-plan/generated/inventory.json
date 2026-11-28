@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2053,
- "claimedTestFiles": 4012,
- "claimedTests": 43151,
+ "claimedTestFiles": 4017,
+ "claimedTests": 43225,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3283
+  "unit": 3288
  },
  "components": [
   {
@@ -7828,7 +7828,7 @@
    "name": "MCP hub and runners",
    "status": "built, flags off (MCP_HUB, MCP_STDIO_RUNNERS)",
    "files": 121,
-   "tests": 1998,
+   "tests": 2013,
    "filesByLevel": {
     "contract": 2,
     "integration-docker": 2,
@@ -7837,7 +7837,7 @@
    "testsByLevel": {
     "contract": 30,
     "integration-docker": 22,
-    "unit": 1946
+    "unit": 1961
    },
    "markers": {
     "docker": 2
@@ -8109,13 +8109,13 @@
      "path": "backend/python/tests/unit/agents/mcp/test_url_guard.py",
      "level": "unit",
      "markers": [],
-     "tests": 31
+     "tests": 43
     },
     {
      "path": "backend/python/tests/unit/agents/mcp/test_url_guard_httpx2.py",
      "level": "unit",
      "markers": [],
-     "tests": 23
+     "tests": 26
     },
     {
      "path": "backend/python/tests/unit/agents/mcp/test_wp88_connect_timeout.py",
@@ -17299,7 +17299,7 @@
    "name": "Legacy query path (today's loop)",
    "status": "built (reference and kill-switch target)",
    "files": 799,
-   "tests": 17871,
+   "tests": 17886,
    "filesByLevel": {
     "contract": 6,
     "integration": 3,
@@ -17314,7 +17314,7 @@
     "integration-docker": 19,
     "live": 39,
     "replay": 7,
-    "unit": 17701
+    "unit": 17716
    },
    "markers": {
     "ai_agents": 6,
@@ -20932,13 +20932,13 @@
      "path": "backend/python/tests/unit/agents/mcp/test_url_guard.py",
      "level": "unit",
      "markers": [],
-     "tests": 31
+     "tests": 43
     },
     {
      "path": "backend/python/tests/unit/agents/mcp/test_url_guard_httpx2.py",
      "level": "unit",
      "markers": [],
-     "tests": 23
+     "tests": 26
     },
     {
      "path": "backend/python/tests/unit/agents/mcp/test_wp88_connect_timeout.py",
@@ -22790,15 +22790,15 @@
    "id": "FEC",
    "name": "Frontend chat surfaces",
    "status": "built",
-   "files": 509,
-   "tests": 4597,
+   "files": 511,
+   "tests": 4626,
    "filesByLevel": {
     "e2e-browser": 77,
-    "unit": 432
+    "unit": 434
    },
    "testsByLevel": {
     "e2e-browser": 327,
-    "unit": 4270
+    "unit": 4299
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -24863,10 +24863,16 @@
      "tests": 16
     },
     {
+     "path": "frontend/lib/api/__tests__/session-check-retry.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 6
+    },
+    {
      "path": "frontend/lib/api/__tests__/session-end.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 23
+     "tests": 24
     },
     {
      "path": "frontend/lib/api/__tests__/session-store-resets.test.ts",
@@ -24926,7 +24932,7 @@
      "path": "frontend/lib/auth/__tests__/session-rotation.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 4
+     "tests": 7
     },
     {
      "path": "frontend/lib/commands/__tests__/render.test.ts",
@@ -25227,6 +25233,12 @@
      "level": "unit",
      "markers": [],
      "tests": 16
+    },
+    {
+     "path": "frontend/lib/socket/__tests__/notification-socket.session-check.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 19
     },
     {
      "path": "frontend/lib/socket/__tests__/notification-socket.test.ts",
@@ -25864,15 +25876,15 @@
    "id": "FEA",
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
-   "files": 303,
-   "tests": 2198,
+   "files": 306,
+   "tests": 2228,
    "filesByLevel": {
     "e2e-browser": 15,
-    "unit": 288
+    "unit": 291
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2145
+    "unit": 2175
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -26584,6 +26596,12 @@
      "tests": 22
     },
     {
+     "path": "frontend/app/(main)/workspace/connectors/__tests__/sync-toggle-pending-store.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 4
+    },
+    {
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/authorize-tab-oauth.test.tsx",
      "level": "unit",
      "markers": [],
@@ -26593,7 +26611,7 @@
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/config-success-dialog.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 5
+     "tests": 8
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/connector-catalog-layout.test.tsx",
@@ -26605,7 +26623,7 @@
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/connector-details-layout.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 22
+     "tests": 23
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/connector-panel.test.tsx",
@@ -26618,6 +26636,12 @@
      "level": "unit",
      "markers": [],
      "tests": 14
+    },
+    {
+     "path": "frontend/app/(main)/workspace/connectors/components/__tests__/instance-card-sync-pending.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 5
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/components/__tests__/instance-card-user.test.tsx",
@@ -26803,13 +26827,13 @@
      "path": "frontend/app/(main)/workspace/connectors/personal/__tests__/connectors-personal-page.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 13
+     "tests": 14
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/team/__tests__/connectors-team-page.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 31
+     "tests": 34
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/utils/__tests__/admin-access-helpers.test.ts",
@@ -26839,7 +26863,7 @@
      "path": "frontend/app/(main)/workspace/connectors/utils/__tests__/connector-sync-actions.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 16
+     "tests": 19
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/utils/__tests__/folder-path-rules.test.ts",
@@ -26888,6 +26912,12 @@
      "level": "unit",
      "markers": [],
      "tests": 8
+    },
+    {
+     "path": "frontend/app/(main)/workspace/connectors/utils/__tests__/sync-toggle-feedback.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/connectors/utils/__tests__/url-field.test.ts",
