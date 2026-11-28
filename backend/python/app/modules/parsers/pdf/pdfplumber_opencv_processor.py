@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 import re
+import time
 import uuid
 from collections import Counter
 from io import BytesIO
@@ -45,6 +45,7 @@ from app.utils.table_enrichment import (
 from app.utils.table_row_memory import with_row_digest
 
 if TYPE_CHECKING:
+    import logging
     from collections.abc import Callable, Sequence
 
     from app.config.configuration_service import ConfigurationService
@@ -227,26 +228,130 @@ class PDFPlumberOpenCVProcessor:
         self.config = config
 
     async def parse_document(
-        self, doc_name: str, content: bytes | BytesIO
+        self,
+        doc_name: str,
+        content: bytes | BytesIO,
+        *,
+        table_model: bool = False,
+        record_id: str | None = None,
     ) -> List[ParsedPageData]:
+        """Parse the layout of a PDF.
+
+        ``table_model=True`` (the record-indexing callers) lets the structure-model shadow run collect its jobs while
+        the layout is parsed and start after the parse has returned; it changes nothing in the result. ``record_id``
+        names the record in that run's log lines; ``None`` means unknown.
+        """
         stream = content if isinstance(content, BytesIO) else BytesIO(content)
         stream.seek(0)
         pdf_bytes = stream.read()
 
+        coordinator, admission, request_id = self._shadow_admit(record_id, table_model=table_model)
+        parse_started = time.monotonic()
+        model_cfg = self._hybrid_cfg(record_id, request_id, table_model=table_model)
         # The worker may run as long as the PDF record it parses for.
-        pages_data = await parse_pool.submit(
-            parse_pdf_layout,
-            pdf_bytes,
-            label=doc_name,
-            size=len(pdf_bytes),
-            timeout=messaging_env.pdf_record_processing_timeout,
-            kind=ParseKind.PDF_LAYOUT,
-        )
+        try:
+            if model_cfg is not None:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    None,
+                    model_cfg,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+            elif admission is None:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+            else:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    admission.spool_dir,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+        except BaseException:
+            if admission is not None:
+                coordinator.abandon(admission)
+            raise
+        if admission is not None:
+            try:
+                coordinator.start(admission, record_id, request_id, time.monotonic() - parse_started)
+            except Exception:
+                coordinator.abandon(admission)
         for pd in pages_data:
             self.logger.debug(
                 f"Page {pd.page_number}: detected {len(pd.regions)} layout regions"
             )
+        self._log_table_hybrid(pages_data)
         return pages_data
+
+    def _hybrid_cfg(self, record_id: str | None, request_id: str | None, *, table_model: bool):  # noqa: ANN202
+        """The worker's configuration for ``PDF_TABLE_EXTRACTION=hybrid``, or ``None``: the mode is off, the caller is not a
+        record-indexing one, or the service is known to be unavailable (the parse is then the evidence result)."""
+        if not table_model:
+            return None
+        try:
+            from app.modules.parsers.pdf import table_hybrid_emit
+            from app.modules.parsers.pdf.table_hybrid_client import service_url
+            from app.modules.parsers.pdf.table_hybrid_flow import get_coordinator
+
+            if not table_hybrid_emit.hybrid_active() or get_coordinator()._latched() is not None:
+                return None
+            if request_id is None:
+                from app.utils.request_context import current_display_id
+
+                request_id = current_display_id()
+            return table_hybrid_emit.make_cfg(record_id, request_id, service_url(), record_timeout_s=messaging_env.pdf_record_processing_timeout)
+        except Exception:
+            self.logger.warning("table hybrid emit: not started", exc_info=True)
+            return None
+
+    def _shadow_admit(self, record_id: str | None, *, table_model: bool):  # noqa: ANN202
+        """(coordinator, admission, request id) for the structure-model shadow run, decided before the parse; all
+        ``None`` when the run is off, not asked for, or this document is not shadowed."""
+        if not table_model:
+            return None, None, None
+        try:
+            from app.modules.parsers.pdf.table_hybrid_flow import (
+                get_coordinator,
+                shadow_active,
+            )
+            from app.utils.request_context import current_display_id
+
+            if not shadow_active():
+                return None, None, None
+            request_id = current_display_id()
+            request_id = None if request_id in ("", "-") else request_id  # unknown is null, not a dash
+            coordinator = get_coordinator()
+            return coordinator, coordinator.admit(record_id, request_id), request_id
+        except Exception:
+            self.logger.warning("table hybrid shadow: not started", exc_info=True)
+            return None, None, None
+
+    def _log_table_hybrid(self, pages_data: list[ParsedPageData]) -> None:
+        """Shadow mode only: one line per document with the routed share and the reasons (no cell text)."""
+        reports = [r.table_hybrid for pd in pages_data for r in pd.regions if r.type == LayoutRegionType.TABLE and r.table_hybrid]
+        if not reports:
+            return
+        reasons: dict[str, int] = {}
+        for rep in reports:
+            for reason in rep.get("reasons", []):
+                reasons[reason] = reasons.get(reason, 0) + 1
+        self.logger.info(
+            "table hybrid shadow: tables=%d would_route=%d q_unknown=%d reasons=%s",
+            len(reports), sum(1 for r in reports if r.get("would_route")), sum(1 for r in reports if r.get("q") is None), dict(sorted(reasons.items())),
+        )
 
     async def create_blocks(
         self,

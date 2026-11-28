@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
@@ -11,10 +13,11 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Request,
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.capacity.admission import docling_demand, parse_class, reserve_or_adopt
 from app.capacity.member_budget import AdmissionTimeout, Permit
@@ -23,6 +26,14 @@ from app.modules.parsers.pdf.docling_processor import (
     DoclingProcessor,
     lanes_active,
     lease_scope,
+)
+from app.services.docling import table_structure as table_model
+from app.services.docling.table_structure_schema import (
+    DEADLINE_HEADER,
+    MAX_DEADLINE_MS,
+    MAX_IMAGE_BYTES,
+    TableRequestMeta,
+    TableResponse,
 )
 from app.services.resource_governor import (
     ParseTier,
@@ -33,6 +44,7 @@ from app.services.resource_governor import (
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
 from app.services.resource_governor.memory_domain import parse_admission_cap
+from app.utils.env_config import env_choice
 from app.utils.lazy_heavy import ensure_docling
 from app.utils.logger import create_logger
 from app.utils.memory_release import release_freed_memory
@@ -386,3 +398,89 @@ def _parse_failure_response(error_code: str, error: str) -> JSONResponse:
         status_code=422,
         content={"success": False, "error": error, "errorCode": error_code},
     )
+
+
+@contextlib.asynccontextmanager
+async def _table_permit(wait_s: float, threads: int = 1) -> AsyncIterator[int]:
+    """HEAVY_PARSE permits for one table and, under the capacity profile, one member reservation; yields the threads the
+    table may run with.
+
+    A permit is a core's worth of heavy parsing, so a table asking for *threads* takes that many permits, at most the
+    gate's limit, and runs with the threads its permits cover: lent threads never oversubscribe the host.
+
+    Taken only once the request holds the model's turn (``run_tables``), so a request queued for the model holds nothing;
+    the permit is held for the table's own run, at most its time bound, and one table at a time per process. Both waits
+    are one bounded wait: *wait_s* is what is left of the caller's deadline."""
+    wait = max(0.0, min(wait_s, MAX_DEADLINE_MS / 1000))
+    cost = 0
+    granted = max(1, threads)
+    member_permit = None
+    start = time.monotonic()
+    try:
+        if _resource_governor is not None:
+            gate = _resource_governor.gate(gate_pool(ParseTier.HEAVY))
+            cap = parse_admission_cap(_resource_governor, gate_pool(ParseTier.HEAVY))
+            granted = max(1, min(granted, gate.limit if cap is None else cap))
+            admitted = await acquire_gate_with_backpressure(
+                gate, granted, ParseTier.HEAVY, "table-structure",
+                logger=logger, log_prefix="docling-table",
+                queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS, gate_timeout_seconds=wait,
+                cap=cap,
+            )
+            if not admitted:
+                raise table_model.Busy
+            cost = granted
+        try:
+            member_permit = await reserve_or_adopt(
+                None, docling_demand(parse_class(None)), deadline_s=max(0.0, wait - (time.monotonic() - start))
+            )
+        except AdmissionTimeout as exc:
+            raise table_model.Busy from exc
+        yield granted
+    finally:
+        _release_docling_gate(cost)
+        if member_permit is not None:
+            member_permit.release()
+
+
+def _table_error(status_code: int, code: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse(status_code=status_code, headers=headers, content={"success": False, "errorCode": code})
+
+
+@app.post("/table-structure", response_model=TableResponse)
+async def table_structure_endpoint(
+    request: Request,
+    x_table_deadline_ms: int | None = Header(default=None, alias=DEADLINE_HEADER),
+) -> TableResponse | JSONResponse:
+    """Structure of the tables of one request: cell spans and the ids of the caller's own words, never text."""
+    arrived = time.monotonic()
+    if env_choice("PDF_DOCLING_TABLE_MODE", "accurate", ("accurate", "fast")) != "accurate":
+        return _table_error(409, "mode_not_supported")
+    form = await request.form()
+    raw_meta = form.get("meta")
+    if not isinstance(raw_meta, str):
+        return _table_error(422, "invalid_request")
+    try:
+        meta = TableRequestMeta.model_validate_json(raw_meta)
+    except ValidationError:
+        return _table_error(422, "invalid_request")
+    images: dict[str, bytes] = {}
+    total = 0
+    for spec in meta.tables:
+        part = form.get(spec.image)
+        if part is None or isinstance(part, str):
+            return _table_error(422, "invalid_request")
+        # one byte past what is left of the budget is enough to refuse it, without reading a large part in full
+        data = await part.read(MAX_IMAGE_BYTES - total + 1)
+        total += len(data)
+        if total > MAX_IMAGE_BYTES:
+            return _table_error(422, "invalid_request")
+        images[spec.image] = data
+    wait_ms = MAX_DEADLINE_MS if x_table_deadline_ms is None else max(0, min(x_table_deadline_ms, MAX_DEADLINE_MS))
+    results, refused = await table_model.run_tables(
+        meta, images, table_model.get_supervisor(), _table_permit,
+        deadline=arrived + wait_ms / 1000, disconnected=request.is_disconnected,
+    )
+    if refused is not None:
+        return _table_error(429, refused, {"Retry-After": str(DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS)})
+    return TableResponse(tables=results, model=table_model.get_supervisor().model_info)

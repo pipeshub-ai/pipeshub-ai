@@ -32,7 +32,9 @@ class PdfPlumberParser:
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
         try:
-            parsed_data = await self._processor.parse_document(record_name_pdf, content)
+            parsed_data = await self._processor.parse_document(
+                record_name_pdf, content, table_model=True, record_id=(config or {}).get("record_id")
+            )
             block_containers = await self._processor.create_blocks(
                 parsed_data,
                 skip_llm_enrichment=bool((config or {}).get("skip_table_enrichment")),

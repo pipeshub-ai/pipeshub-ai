@@ -1,0 +1,13 @@
+{
+ "cap_ceiling": 1024,
+ "cap_k": 2.0,
+ "cap_margin": 16,
+ "docling_ibm_models": "4.0.4",
+ "line_join_h": 0.5,
+ "mode": "accurate",
+ "prefilter_min_lines": 2,
+ "scale": 2.0,
+ "segment_gap_h": 1.0,
+ "threads": 4,
+ "word_loss_max": 0.01
+}

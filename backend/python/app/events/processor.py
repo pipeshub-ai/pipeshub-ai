@@ -395,7 +395,7 @@ class Processor:
             )
 
             # Phase 1: Parse PDF layout (no LLM calls)
-            parsed_data = await processor.parse_document(record_name, pdf_binary)
+            parsed_data = await processor.parse_document(record_name, pdf_binary, table_model=True, record_id=recordId)
             # Pages drawn as outlines have no text layer; read them with OCR, replacing their regions.
             await ocr_textless_pages(pdf_binary, parsed_data, self.config_service, self.logger)
             pdf_binary = None

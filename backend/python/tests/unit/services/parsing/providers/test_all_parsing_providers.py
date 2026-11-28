@@ -312,7 +312,7 @@ class TestPdfPlumberParser:
         assert isinstance(result, ParseResult)
         assert result.provider_used == ParserProvider.DEFAULT
         assert result.metadata["record_name"] == "test.pdf"
-        mock_processor.parse_document.assert_called_once_with("test.pdf", b"pdf content")
+        mock_processor.parse_document.assert_called_once_with("test.pdf", b"pdf content", table_model=True, record_id=None)
         mock_processor.create_blocks.assert_called_once()
 
     @pytest.mark.asyncio
@@ -324,7 +324,7 @@ class TestPdfPlumberParser:
         parser = PdfPlumberParser(mock_processor)
         await parser.parse(b"content", "document")
 
-        mock_processor.parse_document.assert_called_once_with("document.pdf", b"content")
+        mock_processor.parse_document.assert_called_once_with("document.pdf", b"content", table_model=True, record_id=None)
 
     @pytest.mark.asyncio
     async def test_parse_fails_when_create_blocks_returns_none(self):
