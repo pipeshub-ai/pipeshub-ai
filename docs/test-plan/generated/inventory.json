@@ -2,8 +2,8 @@
  "generatedBy": "scripts/harness_test_inventory.py",
  "componentMap": "docs/test-plan/data/components.json",
  "harnessTestFiles": 2054,
- "claimedTestFiles": 4018,
- "claimedTests": 43248,
+ "claimedTestFiles": 4021,
+ "claimedTests": 43272,
  "claimedFilesByLevel": {
   "cohesion": 64,
   "component": 37,
@@ -18,7 +18,7 @@
   "live": 6,
   "perf": 3,
   "replay": 16,
-  "unit": 3289
+  "unit": 3292
  },
  "components": [
   {
@@ -25882,15 +25882,15 @@
    "id": "FEA",
    "name": "Frontend workspace and admin surfaces",
    "status": "built",
-   "files": 307,
-   "tests": 2230,
+   "files": 310,
+   "tests": 2254,
    "filesByLevel": {
     "e2e-browser": 15,
-    "unit": 292
+    "unit": 295
    },
    "testsByLevel": {
     "e2e-browser": 53,
-    "unit": 2177
+    "unit": 2201
    },
    "markers": {},
    "unmatchedTestGlobs": [],
@@ -27424,6 +27424,12 @@
      "tests": 3
     },
     {
+     "path": "frontend/app/(main)/workspace/sidebar/__tests__/settings-scope.test.ts",
+     "level": "unit",
+     "markers": [],
+     "tests": 4
+    },
+    {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-ai-accounts-visibility.test.tsx",
      "level": "unit",
      "markers": [],
@@ -27442,13 +27448,25 @@
      "tests": 1
     },
     {
+     "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-complete.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 8
+    },
+    {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-enterprise-items.test.tsx",
      "level": "unit",
      "markers": [],
-     "tests": 6
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-harness-beta.test.tsx",
+     "level": "unit",
+     "markers": [],
+     "tests": 3
+    },
+    {
+     "path": "frontend/app/(main)/workspace/sidebar/__tests__/sidebar-nav-extras-scope.test.tsx",
      "level": "unit",
      "markers": [],
      "tests": 3
@@ -27487,7 +27505,7 @@
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/workspace-nav-merge.test.ts",
      "level": "unit",
      "markers": [],
-     "tests": 5
+     "tests": 10
     },
     {
      "path": "frontend/app/(main)/workspace/sidebar/__tests__/workspace-page-links.test.tsx",
