@@ -30,6 +30,13 @@ if TYPE_CHECKING:
 BACKEND = Path(__file__).resolve().parents[4]
 
 
+@pytest.fixture(autouse=True)
+def _secret_by_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ring_secret reads SECRET_KEY_FILE first, so an inherited one would override every SECRET_KEY set here.
+    monkeypatch.delenv("SECRET_KEY_FILE", raising=False)
+    monkeypatch.setenv("SECRET_KEY", "d" * 64)
+
+
 class TestSettings:
     def test_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for name in ("PIPESHUB_PROMPT_CACHE", "PIPESHUB_PROMPT_CACHE_TTL", "PIPESHUB_PROMPT_CACHE_RETENTION",
