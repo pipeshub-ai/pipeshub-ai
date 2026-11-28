@@ -278,7 +278,7 @@ CODEQL_LANGUAGES = {
 
 IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 
-# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_5 in
+# The connector shards' markers, as CONN_SHARD_1 .. CONN_SHARD_6 in
 # integration-tests.yml list them (test_pr_changes.py checks the two agree).
 CONNECTOR_SHARDS = {
     "connectors-1": (
@@ -292,6 +292,7 @@ CONNECTOR_SHARDS = {
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
     "connectors-5": ("google_drive_workspace", "s3"),
+    "connectors-6": ("drupal_wiki_sim",),
 }
 # The shards a pull request can run, in the workflow's order. Each one waits for
 # an approval and then takes about three hours, so these rules save the most.
@@ -361,7 +362,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         name: ()
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
-            "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
+            "dropbox_individual", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",
         )
@@ -374,6 +375,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "demo": ("demo",),
     # external/bookstack imports external/dropbox.
     "dropbox": ("bookstack", "bookstack_sim"),
+    "drupal_wiki": ("drupal_wiki_sim",),
     "gcs": ("gcs",),
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
@@ -398,6 +400,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
+    "drupal_wiki": ("drupal_wiki_sim",),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
     "github_personal": ("github",),

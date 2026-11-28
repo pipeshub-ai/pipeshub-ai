@@ -31,6 +31,7 @@ on:
             - sharepoint
             - sharepoint_sim
             - bookstack_sim
+            - drupal_wiki_sim
             - salesforce
             - servicenow_sim
             - confluence
@@ -204,12 +205,12 @@ jobs:
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Five
+        # slow connector suites do not all serialize on one worker. Six
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
-        # CONN_SHARD_5 (one source of truth); "core" is everything those five
-        # and "demo" do not own, so the seven partition -m "integration" exactly.
+        # CONN_SHARD_6 (one source of truth); "core" is everything those six
+        # and "demo" do not own, so the eight partition -m "integration" exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -221,11 +222,11 @@ jobs:
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
         # A pull request runs only the shards its changes can affect (the
-        # changes job above); it-all runs all seven.
+        # changes job above); it-all runs all eight.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","connectors-6","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","connectors-6","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -434,6 +435,13 @@ jobs:
       CONNSIM_ZAMMAD_REF: 8dac96d3a89c5fe85f56224e93151fb357dc4378
       ZAMMAD_SIM_IMAGE: pipeshub/connectors-simulator:zammad-it
       NEEDS_ZAMMAD_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad_sim')) && 'true' || 'false' }}
+      # The drupal_wiki_sim suite runs against the Drupal Wiki simulator on shard 6. It needs no secret and no dataset: the
+      # simulator serves its seed wiki, which each test resets and changes through its control API, and the connector
+      # reaches it by the network alias drupal-wiki-sim.internal (docker-compose.integration.drupal-wiki-sim.yml).
+      # CONNSIM_DRUPALWIKI_REF is connectors-simulator's main with connsim/sources/drupalwiki.
+      CONNSIM_DRUPALWIKI_REF: c3626f6a62a2990c32d03fc949afbe723109d2be
+      DRUPAL_WIKI_SIM_IMAGE: pipeshub/connectors-simulator:drupalwiki-it
+      NEEDS_DRUPAL_WIKI_SIM: ${{ (matrix.shard == 'connectors-6' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'drupal_wiki_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -526,7 +534,7 @@ jobs:
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these five and the `demo` shard do not own, built in the test step
+      # these six and the `demo` shard do not own, built in the test step
       # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
       # one job, so a shard's wall clock is the sum of the two plus ~15 min of
@@ -536,8 +544,9 @@ jobs:
       # Zendesk (shard 2) at ~15 min, what they take when they work; today
       # their tests fail at setup and cost about a minute, so shards 2 and 4
       # finish earlier until they are fixed. servicenow's 60 min (shard 2),
-      # servicenow_sim's 25 min (shard 4, ~261 min with it) and zammad_sim's
-      # 30 min (shard 2, ~262 min with it) are still estimates.
+      # servicenow_sim's 25 min (shard 4, ~261 min with it), zammad_sim's
+      # 30 min (shard 2, ~262 min with it) and drupal_wiki_sim's 88 min
+      # (shard 6) are still estimates.
       # Shard 1 keeps nextcloud and bookstack, the only suites needing
       # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
       # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
@@ -552,7 +561,8 @@ jobs:
       # and 3 only. Shard 4 starts the ServiceNow simulator, which must stay
       # off shard 2 (see NEEDS_SERVICENOW_SIM). Shard 5 starts nothing extra:
       # google_drive_workspace alone is ~184 min, so it shares shard 5 with s3
-      # only.
+      # only. Shard 6 starts the Drupal Wiki simulator for drupal_wiki_sim,
+      # which no other shard has room for.
       # Rebalance with scripts/shard_balance.py when a suite grows, and keep
       # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
@@ -560,6 +570,7 @@ jobs:
       CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
       CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear or servicenow_sim"
       CONN_SHARD_5: "google_drive_workspace or s3"
+      CONN_SHARD_6: "drupal_wiki_sim"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -808,6 +819,24 @@ jobs:
           echo "ZAMMAD_SIM_COMPOSE=-f docker-compose.integration.zammad-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/zammad_sim.env >> "$GITHUB_ENV"
 
+      - name: Check out the Drupal Wiki simulator
+        if: env.NEEDS_DRUPAL_WIKI_SIM == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_DRUPALWIKI_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-drupalwiki
+          persist-credentials: false
+
+      # No dataset: the simulator serves its seed wiki.
+      - name: Use the Drupal Wiki simulator
+        if: env.NEEDS_DRUPAL_WIKI_SIM == 'true'
+        run: |
+          docker build -q -t "$DRUPAL_WIKI_SIM_IMAGE" connectors-simulator-drupalwiki
+          echo "DRUPAL_WIKI_SIM_COMPOSE=-f docker-compose.integration.drupal-wiki-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/drupal_wiki_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -886,7 +915,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -986,7 +1015,8 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-6) MARKERS="$CONN_SHARD_6" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1056,10 +1086,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1079,13 +1109,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1192,7 +1222,8 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-6) MARKERS="$CONN_SHARD_6" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1230,10 +1261,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1253,7 +1284,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $DRUPAL_WIKI_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'

@@ -83,6 +83,7 @@
       "files": [
         "deployment/docker-compose/docker-compose.integration.arango.yml",
         "deployment/docker-compose/docker-compose.integration.bookstack-sim.yml",
+        "deployment/docker-compose/docker-compose.integration.drupal-wiki-sim.yml",
         "deployment/docker-compose/docker-compose.integration.neo4j.yml",
         "deployment/docker-compose/docker-compose.integration.salesforce-sim.yml",
         "deployment/docker-compose/docker-compose.integration.servicenow-sim.yml",

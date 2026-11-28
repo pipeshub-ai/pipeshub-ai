@@ -17,7 +17,10 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    ConnectorInitError,
+    IncompleteSyncError,
+)
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -40,6 +43,7 @@ from app.connectors.sources.drupal_wiki.connector import (
     TREE_UNREADABLE,
     DrupalWikiAuthError,
     DrupalWikiConnector,
+    DrupalWikiIncompleteSync,
     DrupalWikiSyncError,
     _utc_date,
     graphql_refused_action_item,
@@ -1079,15 +1083,111 @@ class TestRunSync:
             "app.connectors.sources.drupal_wiki.connector.load_connector_filters",
             AsyncMock(return_value=(FilterCollection(), FilterCollection())),
         ):
-            await connector.run_sync()
+            await run_that_reads_only_part(connector)
 
         assert "group 5 failed" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_could_not_read_everything_ends_as_failed_after_telling_the_admin_once(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Pages are still written (what could be read is kept), the one notification lists the problem, and the raised
+        # error is what makes the platform record the run as failed instead of succeeded.
+        connector.notify = AsyncMock()
+        connector._sync_users = AsyncMock(return_value={})
+        connector._sync_groups = AsyncMock(side_effect=lambda users: connector._fail("group 5 failed"))
+        connector._sync_spaces = AsyncMock(return_value={12: {"id": 12}})
+        connector.data_source.list_pages = AsyncMock(return_value=response(spring_page([page_payload(1)])))
+        connector.data_source.list_attachments = AsyncMock(return_value=response([]))
+
+        with pytest.raises(DrupalWikiIncompleteSync, match="1 problem"):
+            await run_with_no_filters(connector)
+
+        assert processor.on_new_records.await_count == 1
+        connector.notify.assert_awaited_once()
+        assert "group 5 failed" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_space_problems_alone_do_not_fail_the_run(self, connector: DrupalWikiConnector) -> None:
+        # A wiki that refuses the member query is announced on the connector card, not failed on every run.
+        connector.notify = AsyncMock()
+        connector._sync_users = AsyncMock(return_value={})
+        connector._sync_groups = AsyncMock()
+        connector._sync_spaces = AsyncMock(return_value={})
+        connector._report_space_problem(TREE_UNREADABLE, "'Team'")
+
+        await run_with_no_filters(connector)
+
+        assert not connector._failures
 
     @pytest.mark.asyncio
     async def test_run_sync_without_a_data_source_raises(self, connector: DrupalWikiConnector) -> None:
         connector.data_source = None
         with pytest.raises(DrupalWikiSyncError, match="not initialized"):
             await connector.run_sync()
+
+
+class TestListingWithoutLast:
+    """A Spring window that does not say whether it is the last cannot be taken for the last: that would drop the
+    rest of the listing and still report a clean run."""
+
+    @pytest.mark.asyncio
+    async def test_the_people_listing_fails(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response({"content": [{"id": 1, "email": "a@x.io"}]}))
+        with pytest.raises(DrupalWikiSyncError, match="list of people"):
+            await connector._sync_users()
+
+    @pytest.mark.asyncio
+    async def test_the_group_listing_fails(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response({"content": [{"id": 5}]}))
+        with pytest.raises(DrupalWikiSyncError, match="list of groups"):
+            await connector._sync_groups({})
+
+    @pytest.mark.asyncio
+    async def test_the_space_listing_fails(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_spaces = AsyncMock(return_value=response({"content": [{"id": 12}]}))
+        with pytest.raises(DrupalWikiSyncError, match="list of spaces"):
+            await connector._sync_spaces()
+
+    @pytest.mark.asyncio
+    async def test_the_page_listing_fails_after_the_window_it_could_not_place(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_pages = AsyncMock(return_value=response({"content": [page_payload(1)]}))
+        seen = []
+        with pytest.raises(DrupalWikiSyncError, match="pages of space 12"):
+            async for page in connector._fetch_pages(12, None):
+                seen.append(page["id"])  # noqa: PERF401 - keeps the pages yielded before the raise
+        assert seen == [1]
+
+    @pytest.mark.asyncio
+    async def test_a_window_that_says_it_is_last_or_is_empty_ends_the_walk(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_pages = AsyncMock(side_effect=[
+            response(spring_page([page_payload(1)], last=False)),
+            response(spring_page([], last=False)),
+        ])
+        assert [p["id"] async for p in connector._fetch_pages(12, None)] == [1]
+        assert connector.data_source.list_pages.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{"content": []}, {"content": [], "last": None}, {"content": [], "totalElements": 0}])
+    async def test_an_empty_window_ends_the_walk_whatever_it_says(self, connector: DrupalWikiConnector, payload: dict) -> None:
+        connector.data_source.list_pages = AsyncMock(return_value=response(payload))
+        assert [p async for p in connector._fetch_pages(12, None)] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{}, {"content": None, "last": True}, {"last": True}])
+    async def test_an_answer_without_a_content_list_is_not_an_empty_listing(
+        self, connector: DrupalWikiConnector, payload: dict
+    ) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response(payload))
+        with pytest.raises(DrupalWikiSyncError, match="list of people"):
+            await connector._sync_users()
+
+
+class TestPartialFullSync:
+    def test_a_run_that_read_only_part_reached_its_end(self) -> None:
+        """The runner owes a full sync to a run that was cut off, not to one that ended with a problem to report:
+        otherwise one space that stays refused makes every later run a full one."""
+        assert issubclass(DrupalWikiIncompleteSync, IncompleteSyncError)
 
 
 class TestMisc:
@@ -1253,7 +1353,7 @@ class TestSyncFailureNotification:
             "app.connectors.sources.drupal_wiki.connector.load_connector_filters",
             AsyncMock(return_value=(FilterCollection(), FilterCollection())),
         ):
-            await connector.run_sync()
+            await run_that_reads_only_part(connector)
 
         assert "kaboom" in connector.notify.await_args.kwargs["message"]
         # Pages still synced despite the user phase dying.
@@ -1273,7 +1373,7 @@ class TestSyncFailureNotification:
             "app.connectors.sources.drupal_wiki.connector.load_connector_filters",
             AsyncMock(return_value=(FilterCollection(), FilterCollection())),
         ):
-            await connector.run_sync()
+            await run_that_reads_only_part(connector)
 
         processor.on_new_user_groups.assert_not_awaited()
         assert any("Group membership was left as it is" in f for f in connector._failures)
@@ -1320,6 +1420,12 @@ def non_json(status: int = 200) -> MagicMock:
     resp.status = status
     resp.json.side_effect = ValueError("Expecting value")
     return resp
+
+
+async def run_that_reads_only_part(connector: DrupalWikiConnector) -> None:
+    """A run whose phases all ran, with problems reported: it ends as failed, so the platform does not record a success."""
+    with pytest.raises(DrupalWikiIncompleteSync):
+        await run_with_no_filters(connector)
 
 
 async def run_with_no_filters(connector: DrupalWikiConnector) -> None:
@@ -1411,7 +1517,7 @@ class TestDisabledMembers:
         connector._sync_users = AsyncMock(side_effect=RuntimeError("directory down"))
         connector._sync_spaces = AsyncMock(return_value={})
 
-        await run_with_no_filters(connector)
+        await run_that_reads_only_part(connector)
 
         assert connector._disabled_emails is None
 
@@ -1434,7 +1540,7 @@ class TestFullSyncCoverage:
         connector._sync_groups = AsyncMock()
         connector._sync_spaces = AsyncMock(side_effect=RuntimeError("spaces down"))
 
-        await run_with_no_filters(connector)
+        await run_that_reads_only_part(connector)
 
         assert connector.full_sync_coverage().complete is False
 
@@ -1549,7 +1655,7 @@ class TestRevokedToken:
         connector.data_source.list_users = AsyncMock(return_value=response(status=403))
         connector._sync_spaces = AsyncMock(return_value={})
 
-        await run_with_no_filters(connector)
+        await run_that_reads_only_part(connector)
 
         types = [call.kwargs["type"] for call in connector.notify.await_args_list]
         assert NotificationType.CONNECTOR_AUTH_ERROR not in types
@@ -2127,7 +2233,7 @@ class TestPrivateSpaceWhenMembersAreRefused:
         connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLTransientError("502"))
         store_space_access(connector, processor, ["USER"])
 
-        await run_with_no_filters(connector)
+        await run_that_reads_only_part(connector)
 
         connector.data_source.list_pages.assert_not_awaited()
         processor.get_record_group_by_external_id.assert_not_awaited()
@@ -2185,7 +2291,7 @@ class TestTreeFailuresThatMayPass:
         connector.graphql.get_space_tree = AsyncMock(side_effect=error)
 
         for _ in range(2):
-            await run_with_no_filters(connector)
+            await run_that_reads_only_part(connector)
             assert written_pages(processor)["page:103"][0].parent_external_record_id == "page:700"
             processor.on_new_records.reset_mock()
 
@@ -2304,7 +2410,8 @@ class TestKeptAccessNamesOnlyLivePrincipals:
         store_space_access(connector, processor, ["USER", "GROUP"])
         connector._sync_groups = AsyncMock(side_effect=RuntimeError("groups down"))
 
-        await self.run(connector)
+        connector.graphql.get_space_members = AsyncMock(side_effect=refused())
+        await run_that_reads_only_part(connector)
 
         self.assert_skipped_as(connector, processor, MEMBERS_REFUSED_UNVERIFIED)
 
@@ -2678,7 +2785,7 @@ class TestAPersistentRefusalIsAnnouncedOnce:
         connector.data_source.list_attachments = AsyncMock(return_value=response(status=500))
 
         for _ in range(2):
-            await run_with_no_filters(connector)
+            await run_that_reads_only_part(connector)
 
         assert [
             (call.kwargs["type"], call.kwargs["severity"]) for call in connector.notify.await_args_list
