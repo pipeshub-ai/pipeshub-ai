@@ -551,9 +551,9 @@ async def test_bedrock_multimodal_provider_rules() -> None:
 
         client.return_value.invoke_model.side_effect = RuntimeError("stop")
         await build(allow_ambient=True).embed_images(["x"])
-        assert client.call_args.kwargs == {"service_name": "bedrock-runtime"}
+        assert client.call_args.kwargs == {"service_name": "bedrock-runtime", "region_name": "r"}
         await build(aws_access_key_id="AK", allow_ambient=True).embed_images(["x"])
-        assert client.call_args.kwargs == {"service_name": "bedrock-runtime"}
+        assert client.call_args.kwargs == {"service_name": "bedrock-runtime", "region_name": "r"}
         await build(aws_access_key_id="AK", aws_secret_access_key="SK").embed_images(["x"])
         assert client.call_args.kwargs["aws_access_key_id"] == "AK"
 
