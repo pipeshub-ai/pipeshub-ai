@@ -116,7 +116,7 @@ jobs:
             .github/actions
       - uses: ./.github/actions/heavy-result
         with:
-          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e'))) }}
+          heavy: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) && (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name))) }}
           needs: ${{ toJSON(needs) }}
           job: native-bundle-result
           wait-minutes: 120

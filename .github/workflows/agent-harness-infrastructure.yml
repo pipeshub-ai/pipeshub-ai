@@ -44,6 +44,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: agent-harness-infrastructure-${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, (contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')))) && 'heavy' || format('other-{0}', github.run_id)) || format('{0}-{1}-{2}', github.event_name, github.ref, github.run_id) }}
+  cancel-in-progress: true
+
 jobs:
   mongodb-replica-set:
     if: >-
@@ -220,7 +224,7 @@ jobs:
             .github/actions
       - uses: ./.github/actions/heavy-result
         with:
-          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness'))) }}
+          heavy: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) && (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name))) }}
           needs: ${{ toJSON(needs) }}
           job: agent-harness-infrastructure-result
           wait-minutes: 360

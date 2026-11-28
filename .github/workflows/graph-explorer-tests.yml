@@ -86,7 +86,7 @@ jobs:
             .github/actions
       - uses: ./.github/actions/heavy-result
         with:
-          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full'))) }}
+          heavy: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && contains(fromJSON('["ci:full"]'), github.event.label.name)) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full')) && (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full"]'), github.event.label.name))) }}
           needs: ${{ toJSON(needs) }}
           job: graph-explorer-tests-result
           wait-minutes: 20

@@ -487,7 +487,7 @@ jobs:
             .github/actions
       - uses: ./.github/actions/heavy-result
         with:
-          heavy: ${{ github.event_name != 'pull_request' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name) || (github.event.action != 'labeled' && github.event.action != 'unlabeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db'))) }}
+          heavy: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) && (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name))) }}
           needs: ${{ toJSON(needs) }}
           job: pg-runtime-result
           wait-minutes: 60

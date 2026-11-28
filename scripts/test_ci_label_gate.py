@@ -54,6 +54,8 @@ UNGATED = {
     "Helm chart": {"check"},
 }
 _PR_CHECK = "github.event_name != 'pull_request'"
+# A hand-written workflow whose labels are removed once they fire, so it starts on `labeled` only.
+ONE_SHOT = "# ci: labels are one-shot here"
 _GROUP = re.compile(r"[A-Za-z0-9_.-]+-\$\{\{ (.*) \}\}")
 _ALLOWED = re.compile(r"github\.event\.action == 'labeled' && contains\(fromJSON\('(\[[^\]]*\])'\), github\.event\.label\.name\)")
 _ACTED_ON = re.compile(r"github\.event\.action != 'unlabeled' \|\| contains\(fromJSON\('(\[[^\]]*\])'\), github\.event\.label\.name\)")
@@ -145,7 +147,10 @@ def result_problems(name: str, stem: str, jobs: dict[str, Any], allowed: list[st
     if use is None:
         return problems + [f"{name}:{rid}: must use ./.github/actions/heavy-result"]
     inputs = use.get("with") or {}
-    want = f"${{{{ github.event_name != 'pull_request' || {heavy_flag(allowed, acted_on)} }}}}"
+    # True only when a gated job runs: a removed last label or an added skip-it mirrors, so a failure sticks
+    # to its commit until a new commit or a passing re-run.
+    t = gate_terms(allowed, acted_on)
+    want = f"${{{{ {_PR_CHECK} || {t[0]} || {t[1]} }}}}"
     if " ".join(str(inputs.get("heavy", "")).split()) != want:
         problems.append(f"{name}:{rid}: its heavy input must be the workflow's heavy flag")
     if inputs.get("needs") != "${{ toJSON(needs) }}" or inputs.get("job") != rid:
@@ -167,16 +172,20 @@ def _is_gated(job: Any) -> bool:
     return isinstance(job, dict) and bool(_ALLOWED.search(" ".join(str(job.get("if", "")).split())))
 
 
-def _has_top_level_or(cond: str) -> bool:
+def _can_bypass(rest: str) -> bool:
+    """Whether `gate && rest` could hold without the gate: a top-level `||`, or a `)` that closes the gate's
+    group early (`false) || (true`), or parentheses or quotes left open."""
     depth, quoted = 0, False
-    for i, c in enumerate(cond):
+    for i, c in enumerate(rest):
         if c == "'":
             quoted = not quoted
         elif not quoted and c in "()":
             depth += 1 if c == "(" else -1
-        elif not quoted and depth == 0 and cond.startswith("||", i):
+            if depth < 0:
+                return True
+        elif not quoted and depth == 0 and rest.startswith("||", i):
             return True
-    return False
+    return depth != 0 or quoted
 
 
 def gate_is_mandatory(cond: str, allowed: list[str], acted_on: list[str]) -> bool:
@@ -186,12 +195,12 @@ def gate_is_mandatory(cond: str, allowed: list[str], acted_on: list[str]) -> boo
     if cond == gate:
         return True
     if cond.startswith(f"({gate}) && "):
-        return not _has_top_level_or(cond[len(gate) + 6:])
+        return not _can_bypass(cond[len(gate) + 6:])
     # The fork-guard form: the gate and the rest inside the pull request branch.
     head = f"{_PR_CHECK} || (({a} || {b}) && "
     if cond.startswith(head) and cond.endswith(")"):
         rest = cond[len(head):-1]
-        return rest.count("(") == rest.count(")") and not _has_top_level_or(rest)
+        return not _can_bypass(rest)
     return False
 
 
@@ -201,8 +210,13 @@ def gate_problems(name: str, text: str, area: str | None = None, stem: str | Non
     on = workflow.get(True, workflow.get("on")) or {}
     problems = []
     types = (on.get("pull_request") or {}).get("types") or []
+    generated = text.startswith("# Generated from")
     if "labeled" not in types:
         problems.append(f"{name}: pull_request types must include labeled, so adding a label starts the run")
+    # A push must re-run a labelled pull request's suite, unless the workflow says its labels are one-shot
+    # (removed once they fire) or it is a generated copy whose generator chooses its events.
+    if "synchronize" not in types and not generated and ONE_SHOT not in text:
+        problems.append(f"{name}: pull_request types must include synchronize, so a push re-runs a labelled pull request")
     for trigger in ("schedule", "workflow_dispatch"):
         if trigger not in on:
             problems.append(f"{name}: no {trigger} trigger, so main is not covered without a label")
@@ -230,22 +244,30 @@ def gate_problems(name: str, text: str, area: str | None = None, stem: str | Non
         if acted_on[: len(allowed)] != allowed:
             problems.append(f"{name}:{job_id}: the labels whose removal re-runs the job must start with the allowed ones")
         # A generated copy's triggers are its generator's (which may start it on fewer events); its tests cover that.
-        if set(acted_on) - set(allowed) and "unlabeled" not in types and not text.startswith("# Generated from"):
+        if set(acted_on) - set(allowed) and "unlabeled" not in types and not generated:
             problems.append(f"{name}:{job_id}: its gate re-runs on removing a label, so pull_request types must include unlabeled")
         for term in gate_terms(allowed, acted_on):
             if term not in cond:
                 problems.append(f"{name}:{job_id}: gate term missing or edited: {term}")
         if not gate_is_mandatory(cond, allowed, acted_on):
             problems.append(f"{name}:{job_id}: the condition can run the job without the gate (it must be the gate, or the gate && more)")
+        # Each job against its own lists: a label it reads must start it, or be one whose removal re-runs it
+        # (removal-only, like skip-it, never an opt-in).
+        reads = {label for label in _READS.findall(json.dumps(job)) if not label.startswith("ci:")}
+        unread_here = sorted(reads - set(acted_on))
+        if unread_here:
+            problems.append(f"{name}:{job_id}: labels this job reads are not in its own gate: {unread_here}")
     if not allowed:
         problems.append(f"{name}: no job carries the ci: label gate")
         return problems
     unread = sorted({label for label in _READS.findall(text) if not label.startswith("ci:")} - set(union_acted))
     # A generated copy may add a start label of its own for its other jobs; its generator's tests cover that.
-    if unread and not text.startswith("# Generated from"):
+    if unread and not generated:
         problems.append(f"{name}: labels its jobs read are not in the gate, so adding or removing them skips the run: {unread}")
     concurrency = workflow.get("concurrency")
     group = str(concurrency.get("group") or "") if isinstance(concurrency, dict) else ""
+    if not group and not generated:
+        problems.append(f"{name}: no concurrency group, so a push does not supersede the run a label started")
     if group:
         m = _GROUP.fullmatch(group)
         # Built from every gated job's labels: a label only one job starts on must still be `heavy`.
@@ -276,7 +298,8 @@ class CiLabelGateTest(unittest.TestCase):
 
     def _workflow(
         self, jobs: dict[str, list[str] | None], acted_on: list[str] | None = None,
-        types: str = "[labeled, unlabeled]", name: str = "x", group: bool = True, result: bool = True,
+        types: str = "[opened, synchronize, reopened, labeled, unlabeled]", name: str = "x", group: bool = True,
+        result: bool = True,
         timeout: int | None = None,
     ) -> str:
         wait = timeout or 360
@@ -302,7 +325,7 @@ class CiLabelGateTest(unittest.TestCase):
                 f"  x-result:\n    name: x-result\n    needs: [{', '.join(jobs)}]\n    if: always()\n    runs-on: ubuntu-latest\n"
                 f"    timeout-minutes: {wait + 5}\n"
                 "    steps:\n      - uses: ./.github/actions/heavy-result\n        with:\n"
-                f"          heavy: ${{{{ {_PR_CHECK} || {heavy_flag(allowed_all, acted_all)} }}}}\n"
+                f"          heavy: ${{{{ {_PR_CHECK} || {' || '.join(gate_terms(allowed_all, acted_all))} }}}}\n"
                 f"          needs: ${{{{ toJSON(needs) }}}}\n          job: x-result\n          wait-minutes: {wait}\n"
             )
         return text
@@ -328,7 +351,7 @@ class CiLabelGateTest(unittest.TestCase):
         self.assertEqual(gate_problems("x.yml", exempt, "ci:db"), [])
 
     def test_each_job_must_accept_the_area_label(self) -> None:
-        text = self._workflow({"db": ["ci:full", "ci:db"], "e2e": ["ci:full", "ci:e2e"]}, group=False)
+        text = self._workflow({"db": ["ci:full", "ci:db"], "e2e": ["ci:full", "ci:e2e"]})
         self.assertEqual(
             gate_problems("x.yml", text, "ci:db"),
             ["x.yml:e2e: its gate does not accept the workflow's area label ci:db"],
@@ -412,6 +435,49 @@ class CiLabelGateTest(unittest.TestCase):
             bad = good.replace(old, new)
             self.assertNotEqual(bad, good, new)
             self.assertTrue(any("wait-minutes must be" in p for p in gate_problems("x.yml", bad)), new)
+
+    def test_removing_the_last_label_cannot_turn_a_failure_into_a_pass(self) -> None:
+        # The concurrency predicate counts removing ci:db as acting; the result's heavy input must not, or the
+        # skipped run would report its own (skipped) jobs instead of the earlier failure on this commit.
+        allowed = ["ci:full", "ci:db"]
+        good = self._workflow({"a": allowed})
+        gate = " || ".join(gate_terms(allowed, allowed))
+        bad = good.replace(f"heavy: ${{{{ {_PR_CHECK} || {gate} }}}}", f"heavy: ${{{{ {_PR_CHECK} || {heavy_flag(allowed, allowed)} }}}}")
+        self.assertNotEqual(bad, good)
+        self.assertTrue(any("heavy input" in p for p in gate_problems("x.yml", bad)))
+
+    def test_a_rest_that_closes_the_gate_group_early_is_caught(self) -> None:
+        good = self._workflow({"a": ["ci:full", "ci:db"]})
+        t = gate_terms(["ci:full", "ci:db"], ["ci:full", "ci:db"])
+        gate = f"{_PR_CHECK} || {t[0]} || {t[1]}"
+        bad = good.replace(f"    if: {gate}\n", f"    if: {_PR_CHECK} || (({t[0]} || {t[1]}) && false) || (true)\n")
+        self.assertTrue(any("without the gate" in p for p in gate_problems("x.yml", bad)))
+        ok = good.replace(f"    if: {gate}\n", f"    if: {_PR_CHECK} || (({t[0]} || {t[1]}) && fork == 'ok' && (a || b))\n")
+        self.assertEqual(gate_problems("x.yml", ok), [])
+
+    def test_a_primary_workflow_needs_synchronize(self) -> None:
+        labeled = self._workflow({"a": ["ci:full", "ci:db"]}, types="[labeled]")
+        self.assertTrue(any("include synchronize" in p for p in gate_problems("x.yml", labeled)))
+        # Explicit exceptions: a workflow that says its labels are one-shot, and a generated copy.
+        self.assertEqual(gate_problems("x.yml", labeled.replace("on:\n", f"{ONE_SHOT}\non:\n", 1)), [])
+        self.assertFalse(any("synchronize" in p for p in gate_problems("x.yml", "# Generated from x\n" + labeled)))
+
+    def test_a_primary_workflow_needs_a_concurrency_group(self) -> None:
+        bare = self._workflow({"a": ["ci:full", "ci:db"]}, group=False)
+        self.assertTrue(any("no concurrency group" in p for p in gate_problems("x.yml", bare)))
+
+    def test_each_job_reads_only_its_own_labels(self) -> None:
+        # Job a reads db-wide but does not start on it; job b starting on it must not hide that.
+        jobs = {"a": ["ci:full", "ci:db"], "b": ["ci:full", "ci:db", "db-wide"]}
+        text = self._workflow(jobs).replace(
+            "  b:\n", "    env:\n      WIDE: ${{ contains(github.event.pull_request.labels.*.name, 'db-wide') }}\n  b:\n", 1
+        )
+        self.assertIn("x.yml:a: labels this job reads are not in its own gate: ['db-wide']", gate_problems("x.yml", text))
+        # A removal-only label (re-runs on removal, never an opt-in) may be read: skip-it in integration-tests.
+        skip = self._workflow({"a": ["ci:full", "ci:db"]}, acted_on=["skip-x"]).replace(
+            "jobs:\n  a:\n", "jobs:\n  a:\n    env:\n      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'skip-x') }}\n", 1
+        )
+        self.assertFalse(any("skip-x" in p for p in gate_problems("x.yml", skip)))
 
     def test_a_label_the_jobs_read_must_be_in_the_gate(self) -> None:
         text = self._workflow({"a": ["ci:full", "ci:db"]}) + (
