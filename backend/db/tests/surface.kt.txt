@@ -49,20 +49,24 @@ index kt.docs_pkey on kt.docs unique=true exclusion=false valid=true def=4c12571
 index kt.events_pkey on kt.events unique=true exclusion=false valid=true def=4d5262ed25a9b8c5378129dbe71ac6df
 index kt.tokens_pkey on kt.tokens unique=true exclusion=false valid=true def=3081542da512286fbea93829f2c3cc6c
 policy kt.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.apps org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kt.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kt.apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kt.apps vetted_read cmd=r permissive=true roles=pipeshub_vetted_kt using=true check=-
 policy kt.apps vetted_write cmd=* permissive=true roles=pipeshub_vetted_kt using=true check=true
 policy kt.cfg backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy kt.cfg lineage_read cmd=r permissive=true roles=pipeshub_app using=(org_id = ANY (string_to_array(NULLIF(current_setting('app.org_lineage'::text, true), ''::text), ','::text))) check=-
+policy kt.cfg org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kt.cfg org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kt.cfg restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kt.docs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy kt.docs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy kt.docs org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kt.docs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kt.docs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kt.docs vetted_read cmd=r permissive=true roles=pipeshub_vetted_kt using=true check=-
 policy kt.events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.events org_erase cmd=* permissive=true roles=pipeshub_owner using=kernel.org_erase_allows(org_id) check=kernel.org_erase_allows(org_id)
 policy kt.events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kt.events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 rel kt.apps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-

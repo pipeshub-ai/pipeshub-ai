@@ -7101,6 +7101,13 @@
       "hidden": "Algunos caracteres serían invisibles o cambiarían el orden del texto, por eso se muestran como códigos como ⟨U+202E⟩. Comprueba que es lo que esperas enviar.",
       "host": "{{ascii}} mezcla alfabetos y se parece a {{unicode}}. Se muestra en su forma real porque puede que no sea el sitio que parece.",
       "markerTitle": "Un carácter que de otro modo sería invisible o reordenaría el texto"
+    },
+    "schedule": {
+      "name": "Nombre",
+      "when": "Cuándo",
+      "ask": "Lo que se pide en cada ejecución",
+      "notify": "Avisarte por",
+      "where": "Cada ejecución inicia su propia conversación. Páusala o elimínala cuando quieras en Workspace > Programaciones."
     }
   },
   "codeTaskCard": {
@@ -8062,7 +8069,8 @@
     "status": {
       "active": "Activa",
       "paused": "Pausada",
-      "disabled": "Desactivada"
+      "disabled": "Desactivada",
+      "ranOnce": "Se ejecutó una vez"
     },
     "trigger": {
       "cron": "Cron",
@@ -8085,7 +8093,8 @@
         "cron": "Programada",
         "manual": "Ejecutar ahora",
         "event": "Activada",
-        "cronCaughtUp": "Programada (recuperada)"
+        "cronCaughtUp": "Programada (recuperada)",
+        "once": "Una vez"
       },
       "openConversation": "Abrir la conversación",
       "admitted": "Iniciada",
@@ -8138,7 +8147,13 @@
       "notifyUnknown": "No disponible en este momento.",
       "notifyCheckFailed": "No se pudo comprobar qué canales puedes usar, así que solo se ofrece PipesHub.",
       "webhookCantSign": "Quien llama no puede firmar. Usar un token en un encabezado",
-      "webhookCantSignHint": "Cualquiera que vea el token puede llamarlo. Firmar es más seguro."
+      "webhookCantSignHint": "Cualquiera que vea el token puede llamarlo. Firmar es más seguro.",
+      "kindOnce": "Una vez, en una fecha y hora",
+      "onceAt": "Fecha y hora",
+      "onceAtHint": "En tu zona horaria ({{timeZone}}). Al menos un minuto desde ahora, como mucho un año.",
+      "onceNotExisting": "Esa hora no existe ese día en tu zona horaria: los relojes se la saltan. Elige otra hora.",
+      "onceTooSoon": "Elige una hora al menos un minuto desde ahora.",
+      "onceTooFar": "Elige una hora como mucho un año más adelante."
     },
     "webhook": {
       "title": "Tu webhook",
@@ -8164,7 +8179,10 @@
       "limit": "Has alcanzado el número de programaciones permitidas. Elimina una primero.",
       "budgetCeiling": "El presupuesto por ejecución es demasiado alto.",
       "unavailable": "Las ejecuciones programadas necesitan el chat de agente persistente, que está desactivado en tu organización.",
-      "triggerTokenInvalid": "El token de activación del webhook no coincide. Copia el token actual de la programación y vuelve a intentarlo."
+      "triggerTokenInvalid": "El token de activación del webhook no coincide. Copia el token actual de la programación y vuelve a intentarlo.",
+      "ranOnce": "Esta programación ya se ejecutó una vez. No volverá a ejecutarse; puedes eliminarla.",
+      "notApproved": "Esta programación no se aprobó, así que no se creó.",
+      "approvalUsed": "Esa aprobación ya creó una programación que se eliminó. Vuelve a pedirlo para crear una nueva."
     },
     "reason": {
       "scheduledRunsDisabled": "las ejecuciones programadas se desactivaron para la organización",
@@ -8200,6 +8218,21 @@
       "latest": "Usar siempre la versión en uso",
       "latestHint": "Cada ejecución usa lo último que se publicó.",
       "save": "Guardar"
+    },
+    "ranOnce": "Se ejecutó una vez. No volverá a ejecutarse.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "Cada minuto",
+      "everyMinutes": "Cada {{count}} minutos",
+      "hourly": "Cada hora a los :{{minute}}",
+      "daily": "Todos los días a las {{time}}",
+      "weekdays": "Cada día laborable a las {{time}}",
+      "weekly": "Cada {{day}} a las {{time}}",
+      "monthly": "Cada mes el día {{day}} a las {{time}}",
+      "onceToday": "Una vez, hoy a las {{time}}",
+      "onceTomorrow": "Una vez, mañana a las {{time}}",
+      "onceOn": "Una vez, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -9019,7 +9052,10 @@
       "generic_many": "{{action}} ({{count}} llamadas)",
       "install_packages_one": "Instalar paquetes",
       "install_packages_many": "Instalar paquetes {{count}} veces",
-      "install_packages_other": "Instalar paquetes {{count}} veces"
+      "install_packages_other": "Instalar paquetes {{count}} veces",
+      "scheduleCreate_one": "Crear una programación",
+      "scheduleCreate_many": "Crear {{count}} programaciones",
+      "scheduleCreate_other": "Crear {{count}} programaciones"
     },
     "engineWants": "{{engine}} quiere:",
     "childWants": "La tarea de código quiere:",
@@ -9102,7 +9138,8 @@
     "waitingForOwner_other": "Esperando a que el propietario de la conversación decida sobre {{count}} pasos",
     "waitingForOwner_many": "Esperando a que el propietario de la conversación decida sobre {{count}} pasos",
     "denyAllLabel": "Denegar todo: {{title}}",
-    "titleSiteUpload": "¿Permitir subidas a {{destination}} en esta ejecución?"
+    "titleSiteUpload": "¿Permitir subidas a {{destination}} en esta ejecución?",
+    "titleSchedule": "Crear una programación"
   },
   "engineSignIn": {
     "title": "Inicio de sesión en motores de código",

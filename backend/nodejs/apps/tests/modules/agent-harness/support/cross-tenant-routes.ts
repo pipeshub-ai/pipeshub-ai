@@ -359,6 +359,12 @@ export const CROSS_TENANT_ROUTES: Readonly<Record<string, CrossTenantRow>> = {
   [`POST ${INTERNAL}/runs/:runId/workspace-key`]: attempt(fenced),
   [`GET ${INTERNAL}/runs/:runId/memories`]: attempt(),
   [`POST ${INTERNAL}/runs/:runId/memories`]: attempt(fenced),
+  [`POST ${INTERNAL}/runs/:runId/schedules`]: attempt(() => ({
+    ...fenced(),
+    interactionId: 'ix.approve.kqa26',
+    toolId: 'pipeshub@schedules/create',
+    arguments: { name: 'qa26', ask: 'qa26?', when: { kind: 'once', at: '2030-01-01T09:00:00Z', timeZone: 'UTC' } },
+  })),
   [`POST ${INTERNAL}/runs/:runId/gateway-token`]: {
     guard: 'worker',
     role: 'egress-proxy',

@@ -7022,6 +7022,13 @@
       "hidden": "Some characters here would be invisible or would change the order of the text, so they are shown as codes like ⟨U+202E⟩. Check that this is what you expect to send.",
       "host": "{{ascii}} mixes alphabets and looks like {{unicode}}. It is shown in its real form because it may not be the site it seems to be.",
       "markerTitle": "A character that would otherwise be invisible or reorder the text"
+    },
+    "schedule": {
+      "name": "Name",
+      "when": "When",
+      "ask": "Each run is asked",
+      "notify": "Tell you on",
+      "where": "Each run starts its own conversation. Pause or delete it any time in Workspace > Schedules."
     }
   },
   "codeTaskCard": {
@@ -7963,7 +7970,8 @@
     "status": {
       "active": "Active",
       "paused": "Paused",
-      "disabled": "Turned off"
+      "disabled": "Turned off",
+      "ranOnce": "Ran once"
     },
     "trigger": {
       "cron": "Cron",
@@ -7986,7 +7994,8 @@
         "cron": "Scheduled",
         "manual": "Run now",
         "event": "Triggered",
-        "cronCaughtUp": "Scheduled (caught up)"
+        "cronCaughtUp": "Scheduled (caught up)",
+        "once": "One-time"
       },
       "openConversation": "Open the conversation",
       "admitted": "Started",
@@ -8039,7 +8048,13 @@
       "notifyUnknown": "Not available right now.",
       "notifyCheckFailed": "Couldn't check which channels you can use, so only PipesHub is offered.",
       "webhookCantSign": "The caller can't sign. Use a token in a header instead",
-      "webhookCantSignHint": "Anyone who sees the token can call it. Signing is safer."
+      "webhookCantSignHint": "Anyone who sees the token can call it. Signing is safer.",
+      "kindOnce": "Once, at a date and time",
+      "onceAt": "Date and time",
+      "onceAtHint": "In your time zone ({{timeZone}}). At least a minute from now, at most a year ahead.",
+      "onceNotExisting": "That time doesn't exist on that day in your time zone: the clocks skip it. Pick another time.",
+      "onceTooSoon": "Pick a time at least a minute from now.",
+      "onceTooFar": "Pick a time at most a year ahead."
     },
     "webhook": {
       "title": "Your webhook",
@@ -8065,7 +8080,10 @@
       "limit": "You have reached the number of schedules allowed. Delete one first.",
       "budgetCeiling": "The budget per run is too high.",
       "unavailable": "Scheduled runs need durable agent chat, which is off for your organization.",
-      "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again."
+      "triggerTokenInvalid": "The webhook's trigger token does not match. Copy the current token from the schedule and try again.",
+      "ranOnce": "This schedule already ran once. It won't run again; you can delete it.",
+      "notApproved": "This schedule wasn't approved, so it wasn't made.",
+      "approvalUsed": "That approval already made a schedule that was deleted. Ask again to set up a new one."
     },
     "reason": {
       "scheduledRunsDisabled": "scheduled runs were turned off for the organization",
@@ -8101,6 +8119,21 @@
       "latest": "Always use the live version",
       "latestHint": "Each run uses whatever was published last.",
       "save": "Save"
+    },
+    "ranOnce": "Ran once. It won't run again.",
+    "when": {
+      "cron": "{{cron}} (cron)",
+      "everyMinute": "Every minute",
+      "everyMinutes": "Every {{count}} minutes",
+      "hourly": "Every hour at :{{minute}}",
+      "daily": "Every day at {{time}}",
+      "weekdays": "Every weekday at {{time}}",
+      "weekly": "Every {{day}} at {{time}}",
+      "monthly": "Every month on day {{day}} at {{time}}",
+      "onceToday": "Once, today at {{time}}",
+      "onceTomorrow": "Once, tomorrow at {{time}}",
+      "onceOn": "Once, {{date}}",
+      "withZone": "{{when}} ({{timeZone}})"
     }
   },
   "unknownEffectCard": {
@@ -8885,7 +8918,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}} ({{count}} calls)",
       "install_packages_one": "Install packages",
-      "install_packages_other": "Install packages {{count}} times"
+      "install_packages_other": "Install packages {{count}} times",
+      "scheduleCreate_one": "Set up a schedule",
+      "scheduleCreate_other": "Set up {{count}} schedules"
     },
     "engineWants": "{{engine}} wants to:",
     "childWants": "The code task wants to:",
@@ -8953,7 +8988,8 @@
     "waitingForOwner_one": "Waiting for the conversation's owner to decide on a step",
     "waitingForOwner_other": "Waiting for the conversation's owner to decide on {{count}} steps",
     "denyAllLabel": "Deny all: {{title}}",
-    "titleSiteUpload": "Allow uploads to {{destination}} for this run?"
+    "titleSiteUpload": "Allow uploads to {{destination}} for this run?",
+    "titleSchedule": "Set up a schedule"
   },
   "engineSignIn": {
     "title": "Coding engine sign-in",

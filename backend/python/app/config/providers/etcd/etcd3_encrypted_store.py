@@ -60,6 +60,13 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             "aes-256-gcm", hex_key, logger
         )
         self.logger.debug("🔐 Initialized EncryptionService")
+        # This store encrypts with the platform cipher only: refuse to start where the edition picks another cipher per key,
+        # rather than write values the other processes would read with that one.
+        from app import edition_services
+        from app.config.providers.kv_cipher import InstallKeyCipher
+
+        if type(edition_services.kv_cipher(lambda: self.encryption_service)) is not InstallKeyCipher:   # a subclass may change encrypt
+            raise RuntimeError("Etcd3EncryptedKeyValueStore supports only the platform cipher; use EncryptedKeyValueStore (KV_STORE_TYPE=etcd)")
 
         self.logger.debug("🔧 Creating ETCD store...")
         self.store = self._create_store()

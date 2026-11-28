@@ -488,7 +488,8 @@ def listing_statements() -> list[str]:
                 out.append(kgl.page_sql(field_, "ASC", direction, where, branches, None, kgl.browse_scopes(links)))
         out += [kgl.children_sql(where, links), kgl.children_held_sql(where, links), kgl.browse_undecided_sql(where, "$6", "$7", links),
                 kgl.browse_count_sql(where, "$6", "$7", "$8", "$9", "$10", links),
-                kgl.browse_once_sql("name", "ASC", "next", where, None, links, ("$6", "$7", "$8"), ("$9", "$10", "$11", "$12", "$13", "$14"))]
+                kgl.browse_once_sql("name", "ASC", "next", where, None, links, ("$6", "$7", "$8"), ("$9", "$10", "$11", "$12", "$13", "$14")),
+                kgl.browse_classes_sql(where, links)]
     q = kgl.Params([None, None, None])
     out += [kgl.LINKED_CHILDREN, kgl.CHILD_CLASSES, kgl.children_of_sql(), kgl.children_of_sql(total=True), kgl.arrows_sql(kgl.class_admit("c", q, viewer), kgl.undecided_child(q, [1], 2))]
     return out

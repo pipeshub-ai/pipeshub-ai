@@ -8,7 +8,8 @@ import { ConfirmationDialog } from '../../components/confirmation-dialog';
 import { formatDateTime } from '../../harness-ui/format';
 import { isHarnessError, refusalText, toHarnessError } from '../../harness-ui/refusal';
 import { SchedulesApi } from '../api';
-import { firingReasonKey, isSystemStatus, SCHEDULE_REFUSALS } from '../copy';
+import { firingReasonKey, isSystemStatus, ranOnce, SCHEDULE_REFUSALS } from '../copy';
+import { onceWords } from '../schedule-words';
 import type { AgentVersionPin, Firing, Schedule } from '../types';
 import { ScheduleVersion } from './schedule-version';
 
@@ -32,8 +33,15 @@ export const caughtUp = (firing: Firing): boolean => {
 };
 
 function TriggerSummary({ schedule }: { schedule: Schedule }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const trigger = schedule.trigger;
+  if (trigger.kind === 'once') {
+    return (
+      <Text size="1" style={{ color: 'var(--slate-11)' }} data-testid="schedule-once">
+        {onceWords(t, trigger.at, trigger.timeZone, i18n.language)}
+      </Text>
+    );
+  }
   if (trigger.kind === 'cron') {
     return (
       <Text size="1" style={{ color: 'var(--slate-11)' }}>
@@ -147,6 +155,7 @@ export function ScheduleRow({
   };
 
   const systemStatus = isSystemStatus(schedule.status, schedule.statusReason);
+  const fired = ranOnce(schedule);
 
   return (
     <Flex
@@ -164,7 +173,7 @@ export function ScheduleRow({
               {schedule.name}
             </Text>
             <Badge variant="soft" color={STATUS_COLOR[schedule.status]}>
-              {t(`schedules.status.${schedule.status}`)}
+              {t(fired ? 'schedules.status.ranOnce' : `schedules.status.${schedule.status}`)}
             </Badge>
           </Flex>
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
@@ -181,7 +190,7 @@ export function ScheduleRow({
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {schedule.nextFireAt
               ? t('schedules.nextRun', { date: formatDateTime(schedule.nextFireAt, i18n.language) })
-              : t('schedules.noNextRun')}
+              : t(fired ? 'schedules.ranOnce' : 'schedules.noNextRun')}
             {' · '}
             {schedule.maxCostUsd !== null
               ? t('schedules.budget', { amount: schedule.maxCostUsd })
@@ -201,12 +210,12 @@ export function ScheduleRow({
               {t('schedules.actions.pause')}
             </Button>
           )}
-          {schedule.status === 'paused' && (
+          {schedule.status === 'paused' && !fired && (
             <Button type="button" variant="soft" disabled={busy} onClick={() => void run(() => onAction('resume'))}>
               {t('schedules.actions.resume')}
             </Button>
           )}
-          {!orgView && schedule.status !== 'disabled' && (
+          {!orgView && schedule.status !== 'disabled' && !fired && (
             <Button
               type="button"
               variant="soft"
