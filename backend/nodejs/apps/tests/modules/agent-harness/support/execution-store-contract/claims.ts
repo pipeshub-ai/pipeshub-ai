@@ -1524,6 +1524,7 @@ export function describeClaimCases(
       expect(after.requires?.schemaVersion).to.equal(RUN_SPEC_SCHEMA_VERSION);
       expect([...(after.attemptFeatures ?? [])].sort()).to.deep.equal([
         'agent_code',
+        'answers_only_history',
         'approval_edits',
         'assistant_agent',
         'caller',

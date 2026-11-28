@@ -23,6 +23,7 @@ import {
   assertPinCurrent,
   rootRunDocument,
   rootRunRequirements,
+  withAnswersOnlyHistory,
   sessionJournalFeatures,
   durableSessionTitle,
 } from '../../../../modules/agent-harness/domain/admission';
@@ -68,6 +69,7 @@ import {
   RunAudience,
   runAudience,
 } from '../../../../modules/agent-harness/domain/session-audience';
+import { answersOnlyTurns } from '../../../../modules/enterprise_search/utils/earlier-turns';
 import {
   LabelledTurn,
   MAX_VISIBLE_RUNS,
@@ -497,6 +499,10 @@ export class PgRunAdmissionStore
           audience.ownerRef,
         );
       }
+      // In a chat others read, the earlier answers' text only; the worker gives the journal's turns the same way.
+      if ((binding as SessionBinding).readByOthers) {
+        previousConversations = answersOnlyTurns(previousConversations);
+      }
       // A v1 run has no journal to import into (v1 is failed on claim).
       if (command.harnessMajor === 2) {
         // Whether a run was ever admitted here, not whether the stream has events: a share journals onto a session
@@ -554,12 +560,15 @@ export class PgRunAdmissionStore
       run.input.previousConversations = previousConversations;
     }
     const memory = memoryPin(command.memory, audience !== null);
-    const requires = rootRunRequirements(
-      run,
-      command,
-      sessionCounter?.journalFeatures ?? [],
-      audience,
-      memory,
+    const requires = withAnswersOnlyHistory(
+      rootRunRequirements(
+        run,
+        command,
+        sessionCounter?.journalFeatures ?? [],
+        audience,
+        memory,
+      ),
+      binding?.readByOthers === true,
     );
     if (requires !== undefined) run.requires = requires;
     if (command.resolved !== undefined) {

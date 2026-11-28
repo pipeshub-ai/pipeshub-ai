@@ -826,8 +826,10 @@ class PipesHubRuntimeAssembler:
             inputs=PipesHubInputRenderer(
                 env, built.presenter, log, counted=claim.journal_accepts(ATTACHMENT_COUNT)
             ),
-            history=LegacyHistory(env, log),
+            history=LegacyHistory(env, log, answers_only=run.history_answers_only),
             audience=run.history_audience,
+            # A chat others read: earlier turns as their questions and answers' text only (``x.pipeshub.history``).
+            answers_only_history=run.history_answers_only,
             delegation=None
             if command
             else with_code_task(

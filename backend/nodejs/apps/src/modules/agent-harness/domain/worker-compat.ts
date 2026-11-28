@@ -19,6 +19,7 @@ import {
   KEYWORD_SEARCH_BUDGET_FEATURE,
 } from './worker-input';
 import {
+  ANSWERS_ONLY_HISTORY_FEATURE,
   CODE_TASK_TOOL_FEATURE,
   DELIVERABLE_PIN_FEATURE,
   DESCRIPTOR_PINS_FEATURE,
@@ -79,6 +80,7 @@ import {
  * runs that use it.
  */
 export {
+  ANSWERS_ONLY_HISTORY_FEATURE,
   CODE_TASK_TOOL_FEATURE,
   DELIVERABLE_PIN_FEATURE,
   MCP_CARRIED_PINS_FEATURE,
@@ -162,6 +164,7 @@ export const TRACE_CONTENT_FEATURE: WorkerFeature = 'trace_content';
  * shape this Node knows. Not `region_aware` or `trace_content` (worker facts). Not `vendor_signin`: no such run was pinned on a
  * person's own plan (SIGNIN came long after), and requiring it would strand
  * the run on every server without the sign-in add-on. Not `mcp_first_use`: no such run granted a server whole. Not `mcp_carried_pins`: no such child carried a pin.
+ * Not `answers_only_history`: no such run pinned how its earlier turns are given.
  */
 export const LEGACY_RUN_FEATURES: readonly WorkerFeature[] =
   KNOWN_WORKER_FEATURES.filter(
@@ -170,6 +173,7 @@ export const LEGACY_RUN_FEATURES: readonly WorkerFeature[] =
       feature !== MODEL_FALLBACK_FEATURE &&
       feature !== MCP_FIRST_USE_FEATURE &&
       feature !== MCP_CARRIED_PINS_FEATURE &&
+      feature !== ANSWERS_ONLY_HISTORY_FEATURE &&
       feature !== REGION_AWARE_FEATURE &&
       feature !== TRACE_CONTENT_FEATURE,
   );

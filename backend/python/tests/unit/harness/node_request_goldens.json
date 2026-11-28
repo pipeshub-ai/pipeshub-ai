@@ -285,6 +285,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -339,7 +340,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -481,6 +482,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -535,7 +537,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -1812,6 +1814,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -1866,7 +1869,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -1916,6 +1919,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -1970,7 +1974,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2027,6 +2031,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2081,7 +2086,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2160,6 +2165,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2214,7 +2220,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2271,6 +2277,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2325,7 +2332,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2382,6 +2389,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2436,7 +2444,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2493,6 +2501,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2547,7 +2556,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2626,6 +2635,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2680,7 +2690,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "820",
+     "content-length": "843",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2739,6 +2749,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2793,7 +2804,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "820",
+     "content-length": "843",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -2918,6 +2929,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -2972,7 +2984,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -3129,6 +3141,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -3183,7 +3196,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -3318,6 +3331,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -3372,7 +3386,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -3507,6 +3521,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -3561,7 +3576,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -3695,6 +3710,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -3749,7 +3765,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -3883,6 +3899,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -3937,7 +3954,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4040,6 +4057,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4094,7 +4112,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4200,6 +4218,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4254,7 +4273,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4347,6 +4366,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4401,7 +4421,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4506,6 +4526,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4560,7 +4581,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4670,6 +4691,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4724,7 +4746,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4816,6 +4838,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -4870,7 +4893,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -4968,6 +4991,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5022,7 +5046,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -5173,6 +5197,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5227,7 +5252,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -5333,6 +5358,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5387,7 +5413,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -5494,6 +5520,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5548,7 +5575,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -5669,6 +5696,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5723,7 +5751,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -5842,6 +5870,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -5896,7 +5925,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -6002,6 +6031,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -6056,7 +6086,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -6146,6 +6176,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -6200,7 +6231,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -6311,6 +6342,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -6365,7 +6397,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -6482,6 +6514,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -6536,7 +6569,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },
@@ -6652,6 +6685,7 @@
      "workerCapabilities": {
       "features": [
        "agent_code",
+       "answers_only_history",
        "approval_edits",
        "assistant_agent",
        "caller",
@@ -6706,7 +6740,7 @@
      "accept": "*/*",
      "authorization": "Bearer <worker>",
      "connection": "keep-alive",
-     "content-length": "824",
+     "content-length": "847",
      "content-type": "application/json",
      "host": "node.internal:3000"
     },

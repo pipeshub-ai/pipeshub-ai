@@ -167,6 +167,9 @@ class AssembledRuntime:
     history: ImportedHistory | None = None
     # A shared session's run (SS2): whose turns its model sees, as the host pinned it.
     audience: HistoryAudience | None = None
+    # The host pinned that others read the conversation: earlier runs reach the model as their question and final
+    # answer's text, never their tool calls or results, and no compaction an earlier run wrote is used.
+    answers_only_history: bool = False
     # Reconcile hooks of the granted tools by tool id (P2.9); unset: unknown effects go to a person.
     reconcile_hooks: Mapping[str, ReconcileLookup] | None = None
     # Child runs and loop phases (P6.1, K-L): which calls delegate, the
@@ -340,6 +343,7 @@ class RunDriver:
             inputs=runtime.inputs,
             history=runtime.history,
             audience=runtime.audience,
+            answers_only_history=runtime.answers_only_history,
             children=self.children,
             delegation=runtime.delegation,
             director=runtime.director,

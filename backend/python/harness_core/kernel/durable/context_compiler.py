@@ -93,6 +93,9 @@ JournalContext = tuple[list[HistoryItem], tuple[Compaction, ...], tuple[SeqSpan,
 
 async def journal_context(renderer: TranscriptRenderer, session: SessionState, run_id: str | None) -> JournalContext:
     items = await renderer.render_items(session, run_id)
+    # In a conversation others read (``answers_only``) an earlier run's summary was made from its tool results, which
+    # this run is never given: only a compaction this run journaled itself, from what its model saw, is used.
+    since = _run_start(session, run_id or renderer.run_id) if renderer.answers_only else None
     compactions = tuple(
         [
             Compaction(
@@ -101,10 +104,16 @@ async def journal_context(renderer: TranscriptRenderer, session: SessionState, r
                 labels=labels_of(c.labels),
             )
             for c in session.compactions
+            if since is None or c.seq >= since
         ]
     )
     cleared = tuple(SeqSpan(r.from_seq, r.to_seq) for r in session.cleared)
     return items, compactions, cleared
+
+
+def _run_start(session: SessionState, run_id: str | None) -> int:
+    """The seq of ``run_id``'s first entry; past everything journaled when it has none yet."""
+    return next((entry.seq for entry in session.entries if run_id is not None and entry.run_id == run_id), session.seq + 1)
 
 
 async def compile_session(

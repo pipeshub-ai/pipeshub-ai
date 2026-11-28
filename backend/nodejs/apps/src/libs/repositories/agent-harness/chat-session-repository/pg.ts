@@ -15,6 +15,7 @@ import {
 import { EMPTY_LEDGER } from '../../../../modules/agent-harness/domain/session-import';
 import type { TurnRole } from '../../../../modules/agent-harness/domain/session-roles';
 import { accountedOfRow } from '../history-source/pg';
+import { readByOthers } from '../../../../modules/enterprise_search/utils/earlier-turns';
 
 const HEX24 = /^[0-9a-f]{24}$/i;
 
@@ -205,6 +206,7 @@ export class PgHarnessChatSessionRepository implements ChatSessionRepository<Tx>
       shared:
         row.session.isShared === true &&
         (row.session.sharedWith ?? []).length > 0,
+      readByOthers: readByOthers(row.session),
       accounted: accountedOfRow(row),
     };
   }

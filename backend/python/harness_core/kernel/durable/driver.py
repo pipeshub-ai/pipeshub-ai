@@ -625,6 +625,9 @@ class DurableKernel:
     history: ImportedHistory | None = None
     # A shared session's run (SS2): whose turns its model sees; unset, all of them.
     audience: HistoryAudience | None = None
+    # Others read the conversation (the host pinned it): earlier runs reach the model as their question and final
+    # answer's text, never their tool calls or results, and no compaction an earlier run wrote is used.
+    answers_only_history: bool = False
     # Child runs (P6.1): Node's admission, and which tool calls delegate to it.
     children: ChildRunPort | None = None
     delegation: DelegationTools | None = None
@@ -757,7 +760,12 @@ class _ClaimedRun:
         self.session = SessionState(stream_id=claim.stream_id)
         self.content = _LeasedContent(self)
         self.renderer = TranscriptRenderer(
-            self.content, kernel.model, kernel.history, kernel.audience, claim.run_id
+            self.content,
+            kernel.model,
+            kernel.history,
+            kernel.audience,
+            claim.run_id,
+            answers_only=kernel.answers_only_history,
         )
         self.log = HarnessLog.for_claim("harness_core.kernel.durable", claim)
         # G-04: the spec's plan gate, read from this run's journal whenever it decides.

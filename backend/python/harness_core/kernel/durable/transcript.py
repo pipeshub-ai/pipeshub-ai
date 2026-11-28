@@ -133,6 +133,8 @@ class TranscriptRenderer:
         history: ImportedHistory | None = None,
         audience: HistoryAudience | None = None,
         run_id: str | None = None,
+        *,
+        answers_only: bool = False,
     ) -> None:
         self._content = content
         self._model = model
@@ -140,9 +142,18 @@ class TranscriptRenderer:
         # Set in a shared session (SS2): other participants' turns render as a stub.
         self._audience = audience
         self._run_id = run_id
+        # The host pinned that others read the conversation: every earlier run renders as the person's messages and
+        # its final answer's text (``_answered``), never its tool calls or results; ``journal_context`` drops the
+        # compactions earlier runs wrote, whose summaries were made from those results.
+        self.answers_only = answers_only
         self._cache: dict[str, bytes] = {}
         # One rendering per transcript and attempt, as legacy seeds a request once.
         self._imported: dict[str, list[Message]] = {}
+
+    @property
+    def run_id(self) -> str | None:
+        """The run this transcript is rendered for, when the caller names none."""
+        return self._run_id
 
     async def blob(self, ref: ContentRef) -> bytes:
         cached = self._cache.get(ref.ref)
@@ -215,11 +226,15 @@ class TranscriptRenderer:
         items: list[HistoryItem] = []
         stubbed_run: str | None = None
         passed = _PassedTurn()
+        earlier = _EarlierRun()
         own = run_id or self._run_id
         for entry in session.entries:
             if passed.run_id is not None and entry.run_id != passed.run_id:
                 items.append(await self._passed(passed))
                 passed = _PassedTurn()
+            if earlier.run_id is not None and entry.run_id != earlier.run_id:
+                items.append(await self._answered(earlier))
+                earlier = _EarlierRun()
             # A person's /run and its output reach a model only when the person attaches them (SLASH3 SD9).
             if entry.run_id is not None and entry.run_id != own and entry.run_id in session.command_runs:
                 continue
@@ -243,6 +258,9 @@ class TranscriptRenderer:
                     items[-1] = replace(items[-1], last_seq=_last_seq(entry))
                 continue
             stubbed_run = None
+            if self.answers_only and entry.run_id is not None and entry.run_id != own:
+                earlier.take(entry)
+                continue
             if entry.role == "user":
                 user = await self._user(entry, run_id)
                 if user is not None:
@@ -252,6 +270,8 @@ class TranscriptRenderer:
                 items.append(await self._response(entry, entry.response))
         if passed.run_id is not None:
             items.append(await self._passed(passed))
+        if earlier.run_id is not None:
+            items.append(await self._answered(earlier))
         return items
 
     async def _user(self, entry: SessionEntry, run_id: str | None) -> HistoryItem | None:
@@ -307,6 +327,24 @@ class TranscriptRenderer:
             artifact_meta=ToolMessageMeta.model_validate(meta) if meta else None,
         )
 
+    async def _answered(self, run: _EarlierRun) -> HistoryItem:
+        """An earlier run in a conversation others read (``answers_only``): what the person wrote into it and its
+        final answer's text, one item, nothing it read or called. A fact the current run states that no earlier
+        answer said must then come from its own tools, which cite it."""
+        messages: list[Message] = []
+        for entry in run.users:
+            user = await self._user(entry, None)
+            if user is not None:
+                messages.extend(user.messages)
+        answer = ""
+        for response in reversed(run.responses):
+            answer = text_of(decode_assistant(await self.blob(response.message_ref))).strip()
+            if answer:
+                break
+        if answer:
+            messages.append(AssistantMessage(content=[TextPart(text=answer)]))
+        return HistoryItem(first_seq=run.first_seq, last_seq=run.last_seq, messages=tuple(messages))
+
     async def _passed(self, turn: _PassedTurn) -> HistoryItem:
         """A turn whose label passed: its question and its final answer's text, nothing it read or called."""
         question = (await self.blob(turn.question)).decode("utf-8") if turn.question is not None else ""
@@ -344,6 +382,29 @@ class _PassedTurn:
                 self.question = entry.text_ref
         elif entry.response is not None:
             self.answer = entry.response
+
+
+class _EarlierRun:
+    """An earlier run as ``answers_only`` gives it: the person's messages (its input and their steering, not what
+    the run injected) and its responses, of which only the last answer's text is used."""
+
+    def __init__(self) -> None:
+        self.run_id: str | None = None
+        self.users: list[SessionEntry] = []
+        self.responses: list[ResponseRecord] = []
+        self.first_seq = 0
+        self.last_seq = 0
+
+    def take(self, entry: SessionEntry) -> None:
+        if self.run_id is None:
+            self.first_seq = entry.seq
+        self.last_seq = _last_seq(entry)
+        self.run_id = entry.run_id
+        if entry.role == "user":
+            if not entry.injected:
+                self.users.append(entry)
+        elif entry.response is not None:
+            self.responses.append(entry.response)
 
 
 def _last_seq(entry: SessionEntry) -> int:

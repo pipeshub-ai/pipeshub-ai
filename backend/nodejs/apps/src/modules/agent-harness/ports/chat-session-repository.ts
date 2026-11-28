@@ -85,6 +85,11 @@ export interface SessionBinding {
   ownerId: string;
   /** Shared with at least one participant. */
   shared: boolean;
+  /**
+   * Read by people besides its owner as the turn starts: shared now, or open to its project (`readByOthers`). Its
+   * run's model is then given the earlier turns' questions and answers' text only.
+   */
+  readByOthers: boolean;
   /** As the bind left the session in its transaction: what later steps of it need not read again. */
   accounted: AccountedConversation;
 }

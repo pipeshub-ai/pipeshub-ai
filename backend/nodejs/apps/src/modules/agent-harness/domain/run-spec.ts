@@ -367,6 +367,12 @@ export const RESOLVED_CONFIG_FEATURE = 'resolved_config' as const;
 
 /** FU4: a spec pinning where the run was started (`x.pipeshub.surface`); an older worker's strict model refuses it. */
 export const RUN_SURFACE_FEATURE = 'run_surface' as const;
+/**
+ * A run admitted in a chat others read (`readByOthers`): the worker gives its model the earlier turns' questions and
+ * answers' text only, never their tool calls, results or reference data (`x.pipeshub.history`). Decided per run, as
+ * the chat is when the turn starts; not a session feature.
+ */
+export const ANSWERS_ONLY_HISTORY_FEATURE = 'answers_only_history' as const;
 
 /**
  * C2.07: a spec pinning what the run was admitted under (`x.pipeshub.release`)
@@ -961,6 +967,10 @@ export function resolveRunSpec(
       : {}),
     ...(subject.audience !== undefined && subject.audience !== null
       ? { audience: structuredClone(subject.audience) }
+      : {}),
+    // Only a worker that reads it claims a run that carries it.
+    ...((run.requires?.features ?? []).includes(ANSWERS_ONLY_HISTORY_FEATURE)
+      ? { history: { earlierTurns: 'answers' as const } }
       : {}),
     ...(subject.memory !== undefined && subject.memory !== null
       ? { memory: structuredClone(subject.memory) }
