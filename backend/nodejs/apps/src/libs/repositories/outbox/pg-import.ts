@@ -62,7 +62,8 @@ const sameEvent = (a: Row, b: Row): boolean => rowIsEvent(a, b) === true;
 
 const keyOf = (r: Row): string => `${String(r.org_id)}/${String(r.id)}`;
 
-const orgOf = (d: NeutralDoc): string | null => eventOrgOf(d.value, d.orderingKey);
+const orgOf = (d: NeutralDoc): string | null =>
+  eventOrgOf(d.value, d.orderingKey);
 
 export async function importOutboxDocs(
   k: KernelTx,
