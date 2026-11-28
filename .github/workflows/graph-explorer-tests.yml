@@ -65,28 +65,3 @@ jobs:
           path: |
             frontend/test-results
           retention-days: 7
-
-  # The check branch protection requires for this workflow, not its label-gated jobs: an unrelated label
-  # starts a run whose heavy jobs skip, and this reports the latest earlier result instead (CONTRIBUTING.md).
-  graph-explorer-tests-result:
-    name: graph-explorer-tests-result
-    needs: [graph-explorer]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            scripts
-            .github/actions
-      - uses: ./.github/actions/heavy-result
-        with:
-          heavy: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && contains(fromJSON('["ci:full"]'), github.event.label.name)) || (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full')) && (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full"]'), github.event.label.name))) }}
-          needs: ${{ toJSON(needs) }}
-          job: graph-explorer-tests-result
-          wait-minutes: 20

@@ -15,7 +15,6 @@ import json
 import re
 import unittest
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -99,7 +98,7 @@ def group_key(allowed: list[str], acted_on: list[str]) -> str:
 
     A pull request is `pr-<number>-heavy` for an event the gate acts on, so a push cancels a run a label
     started, and `pr-<number>-other-<run id>` for the rest, so an unrelated label never cancels a run (nor
-    another unrelated label's run, whose result check is waiting on an earlier run). Anything else is
+    another unrelated label's run). Anything else is
     `<event>-<ref>-<run id>`: a schedule, a manual run and a push never cancel each other or a pull request run.
     """
     return (
@@ -111,65 +110,6 @@ def group_key(allowed: list[str], acted_on: list[str]) -> str:
 
 def _merge(into: list[str], labels: list[str]) -> list[str]:
     return into + [label for label in labels if label not in into]
-
-
-def _result_job_id(jobs: dict[str, Any]) -> str | None:
-    """The job that uses ./.github/actions/heavy-result (a copy of the workflow may live under another file name)."""
-    for job_id, job in jobs.items():
-        steps = job.get("steps") if isinstance(job, dict) else None
-        if any(str(st.get("uses", "")).startswith("./.github/actions/heavy-result") for st in steps or []):
-            return job_id
-    return None
-
-
-def result_problems(name: str, stem: str, jobs: dict[str, Any], allowed: list[str], acted_on: list[str]) -> list[str]:
-    """The `<workflow>-result` job: needs every other job, always runs, and gets the workflow's heavy flag.
-
-    An unrelated label starts a run whose heavy jobs skip, and a skip reports success; this job instead
-    reports the latest earlier result on the commit (scripts/heavy_result.py), so branch protection
-    requires it rather than the heavy jobs.
-    """
-    rid = f"{stem}-result" if stem else (_result_job_id(jobs) or "<workflow>-result")
-    job = jobs.get(rid)
-    if not isinstance(job, dict):
-        return [f"{name}: no {rid} job, so an unrelated label's skipped run could replace a failed result"]
-    problems = []
-    needs = job.get("needs") or []
-    missing = sorted(set(jobs) - {rid} - set(needs if isinstance(needs, list) else [needs]))
-    if missing:
-        problems.append(f"{name}:{rid}: must need every other job, missing {missing}")
-    if str(job.get("if", "")).strip() != "always()":
-        problems.append(f"{name}:{rid}: must run with if: always()")
-    if job.get("name") != rid:
-        problems.append(f"{name}:{rid}: its check name must be {rid}")
-    steps = job.get("steps") or []
-    use = next((st for st in steps if str(st.get("uses", "")).startswith("./.github/actions/heavy-result")), None)
-    if use is None:
-        return problems + [f"{name}:{rid}: must use ./.github/actions/heavy-result"]
-    inputs = use.get("with") or {}
-    # True only when a gated job runs: a removed last label or an added skip-it mirrors, so a failure sticks
-    # to its commit until a new commit or a passing re-run.
-    t = gate_terms(allowed, acted_on)
-    want = f"${{{{ {_PR_CHECK} || {t[0]} || {t[1]} }}}}"
-    if " ".join(str(inputs.get("heavy", "")).split()) != want:
-        problems.append(f"{name}:{rid}: its heavy input must be the workflow's heavy flag")
-    if inputs.get("needs") != "${{ toJSON(needs) }}" or inputs.get("job") != rid:
-        problems.append(f"{name}:{rid}: must pass toJSON(needs) and its own name")
-    # It waits at most as long as the longest heavy job can run, then fails and asks for a re-run.
-    wait = max((job_timeout(j) for j_id, j in jobs.items() if j_id != rid and _is_gated(j)), default=360)
-    if inputs.get("wait-minutes") != wait or job.get("timeout-minutes") != wait + 5:
-        problems.append(f"{name}:{rid}: wait-minutes must be the longest heavy-job timeout ({wait}), timeout-minutes {wait + 5}")
-    return problems
-
-
-def job_timeout(job: Any) -> int:
-    """A job's timeout in minutes: the largest number in its timeout-minutes, else GitHub's default 360."""
-    nums = [int(n) for n in re.findall(r"\b\d+\b", str(job.get("timeout-minutes", "")))]
-    return max(nums) if nums else 360
-
-
-def _is_gated(job: Any) -> bool:
-    return isinstance(job, dict) and bool(_ALLOWED.search(" ".join(str(job.get("if", "")).split())))
 
 
 def _can_bypass(rest: str) -> bool:
@@ -204,7 +144,7 @@ def gate_is_mandatory(cond: str, allowed: list[str], acted_on: list[str]) -> boo
     return False
 
 
-def gate_problems(name: str, text: str, area: str | None = None, stem: str | None = None) -> list[str]:
+def gate_problems(name: str, text: str, area: str | None = None) -> list[str]:
     """Problems with a gated workflow. With `area`, every job not in UNGATED must carry the gate with that label."""
     workflow = yaml.safe_load(text)
     on = workflow.get(True, workflow.get("on")) or {}
@@ -217,17 +157,17 @@ def gate_problems(name: str, text: str, area: str | None = None, stem: str | Non
     # (removed once they fire) or it is a generated copy whose generator chooses its events.
     if "synchronize" not in types and not generated and ONE_SHOT not in text:
         problems.append(f"{name}: pull_request types must include synchronize, so a push re-runs a labelled pull request")
-    for trigger in ("schedule", "workflow_dispatch"):
-        if trigger not in on:
-            problems.append(f"{name}: no {trigger} trigger, so main is not covered without a label")
+    problems += [
+        f"{name}: no {trigger} trigger, so main is not covered without a label"
+        for trigger in ("schedule", "workflow_dispatch") if trigger not in on
+    ]
     ungated = UNGATED.get(workflow.get("name"), set())
     allowed: list[str] = []
     acted_on: list[str] = []
     union_allowed: list[str] = []
     union_acted: list[str] = []
-    rid = f"{stem}-result" if stem else _result_job_id(workflow.get("jobs") or {})
     for job_id, job in (workflow.get("jobs") or {}).items():
-        if job_id in ungated or job_id == rid:
+        if job_id in ungated:
             continue
         cond = " ".join(str(job.get("if", "")).split())
         m, n = _ALLOWED.search(cond), _ACTED_ON.search(cond)
@@ -246,9 +186,9 @@ def gate_problems(name: str, text: str, area: str | None = None, stem: str | Non
         # A generated copy's triggers are its generator's (which may start it on fewer events); its tests cover that.
         if set(acted_on) - set(allowed) and "unlabeled" not in types and not generated:
             problems.append(f"{name}:{job_id}: its gate re-runs on removing a label, so pull_request types must include unlabeled")
-        for term in gate_terms(allowed, acted_on):
-            if term not in cond:
-                problems.append(f"{name}:{job_id}: gate term missing or edited: {term}")
+        problems += [
+            f"{name}:{job_id}: gate term missing or edited: {term}" for term in gate_terms(allowed, acted_on) if term not in cond
+        ]
         if not gate_is_mandatory(cond, allowed, acted_on):
             problems.append(f"{name}:{job_id}: the condition can run the job without the gate (it must be the gate, or the gate && more)")
         # Each job against its own lists: a label it reads must start it, or be one whose removal re-runs it
@@ -273,11 +213,47 @@ def gate_problems(name: str, text: str, area: str | None = None, stem: str | Non
         # Built from every gated job's labels: a label only one job starts on must still be `heavy`.
         if not m or m.group(1) != group_key(union_allowed, union_acted):
             problems.append(f"{name}: the concurrency group must be <prefix>-${{{{ <the shared key> }}}} (group_key)")
-    problems += result_problems(name, stem or "", workflow.get("jobs") or {}, union_allowed, union_acted)
     return problems
 
 
+CONTRIBUTING = WORKFLOWS.parent.parent / "CONTRIBUTING.md"
+_REQUIRED = re.compile(r"<!-- required-checks -->(.*?)<!-- /required-checks -->", re.S)
+
+
+def required_check_problems(docs: str, workflows: dict[str, str]) -> list[str]:
+    """Heavy suites are opt-in, so none of them may be listed as a required check.
+
+    `workflows` maps file name to text. A required check that runs only when someone adds a label cannot gate
+    every merge; the list names only fast workflows.
+    """
+    m = _REQUIRED.search(docs)
+    if not m:
+        return ["CONTRIBUTING.md: no <!-- required-checks --> list"]
+    listed = set(re.findall(r"`([^`]+)`", m.group(1)))
+    heavy: set[str] = set()
+    for text in workflows.values():
+        if '"ci:full"' not in text:
+            continue
+        workflow = yaml.safe_load(text)
+        heavy.add(str(workflow.get("name")))
+        for job_id, job in (workflow.get("jobs") or {}).items():
+            if _ALLOWED.search(" ".join(str((job or {}).get("if", "")).split())):
+                heavy |= {str(job_id), str((job or {}).get("name", job_id))}
+    bad = sorted(name for name in listed if name in heavy or name.endswith("-result"))
+    return [f"CONTRIBUTING.md: heavy suites listed as required checks: {bad}"] if bad else []
+
+
 class CiLabelGateTest(unittest.TestCase):
+    def test_no_heavy_suite_is_a_required_check(self) -> None:
+        workflows = {p.name: p.read_text(encoding="utf-8") for p in sorted(WORKFLOWS.glob("*.yml"))}
+        self.assertEqual(required_check_problems(CONTRIBUTING.read_text(encoding="utf-8"), workflows), [])
+        heavy = self._workflow({"stores": ["ci:full", "ci:db"]}, name="pg-stores")
+        for bad in ("`pg-stores`", "`stores`", "`pg-stores-result`"):
+            docs = f"<!-- required-checks -->\n`PR Validations`, {bad}\n<!-- /required-checks -->\n"
+            self.assertTrue(required_check_problems(docs, {"x.yml": heavy}), bad)
+        self.assertEqual(required_check_problems("<!-- required-checks -->`PR Validations`<!-- /required-checks -->", {"x.yml": heavy}), [])
+
+
     def test_heavy_workflows_are_gated(self) -> None:
         problems = []
         for name, area in HEAVY.items():
@@ -285,7 +261,7 @@ class CiLabelGateTest(unittest.TestCase):
             if not path.exists():
                 continue
             text = path.read_text(encoding="utf-8")
-            problems += gate_problems(name, text, area, name[: -len(".yml")])
+            problems += gate_problems(name, text, area)
         self.assertEqual(problems, [])
 
     def test_every_gated_workflow_uses_the_same_gate(self) -> None:
@@ -297,12 +273,9 @@ class CiLabelGateTest(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def _workflow(
-        self, jobs: dict[str, list[str] | None], acted_on: list[str] | None = None,
+        self, jobs: dict[str, list[str] | None], acted_on: list[str] | None = None, *,
         types: str = "[opened, synchronize, reopened, labeled, unlabeled]", name: str = "x", group: bool = True,
-        result: bool = True,
-        timeout: int | None = None,
     ) -> str:
-        wait = timeout or 360
         text = (
             f"name: {name}\non:\n  pull_request:\n    types: {types}\n  schedule:\n    - cron: '0 1 * * *'\n  workflow_dispatch:\n"
         )
@@ -315,19 +288,9 @@ class CiLabelGateTest(unittest.TestCase):
         text += "jobs:\n"
         for job_id, allowed in jobs.items():
             text += f"  {job_id}:\n    runs-on: ubuntu-latest\n"
-            if timeout:
-                text += f"    timeout-minutes: {timeout}\n"
             if allowed:
                 t = gate_terms(allowed, _merge(allowed, acted_on or []))
                 text += f"    if: {_PR_CHECK} || {t[0]} || {t[1]}\n"
-        if result:
-            text += (
-                f"  x-result:\n    name: x-result\n    needs: [{', '.join(jobs)}]\n    if: always()\n    runs-on: ubuntu-latest\n"
-                f"    timeout-minutes: {wait + 5}\n"
-                "    steps:\n      - uses: ./.github/actions/heavy-result\n        with:\n"
-                f"          heavy: ${{{{ {_PR_CHECK} || {' || '.join(gate_terms(allowed_all, acted_all))} }}}}\n"
-                f"          needs: ${{{{ toJSON(needs) }}}}\n          job: x-result\n          wait-minutes: {wait}\n"
-            )
         return text
 
     def test_a_good_workflow_passes(self) -> None:
@@ -411,40 +374,6 @@ class CiLabelGateTest(unittest.TestCase):
         bad = good.replace(union, last_only)
         self.assertNotEqual(bad, good)
         self.assertTrue(any("concurrency group" in p for p in gate_problems("x.yml", bad)))
-
-    def test_an_unrelated_label_cannot_replace_a_failure(self) -> None:
-        good = self._workflow({"a": ["ci:full", "ci:db"], "lint": None}, name="Helm chart")
-        missing = self._workflow({"a": ["ci:full", "ci:db"]}, result=False)
-        self.assertTrue(any("-result job, so an unrelated label" in p for p in gate_problems("x.yml", missing)))
-        cases = {
-            "if: always()": ("    if: always()\n", "    if: success()\n"),
-            "need every other job": ("    needs: [a, lint]\n", "    needs: [a]\n"),
-            "heavy flag": ("          heavy: ${{ github.event_name != 'pull_request' || ", "          heavy: ${{ "),
-            "toJSON(needs)": ("          needs: ${{ toJSON(needs) }}\n", "          needs: '{}'\n"),
-        }
-        for want, (old, new) in cases.items():
-            bad = good.replace(old, new)
-            self.assertNotEqual(bad, good, want)
-            self.assertTrue(any(want in p for p in gate_problems("x.yml", bad)), want)
-
-    def test_the_result_job_waits_no_longer_than_a_heavy_job_runs(self) -> None:
-        good = self._workflow({"a": ["ci:full", "ci:db"]}, timeout=45)
-        self.assertIn("          wait-minutes: 45\n", good)
-        self.assertEqual(gate_problems("x.yml", good), [])
-        for old, new in (("wait-minutes: 45", "wait-minutes: 110"), ("    timeout-minutes: 50\n", "    timeout-minutes: 120\n")):
-            bad = good.replace(old, new)
-            self.assertNotEqual(bad, good, new)
-            self.assertTrue(any("wait-minutes must be" in p for p in gate_problems("x.yml", bad)), new)
-
-    def test_removing_the_last_label_cannot_turn_a_failure_into_a_pass(self) -> None:
-        # The concurrency predicate counts removing ci:db as acting; the result's heavy input must not, or the
-        # skipped run would report its own (skipped) jobs instead of the earlier failure on this commit.
-        allowed = ["ci:full", "ci:db"]
-        good = self._workflow({"a": allowed})
-        gate = " || ".join(gate_terms(allowed, allowed))
-        bad = good.replace(f"heavy: ${{{{ {_PR_CHECK} || {gate} }}}}", f"heavy: ${{{{ {_PR_CHECK} || {heavy_flag(allowed, allowed)} }}}}")
-        self.assertNotEqual(bad, good)
-        self.assertTrue(any("heavy input" in p for p in gate_problems("x.yml", bad)))
 
     def test_a_rest_that_closes_the_gate_group_early_is_caught(self) -> None:
         good = self._workflow({"a": ["ci:full", "ci:db"]})
