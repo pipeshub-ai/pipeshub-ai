@@ -1,3 +1,5 @@
+import { EDITION_ACTIVITY_TYPES, EDITION_LOGIN_MODES } from '../../edition';
+
 export const userActivitiesType = {
   LOGIN: 'LOGIN',
   LOGOUT: 'LOGOUT',
@@ -18,11 +20,15 @@ export const userActivitiesType = {
 export type UserActivityType =
   (typeof userActivitiesType)[keyof typeof userActivitiesType];
 
-/** Every activity type a store must accept: the document schema and the PostgreSQL store both check against this list. */
-export const USER_ACTIVITY_TYPES: readonly UserActivityType[] =
-  Object.values(userActivitiesType);
+/**
+ * Every activity type a store must accept: the document schema and the PostgreSQL store both check against this list.
+ * An edition adds its own through `EDITION_ACTIVITY_TYPES`.
+ */
+export const USER_ACTIVITY_TYPES: readonly string[] = [
+  ...new Set([...Object.values(userActivitiesType), ...EDITION_ACTIVITY_TYPES]),
+];
 
-export const USER_LOGIN_MODES = [
+const BUILT_IN_LOGIN_MODES = [
   'OTP',
   'PASSWORD',
   'AUTH SERVICE',
@@ -34,7 +40,12 @@ export const USER_LOGIN_MODES = [
   'GITHUB OAUTH',
 ] as const;
 
-export type UserLoginMode = (typeof USER_LOGIN_MODES)[number];
+export type UserLoginMode = (typeof BUILT_IN_LOGIN_MODES)[number];
+
+/** Every login mode a store must accept; an edition adds its own through `EDITION_LOGIN_MODES`. */
+export const USER_LOGIN_MODES: readonly string[] = [
+  ...new Set([...BUILT_IN_LOGIN_MODES, ...EDITION_LOGIN_MODES]),
+];
 
 export const SESSION_INVALIDATING_ACTIVITIES = [
   userActivitiesType.LOGOUT,
