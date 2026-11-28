@@ -66984,7 +66984,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: The token lacks a required scope, or the caller may not use this connector, or the
+            source refused the account the connector uses during the connection test. Nothing was turned on.
           content:
             application/json:
               schema:
@@ -66996,18 +66997,37 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: A Local FS desktop refusal, or the connector is locked
+          description: A Local FS desktop refusal, or the connector is locked. Also, with nothing turned on, the
+            connection to the source has expired or been revoked (reconnect it from Connector Settings), or the
+            server may not reach the source's address (a self-hosted URL that does not resolve or is not allowed);
+            the message says which.
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/LocalFsDesktopRefusal'
                   - $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The source rate-limited the connection test; nothing was turned on. Try again after
+            `Retry-After` seconds when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds the source asked to wait, when it said.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '504':
-          description: The connector service did not answer in time. The change may still have
-            been made; read the connector before sending a flip again.
+          description: The connector service did not answer in time, or the source timed out during the
+            connection test (nothing was turned on). The two cannot be told apart; both can be retried. After the
+            gateway's own timeout the change may still have been made; read the connector before sending a
+            flip again.
           content:
             application/json:
               schema:
@@ -67593,7 +67613,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The token lacks a required scope, or the caller may not use this connector
+          description: The token lacks a required scope, or the caller may not use this connector, or the
+            connected service refused the account the connector uses
           content:
             application/json:
               schema:
@@ -67604,16 +67625,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: |
-            The connected service could not be queried.
-
+        '409':
+          description: The connection to the connected service has expired or been revoked (reconnect it from
+            Connector Settings), the server may not reach the service's address, or the connector says why it
+            cannot list these options; the message says which.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The connected service rate-limited the request. Try again after `Retry-After` seconds
+            when it is sent.
+          headers:
+            Retry-After:
+              description: Seconds the connected service asked to wait, when it said.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
         '503':
           $ref: '#/components/responses/StoreUnavailable'
+        '504':
+          description: The connected service timed out. The request can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Service Configuration (internal) --------------------
   /connectors/getTokenFromCode:

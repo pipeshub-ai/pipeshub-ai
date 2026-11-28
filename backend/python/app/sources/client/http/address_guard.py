@@ -49,6 +49,8 @@ if TYPE_CHECKING:
 class AddressNotAllowedError(Exception):
     """A request went to an address this client may not reach."""
 
+    log_error_class = "bad_request"  # the address an admin typed, not a bug of ours
+
 
 def address_rule(*, allow_private: bool) -> str:
     if not allow_private:
