@@ -179,7 +179,11 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       const U1 = 'a'.repeat(24);
       const U2 = 'b'.repeat(24);
       await writeWithDocuments({} as never, 'users', [{ _id: new ObjectId(U1), codingEngine: 'x' }, { _id: new ObjectId(U2) }], new Set([U2]), [c]);
-      expect(calls).to.deep.equal([{ op: 'write', collection: 'users', ids: [U1] }]);
+      // the skipped one's fields go (its rows are gone), the other's are written
+      expect(calls).to.deep.equal([
+        { op: 'remove', collection: 'users', ids: [U2] },
+        { op: 'write', collection: 'users', ids: [U1] },
+      ]);
       // nothing of the batch is written when one document cannot be read: the unit fails, the documents' rows with it
       let err: Error | undefined;
       await writeWithDocuments({} as never, 'users', [{ _id: U1, bad: { ref: new ObjectId() } }], new Set(), [{ ...c, reads: { users: { pick: ['bad'] } } }]).catch((e: Error) => (err = e));
@@ -197,6 +201,17 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       calls.length = 0;
       await resyncCarried(noPg, mongo, [c]);
       expect(calls.map((x) => `${x.op}:${x.collection}`), 'a resync clears the carrier and writes all of it again').to.deep.equal(['clear:', 'write:agentWorkspaceHeads', 'write:users']);
+    });
+
+    it('a withDocument carrier: the fields of a document the importer skips are removed; a skip of part of a document removes nothing', async () => {
+      const calls: Call[] = [];
+      const c: Carrier = { ...fake(new Map(), calls), withDocument: true };
+      const [U1, U2] = ['a'.repeat(24), 'b'.repeat(24)];
+      await writeWithDocuments({} as never, 'users', [{ _id: new ObjectId(U1), codingEngine: 'x' }, { _id: new ObjectId(U2) }], new Set([U2, `${U1}.members[0]`]), [c]);
+      expect(calls).to.deep.equal([
+        { op: 'remove', collection: 'users', ids: [U2] },
+        { op: 'write', collection: 'users', ids: [U1] },
+      ]);
     });
 
     it('verify reports missing, extra, differing (by field name only) and duplicate entries, and never a carried value', async () => {

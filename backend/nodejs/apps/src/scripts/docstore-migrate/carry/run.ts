@@ -102,16 +102,36 @@ export async function writeWithDocuments(
   for (const c of carriers) {
     if (!withDocument(c, collection) || !(c.fields[collection] ?? []).length)
       continue;
-    const docs = raw
-      .map((d) => sourceDoc(d, collection, readOf(c, collection)))
-      .filter((d) => !skipped.has(d.id.toLowerCase()));
+    const read = raw.map((d) =>
+      sourceDoc(d, collection, readOf(c, collection)),
+    );
+    const docs = read.filter((d) => !skipped.has(d.id.toLowerCase()));
+    // a document the importer skips has no rows now (the follower and a repair removed them in this unit): its fields go too. A
+    // skip of part of a document (a member, reported as `<id>.members[i]`) is not one of these ids and removes nothing.
+    const gone = read
+      .filter((d) => skipped.has(d.id.toLowerCase()))
+      .map((d) => d.id);
     const bad = docs.find((d) => d.refused);
     if (bad)
       throw new Error(
         `${bad.refused ?? ''}: nothing of this batch was written; correct the document, then run again`,
       );
+    if (gone.length) await c.remove(k, collection, gone);
     if (docs.length) await c.write(k, collection, docs);
   }
+}
+
+/** In the unit that removed these documents' rows: the fields `withDocument` carriers keep of them go too. */
+export async function removeWithDocuments(
+  k: KernelTx,
+  collection: string,
+  ids: readonly string[],
+  carriers: readonly Carrier[] = CARRIERS,
+): Promise<void> {
+  if (!ids.length) return;
+  for (const c of carriers)
+    if (withDocument(c, collection) && (c.fields[collection] ?? []).length)
+      await c.remove(k, collection, [...ids]);
 }
 
 /** Carriers that read any of the collections named (all of them without a list). */

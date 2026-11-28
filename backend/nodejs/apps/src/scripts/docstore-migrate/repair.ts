@@ -4,6 +4,7 @@
  * brought level by comparing instead of replaying. Deletes go children-first (reverse mapping order), writes parents-first.
  */
 import { deleteDocs, replaceDocs } from './apply';
+import { removeWithDocuments } from './carry/run';
 import { Log, sourceDb } from './bulk';
 import type { DocDiff } from './compare';
 import { MAPPINGS } from './mapping';
@@ -32,7 +33,10 @@ export async function repair(
       .filter((d) => d.kind === 'extra_in_pg')
       .map((d) => d.id);
     if (!ids.length) continue;
-    await rt.jobs((_tx, k) => deleteDocs(k, m, ids));
+    await rt.jobs(async (_tx, k) => {
+      await deleteDocs(k, m, ids);
+      await removeWithDocuments(k, m.collection, ids);
+    });
     out.deleted += ids.length;
   }
   for (const m of todo) {
@@ -57,7 +61,10 @@ export async function repair(
       const have = new Set(raw.map((r) => String(r._id).toLowerCase()));
       const gone = part.filter((id) => !have.has(id.toLowerCase()));
       if (gone.length) {
-        await rt.jobs((_tx, k) => deleteDocs(k, m, gone));
+        await rt.jobs(async (_tx, k) => {
+          await deleteDocs(k, m, gone);
+          await removeWithDocuments(k, m.collection, gone);
+        });
         out.deleted += gone.length;
       }
     }
