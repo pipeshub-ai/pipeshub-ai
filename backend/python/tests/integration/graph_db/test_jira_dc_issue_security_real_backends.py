@@ -148,45 +148,50 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         user_keys: list[str] = []
         cleanup.push_async_callback(_remove, graph, org_id, connector_id, user_keys)
 
-        now = get_epoch_timestamp_in_ms()
-        assert await graph.batch_upsert_nodes(
-            [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
-        assert await graph.batch_upsert_nodes(
-            [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
-              "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
-              "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-            collection=CollectionNames.APPS.value)
+        yield await new_world(graph, run, org_id, connector_id, user_keys)
 
-        user_ids: dict[str, str] = {}
-        for name in PEOPLE:
-            key, user_id = f"{run}-{name}", f"user-{run}-{name}"
-            user_keys.append(key)
-            assert await graph.batch_upsert_nodes(
-                [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
-                  "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-                collection=CollectionNames.USERS.value)
-            assert await graph.batch_create_edges(
-                [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
-                  "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
-                  "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
-            user_ids[name] = user_id
 
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
-        processor.org_id = org_id
-        processor.messaging_producer = AsyncMock()
-        processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
-        config = MagicMock()
-        config.get_config = AsyncMock(return_value=None)
-        connector = JiraDataCenterConnector(
-            logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
-        connector.notify = AsyncMock()
-        connector.data_source = MagicMock()  # the search itself is stood in for per test
-        connector._epic_link_field_id = EPIC_FIELD
-        connector._parent_link_field_id = ""
-        yield {"graph": graph, "processor": processor, "connector": connector, "run": run,
-               "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
+async def new_world(graph: IGraphDBProvider, run: str, org_id: str, connector_id: str, user_keys: list[str]) -> dict[str, Any]:
+    """The org, the Jira Data Center app, the people and the connector writing through the real processor into ``graph``."""
+    now = get_epoch_timestamp_in_ms()
+    assert await graph.batch_upsert_nodes(
+        [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
+    assert await graph.batch_upsert_nodes(
+        [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
+          "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
+          "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value)
+
+    user_ids: dict[str, str] = {}
+    for name in PEOPLE:
+        key, user_id = f"{run}-{name}", f"user-{run}-{name}"
+        user_keys.append(key)
+        assert await graph.batch_upsert_nodes(
+            [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
+              "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection=CollectionNames.USERS.value)
+        assert await graph.batch_create_edges(
+            [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+              "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+        user_ids[name] = user_id
+
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+    processor.org_id = org_id
+    processor.messaging_producer = AsyncMock()
+    processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value=None)
+    connector = JiraDataCenterConnector(
+        logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
+    connector.notify = AsyncMock()
+    connector.data_source = MagicMock()  # the search itself is stood in for per test
+    connector._epic_link_field_id = EPIC_FIELD
+    connector._parent_link_field_id = ""
+    return {"graph": graph, "processor": processor, "connector": connector, "run": run,
+           "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
 
 
 def _user_holder(name: str) -> dict[str, Any]:
@@ -717,3 +722,25 @@ async def test_while_the_holders_are_unread_a_changed_issue_drops_its_reporter_a
         issue = BROWSE_ISSUES[label][0] if label == "PROJ-21" else leveled
         await _write(world, [{**issue, "fields": {**issue["fields"], "updated": later, "security": None}}])
     assert not await _mismatches(world, {**_browse_readers(), "PROJ-21": PROJECT_READERS, "PROJ-25": PROJECT_READERS}, by_key)
+
+
+async def test_a_leveled_issue_is_read_by_exactly_the_viewers_jira_lists(world: dict[str, Any]) -> None:
+    """Data Center lists no level's members, so a leveled issue is granted to the users GET /user/permission/search lists
+    for it, and inherits nothing. Jira lists alice and dave (who cannot browse the project, but Browse names him on the
+    issue, as its reporter say): both read it and its sub-task (filed on the project, not under its parent); bob and
+    carol browse the project and are not listed, so they do not. An issue whose viewers cannot be read is read by no one."""
+    connector = world["connector"]
+    await _open_project(world, _context(members_by_level={}, members_readable=False, viewers=True,
+                                        level_names={"10101": "level 10101"}))
+    connector._issue_viewers = AsyncMock(return_value=(200, [{"key": PEOPLE[n], "name": n} for n in ("alice", "dave")]))
+    await _write(world, [_issue("51", "PROJ-51", "Task", level="10101"),
+                         _issue("52", "PROJ-52", "Sub-task", level="10101", parent="51"),
+                         _issue("53", "PROJ-53", "Task")])
+    by_key = await _ticket_ids(world)
+    assert set(by_key) == {"PROJ-51", "PROJ-52", "PROJ-53"}
+    assert not await _mismatches(world, {"PROJ-51": {"alice", "dave"}, "PROJ-52": {"alice", "dave"},
+                                         "PROJ-53": PROJECT_READERS}, by_key)
+
+    connector._issue_viewers = AsyncMock(return_value=(503, None))
+    await _write(world, [_issue("51", "PROJ-51", "Task", level="10101", updated="2024-06-16T10:00:00.000+0000")], again=True)
+    assert not await _mismatches(world, {"PROJ-51": set(), "PROJ-52": {"alice", "dave"}, "PROJ-53": PROJECT_READERS}, by_key)

@@ -20774,6 +20774,34 @@ class JiraDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def find_users_with_permissions_v2(
+        self,
+        permissions: str,
+        issueKey: Optional[str] = None,
+        username: Optional[str] = None,
+        startAt: Optional[int] = None,
+        maxResults: Optional[int] = None,
+        headers: Optional[dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/user/permission/search (Data Center / Server): the active users matching ``username`` that hold
+        every permission in ``permissions`` for the issue. Needs Administer Projects on the project or Jira administrator
+        rights (403 otherwise). From 10.6, startAt + maxResults is limited to the first 100 results
+        (https://dac-static.atlassian.com/server/jira/platform/jira_software_dc_11003_swagger.v3.json)."""
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _query: dict[str, Any] = {'permissions': permissions, **{name: value for name, value in (
+            ('issueKey', issueKey), ('username', username), ('startAt', startAt), ('maxResults', maxResults),
+        ) if value is not None}}
+        req = HTTPRequest(
+            method='GET',
+            url=self.base_url + '/rest/api/2/user/permission/search',
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_project_roles_v2(
         self,
         projectIdOrKey: str,

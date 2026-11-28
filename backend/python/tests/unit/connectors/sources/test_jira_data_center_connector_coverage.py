@@ -946,7 +946,8 @@ async def test_fetch_project_permission_scheme_dc_branches():
         pytest.param("acc", True, None, False, id="user list cut short"),
         pytest.param("acc", True, {"other"}, False, id="user list cut short, no product access"),
         pytest.param("acc", True, {"acc"}, False, id="user list cut short, product access"),
-        pytest.param("ann", False, None, False, id="a username is never read as a key"),
+        # Data Center names the user by username in the grant (a live 10.3: "parameter": "outsider" for JIRAUSER10106).
+        pytest.param("ann", False, None, True, id="a username is the account holding it"),
     ],
 )
 async def test_a_user_holder_outside_the_synced_users_is_never_granted_by_the_email_on_the_holder(
@@ -1372,25 +1373,36 @@ async def test_a_group_member_named_by_username_is_the_account_holding_that_user
 
 
 @pytest.mark.asyncio
-async def test_a_project_user_grant_parameter_is_a_key_never_a_username() -> None:
-    """The renamed account (key "alice") is not synced; the newer account holding the username "alice" is."""
+@pytest.mark.parametrize(("parameter", "synced", "complete", "granted"), [
+    pytest.param("alice", ("JIRAUSER10100",), True, {"new-alice@example.com"}, id="the username, not a legacy key equal to it"),
+    pytest.param("alice", ("alice", "JIRAUSER10100"), True, {"new-alice@example.com"}, id="both synced: the username wins"),
+    pytest.param("JIRAUSER10100", ("JIRAUSER10100",), True, {"new-alice@example.com"}, id="a key no username matches"),
+    pytest.param("JIRAUSER10100", ("JIRAUSER10100",), False, set(), id="a key on a list cut short: not read as one"),
+])
+async def test_a_project_user_grant_parameter_is_read_as_a_username_first(
+    parameter: str, synced: tuple[str, ...], complete: bool, granted: set[str],
+) -> None:
+    """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice". A key is
+    read only when no listed account holds that username and the list was read in full."""
     conn = _make_connector()
     conn.data_source = MagicMock()
-    _, newer = _renamed_and_new_alice(conn)
+    users = {u.source_user_id: u for u in _renamed_and_new_alice(conn) if u.source_user_id in synced}
+    conn._user_read_unfinished = not complete
+    conn._listed_user_keys = set(users)
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
     sch.json = MagicMock(return_value={"id": 10000})
     grants = MagicMock()
     grants.status = HttpStatusCode.OK.value
     grants.json = MagicMock(return_value={"permissions": [
-        {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "alice"}},
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": parameter}},
     ]})
     ds = MagicMock()
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("TEST", {}, {"JIRAUSER10100": newer})
-    assert perms == []
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, users)
+    assert {p.email for p in perms} == granted
 
 
 @pytest.mark.asyncio
