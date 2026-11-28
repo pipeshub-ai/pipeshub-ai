@@ -12,7 +12,8 @@ vi.mock('@/lib/api', () => ({
   apiClient: { interceptors: { response: { use: (_ok: unknown, rejected: Rejected) => mocks.handlers.push(rejected) } } },
 }));
 
-vi.mock('@/lib/store/auth-store', () => ({
+// The recorder reads the auth store through `@/config`, whichever store a build binds there.
+vi.mock('@/config', () => ({
   useAuthStore: {
     subscribe: (listener: (state: unknown, previous: unknown) => void) => mocks.authListeners.push(listener),
   },
