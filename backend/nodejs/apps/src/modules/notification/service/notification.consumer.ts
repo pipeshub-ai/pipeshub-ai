@@ -7,13 +7,22 @@ import { injectable, inject, optional } from 'inversify';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { DuplicateEnvelope } from '../../../libs/context/envelope';
 import { NotificationService } from './notification.service';
-import { toBrokerMessage } from '../utils/notification-payload.resolver';
+import {
+  notificationOf,
+  toBrokerMessage,
+} from '../utils/notification-payload.resolver';
+import {
+  notificationEventRefused,
+  notificationLegacySigned,
+} from './notification.delivery';
+import { enforcing } from '../../../libs/context/orgContext';
 import { ValidationError } from '../../../libs/errors/validation.error';
 import { deliverToOrg, messageFacts } from './notification.delivery';
 import {
   PlatformAlertHandler,
   isPlatformAudience,
 } from './platform-alert.handler';
+import { alertFieldsInPayload } from '../utils/sandbox-capacity-alert';
 
 // Defined beside the delivery that counts it; exported here as before.
 export { notificationEventRefused } from './notification.delivery';
@@ -69,11 +78,33 @@ export class NotificationConsumer {
         async (message: StreamMessage<INotification>) => {
           let redeliver = false;
           try {
-            if (isPlatformAudience(message.value)) {
+            const { value, signedLegacy, signedBody } = notificationOf(
+              message.value,
+            );
+            // A signed notification is never routed by its unsigned top level (an added `audience`).
+            const platform = !signedBody && isPlatformAudience(message.value);
+            // Signed, but in the older shape: its top-level fields (text, recipients, an alert's type) are not covered
+            // by the signature. Counted; refused in enforce mode, read in shadow mode (its org is held to the signed
+            // one at delivery). A platform alert that carries its type in its payload is covered and goes on.
+            if (
+              signedLegacy &&
+              !(platform && alertFieldsInPayload(message.value))
+            ) {
+              notificationLegacySigned.inc();
+              if (enforcing()) {
+                notificationEventRefused.inc({ reason: 'legacy_signed' });
+                this.logger.warn(
+                  'Notification event refused: signed in the older shape',
+                  messageFacts(message.value),
+                );
+                return;
+              }
+            }
+            if (platform) {
               await this.handlePlatformEvent(message.value);
               return;
             }
-            const event = toBrokerMessage(message.value);
+            const event = toBrokerMessage(value);
             if (!event) {
               this.logger.warn(
                 'Notification event skipped: invalid orgId or type',
