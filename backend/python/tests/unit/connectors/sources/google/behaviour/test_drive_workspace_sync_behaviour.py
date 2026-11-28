@@ -13,6 +13,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import pytest
 from drive_world import FOLDER, DriveWorld, FileState
@@ -279,6 +280,23 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
     assert ws.grants("linked") == {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")}, (
         "link sharing names nobody, so it is not stored as a grant"
     )
+
+
+async def test_without_a_licence_key_no_sharing_or_group_is_read_and_the_files_still_sync(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB},
+        {"type": "group", "role": "reader", "emailAddress": "eng@example.com"},
+    ])
+    ws.records.skips_permission_writes = AsyncMock(return_value=True)  # unlicensed: the processor keeps what is stored
+
+    await ws.sync()
+
+    assert "plan.txt" in ws.names()
+    assert not ws.incomplete, "an item whose sharing is not read is not a failed item"
+    assert ws.http.calls("GET", "/drive/v3/files/[^/]+/permissions") == []
+    assert ws.http.calls("GET", "/admin/directory/v1/groups(/[^/]+/members)?") == []
+    assert ws.grants("shared") == set()
 
 
 def discoverable(kind: str, **extra: object) -> dict:
@@ -970,7 +988,7 @@ async def test_a_full_read_removes_an_audience_grant_nobody_can_read_the_sharing
 
 
 async def test_a_parked_holder_check_is_asked_again_without_the_reader_it_left_out(ws: Workspace) -> None:
-    from app.connectors.sources.google.drive.team.connector import (
+    from app.ee.permission_sync.google_drive_workspace import (
         HOLDER_RECHECK_SYNC_POINT_KEY,
     )
 
@@ -3572,7 +3590,7 @@ async def test_a_person_who_joins_a_members_only_drive_gets_their_own_shares_on_
 
 def _forget_the_member_list(ws: Workspace, drive_id: str) -> None:
     """A members-only drive synced before its member list was remembered: the restrictions stored, no list."""
-    from app.connectors.sources.google.drive.team.connector import (
+    from app.ee.permission_sync.google_drive_workspace import (
         DRIVE_DIRECT_MEMBERS_MARK,
         DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX,
     )
@@ -5290,7 +5308,7 @@ async def test_a_cut_list_of_a_limited_folder_gives_a_reader_who_sees_its_name_o
 
 
 async def test_a_real_list_that_writes_a_new_item_clears_its_empty_list_count(ws: Workspace) -> None:
-    from app.connectors.sources.google.drive.team.connector import (
+    from app.ee.permission_sync.google_drive_workspace import (
         EMPTY_LIST_RUNS_SYNC_POINT_KEY,
     )
 

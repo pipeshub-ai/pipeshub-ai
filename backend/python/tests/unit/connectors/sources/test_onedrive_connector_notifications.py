@@ -23,6 +23,7 @@ def _make_connector() -> OneDriveConnector:
     logger = logging.getLogger("test.onedrive.notifications")
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-123"
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
 

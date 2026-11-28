@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 from box_behaviour_fakes import (
     ROOT_ID,
@@ -518,6 +519,28 @@ class TestSharingEvents:
 
         assert set(db.removed_access) == {("fold-a", bob_id), ("file-1", bob_id)}
         assert BOB_EMAIL not in db.access("file-1")
+
+    async def test_without_a_licence_key_no_collaborator_is_read_or_removed(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-a", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-a")
+        collab_id = box_api.collaborate("fold-a", BOB)
+        connector = await synced_connector(box_api, db, checkpoints)
+        db.skips_permission_writes = AsyncMock(return_value=True)  # unlicensed from here on
+        box_api.requests.clear()
+        box_api.add_event("COLLABORATION_REMOVE", collab_event_source(box_api, "fold-a", BOB, collab_id))
+        box_api.add_file("file-2", "notes.pdf", ALICE, parent="fold-a")
+        box_api.add_event("ITEM_UPLOAD", item_event("file-2"), created_by=by(ALICE, box_api))
+
+        await connector.run_sync()
+
+        # The content still syncs; no collaborator, group or member is read, and no stored access is removed.
+        assert "file-2" in db.records
+        assert db.removed_access == []
+        assert not [
+            r.path for r in box_api.requests
+            if "collaboration" in r.path or r.path.startswith(("/2.0/users/", "/2.0/groups"))
+        ]
 
     async def test_an_invite_revoked_in_the_same_batch_is_not_shared(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

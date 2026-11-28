@@ -37,6 +37,7 @@ def mock_deps():
     logger = logging.getLogger("test.box.comp")
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-box-comp"
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
