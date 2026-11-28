@@ -12,7 +12,7 @@ test.describe('Groups Enterprise Placeholder', () => {
     });
     await expect(
       page.getByRole('heading', {
-        name: /Group permissions are available in the Enterprise Edition/i,
+        name: /Group permissions are available in Enterprise Edition/i,
       })
     ).toBeVisible();
     await expect(

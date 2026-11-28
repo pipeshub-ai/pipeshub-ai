@@ -196,6 +196,20 @@ def note_request_sent() -> None:
         outcome.status = None
 
 
+def forget_last_request() -> None:
+    """Drop this call's last request from its wire evidence: the provider refused it for its shape, and the caller sends
+    it again changed. Without this the gateway would settle it as a failed send once the call succeeds."""
+    outcome = _current.get()
+    if outcome is None or outcome.requests == 0:
+        return
+    outcome.requests -= 1
+    if outcome.responses and outcome.statuses:
+        outcome.responses -= 1
+        outcome.statuses.pop()
+    outcome.status = outcome.statuses[-1] if outcome.statuses else None
+    outcome.sent = outcome.requests > 0
+
+
 def note_response(status: int, retry_after: float | None = None) -> None:
     outcome = _current.get()
     if outcome is not None:

@@ -197,6 +197,23 @@ CASE_CARDS: dict[str, dict[str, ToolCard]] = {
 }
 
 
+def _schedule_card() -> ToolCard:
+    """``schedule_create`` as the harness offers it, read off the real tool (ADR-SCH-01)."""
+    from app.harness.schedules import ScheduleCreateTool
+
+    real = ScheduleCreateTool(None)  # type: ignore[arg-type] - only its metadata is read
+    return ToolCard(
+        name=real.name,
+        short_description=real.short_description,
+        description=real.description,
+        path=real.path,
+        parameters=tuple(real.parameters),
+        tags=tuple(real.tags),
+        mutating=True,
+        result="Scheduled “Joke”: once, in 5 minutes. Each run starts its own chat.",
+    )
+
+
 def card_for(tool_name: str, case_id: str | None = None) -> ToolCard | None:
     """The card for a tool this module describes, if it has one.
 
@@ -207,6 +224,8 @@ def card_for(tool_name: str, case_id: str | None = None) -> ToolCard | None:
         case_card = CASE_CARDS.get(case_id, {}).get(tool_name)
         if case_card is not None:
             return case_card
+    if tool_name == "schedule_create":
+        return _schedule_card()
     return KNOWLEDGE_CARDS.get(tool_name)
 
 
