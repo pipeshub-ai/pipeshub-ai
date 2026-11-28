@@ -10155,5 +10155,40 @@
     "deniedTitle": "No se vinculó nada",
     "deniedLine": "El enlace está cancelado. Puedes cerrar esta página.",
     "otherOrg": "Este enlace es de otra organización. Inicia sesión con la cuenta de PipesHub de la organización cuyo bot de Slack lo envió."
+  },
+  "licenseNotices": {
+    "dismiss": "Descartar",
+    "developmentKey": "Esta instalación funciona con una clave de licencia de desarrollo. No es apta para producción.",
+    "grace_one": "Los conectores de toda la empresa que copian los accesos de sus orígenes necesitan una clave de licencia. Sin ella, dentro de {{count}} día, el {{date}}, quedarán limitados a las personas que los crearon. No se elimina nada.",
+    "grace_many": "Los conectores de toda la empresa que copian los accesos de sus orígenes necesitan una clave de licencia. Sin ella, dentro de {{count}} días, el {{date}}, quedarán limitados a las personas que los crearon. No se elimina nada.",
+    "grace_other": "Los conectores de toda la empresa que copian los accesos de sus orígenes necesitan una clave de licencia. Sin ella, dentro de {{count}} días, el {{date}}, quedarán limitados a las personas que los crearon. No se elimina nada.",
+    "installKey": "Instalar una clave de licencia",
+    "limited_one": "{{count}} conector de toda la empresa está limitado a la persona que lo creó, porque ninguna clave de licencia permite la sincronización de permisos. No se ha eliminado nada.",
+    "limited_many": "{{count}} conectores de toda la empresa están limitados a las personas que los crearon, porque ninguna clave de licencia permite la sincronización de permisos. No se ha eliminado nada.",
+    "limited_other": "{{count}} conectores de toda la empresa están limitados a las personas que los crearon, porque ninguna clave de licencia permite la sincronización de permisos. No se ha eliminado nada.",
+    "restoring": {
+      "admin_one": "Restaurando el acceso: {{count}} conector está ejecutando la sincronización completa que recupera su acceso.",
+      "admin_many": "Restaurando el acceso: {{count}} conectores están ejecutando las sincronizaciones completas que recuperan su acceso.",
+      "admin_other": "Restaurando el acceso: {{count}} conectores están ejecutando las sincronizaciones completas que recuperan su acceso.",
+      "member": "Se está restaurando el acceso a algunos orígenes de la empresa. Tus resultados pueden estar incompletos hasta que termine.",
+      "queued": "esperando para sincronizar",
+      "syncing": "sincronizando",
+      "waiting": "en espera"
+    },
+    "memberLimited": "Algunos orígenes de la empresa no se incluyen ahora mismo en tus resultados. Pregunta a tu administrador si los necesitas.",
+    "memberRestoring": "Se está restaurando el acceso a algunos orígenes de la empresa, así que por ahora tus resultados pueden estar incompletos.",
+    "connector": {
+      "affected": "Se limitará",
+      "affectedTooltip": "Este conector copia los accesos de su origen, lo que requiere una clave de licencia. Sin ella, a partir del {{date}} solo la persona que lo creó podrá ver su contenido. No se elimina nada.",
+      "affectedTooltipKeyLater": "Tu clave de licencia empieza el {{start}}, después de que termine el periodo de gracia de la actualización el {{date}}. Entre ambas fechas, solo la persona que creó este conector podrá ver su contenido. No se elimina nada.",
+      "affectedTooltipKeyWithoutSync": "Tu clave de licencia empieza el {{start}}, pero no incluye copiar los accesos de los orígenes. A partir del {{date}}, cuando termina el periodo de gracia de la actualización, solo la persona que creó este conector podrá ver su contenido. No se elimina nada.",
+      "limited": "Limitado",
+      "limitedTooltip": "Ninguna clave de licencia permite la sincronización de permisos, así que solo la persona que creó este conector puede ver su contenido. Instala una clave para restaurar el acceso. No se ha eliminado nada.",
+      "restoring": "Restaurando el acceso",
+      "restoringTooltip": "Hay una clave de licencia instalada. El acceso volverá cuando termine la sincronización completa de este conector."
+    },
+    "graceKeyStartsLater": "Tu clave de licencia empieza el {{start}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Si el periodo de gracia termina antes, solo las personas que los crearon podrán ver su contenido hasta que empiece la clave.",
+    "graceKeyEnded": "Tu clave de licencia terminó el {{ended}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Después, sin una clave nueva, quedarán limitados a las personas que los crearon. No se elimina nada.",
+    "openLicensePage": "Abrir la configuración de la licencia"
   }
 }

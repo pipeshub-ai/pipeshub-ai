@@ -9,6 +9,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 import { SettingsSection } from '@/app/(main)/workspace/components/settings-section';
 import { LicenseApi, licenseErrorReason, procurementLink, PROCUREMENT_PATHS } from './api';
@@ -104,6 +105,8 @@ export default function LicensePage() {
       const result = await LicenseApi.install(parsed);
       setView(result.status);
       setKeyText('');
+      // The banners and connector notices change with the key.
+      revalidateSwrNamespace(SWR_NS.licenseNotice);
       addToast({
         variant: 'success',
         title: result.alreadyInstalled

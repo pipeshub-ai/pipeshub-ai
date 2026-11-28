@@ -16,6 +16,7 @@ export const SWR_NS = {
   userDirectory: 'users/directory',
   connectorConfigs: 'connectors/configs',
   webSearchConfig: 'web-search/config',
+  licenseNotice: 'license/notice',
   mcpPopular: 'mcp-servers/popular',
 } as const;
 
