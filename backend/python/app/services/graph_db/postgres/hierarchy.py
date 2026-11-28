@@ -169,8 +169,8 @@ class HierarchyMixin(PgBase):
                     UNION SELECT hg.hc, hg.hi, NULL FROM hg WHERE hg.hc IN ('users', 'person') AND hg.tc IN ('groups', 'roles', 'teams')),
                 -- a membership of a group, role or team holds the group's node exclusively, after the member's memberships: it waits for a grant
                   -- of the group being written, which holds the node shared (_hold_groups) before it reads the members
-                  gx AS (SELECT 1 FROM graph.nodes n JOIN g ON n.coll = g.tc AND n.id = g.ti WHERE n.org_id = $1 AND g.hc IN ('users', 'person')
-                         AND g.tc IN ('groups', 'roles', 'teams') ORDER BY n.coll, n.id FOR UPDATE OF n),
+                  gx AS (SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($8::text[]) AND n.id = ANY($9::text[])
+                         AND cardinality($9::text[]) > 0 ORDER BY n.coll, n.id FOR UPDATE OF n),
                   held AS (SELECT 1 FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
                     WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
                       AND cardinality($5::text[]) > 0      -- no grant to lock: nothing is read

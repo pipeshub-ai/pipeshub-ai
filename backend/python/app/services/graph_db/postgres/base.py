@@ -74,13 +74,16 @@ async def _hold_groups(tx: Tx, org: str, grants: Sequence[tuple[str, str, str, s
     waits for the other, and the members read next include one whose membership committed first (a statement reads the snapshot it started with)."""
     groups = sorted({(hc, hi) for hc, hi, tc, _ in grants if hc in ("groups", "roles", "teams") and tc in ("records", "recordGroups")})
     if groups:
-        await tx.execute("""/* pipeshub:graph.hold_granting_groups */ SELECT 1 FROM graph.nodes n JOIN unnest($2::text[], $3::text[]) AS h(c, i)
-            ON n.coll = h.c AND n.id = h.i WHERE n.org_id = $1 ORDER BY n.coll, n.id FOR SHARE OF n""", org, [c for c, _ in groups], [i for _, i in groups])
+        # the keys as arrays an index condition takes (a join to unnest() can be planned as a scan of the org's nodes)
+        await tx.execute("""/* pipeshub:graph.hold_granting_groups */ SELECT 1 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
+            AND n.id = ANY($3::text[]) ORDER BY n.coll, n.id FOR SHARE OF n""", org, sorted({c for c, _ in groups}), [i for _, i in groups])
 
 
 def _grant_columns(grants: Sequence[tuple[str, str, str, str]]) -> list[list[str]]:
-    """Grants (holder collection, holder, target collection, target) as the four arrays the lock of the memberships they keep binds."""
-    return [[g[i] for g in grants] for i in range(4)]
+    """Grants (holder collection, holder, target collection, target) as the arrays the lock of the memberships they keep binds: the four
+    columns, then the collections and ids of the groups, roles and teams a user's or person's grant makes it a member of (``gx``)."""
+    groups = sorted({(tc, ti) for hc, _, tc, ti in grants if hc in ("users", "person") and tc in ("groups", "roles", "teams")})
+    return [[g[i] for g in grants] for i in range(4)] + [[c for c, _ in groups], [i for _, i in groups]]
 
 
 def _ekey(coll: str, props: dict) -> str:
