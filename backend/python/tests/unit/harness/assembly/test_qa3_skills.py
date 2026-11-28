@@ -30,6 +30,7 @@ from harness_core.kernel.durable import ToolContext
 from harness_core.skills.types import SkillRef
 from harness_core.testing import ModelScript, Reply, ScriptedModel, Turn
 from harness_core.testing.durable import ScriptedModelPort
+from tests.support import edition_defaults
 from tests.support.config_service import RIG_PLATFORM_FLAGS
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
@@ -80,16 +81,22 @@ class Rig:
             return '{"id": "J-1"}'
 
         w.replace_tool(monkeypatch, w.FakeJira, "create_issue", create_issue)
-        services, skills = w.Services(), FakeGraphProvider()
+        services, skills = w.Services(w.agent_doc(createdBy=AUTHOR)), FakeGraphProvider()
         services.config.put(
             PLATFORM_SETTINGS_KEY, {"featureFlags": {**RIG_PLATFORM_FLAGS, "ENABLE_MCP": True, "ENABLE_SKILLS": True}}
         )
         elsewhere = services.graph.get_document
+        # The agent's editor owns it, as a stored agent names its creator.
+        owners = {(CollectionNames.AGENT_INSTANCES.value, w.AGENT), (CollectionNames.USERS.value, AUTHOR)}
+        _ = await skills.batch_upsert_nodes(
+            [{"_key": w.AGENT, "orgId": w.ORG, "createdBy": AUTHOR}], CollectionNames.AGENT_INSTANCES.value
+        )
+        _ = await skills.batch_upsert_nodes([{"_key": AUTHOR, "orgId": w.ORG}], CollectionNames.USERS.value)
 
         async def get_document(
             key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
         ) -> dict[str, Any] | None:
-            source = skills.get_document if collection in SKILL_COLLECTIONS else elsewhere
+            source = skills.get_document if collection in SKILL_COLLECTIONS or (collection, key) in owners else elsewhere
             return await source(key, collection)
 
         services.graph.get_document = get_document
@@ -200,6 +207,7 @@ async def test_skl15_on_today_s_loop_a_loaded_skill_narrows_nothing(monkeypatch:
     context = AgentContext(
         org_id=w.ORG, user_id=w.ACTOR, user_email="user@corp.example", user_info={"userId": w.ACTOR, "orgId": w.ORG},
         graph_provider=rig.skills, config_service=rig.services.config, agent_skills=[SKILL],  # type: ignore[arg-type]
+        **edition_defaults.agent_context_extras(owner_key=AUTHOR),  # type: ignore[arg-type]
     )
     manager = await build_skill_manager(context, TransportRegistry())
     assert manager is not None

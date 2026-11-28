@@ -11,6 +11,8 @@ import pytest
 
 from app.harness.assembly.context import RunContext
 from app.harness.assembly.tool_environment import _identity
+from harness_core.driver.run_driver import RunRefused
+from tests.support.edition_defaults import agents_run_as_the_caller
 from tests.unit.harness.assembly.world import ORG, agent_doc, claim, pinned_spec
 
 CREATOR = {"_key": "creator-key", "userId": "creator-user", "orgId": ORG, "email": "creator@corp.example", "fullName": "Cora Creator"}
@@ -35,6 +37,12 @@ async def test_the_slack_caller_names_the_user_and_the_creator_scopes_the_knowle
     run = _run(SLACK_CALLER)
     assert (run.caller_email, run.caller_display_name) == ("sam@slack.example", "Sam from Slack")
     graph = _graph()
+    if agents_run_as_the_caller():
+        # The run acts as its actor, who has no account here: refused, never run as the creator.
+        with pytest.raises(RunRefused):
+            await _identity(run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t"))
+        graph.get_document.assert_not_awaited()
+        return
     info, service_account = await _identity(
         run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t")
     )
@@ -48,6 +56,12 @@ async def test_the_slack_caller_names_the_user_and_the_creator_scopes_the_knowle
 
 @pytest.mark.asyncio
 async def test_without_a_caller_the_run_keeps_the_creator_as_legacy_does() -> None:
+    if agents_run_as_the_caller():
+        with pytest.raises(RunRefused):
+            await _identity(
+                _run(None), agent_doc(isServiceAccount=True, createdBy="creator-key"), _graph(), logging.getLogger("t")
+            )
+        return
     info, _ = await _identity(
         _run(None), agent_doc(isServiceAccount=True, createdBy="creator-key"), _graph(), logging.getLogger("t")
     )
@@ -68,8 +82,6 @@ async def test_an_ordinary_agent_ignores_the_caller() -> None:
 
 @pytest.mark.asyncio
 async def test_the_creator_of_another_org_is_refused() -> None:
-    from harness_core.driver.run_driver import RunRefused
-
     graph = _graph()
     graph.get_document = AsyncMock(return_value={**CREATOR, "orgId": "org-2"})
     with pytest.raises(RunRefused):

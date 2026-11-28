@@ -16,6 +16,7 @@ from app.agents.run_definition import build_run_definition
 from app.api.middlewares.auth import AUTH_POLICY_ATTR
 from tests.support.agent_versions import versions_beside
 from tests.support.bound_org import bind_test_org
+from tests.support.edition_defaults import agents_run_as_the_caller
 from tests.support.mcp_tool_admission import (  # noqa: F401 - the fixtures, used by name
     mcp_approvals_open,
     mcp_approvals_required,
@@ -223,8 +224,14 @@ class TestRunDefinitionRouteScopes:
 
     @pytest.mark.asyncio
     async def test_the_slack_service_token_is_admitted_and_no_other(self) -> None:
-        # SF-6: the Slack bot admits service-account agent runs; the route decides which agents.
-        await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
+        # SF-6: the Slack bot admits service-account agent runs; the route decides which agents. A build whose
+        # agents run only as the identified person refuses every service token here.
+        if agents_run_as_the_caller():
+            with pytest.raises(HTTPException) as refused:
+                await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
+            assert refused.value.status_code == 403
+        else:
+            await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), _SLACK_SERVICE_TOKEN)
         other = {**_SLACK_SERVICE_TOKEN, "scopes": ["fetch:config"]}
         with pytest.raises(HTTPException) as refused:
             await _run_scope_checks(_route("/{agent_id}/run-definition", "GET"), other)
@@ -421,6 +428,11 @@ class TestRunDefinitionOwner:
 _LIVE_DIGEST = "sha256:" + "d" * 64
 
 
+def _listed_as(*, service_account: bool) -> dict[str, bool]:
+    """The listing's credential kwarg: none where every agent lists with the caller's own credentials."""
+    return {} if agents_run_as_the_caller() else {"is_service_account": service_account}
+
+
 class TestHubOffSavedAgentPins:
     """WP84-FU-1: with the MCP hub off a saved agent's MCP tools are pinned at admission to the listing its server
     gives the run's credential owner now, as the assistant's are, so the claim withholds a tool whose schema changed
@@ -451,12 +463,12 @@ class TestHubOffSavedAgentPins:
         [server] = definition["mcpServers"]
         assert [(t["name"], t["descriptorDigest"]) for t in server["tools"]] == [("list_prs", _LIVE_DIGEST)]
         listing.assert_awaited_once()
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": False, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": [], **_listed_as(service_account=False)}
 
     @pytest.mark.asyncio
     async def test_hub_off_a_service_account_agent_lists_with_the_agents_own_credentials(self) -> None:
         _, listing = await self._define(_service_account_agent(), hub=False)
-        assert listing.await_args.kwargs == {"agent_id": "agent-1", "is_service_account": True, "failures": []}
+        assert listing.await_args.kwargs == {"agent_id": "agent-1", "failures": [], **_listed_as(service_account=True)}
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("mcp_approvals_open")
@@ -481,3 +493,64 @@ class TestLiveListingCredentials:
         assert resolve.await_args.kwargs["executing_user_id"] == "u1"
         assert resolve.await_args.kwargs["agent_id"] == "agent-1"
         assert resolve.await_args.kwargs["is_service_account"] is True
+
+
+class TestRunDefinitionWhereAgentsRunAsTheCaller:
+    """With ``app.edition.AGENTS_RUN_AS_THE_CALLER`` on, admission serves only a person acting as themself, and a
+    service-account agent's definition lists its MCP servers as that person, never with the agent's credentials."""
+
+    @pytest.fixture(autouse=True)
+    def _caller_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app import edition
+
+        monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+
+    @staticmethod
+    async def _admitted(user: dict[str, Any], agent: dict[str, Any]) -> None:
+        """Every dependency of the route, as FastAPI runs them, then the route."""
+        import inspect
+
+        from app.api.routes.agent import get_agent_run_definition
+
+        request = _request(user)
+        for dependency in _route("/{agent_id}/run-definition", "GET").dependant.dependencies:
+            named = inspect.signature(dependency.call).parameters
+            await dependency.call(request, **({"agent_id": "agent-1"} if "agent_id" in named else {}))
+        services = _services({"role": "READER"}, agent)
+        services["graph_provider"].get_document = AsyncMock(return_value={"orgId": "org-1"})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "uk1"}), \
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock):
+            await get_agent_run_definition(request, "agent-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", [_service_account_agent(), _agent()], ids=["service-account", "ordinary"])
+    async def test_a_service_token_is_refused_whatever_the_agent(self, agent: dict[str, Any]) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await self._admitted(_SLACK_SERVICE_TOKEN, agent)
+        assert refused.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", [_service_account_agent(), _agent()], ids=["service-account", "ordinary"])
+    async def test_an_oauth_apps_user_token_is_served_and_its_client_credentials_token_refused(
+        self, agent: dict[str, Any]
+    ) -> None:
+        """An authorization-code token acts for the user who granted it (the MCP client, the CLI); a
+        client-credentials token of the same app acts as an identity the app names and is no person."""
+        from app.api.middlewares.auth import _normalize_regular_payload
+
+        app = {"orgId": "org-1", "tokenType": "oauth", "scope": "agent:execute"}
+        user_token = _normalize_regular_payload({**app, "userId": "u1", "client_id": "client-9"}, "t")
+        client_credentials = _normalize_regular_payload(
+            {**app, "userId": "client-9", "client_id": "client-9", "createdBy": "u1"}, "t"
+        )
+        await self._admitted(user_token, agent)
+        with pytest.raises(HTTPException) as refused:
+            await self._admitted(client_credentials, agent)
+        assert refused.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_agent_lists_its_servers_as_the_caller(self) -> None:
+        _, listing = await TestHubOffSavedAgentPins._define(_service_account_agent(), hub=False)
+        listing.assert_awaited_once()
+        assert not listing.await_args.kwargs.get("is_service_account", False)

@@ -98,6 +98,7 @@ from app.harness.assembly.tool_environment import (
     WEB_SOURCE,
     UnavailableItemsStep,
     build_tool_environment,
+    refuse_unidentified_run,
 )
 from app.harness.assembly.tool_sources import (
     ASKS_USER,
@@ -281,6 +282,8 @@ def _run_context(claim: NodeClaim) -> RunContext:
     """The claim's run, granted what its authority holds: where the pin says the effective set decides (CPD-10
     R3), the spec's grants the set does not hold ready are gone before anything reads them."""
     run = RunContext.from_claim(claim)
+    # Every attempt (a first claim, a resume, a scheduled or a child run) reaches its run through here.
+    refuse_unidentified_run(run)
     offered = offer(run)
     return run if offered is None else offered.narrowed(run)
 

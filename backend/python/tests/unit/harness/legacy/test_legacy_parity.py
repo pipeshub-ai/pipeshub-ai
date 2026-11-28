@@ -25,6 +25,7 @@ from harness_core.kernel.hooks.registry import HookRegistry
 from harness_core.logs import HarnessLog
 from harness_core.tools.base import Tag
 from tests.support.config_service import FakeConfigurationService
+from tests.support.edition_defaults import agents_run_as_the_caller
 from tests.unit.harness.legacy.rig import (
     APPROVALS_NODE,
     Rig,
@@ -123,14 +124,31 @@ def test_legp_a_bound_and_an_unbound_toolset_and_an_mcp_server(monkeypatch: pyte
 
 
 def test_legp_a_service_account_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Where every agent runs as the caller, a service-account agent's credentials are the person's own too.
+    owner = ("u-bob", "user:u-bob") if agents_run_as_the_caller() else ("sa", "agent:sa")
     read, read_response, fed, fed_response = _pair(
-        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=("sa", "agent:sa")
+        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=owner
     )
     assert read_response.status_code == fed_response.status_code == 200
     assert _handed(fed) == _handed(read)
-    assert _handed(fed)["query_info"]["credentialOwner"] == "sa"
-    assert toolset_path("inst-1", "sa") in read.world.config.reads
-    assert toolset_path("inst-1", "sa") not in fed.world.config.reads
+    assert _handed(fed)["query_info"]["credentialOwner"] == owner[0]
+    assert toolset_path("inst-1", owner[0]) in read.world.config.reads
+    assert toolset_path("inst-1", owner[0]) not in fed.world.config.reads
+
+
+def test_legp_a_service_account_agent_runs_as_the_caller_where_agents_run_as_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import edition
+
+    monkeypatch.setattr(edition, "AGENTS_RUN_AS_THE_CALLER", True)
+    read, read_response, fed, fed_response = _pair(
+        monkeypatch, World, "/api/v1/agent/sa/chat/stream", agent="sa", owner=("u-bob", "user:u-bob")
+    )
+    assert read_response.status_code == fed_response.status_code == 200
+    assert _handed(fed) == _handed(read)
+    assert _handed(fed)["query_info"]["credentialOwner"] == "u-bob"
+    assert toolset_path("inst-1", "sa") not in read.world.config.reads
 
 
 def test_legp_a_credential_the_store_does_not_hold_stops_both_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:

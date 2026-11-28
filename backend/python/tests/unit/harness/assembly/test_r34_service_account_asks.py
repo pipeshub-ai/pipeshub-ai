@@ -51,10 +51,11 @@ async def _service_identity(*_: Any, **__: Any) -> dict[str, Any]:  # noqa: ANN4
 async def _build(services: w.Services) -> AssembledRuntime:
     port = ScriptedModelPort(ScriptedModel(ModelScript(id="t", turns=[Turn(reply=Reply(text="ok"))])))
     assembler = PipesHubRuntimeAssembler(services, model_factory=w.model_factory(port))
+    # create=True: a build whose agents run only as the caller has no service-account identity to stand in for.
     with (
-        patch("app.api.routes.agent._enrich_user_info_for_service_account_agent_chat", _service_identity),
-        patch("app.api.routes.agent._resolve_service_account_caller_identity", _service_identity),
-        patch("app.api.routes.agent._service_account_artifact_owner", _owner),
+        patch("app.api.routes.agent._enrich_user_info_for_service_account_agent_chat", _service_identity, create=True),
+        patch("app.api.routes.agent._resolve_service_account_caller_identity", _service_identity, create=True),
+        patch("app.api.routes.agent._service_account_artifact_owner", _owner, create=True),
     ):
         runtime = await w.first_use(await assembler.build(w.claim(w.pinned_spec(tool_ids=[JIRA_SEARCH, JIRA_CREATE]))))
     await refresh_policy(runtime.approval)

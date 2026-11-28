@@ -80,15 +80,21 @@ class ChildRig:
 
     @classmethod
     async def with_the_owner_s_skill(cls) -> ChildRig:
-        services, skills = w.Services(), FakeGraphProvider()
+        services, skills = w.Services(w.agent_doc(createdBy=OWNER)), FakeGraphProvider()
         control = ControlPlane(services, ManualClock())
         services.config.put(PLATFORM_SETTINGS_KEY, {"featureFlags": {**RIG_PLATFORM_FLAGS, "ENABLE_SKILLS": True}})
         elsewhere = services.graph.get_document
+        # The agent's owner, who shares the skill through it, as a stored agent names its creator.
+        owners = {(CollectionNames.AGENT_INSTANCES.value, w.AGENT), (CollectionNames.USERS.value, OWNER)}
+        _ = await skills.batch_upsert_nodes(
+            [{"_key": w.AGENT, "orgId": w.ORG, "createdBy": OWNER}], CollectionNames.AGENT_INSTANCES.value
+        )
+        _ = await skills.batch_upsert_nodes([{"_key": OWNER, "orgId": w.ORG}], CollectionNames.USERS.value)
 
         async def get_document(
             key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
         ) -> dict[str, Any] | None:
-            source = skills.get_document if collection in SKILL_COLLECTIONS else elsewhere
+            source = skills.get_document if collection in SKILL_COLLECTIONS or (collection, key) in owners else elsewhere
             return await source(key, collection)
 
         services.graph.get_document = get_document

@@ -12,6 +12,10 @@ TELEMETRY_DEFAULT_ENABLED = True
 # same preview as ``argsPreview``, which the chat shows as it is.
 TOOL_ARGS_PREVIEW_CHARS = 2000
 
+# Whether every agent run, a service-account agent's included, is the identified person asking: a durable run
+# with no person behind it is refused, and a service-account agent's tools use that person's own credentials.
+AGENTS_RUN_AS_THE_CALLER = False
+
 # Extra migration module directories, relative to ``backend/`` (e.g. ``"db/extra/usage"``), added to the
 # ones under ``backend/db/versions/``. Read by ``backend/db`` by file path: keep this module import-free.
 EXTRA_MIGRATION_LOCATIONS: list[str] = []

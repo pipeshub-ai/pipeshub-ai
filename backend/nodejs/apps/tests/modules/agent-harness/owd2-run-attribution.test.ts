@@ -59,6 +59,14 @@ describe('OWD-2 run attribution: principal, initiator and on whose behalf', () =
       );
     });
 
+    it("an application's client_credentials token is a service; an OAuth app's user token is the person's", () => {
+      const app = { userId: 'u1', isOAuth: true, oauthClientId: 'client-app-1' };
+      expect(requestVia(verified({ ...app, isClientCredentials: true }))).to.equal('service');
+      expect(requestVia(verified(app))).to.equal('oauth_app');
+      expect(requestVia(verified({ ...app, isClientCredentials: 'true' }))).to.equal('oauth_app');
+      expect(requestVia(verified({ userId: 'u1' }, { isClientCredentials: true }))).to.equal('session');
+    });
+
     it('OWD-2: only the verified identity makes a service account; the body never does', () => {
       expect(requestPrincipalKind(verified({ userId: 'u1', isServiceAccount: true }))).to.equal('agent_service');
       expect(requestVia(verified({ userId: 'u1', isServiceAccount: true }))).to.equal('service');

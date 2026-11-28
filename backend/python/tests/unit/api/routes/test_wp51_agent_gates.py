@@ -272,7 +272,7 @@ async def _legacy_chat(agent: dict[str, Any]) -> bool:
     graph = AsyncMock()
     graph.get_agent = AsyncMock(return_value={
         "_key": "agent-1", "name": "agent", "knowledge": [], "toolsets": [], "models": [],
-        "createdBy": "caller-key", "isServiceAccount": False, **agent,
+        "orgId": ORG, "createdBy": "caller-key", "isServiceAccount": False, **agent,
     })
     graph.check_agent_permission = AsyncMock(return_value={"can_edit": False, "role": "viewer"})
     services = {"graph_provider": graph, "retrieval_service": MagicMock(), "reranker_service": MagicMock(),

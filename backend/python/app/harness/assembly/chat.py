@@ -61,11 +61,17 @@ async def build_chat_environment(
         load_system_prompts,
     )
     from app.harness.assembly.scope import requested_filters
-    from app.harness.assembly.tool_environment import ToolEnvironment, _attachment, _log
+    from app.harness.assembly.tool_environment import (
+        ToolEnvironment,
+        _attachment,
+        _log,
+        refuse_unidentified_run,
+    )
     from app.services.featureflag.platform_settings import is_user_context_enabled
     from app.utils.attachment_utils import keep_accessible_attachments
 
     assert run.chat is not None
+    refuse_unidentified_run(run)
     logger = services.logger()
     config_service = services.config_service()
     graph = await services.graph_provider()

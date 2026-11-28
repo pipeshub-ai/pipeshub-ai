@@ -72,6 +72,7 @@ from app.api.middlewares.auth import (
     require_service_token,
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
+from app.api.middlewares.person_caller import require_a_person
 from app.api.middlewares.request_log import (
     add_request_log_fields,
     bind_request_log_fields,
@@ -4109,6 +4110,8 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
             )
         ),
         Depends(require_agent_execute_for_named_agents),
+        # Before anything is read: where every agent runs as the caller, only a person acting as themself is served.
+        Depends(require_a_person),
     ],
 )
 async def get_agent_run_definition(
@@ -4133,6 +4136,7 @@ async def get_agent_run_definition(
     org (the Slack bot's service token included), any other agent needs
     ``check_agent_permission``; no access is a 404.
     """
+    from app import edition
     from app.agents.agent_loop.skills.bundle_source import GraphSkillSource
     from app.agents.mcp.service import is_mcp_enabled
     from app.agents.run_definition import (
@@ -4165,13 +4169,18 @@ async def get_agent_run_definition(
         user_doc: dict[str, Any] = {}
         # Whose own skills the run is offered when the agent assigns none (FIX-SKILLS): a service account has none.
         viewers: tuple[str | None, ...] = ()
+        # Where every agent runs as the caller, a service-account agent is the org's, run as the person asking.
+        as_service_account = bool(agent.get("isServiceAccount", False)) and not edition.AGENTS_RUN_AS_THE_CALLER
         if agent.get("isServiceAccount", False):
             await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
-        elif is_service_token(getattr(request.state, "user", None)) or user_context["isServiceAccount"]:
-            raise AgentNotFoundError(agent_id)
-        else:
+        if not as_service_account:
+            if is_service_token(getattr(request.state, "user", None)) or user_context["isServiceAccount"]:
+                raise AgentNotFoundError(agent_id)
             user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
-            if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
+            # An org's service-account agent needs no grant of its own: the org check above admitted it.
+            if not agent.get("isServiceAccount", False) and not await graph_provider.check_agent_permission(
+                agent_id, user_doc["_key"], org_key
+            ):
                 raise AgentNotFoundError(agent_id)
             viewers = (user_context["userId"], user_doc.get("_key"))
 
@@ -4207,7 +4216,7 @@ async def get_agent_run_definition(
             failures: list[dict[str, Any]] = []
             live, answered = await _live_mcp_listing(
                 servers, config_service, user_context, user_doc, services["logger"],
-                agent_id=agent_id, is_service_account=bool(agent.get("isServiceAccount", False)),
+                agent_id=agent_id, is_service_account=as_service_account,
                 failures=failures,
             )
             return McpListing(live, answered, failures)
@@ -5284,6 +5293,7 @@ UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
     dependencies=[
         Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_a_person),
     ],
 )
 async def chat(request: Request, agent_id: str) -> JSONResponse:
@@ -5528,10 +5538,13 @@ async def _resolve_mcp_server_configs(
             )
         ),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_a_person),
     ],
 )
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
+    from app import edition
+
     timer = StageTimer()
     resolved = None
     try:
@@ -5650,7 +5663,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             )
             if not agent:
                 raise AgentNotFoundError(agent_id)
-            is_service_account = agent.get("isServiceAccount", False)
+            service_account_agent = bool(agent.get("isServiceAccount", False))
+            # Where every agent runs as the caller, a service-account agent is the org's, run as the person asking.
+            is_service_account = service_account_agent and not edition.AGENTS_RUN_AS_THE_CALLER
             artifact_owner_user_id = None
 
             if is_service_account:
@@ -5671,9 +5686,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
             else:
                 # Standard user path: look up the user document and verify permissions.
+                if service_account_agent:
+                    await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
                 enriched_user_info = await _enrich_user_info(user_context, user_doc)
-                if resolved is not None and resolved.access_run:
+                if service_account_agent or (resolved is not None and resolved.access_run):
                     # Node's agent directory holds a current "may run" for this caller (CPD-10).
                     perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 else:
@@ -5833,7 +5850,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # 5. The lookup key comes from authenticated request context (user) or agent key
                 # ============================================================================
 
-                is_service_account = bool(agent.get("isServiceAccount", False))
+                is_service_account = bool(agent.get("isServiceAccount", False)) and not edition.AGENTS_RUN_AS_THE_CALLER
                 executing_user_id = user_context["userId"]
                 # For service account agents, credentials are keyed by agentKey not userId
                 credential_lookup_id = agent_id if is_service_account else executing_user_id

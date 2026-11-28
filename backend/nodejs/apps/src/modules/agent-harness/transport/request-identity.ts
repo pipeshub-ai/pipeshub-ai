@@ -32,10 +32,12 @@ export const KNOWLEDGE_LIMITED_MESSAGE =
 
 /**
  * How the caller authenticated (x.pipeshub `via`, audited), read only from
- * what the auth middleware verified: a scoped service token (the Slack bot)
- * or a service-account identity is `service`, an OAuth access token is `pat`
- * or `oauth_app` by its client, anything else a user session. The body is
- * never consulted.
+ * what the auth middleware verified: a scoped service token (the Slack bot),
+ * a service-account identity or an application's client_credentials token
+ * (it acts as an identity the app names, not for a person) is `service`; any
+ * other OAuth access token is `pat` or `oauth_app` by its client, acting for
+ * the user who granted it; anything else a user session. The body is never
+ * consulted.
  */
 export function requestVia(req: Request): RunVia {
   const verified = req as Request & {
@@ -45,7 +47,8 @@ export function requestVia(req: Request): RunVia {
   const user = verified.user;
   if (
     (verified.tokenPayload !== undefined && verified.tokenPayload !== null) ||
-    user?.['isServiceAccount'] === true
+    user?.['isServiceAccount'] === true ||
+    user?.['isClientCredentials'] === true
   ) {
     return 'service';
   }
