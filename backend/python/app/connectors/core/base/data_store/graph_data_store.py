@@ -1744,8 +1744,7 @@ class GraphDataStore(DataStoreProvider):
         return await self.graph_provider.get_existing_record_keys(record_ids)
 
     @asynccontextmanager
-    async def transaction(self, explicit: bool | None = None, *,
-                          team_carried: set[tuple[str, str, str]] | None = None) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Create a graph database transaction store context manager.
 
@@ -1772,8 +1771,6 @@ class GraphDataStore(DataStoreProvider):
         tx_store = GraphTransactionStore(
             self.graph_provider, txn, explicit=self.graph_provider.opens_explicit_transaction(explicit) is True,
         )
-        if team_carried is not None:
-            tx_store._team_carried = team_carried
 
         try:
             yield tx_store
@@ -1884,7 +1881,9 @@ class GraphDataStore(DataStoreProvider):
         while True:
             attempts += 1
             try:
-                async with self.transaction(explicit=explicit, team_carried=carried) as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
+                    if isinstance(tx_store, GraphTransactionStore):
+                        tx_store._team_carried = carried
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not self.is_transient_error(e, explicit=explicit):
@@ -1917,7 +1916,9 @@ class GraphDataStore(DataStoreProvider):
         while True:
             attempts += 1
             try:
-                async with self.transaction(explicit=explicit, team_carried=carried) as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
+                    if isinstance(tx_store, GraphTransactionStore):
+                        tx_store._team_carried = carried
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not (self.graph_provider.is_write_conflict(e) or isinstance(e, ScopeGenerationConflict)):
