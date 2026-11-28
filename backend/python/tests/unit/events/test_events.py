@@ -2640,12 +2640,12 @@ class TestNormalizeContentForDedup:
         result = ep._normalize_content_for_dedup(html, record_type="INLINE_COMMENT")
         assert b"Inline" in result
 
-    def test_html_with_empty_text_returns_original(self):
-        """HTML that produces empty text returns original content."""
+    def test_html_with_empty_text_normalizes_to_nothing(self):
+        """HTML with no text has nothing to compare: its markup alone would make every blank page a duplicate."""
         ep, _, _, _ = _make_event_processor()
         html = b"<script>only scripts</script>"
         result = ep._normalize_content_for_dedup(html, mime_type="text/html")
-        assert result == html
+        assert result == b""
 
     def test_json_with_block_groups_extracts_data(self):
         """JSON with block_groups extracts data fields."""
@@ -2677,13 +2677,13 @@ class TestNormalizeContentForDedup:
         result = ep._normalize_content_for_dedup(content)
         assert b'"x": 1' in result
 
-    def test_json_block_groups_all_null_data_returns_original(self):
-        """Block groups where all data is None returns original content."""
+    def test_json_block_groups_all_null_data_normalizes_to_nothing(self):
+        """Block groups where all data is None have nothing to compare, as a blank page."""
         ep, _, _, _ = _make_event_processor()
         payload = {"block_groups": [{"data": None}]}
         content = json.dumps(payload).encode("utf-8")
         result = ep._normalize_content_for_dedup(content)
-        assert result == content
+        assert result == b""
 
     def test_plain_json_dict_sorted(self):
         """Plain JSON dict is re-serialized with sorted keys."""
