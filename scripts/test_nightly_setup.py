@@ -48,6 +48,27 @@ class TestRotation(unittest.TestCase):
         self.assertEqual(ns.setup_for(date(2026, 9, 17)), ns.DEFAULT)
 
 
+class TestSimSlot(unittest.TestCase):
+    """The slice of the rotating simulator suites each run keeps (integration-tests/sim_tiers.json)."""
+
+    def test_every_monday_to_sunday_week_takes_every_slot_once(self) -> None:
+        monday = date(2026, 11, 23)
+        for week in range(60):  # across a year boundary and a 53-week year
+            start = monday + timedelta(days=7 * week)
+            slots = [ns.sim_slot(start + timedelta(days=i)) for i in range(7)]
+            self.assertEqual(sorted(slots), list(range(ns.SIM_SLOTS)), start)
+
+    def test_a_slot_moves_to_every_weekday_over_seven_weeks_so_it_meets_every_broker(self) -> None:
+        for monday in (date(2026, 11, 23), date(2027, 12, 6)):
+            weekdays = set()
+            for week in range(7):
+                start = monday + timedelta(days=7 * week)
+                weekdays.add([ns.sim_slot(start + timedelta(days=i)) for i in range(7)].index(0))
+            self.assertEqual(weekdays, set(range(7)), monday)
+        kafka_nights = {iso for iso in range(1, 8) if ns.ROTATION.get(iso, {}).get("message_broker") == "kafka"}
+        self.assertTrue(kafka_nights and len(kafka_nights) < 7, "the broker rotates by weekday")
+
+
 class TestResolve(unittest.TestCase):
     def test_pull_requests_always_use_the_default(self) -> None:
         self.assertEqual(ns.resolve("pull_request", date(2026, 9, 16), {"message_broker": "kafka"}), ns.DEFAULT)
@@ -81,6 +102,7 @@ class TestMain(unittest.TestCase):
             self.assertEqual(lines["message_broker"], "kafka")
             self.assertEqual(lines["label"], "Kafka message queue")
             self.assertEqual(lines["is_default"], "false")
+            self.assertEqual(lines["sim_slot"], str(ns.sim_slot(date(2026, 9, 16))))
             self.assertIn("Kafka message queue, on both Neo4j and ArangoDB", summary.read_text())
 
     def test_an_unknown_choice_exits_non_zero(self) -> None:

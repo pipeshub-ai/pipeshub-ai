@@ -65,6 +65,15 @@ on:
             - resilience
             - permissions
             - storage
+      sim_tier:
+        description: 'Which cases of a simulator suite run (integration-tests/sim_tiers.json): all, the nightly selection, or the pull-request core'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - nightly
+          - pr
       commit_hash:
         description: 'Full 40-character commit SHA to test (defaults to the dispatched branch). For a fork PR, the SHA you reviewed.'
         required: false
@@ -168,6 +177,9 @@ jobs:
       message_broker: ${{ steps.pick.outputs.message_broker }}
       label: ${{ steps.pick.outputs.label }}
       is_default: ${{ steps.pick.outputs.is_default }}
+      # The slice of the rotating simulator suites this run keeps, fixed per run so a re-run of failed jobs tests
+      # the same cases (scripts/nightly_setup.py sim_slot, integration-tests/sim_tiers.json).
+      sim_slot: ${{ steps.pick.outputs.sim_slot }}
     steps:
       - name: Checkout the picker
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,12 +216,14 @@ jobs:
         # `strategy` can't read the job env block, so derive from inputs/labels here.
         graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Five
+        # slow connector suites do not all serialize on one worker. Six
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
         # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
-        # CONN_SHARD_5 (one source of truth); "core" is everything those five
-        # and "demo" do not own, so the seven partition -m "integration" exactly.
+        # CONN_SHARD_6 (one source of truth); "core" is everything those six
+        # and "demo" do not own, so the eight partition -m "integration" exactly.
+        # connectors-6 holds only simulator suites and runs them on the fake
+        # model (integration-tests/sim_tiers.json, scripts/sim_shard_env.py).
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -221,11 +235,11 @@ jobs:
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
         # A pull request runs only the shards its changes can affect (the
-        # changes job above); it-all runs all seven.
+        # changes job above); it-all runs all eight.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'it-all') && '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","connectors-6","core","demo"]' || needs.changes.outputs.integration_shards)) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","connectors-6","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -426,14 +440,14 @@ jobs:
       CONNSIM_SERVICENOW_REF: 72f5b98a07c958604c64b86ead785a2236a7516b
       SERVICENOW_SIM_IMAGE: pipeshub/connectors-simulator:servicenow-it
       NEEDS_SERVICENOW_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'servicenow_sim')) && 'true' || 'false' }}
-      # The zammad_sim suite runs against the Zammad simulator on shard 2. It needs no secret and no dataset: each test
-      # loads its own installation, and the connector reaches the simulator by service name (zammad-sim). It does not
-      # need the zammad-source profile (the live zammad suite's real Zammad on shard 3); shard 3 has no room for it
-      # (scripts/shard_durations.json). CONNSIM_ZAMMAD_REF is a connectors-simulator commit with connsim/sources/zammad
+      # The zammad_sim suite runs against the Zammad simulator on shard 6, the simulator shard, on the fake model. It
+      # needs no secret and no dataset: each test loads its own installation, and the connector reaches the simulator by
+      # service name (zammad-sim). It does not need the zammad-source profile (the live zammad suite's real Zammad on
+      # shard 3). CONNSIM_ZAMMAD_REF is a connectors-simulator commit with connsim/sources/zammad
       # as checked against real Zammad 6.4.1 and 7.2.2 (roles with expand, the access rules the suite compares with).
       CONNSIM_ZAMMAD_REF: 8dac96d3a89c5fe85f56224e93151fb357dc4378
       ZAMMAD_SIM_IMAGE: pipeshub/connectors-simulator:zammad-it
-      NEEDS_ZAMMAD_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad_sim')) && 'true' || 'false' }}
+      NEEDS_ZAMMAD_SIM: ${{ (matrix.shard == 'connectors-6' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -536,15 +550,13 @@ jobs:
       # Zendesk (shard 2) at ~15 min, what they take when they work; today
       # their tests fail at setup and cost about a minute, so shards 2 and 4
       # finish earlier until they are fixed. servicenow's 60 min (shard 2),
-      # servicenow_sim's 25 min (shard 4, ~261 min with it) and zammad_sim's
-      # 30 min (shard 2, ~262 min with it) are still estimates.
+      # servicenow_sim's 25 min (shard 4, ~261 min with it) is still an
+      # estimate.
       # Shard 1 keeps nextcloud and bookstack, the only suites needing
       # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
       # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
-      # zendesk (its token is minted only there), the Gmail suites (the
-      # Gmail simulator starts only there) and zammad_sim (the Zammad
-      # simulator starts only there; shard 3, beside the live zammad suite,
-      # would pass the job's 300 min with it). Shard 3 keeps zammad
+      # zendesk (its token is minted only there) and the Gmail suites (the
+      # Gmail simulator starts only there). Shard 3 keeps zammad
       # (zammad-source), notion (notion-sim) and sharepoint_sim, whose
       # simulator answers Microsoft's host names for the whole stack, so the
       # live sharepoint and outlook suites must stay off shard 3. Jira and
@@ -552,14 +564,17 @@ jobs:
       # and 3 only. Shard 4 starts the ServiceNow simulator, which must stay
       # off shard 2 (see NEEDS_SERVICENOW_SIM). Shard 5 starts nothing extra:
       # google_drive_workspace alone is ~184 min, so it shares shard 5 with s3
-      # only.
+      # only. Shard 6 holds only simulator suites, the ones
+      # integration-tests/sim_tiers.json lists, and runs them on the fake model
+      # (scripts/sim_shard_env.py); no live suite may join it.
       # Rebalance with scripts/shard_balance.py when a suite grows, and keep
       # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
       CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
-      CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow or zammad_sim"
+      CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow"
       CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
       CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear or servicenow_sim"
       CONN_SHARD_5: "google_drive_workspace or s3"
+      CONN_SHARD_6: "zammad_sim"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -587,6 +602,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
+
+      # A simulator shard (integration-tests/sim_tiers.json) runs on the fake model, and there a setting its suites
+      # miss is an error, not a skip. Before the model check, so the check sees the provider the shard uses.
+      - name: Use the fake model on simulator shards
+        run: python3 scripts/sim_shard_env.py --shard "$SHARD" --connectors "$CONNECTORS_INPUT" >> "$GITHUB_ENV"
 
       # Stop before the stack build when the chosen provider's key is missing.
       - name: Check the AI model provider
@@ -886,7 +906,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -973,6 +993,9 @@ jobs:
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
+          # At step level, so no simulator env file loaded into GITHUB_ENV can change which cases run.
+          SIM_TIER: ${{ (github.event_name == 'pull_request' && 'pr') || (github.event_name == 'schedule' && 'nightly') || github.event.inputs.sim_tier || 'all' }}
+          SIM_SLOT: ${{ needs.setup.outputs.sim_slot }}
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
@@ -986,7 +1009,8 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-6) MARKERS="$CONN_SHARD_6" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1003,11 +1027,40 @@ jobs:
           # No exit-code special-casing: an empty selection (pytest exit 5) fails.
           # On a normal run that means a shard's marker was dropped or renamed; on
           # a dispatch it means the chosen marker matches no tests (e.g. messaging).
-          pytest -m "$MARKERS" -v --tb=short \
+          # A simulator suite keeps the cases its tier names (integration-tests/sim_tiers.json); a nightly
+          # rotating suite keeps the run's slot of its non-core cases. On a simulator job, a serial collection
+          # first prints what each suite keeps and stops on a tier mistake with its reason, which xdist's
+          # workers would report only as an internal error.
+          if [ "${SIM_JOB:-}" = "1" ]; then
+            if ! pytest --collect-only -q -m "$MARKERS" --sim-tier "$SIM_TIER" --sim-slot "$SIM_SLOT" \
+                > "$RUNNER_TEMP/sim-collect-neo4j.txt" 2>&1; then
+              cat "$RUNNER_TEMP/sim-collect-neo4j.txt"
+              exit 1
+            fi
+            grep -E '^sim tiers|collected|deselected' "$RUNNER_TEMP/sim-collect-neo4j.txt" || true
+          fi
+          pytest -m "$MARKERS" --sim-tier "$SIM_TIER" --sim-slot "$SIM_SLOT" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/neo4j-results.xml 2>&1
 
 
+
+      # A simulator suite reads what was synced and who may read it, not what the model said, so a fake model that
+      # died or stopped answering after set-up leaves every test green. This step makes that run fail.
+      - name: 'Neo4j: Check the fake model stayed up'
+        if: ${{ !cancelled() && env.SIM_JOB == '1' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        working-directory: deployment/docker-compose
+        run: |
+          id=$(docker compose -f docker-compose.integration.neo4j.yml $FAKE_MODEL_COMPOSE ps -a -q fakellm)
+          state=""
+          if [ -n "$id" ]; then
+            state=$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")
+          fi
+          if [ "$state" != "running 0 healthy" ]; then
+            echo "::error::The fake model did not stay up through the tests (status, restarts, health: ${state:-no container}). The suites cannot see this: their model calls failed unseen. See the fakellm log in this leg's docker logs."
+            exit 1
+          fi
+          echo "Fake model stayed up: $state"
 
       - name: 'Neo4j: Run Playwright e2e tests'
         if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && env.RUN_PLAYWRIGHT == 'true' }}
@@ -1056,10 +1109,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1079,13 +1132,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1179,6 +1232,9 @@ jobs:
           TEST_ARANGO_USERNAME: root
           TEST_ARANGO_PASSWORD: ${{ env.ARANGO_PASSWORD }}
           TEST_ARANGO_DB_NAME: es
+          # At step level, so no simulator env file loaded into GITHUB_ENV can change which cases run.
+          SIM_TIER: ${{ (github.event_name == 'pull_request' && 'pr') || (github.event_name == 'schedule' && 'nightly') || github.event.inputs.sim_tier || 'all' }}
+          SIM_SLOT: ${{ needs.setup.outputs.sim_slot }}
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
@@ -1192,7 +1248,8 @@ jobs:
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
             connectors-4) MARKERS="$CONN_SHARD_4" ;;
             connectors-5) MARKERS="$CONN_SHARD_5" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
+            connectors-6) MARKERS="$CONN_SHARD_6" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not zendesk and not storage and not cifs and not snowflake and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -1209,9 +1266,38 @@ jobs:
           # No exit-code special-casing: an empty selection (pytest exit 5) fails.
           # On a normal run that means a shard's marker was dropped or renamed; on
           # a dispatch it means the chosen marker matches no tests (e.g. messaging).
-          pytest -m "$MARKERS" -v --tb=short \
+          # A simulator suite keeps the cases its tier names (integration-tests/sim_tiers.json); a nightly
+          # rotating suite keeps the run's slot of its non-core cases. On a simulator job, a serial collection
+          # first prints what each suite keeps and stops on a tier mistake with its reason, which xdist's
+          # workers would report only as an internal error.
+          if [ "${SIM_JOB:-}" = "1" ]; then
+            if ! pytest --collect-only -q -m "$MARKERS" --sim-tier "$SIM_TIER" --sim-slot "$SIM_SLOT" \
+                > "$RUNNER_TEMP/sim-collect-arango.txt" 2>&1; then
+              cat "$RUNNER_TEMP/sim-collect-arango.txt"
+              exit 1
+            fi
+            grep -E '^sim tiers|collected|deselected' "$RUNNER_TEMP/sim-collect-arango.txt" || true
+          fi
+          pytest -m "$MARKERS" --sim-tier "$SIM_TIER" --sim-slot "$SIM_SLOT" -v --tb=short \
             -n "$WORKERS" --dist loadgroup \
             --junitxml=reports/arango-results.xml 2>&1
+
+      # A simulator suite reads what was synced and who may read it, not what the model said, so a fake model that
+      # died or stopped answering after set-up leaves every test green. This step makes that run fail.
+      - name: 'ArangoDB: Check the fake model stayed up'
+        if: ${{ !cancelled() && env.SIM_JOB == '1' && steps.arango-ready.outcome == 'success' }}
+        working-directory: deployment/docker-compose
+        run: |
+          id=$(docker compose -f docker-compose.integration.arango.yml $FAKE_MODEL_COMPOSE ps -a -q fakellm)
+          state=""
+          if [ -n "$id" ]; then
+            state=$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$id")
+          fi
+          if [ "$state" != "running 0 healthy" ]; then
+            echo "::error::The fake model did not stay up through the tests (status, restarts, health: ${state:-no container}). The suites cannot see this: their model calls failed unseen. See the fakellm log in this leg's docker logs."
+            exit 1
+          fi
+          echo "Fake model stayed up: $state"
 
       - name: 'ArangoDB: Run Playwright e2e tests'
         if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
@@ -1230,10 +1316,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1253,7 +1339,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $FAKE_MODEL_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'

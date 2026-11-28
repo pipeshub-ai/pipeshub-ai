@@ -367,6 +367,8 @@ jobs:
   connector-coverage:
     name: Connector integration coverage
     runs-on: ubuntu-latest
+    # A test that hangs (a server started at import, a child that never exits) ends here, not after six hours.
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

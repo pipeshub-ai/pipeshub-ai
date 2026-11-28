@@ -37,6 +37,21 @@ NAMES: dict[tuple[str, str], str] = {
 }
 
 
+# How many nights a rotating simulator suite (integration-tests/sim_tiers.json) spreads its non-core cases over.
+SIM_SLOTS = 7
+
+
+def sim_slot(day: date) -> int:
+    """The slice of the rotating simulator suites this run keeps (integration-tests/helper/sim_tiers.py).
+
+    Each Monday-to-Sunday week takes every slot once, so every case runs once a week. The weekday a slot lands on
+    moves one day each week (the week count runs on across years), so over seven weeks a case meets every weekday's
+    setup, the message broker included, instead of always running on the same one.
+    """
+    days = day.toordinal() - 1  # 0001-01-01 is a Monday
+    return (days % 7 + days // 7) % SIM_SLOTS
+
+
 def setup_for(day: date) -> dict[str, str]:
     return {**DEFAULT, **ROTATION.get(day.isoweekday(), {})}
 
@@ -84,7 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     label = describe(setup)
     is_default = setup == DEFAULT
     outputs = "".join(f"{part}={value}\n" for part, value in setup.items())
-    _append("GITHUB_OUTPUT", outputs + f"label={label}\nis_default={str(is_default).lower()}\n")
+    _append(
+        "GITHUB_OUTPUT",
+        outputs + f"label={label}\nis_default={str(is_default).lower()}\nsim_slot={sim_slot(day)}\n",
+    )
     note = (
         "the default setup."
         if is_default

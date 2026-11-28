@@ -46,6 +46,9 @@ os.environ.setdefault("ORG_CONTEXT_MODE", "shadow")
 # Import after backend path is added to sys.path
 from helper.config_service_fixture import config_service  # noqa: F401, E402
 
+# Simulator suite tiers (sim_tiers.json): which cases a pull request, the nightly and a full run keep.
+pytest_plugins = ("helper.sim_tiers",)
+
 
 def _load_env() -> None:
     """

@@ -277,11 +277,12 @@ pytest -m "integration and not slow" -v             # exclude slow
 
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
-five shards (`CONN_SHARD_1` … `CONN_SHARD_5`), and a sixth `core` shard runs
-everything those five do not name, plus the browser tests. A seventh `demo` shard
+six shards (`CONN_SHARD_1` … `CONN_SHARD_6`), and a seventh `core` shard runs
+everything those six do not name, plus the browser tests. The sixth,
+`connectors-6`, is the simulator shard (below). An eighth `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. An eighth
+workspace has data of its own; `core` leaves the `demo` marker out. A ninth
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
@@ -326,13 +327,57 @@ job's summary lists each shard with the file that started it:
 - Unit tests, docs, other workflows and the helper unit tests (`unit/`) run no
   shard and need no approval. When `integration-tests/` changed, the helper unit
   tests run in the `it-fork` job instead.
-- Anything else, such as the Node API or shared Python code, runs all seven.
+- Anything else, such as the Node API or shared Python code, runs all eight.
 
-The `it-all` label runs all seven anyway. A push, the schedule and a manual run
+The `it-all` label runs all eight anyway. A push, the schedule and a manual run
 always run every shard. A new connector's marker goes in `CONNECTOR_SHARDS` in
 `scripts/pr_changes.py` as well as in `CONN_SHARD_N`; `python3 -m unittest
 discover -s scripts` fails until the two agree. A new connector code folder runs
 every shard until it is added to `CONNECTOR_CODE_MARKERS`.
+
+**The simulator shard and suite tiers.** `connectors-6` holds only simulator
+suites, the ones `sim_tiers.json` lists, and runs them on the fake model
+(`fake_model/server.py`, `docker-compose.integration.fake-model.yml`): they check
+what a connector syncs and who may read it, which needs no paid model.
+`scripts/sim_shard_env.py` sets that up before the AI model check, for the shard and
+for a manual run of one of its suites, and makes a missing simulator setting an
+error there instead of a skip. No live suite may join the shard
+(`scripts/test_sim_tiers.py` checks).
+
+Each listed suite also says which of its cases run when
+(`helper/sim_tiers.py`, from `--sim-tier` and `--sim-slot`):
+
+- `"pr": "core"` keeps only the cases marked `sim_core` on a pull request;
+  `"pr": "all"` keeps the whole suite.
+- `"nightly": "all"` runs the whole suite every night. `"nightly": "rotate"` runs
+  the core every night and one seventh of the other cases: those whose id hashes
+  to the run's slot. The `setup` job picks the slot once per run
+  (`sim_slot` in `scripts/nightly_setup.py`), so re-running a failed job tests
+  the same cases. Every case runs once in each Monday-to-Sunday week on each
+  graph database (ArangoDB three nights after Neo4j), and on a different
+  weekday each week, so over seven weeks it meets each weekday's setup, the
+  message broker included. `"rotate_legs": ["neo4j"]` keeps a suite's rotation
+  to one database.
+- A manual run takes the `sim_tier` input (`all` by default).
+
+To add a simulator suite, change all of these (the guards in `scripts/` fail
+until they agree):
+
+- its marker in `pytest.ini`, on `CONN_SHARD_6` (or another simulator shard
+  named in `sim_tiers.json`), and in `CONNECTOR_SHARDS` in `scripts/pr_changes.py`;
+- its connector's code folder in `CONNECTOR_CODE_MARKERS`, so a change there
+  runs it;
+- an entry in `sim_tiers.json`, and `sim_core` on its core cases if the whole
+  suite is too long for a pull request;
+- its simulator's steps in `integration-tests.yml`: a `NEEDS_<MARKER>` flag keyed
+  on its shard (`scripts/sim_wiring.py` checks), the checkout and build, and its
+  compose variable on every compose line, next to `$FAKE_MODEL_COMPOSE`;
+- its compose overlay in `NOT_SHIPPED`
+  (`backend/python/tests/unit/harness/security/test_container_baseline.py`);
+- its marker in the `connectors` dispatch choices.
+
+Running one tier locally: `pytest -m zammad_sim --sim-tier pr connectors/zammad`, or one
+night's slice: `--sim-tier nightly --sim-slot 3`.
 
 **Pull requests and secrets.** `integration-tests.yml` runs on `pull_request`.
 For a branch in this repository, the shards it picks run with the connector and

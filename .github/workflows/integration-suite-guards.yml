@@ -101,6 +101,7 @@ jobs:
             integration-tests/unit/test_citation_viewer_stats.py
             integration-tests/unit/test_perf_costclass.py
             integration-tests/unit/test_perf_costclass_driver.py
+            integration-tests/unit/test_sim_tiers_hook.py
         run: |
           # `-c` and `--noconftest` because the files sit inside integration-tests,
           # whose pytest.ini asks for pytest-order and whose conftest expects a

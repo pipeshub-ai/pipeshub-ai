@@ -33,10 +33,19 @@ case "$provider" in
       exit 1
     fi
     ;;
+  ollama)
+    # The simulator shards run on the fake model (integration-tests/fake_model), which speaks
+    # Ollama's API. Without an endpoint the helper skips this provider and model setup fails later.
+    echo "AI model provider: Ollama at ${TEST_OLLAMA_ENDPOINT:-<unset>}"
+    if [ -z "${TEST_OLLAMA_ENDPOINT:-}" ]; then
+      echo "::error::TEST_AI_MODEL_PROVIDER is ollama but TEST_OLLAMA_ENDPOINT is not set."
+      exit 1
+    fi
+    ;;
   *)
-    # gemini, groq and ollama are helper providers too, but these workflows pass none of their
-    # settings, and a named provider gets no fallback, so model setup would fail later.
-    echo "::error::TEST_AI_MODEL_PROVIDER must be openAI, azureOpenAI or openAICompatible (check its case); the workflows configure no other provider."
+    # gemini and groq are helper providers too, but these workflows pass none of their settings,
+    # and a named provider gets no fallback, so model setup would fail later.
+    echo "::error::TEST_AI_MODEL_PROVIDER must be openAI, azureOpenAI, openAICompatible or ollama (check its case); the workflows configure no other provider."
     exit 1
     ;;
 esac
