@@ -606,7 +606,7 @@ async def test_a_member_added_while_a_group_s_grant_is_written_keeps_its_members
     async def add() -> None:
         """T2, run again after a conflict once T1 is no longer open, as its caller does (retry_on_deadlock: what a rolled-back attempt read is
         carried to the next), and committed through the store, which makes again a membership a reaper removed while T2 waited."""
-        graph_data_store._CARRIED_MEMBERSHIPS.set(set())      # this task's context: one retried call
+        graph_data_store._CARRIED_MEMBERSHIPS.set((set(), set()))      # this task's context: one retried call
         while True:
             t2 = await g.begin_transaction(*collections)
             open_.append(t2)

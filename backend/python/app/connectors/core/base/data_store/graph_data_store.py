@@ -159,7 +159,7 @@ _ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 # The flagged memberships that the rolled-back attempts of one retried call read before their grants (GraphTransactionStore._held_before): an
 # attempt that met a reaper (on ArangoDB, as a conflict) runs again in a new snapshot, where a membership the reaper removed is gone.
-_CARRIED_MEMBERSHIPS: contextvars.ContextVar[set[tuple[str, str, str]] | None] = contextvars.ContextVar(
+_CARRIED_MEMBERSHIPS: contextvars.ContextVar[tuple[set[tuple[str, str, str, str]], set[tuple[str, str, str]]] | None] = contextvars.ContextVar(
     "retry_on_deadlock_carried_memberships", default=None
 )
 
@@ -198,7 +198,7 @@ def retry_on_deadlock(max_retries: int = _RETRY_ATTEMPTS):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             logger = logging.getLogger(func.__module__)
-            carried = _CARRIED_MEMBERSHIPS.set(set()) if _CARRIED_MEMBERSHIPS.get() is None else None      # the outermost call's
+            carried = _CARRIED_MEMBERSHIPS.set((set(), set())) if _CARRIED_MEMBERSHIPS.get() is None else None      # the outermost call's: (grants, memberships)
             try:
                 last_exception = None
                 for attempt in range(max_retries):
@@ -377,7 +377,7 @@ class GraphTransactionStore(TransactionStore):
         # The flagged memberships its grants keep, read before each grant statement, and those grants: a reaper this transaction waited for (or
         # conflicted with) may have removed one before the lock was taken, and it is made again before commit (_make_held_again).
         self._held_before: set[tuple[str, str, str]] = set()
-        self._grants_written: list[tuple[str, str, str, str]] = []
+        self._grants_read: list[tuple[str, str, str, str]] = []      # the grants whose memberships were read, one per holder
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -730,8 +730,13 @@ class GraphTransactionStore(TransactionStore):
         if not grants:
             return await write(edges)
         if self.explicit:
-            self._held_before.update(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn, lock=False))
-            self._grants_written.extend(grants)
+            # A holder read once: its next grants are written under the lock its first took, so no reaper of that app runs in between.
+            # shortcut: a holder whose grants in one transaction reach two apps (a team) is read for the first app only; read per app if teams grant across apps in one sync.
+            seen = {(hc, hi) for hc, hi, _, _ in self._grants_read}
+            fresh = list({(hc, hi): (hc, hi, tc, ti) for hc, hi, tc, ti in grants if (hc, hi) not in seen}.values())
+            if fresh:
+                self._held_before.update(await self.graph_provider.lock_external_app_memberships(fresh, transaction=self.txn, lock=False))
+                self._grants_read.extend(fresh)
             return await write(edges, lock_grants=grants, lock_held=self._app_locks)
         held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
@@ -757,10 +762,12 @@ class GraphTransactionStore(TransactionStore):
         grant of this transaction (or of a rolled-back attempt of the same call) that the grants keep and that is gone, which a reaper this
         transaction waited for removed. shortcut: a membership removed by a reaper that ended before this transaction read it is not known here;
         the source's next membership sync makes it again."""
-        wanted = self._held_before | (_CARRIED_MEMBERSHIPS.get() or set())
-        if not wanted or not self._grants_written:
+        carried_grants, carried_memberships = _CARRIED_MEMBERSHIPS.get() or (set(), set())
+        wanted = self._held_before | carried_memberships
+        grants = sorted(set(self._grants_read) | carried_grants)
+        if not wanted or not grants:
             return
-        kept = set(await self.graph_provider.lock_external_app_memberships(self._grants_written, transaction=self.txn, lock=False))
+        kept = set(await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn, lock=False))
         await self._make_again(sorted(wanted - kept))
 
     async def _write_grant_alone(self, edges: list[dict], grants: list[tuple[str, str, str, str]], held: list[tuple[str, str, str]],
@@ -1368,7 +1375,9 @@ class GraphTransactionStore(TransactionStore):
         self._app_locks.clear()
         carried = _CARRIED_MEMBERSHIPS.get()
         if carried is not None:
-            carried |= self._held_before      # a retry of the call runs again in a new snapshot, where a membership a reaper removed is gone
+            # a retry of the call runs again in a new snapshot, where a membership a reaper removed is gone: what was read, and the grants it was read for
+            carried[0].update(self._grants_read)
+            carried[1].update(self._held_before)
         await self.graph_provider.rollback_transaction(self.txn)
 
     async def publish_with_commit(

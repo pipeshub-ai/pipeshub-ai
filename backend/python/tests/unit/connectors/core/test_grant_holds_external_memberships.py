@@ -364,7 +364,7 @@ async def test_a_retry_makes_again_what_its_rolled_back_attempt_read() -> None:
     the reaper's removal is committed and reads nothing: it still makes the membership again before it commits. Outside a retried call
     nothing is carried."""
     from app.connectors.core.base.data_store import graph_data_store
-    token = graph_data_store._CARRIED_MEMBERSHIPS.set(set())
+    token = graph_data_store._CARRIED_MEMBERSHIPS.set((set(), set()))
     try:
         first, provider, _ = _store(held=[("users", "u1", "app1")])
         provider.rollback_transaction = AsyncMock()
@@ -415,3 +415,19 @@ async def test_without_a_transaction_a_failed_read_of_the_people_after_the_grant
     with pytest.raises(ConnectionError):
         await store.batch_create_edges([_grant("person", "p1")], "permission")
     store.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
+
+
+@pytest.mark.asyncio
+async def test_a_holder_s_memberships_are_read_once_per_transaction() -> None:
+    """A group's grant on a hundred records reads the memberships it keeps once (its members can be thousands), and the check before commit
+    reads them for that one grant: the later grants are written under the lock the first took."""
+    store, provider, _ = _store(held=[("users", "m1", "app1")])
+    provider.commit_transaction = AsyncMock()
+    store.ensure_app_membership = AsyncMock()
+    for i in range(3):
+        await store.batch_create_edges([_grant("groups", "g1", ti=f"r{i}")], "permission")
+    await store.batch_create_edges([_grant("groups", "g1", ti="r9"), _grant("users", "u2", ti="r9")], "permission")
+    reads = [c.args[0] for c in provider.lock_external_app_memberships.await_args_list]
+    assert reads == [[("groups", "g1", "records", "r0")], [("users", "u2", "records", "r9")]]
+    await store.commit()
+    assert provider.lock_external_app_memberships.await_args.args[0] == [("groups", "g1", "records", "r0"), ("users", "u2", "records", "r9")]
