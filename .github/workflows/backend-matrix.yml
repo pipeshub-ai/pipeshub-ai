@@ -249,7 +249,7 @@ jobs:
   changes:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -278,7 +278,7 @@ jobs:
     name: ${{ matrix.suite }} · ${{ matrix.backend }}${{ matrix.shard && format(' ({0})', matrix.shard) || '' }}
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     needs: changes
@@ -523,7 +523,7 @@ jobs:
     needs: changes
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       needs.changes.outputs.matrix_storage == 'true'

@@ -35,7 +35,7 @@ jobs:
   changes:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -62,7 +62,7 @@ jobs:
     # Skipped when the pull request changes only docs, which the stack never reads.
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))) &&
       needs.changes.outputs.e2e_smoke == 'true' &&

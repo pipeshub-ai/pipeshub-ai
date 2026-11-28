@@ -61,7 +61,7 @@ jobs:
     name: ${{ matrix.lane == 'harness' && 'es-pr' || 'es-engine-nightly' }} (run.sh ${{ matrix.lane }})
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))) &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
@@ -174,7 +174,7 @@ jobs:
     name: es-matrix (${{ github.event.schedule == '0 2 * * 6' && 'weekly' || 'nightly' }})
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))) &&
       (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.lane == 'matrix' || github.event.inputs.lane == 'all')))

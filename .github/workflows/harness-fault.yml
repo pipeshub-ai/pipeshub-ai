@@ -33,7 +33,7 @@ jobs:
     name: Crash points (${{ matrix.broker }})
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness","harness-fault"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness","harness-fault"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness') || contains(github.event.pull_request.labels.*.name, 'harness-fault')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness","harness-fault"]'), github.event.label.name)))
     runs-on: ubuntu-latest

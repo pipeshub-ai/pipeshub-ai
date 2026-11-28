@@ -46,7 +46,12 @@ HEAVY = {
     "codeql.yml": "ci:security",
     "graph-explorer-tests.yml": "ci:full",
 }
-_ALLOWED = re.compile(r"github\.event\.action != 'unlabeled' && contains\(fromJSON\('(\[[^\]]*\])'\), github\.event\.label\.name\)")
+# Jobs of a heavy workflow that run without the gate: cheap jobs its gated jobs need, or a light job for forks.
+UNGATED = {
+    "integration-tests.yml": {"changes", "setup", "it-fork"},
+    "helm-chart.yml": {"check"},
+}
+_ALLOWED = re.compile(r"github\.event\.action == 'labeled' && contains\(fromJSON\('(\[[^\]]*\])'\), github\.event\.label\.name\)")
 _ACTED_ON = re.compile(r"github\.event\.action != 'unlabeled' \|\| contains\(fromJSON\('(\[[^\]]*\])'\), github\.event\.label\.name\)")
 # A label the workflow's own conditions read, outside the gate (for example integration-tests' it-arango).
 _READS = re.compile(r"(?:labels\.\*\.name, |label\.name == )'([^']+)'")
@@ -63,12 +68,13 @@ def _has_any(labels: list[str]) -> str:
 def gate_terms(allowed: list[str], acted_on: list[str]) -> list[str]:
     """The pull request terms of the gate, as written in every heavy job.
 
-    `allowed` start the job (added, or already on the pull request); `acted_on` adds the labels whose
+    `allowed` start the job (just added, or already on the pull request); `acted_on` adds the labels whose
     removal re-runs it (allowed plus, say, skip-it). Only the label just added or removed counts on a
-    label event, so an unrelated label re-runs nothing.
+    label event, so an unrelated label re-runs nothing, and a removed label is never an opt-in: removal
+    re-runs only while an allowed label is still on the pull request.
     """
     return [
-        f"(github.event.action != 'unlabeled' && contains(fromJSON('{_arr(allowed)}'), github.event.label.name))",
+        f"(github.event.action == 'labeled' && contains(fromJSON('{_arr(allowed)}'), github.event.label.name))",
         f"(github.event.action != 'labeled' && ({_has_any(allowed)}) &&"
         f" (github.event.action != 'unlabeled' || contains(fromJSON('{_arr(acted_on)}'), github.event.label.name)))",
     ]
@@ -86,7 +92,8 @@ def group_flag(allowed: list[str], acted_on: list[str]) -> str:
     )
 
 
-def gate_problems(name: str, text: str) -> list[str]:
+def gate_problems(name: str, text: str, area: str | None = None, ungated: frozenset[str] | None = None) -> list[str]:
+    """Problems with a gated workflow. With `area`, every job but `ungated` must carry the gate with that label."""
     workflow = yaml.safe_load(text)
     on = workflow.get(True, workflow.get("on")) or {}
     problems = []
@@ -102,8 +109,12 @@ def gate_problems(name: str, text: str) -> list[str]:
         cond = " ".join(str(job.get("if", "")).split())
         m, n = _ALLOWED.search(cond), _ACTED_ON.search(cond)
         if not m:
+            if area is not None and job_id not in (ungated or frozenset()):
+                problems.append(f"{name}:{job_id}: a heavy job without the ci: label gate runs on every pull request")
             continue
         allowed, acted_on = json.loads(m.group(1)), json.loads(n.group(1)) if n else []
+        if area is not None and area not in allowed:
+            problems.append(f"{name}:{job_id}: its gate does not accept the workflow's area label {area}")
         if allowed[:1] != ["ci:full"]:
             problems.append(f"{name}:{job_id}: ci:full must come first in the gate's labels")
         if acted_on[: len(allowed)] != allowed:
@@ -134,9 +145,7 @@ class CiLabelGateTest(unittest.TestCase):
             if not path.exists():
                 continue
             text = path.read_text(encoding="utf-8")
-            problems += gate_problems(name, text)
-            if f'"{area}"' not in text:
-                problems.append(f"{name}: its area label {area} is not in the gate")
+            problems += gate_problems(name, text, area, frozenset(UNGATED.get(name, ())))
         self.assertEqual(problems, [])
 
     def test_every_gated_workflow_uses_the_same_gate(self) -> None:
@@ -159,6 +168,45 @@ class CiLabelGateTest(unittest.TestCase):
         # Re-running on any label event (labels already on the pull request) is the bug the gate prevents.
         loose = good.replace("(github.event.action != 'labeled' && (", "((")
         self.assertTrue(any("gate term missing" in p for p in gate_problems("x.yml", loose)))
+
+    def _workflow(self, jobs: dict[str, list[str] | None]) -> str:
+        text = "on:\n  pull_request:\n    types: [labeled]\n  schedule:\n    - cron: '0 1 * * *'\n  workflow_dispatch:\njobs:\n"
+        for job_id, allowed in jobs.items():
+            text += f"  {job_id}:\n    runs-on: ubuntu-latest\n"
+            if allowed:
+                terms = gate_terms(allowed, allowed)
+                text += f"    if: github.event_name != 'pull_request' || {terms[0]} || {terms[1]}\n"
+        return text
+
+    def test_an_ungated_heavy_job_beside_a_gated_one_is_caught(self) -> None:
+        text = self._workflow({"gated": ["ci:full", "ci:db"], "heavy": None, "light": None})
+        problems = gate_problems("x.yml", text, "ci:db", frozenset({"light"}))
+        self.assertEqual(problems, ["x.yml:heavy: a heavy job without the ci: label gate runs on every pull request"])
+
+    def test_each_job_must_accept_the_area_label(self) -> None:
+        text = self._workflow({"db": ["ci:full", "ci:db"], "e2e": ["ci:full", "ci:e2e"]})
+        problems = gate_problems("x.yml", text, "ci:db")
+        self.assertEqual(problems, ["x.yml:e2e: its gate does not accept the workflow's area label ci:db"])
+        # A workflow's own label beside the area label is fine (harness-fault, it-all).
+        self.assertEqual(gate_problems("x.yml", self._workflow({"a": ["ci:full", "ci:db", "db-wide"]}), "ci:db"), [])
+
+    def test_a_removed_label_is_not_an_opt_in(self) -> None:
+        good = self._workflow({"a": ["ci:full", "ci:db"]})
+        self.assertEqual(gate_problems("x.yml", good), [])
+        # Without the action check, removing the only ci:db label would start the job.
+        loose = good.replace("(github.event.action == 'labeled' && contains(", "(contains(")
+        self.assertTrue(any("gate term missing" in p or "no job carries" in p for p in gate_problems("x.yml", loose)))
+
+    def test_label_and_push_runs_share_the_group(self) -> None:
+        allowed = ["ci:full", "ci:e2e"]
+        flagged = self._workflow({"a": allowed}).replace(
+            "jobs:\n", "concurrency:\n  group: x-${{ github.event.pull_request.number }}" + group_flag(allowed, allowed) + "\njobs:\n"
+        )
+        self.assertEqual(gate_problems("x.yml", flagged), [])
+        # A suffix that differs between the label event and the next push keeps the stale run going.
+        for suffix in ("-${{ github.event.label.name }}", "-${{ github.event.action }}"):
+            split = flagged.replace(group_flag(allowed, allowed), suffix)
+            self.assertTrue(any("concurrency group" in p for p in gate_problems("x.yml", split)), suffix)
 
     def test_a_label_the_jobs_read_must_be_in_the_gate(self) -> None:
         allowed = ["ci:full", "ci:db"]

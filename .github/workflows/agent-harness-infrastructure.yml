@@ -48,7 +48,7 @@ jobs:
   mongodb-replica-set:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -85,7 +85,7 @@ jobs:
     name: Journal survives primary failover (3-member replica set, J-7)
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -114,7 +114,7 @@ jobs:
     name: MongoDB replica set by default (fresh, standalone migration, rerun)
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -131,7 +131,7 @@ jobs:
   sandbox-contract:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -195,7 +195,7 @@ jobs:
     name: Harness security gate
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:harness')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:harness"]'), github.event.label.name)))
     uses: ./.github/workflows/harness-security-gate.yml

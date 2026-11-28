@@ -25,7 +25,7 @@ jobs:
   linux-x64:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -58,7 +58,7 @@ jobs:
   macos-arm64:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:e2e')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:e2e"]'), github.event.label.name)))
     runs-on: macos-15

@@ -61,7 +61,7 @@ jobs:
   oracle:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+      (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
       (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
        (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))
     runs-on: ubuntu-latest
@@ -111,7 +111,7 @@ jobs:
     name: graph (shard ${{ matrix.shard }})
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       github.event_name != 'schedule'
@@ -286,7 +286,7 @@ jobs:
   kh-browse-cost:
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       github.event_name != 'schedule'
@@ -370,7 +370,7 @@ jobs:
   nightly:
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action != 'unlabeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
+       (github.event.action == 'labeled' && contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)) ||
        (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:db')) &&
         (github.event.action != 'unlabeled' || contains(fromJSON('["ci:full","ci:db"]'), github.event.label.name)))) &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
