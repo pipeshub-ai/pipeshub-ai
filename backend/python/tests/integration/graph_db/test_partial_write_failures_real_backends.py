@@ -973,7 +973,8 @@ async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _Worl
 
     def upgrade(permission: Permission) -> Awaitable[object]:
         return w.processor.upsert_permission_edge(
-            alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
+            alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission,
+            connector_id=record.connector_id,
         )
 
     # Neither store can write this edge: both refuse a map for createdAtTimestamp, which the

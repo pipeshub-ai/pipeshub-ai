@@ -79,6 +79,7 @@ def _make_mock_deps():
     dep.on_record_content_update = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
 
     mock_tx = MagicMock()
 

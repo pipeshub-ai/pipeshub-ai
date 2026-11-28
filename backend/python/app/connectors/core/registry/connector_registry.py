@@ -882,9 +882,45 @@ class ConnectorRegistry:
                     f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
                 )
 
+            await self._limit_unlicensed_connectors(org_id, all_documents)
+
         except Exception as e:
             self.logger.error(f"Error syncing registry with database org={org_id}: {e}")
             raise
+
+    async def _limit_unlicensed_connectors(self, org_id: str, documents: list[dict[str, Any]]) -> None:
+        """The startup half of the licence gate (``permission_sync_gate``): an unlicensed company-wide connector that
+        never syncs again is limited here, by the same rule as at sync start (``limit_unlicensed``): one already
+        limited has only its refreshes run again, so a limit whose refresh failed before a restart is made good. A failure is logged and leaves the rest of startup alone: the connector's next sync start raises instead,
+        and does not run."""
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
+        from app.connectors.core.base.data_processor.permission_sync_gate import (
+            gated,
+            permission_sync_licensed,
+        )
+
+        limited = [doc for doc in documents if gated(doc)]
+        if not limited:
+            return
+        try:
+            config_service = self.container.config_service()
+            if await permission_sync_licensed(config_service):
+                return
+            # Built only for the write and its refreshes (set_access_limit); never initialized, so it publishes nothing.
+            processor = DataSourceEntitiesProcessor(self.logger, await self.container.data_store(), config_service)
+            processor.org_id = org_id
+        except Exception as e:
+            self.logger.error(f"Could not apply the licence gate at startup for org={org_id}: {e}")
+            return
+        for doc in limited:
+            key = doc.get('_key') or doc.get('id')
+            try:
+                await processor.limit_unlicensed(key, doc)
+            except Exception as e:
+                self.logger.error(f"Could not limit unlicensed connector {key}: {e}")
+        self.logger.info(f"Unlicensed: {len(limited)} company-wide connector(s) limited (accessLimit)")
 
     def _build_connector_info(
         self,
