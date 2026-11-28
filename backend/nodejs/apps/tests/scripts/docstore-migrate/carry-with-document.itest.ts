@@ -217,7 +217,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         await replaceDocs(rt, logos, [{ ...logo!, qaField: 'kept' }]);
         expect(logoFields.get(id)).to.equal('kept');
         // the follower: the logo loses its org, the importer skips it and removes its row, and its field goes with it
-        const { orgId: _o, ...orphan } = logo!;
+        const orphan = { ...logo! };
+        delete orphan.orgId;
         await replaceDocs(rt, logos, [{ ...orphan, qaField: 'kept' }]);
         expect(
           logoFields.has(id),
