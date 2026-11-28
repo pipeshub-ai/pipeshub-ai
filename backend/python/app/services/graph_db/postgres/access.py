@@ -22,7 +22,11 @@ if TYPE_CHECKING:
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 PAG = "PARENT_AND_GRANT"
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
+# A SourceAccount's edge grants only through a link, so it is read by collection and id (``Grants``' linked holders), never by a bare id.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
+# What an authenticatedAs link may point at: a User (the account a connector was authenticated as) or a SourceAccount (one account of a source
+# directory). Either one's grants and badges reach the linked user inside the link's connector only.
+SOURCE_ACCOUNT_COLLS = ("users", "sourceAccounts")
 
 
 
@@ -70,13 +74,15 @@ async def _info(tx: Tx, org: str, nodes: list[tuple[str, str]]) -> dict[tuple[st
 
 class Grants(set):
     """The ids of the records and groups granted to the viewer, as the check tests them. Built from ``by_connector`` it holds every grant. Built from a gate alone
-    (``linked`` in the access, no ``by_connector``) it starts empty and :meth:`see` reads the permission edges of the nodes the check meets, so a check costs the nodes
-    it decides, not every grant the viewer holds. It then answers only for nodes it has seen; every membership test of the check follows a :meth:`see` of that node."""
+    (``linked`` in the access, no ``by_connector``: per connector, the (collection, id) of each source account and of its groups) it starts empty and :meth:`see`
+    reads the permission edges of the nodes the check meets, so a check costs the nodes it decides, not every grant the viewer holds. It then answers only for
+    nodes it has seen; every membership test of the check follows a :meth:`see` of that node."""
 
-    def __init__(self, ids: Iterable[str] = (), *, grantees: list[str] | None = None, gated: list[str] = (), linked: dict[str, list[str]] | None = None) -> None:
+    def __init__(self, ids: Iterable[str] = (), *, grantees: list[str] | None = None, gated: list[str] = (), linked: dict[str, list[Node]] | None = None) -> None:
         super().__init__(ids)
         self.probing = grantees is not None
-        self._grantees, self._gated, self._linked = set(grantees or ()), set(gated), linked or {}
+        self._grantees, self._gated = set(grantees or ()), set(gated)
+        self._linked = {c: set(hs) for c, hs in (linked or {}).items()}
         self._seen: set[str] = set()
 
     async def see(self, tx: Tx, org: str, ids: Iterable[str]) -> None:
@@ -86,20 +92,21 @@ class Grants(set):
             return
         new = [i for i in dict.fromkeys(ids) if i not in self._seen]
         self._seen.update(new)
-        holders = sorted({*self._grantees, *(h for hs in self._linked.values() for h in hs)})
+        holders = sorted({*self._grantees, *(h for hs in self._linked.values() for _, h in hs)})
         if not new or not holders:
             return
         hits: dict[Node, set[str]] = {}         # node -> the connectors it may be granted in
         for k in range(0, len(new), _CHUNK):
             for r in await tx.fetch("""/* pipeshub:graph.access_grants_of */ SELECT e.from_coll, e.from_id, e.to_coll, e.to_id, e.doc->>'type' AS t FROM graph.edges e
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[]) AND e.from_coll = ANY($4::text[])
-                  AND e.to_coll IN ('records', 'recordGroups')""", org, new[k:k + _CHUNK], holders, PRINCIPALS):
+                  AND e.to_coll IN ('records', 'recordGroups')""", org, new[k:k + _CHUNK], holders, [*PRINCIPALS, "sourceAccounts"]):
                 org_edge = r["from_coll"] == "organizations"
                 cids = hits.setdefault((r["to_coll"], r["to_id"]), set())
-                if r["from_id"] in self._grantees and (not org_edge or r["t"] in ORG_SHARE_PERMISSION_TYPES):
+                # a grantee by its id in the principals' collections; a linked holder by (collection, id), so a node sharing another's id holds nothing
+                if r["from_coll"] in PRINCIPALS and r["from_id"] in self._grantees and (not org_edge or r["t"] in ORG_SHARE_PERMISSION_TYPES):
                     cids |= self._gated
                 if not org_edge:
-                    cids |= {c for c, hs in self._linked.items() if r["from_id"] in hs}
+                    cids |= {c for c, hs in self._linked.items() if (r["from_coll"], r["from_id"]) in hs}
         for (_, i), v in (await _info(tx, org, [n for n, cids in hits.items() if cids])).items():
             if v["cid"] and not v["deleted"] and v["cid"] in hits[(v["coll"], i)]:
                 self.add(i)
@@ -511,7 +518,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
         if cand:
             for r in await tx.fetch("""/* pipeshub:graph.access_orphan */ SELECT DISTINCT e.to_id FROM graph.edges e
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
-                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
+                  AND e.from_coll = ANY($5::text[])      -- the grantees' collections: a SourceAccount sharing a grantee's id holds nothing
+                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES), PRINCIPALS):
                 ok.add(r["to_id"])
     return await _shape(tx, org, targets, ok)
 

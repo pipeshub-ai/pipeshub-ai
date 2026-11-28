@@ -34,6 +34,7 @@ class Neo4jLabel(Enum):
 
     # Users and groups
     USERS = "User"
+    SOURCE_ACCOUNTS = "SourceAccount"
     GROUPS = "Group"
     PEOPLE = "Person"
     ROLES = "Role"
@@ -155,6 +156,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.SQL_COLUMNS.value: Neo4jLabel.SQL_COLUMNS.value,
     CollectionNames.SQL_VIEWS.value: Neo4jLabel.SQL_VIEWS.value,
     CollectionNames.USERS.value: Neo4jLabel.USERS.value,
+    CollectionNames.SOURCE_ACCOUNTS.value: Neo4jLabel.SOURCE_ACCOUNTS.value,
     CollectionNames.GROUPS.value: Neo4jLabel.GROUPS.value,
     CollectionNames.PEOPLE.value: Neo4jLabel.PEOPLE.value,
     CollectionNames.ROLES.value: Neo4jLabel.ROLES.value,

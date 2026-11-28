@@ -62,7 +62,7 @@ class TestAppListsIncludeLinkedConnectors:
 
         provider.client.execute_query.assert_awaited_once()
         query = provider.client.execute_query.await_args.args[0]
-        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)" in query
+        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(linked_src:User|SourceAccount) WHERE coalesce(linked_src.state, '') <> 'withdrawn'" in query
         assert "OPTIONAL MATCH (app3:App {id: linked.connectorId})" in query
 
 
@@ -83,8 +83,11 @@ class TestRetrievalCountsTheLinkedAccount:
         provider.execute_query.assert_awaited_once()
         query = provider.execute_query.await_args.args[0]
         assert "linked._from == userDoc._id AND linked.connectorId == @connectorId" in query
+        # own grants, group membership, group grants and the organisation's grants: each walks every principal
         assert query.count("FOR principal_id IN principal_ids") == 4
         assert " ANY userDoc._id " not in query
+        # the caller's organisation only: a linked account's, User or SourceAccount, counts for nothing
+        assert 'FILTER principal_id == userDoc._id\n                FOR org IN 1..1 ANY principal_id' in query
         # the only userId lookup is the caller's own
         assert query.count("user.userId == @userId") == 1
         assert provider.execute_query.await_args.kwargs["bind_vars"]["userId"] == CREATOR_ID
@@ -98,7 +101,7 @@ class TestRetrievalCountsTheLinkedAccount:
         assert result == {"v1": "r1"}
         provider.client.execute_query.assert_awaited_once()
         query = provider.client.execute_query.await_args.args[0]
-        assert "(caller)-[:AUTHENTICATED_AS {connectorId: $connectorId}]->(source_account:User)" in query
+        assert "(caller)-[:AUTHENTICATED_AS {connectorId: $connectorId}]->(source_account:User|SourceAccount)" in query
         assert "UNWIND [caller] + source_accounts AS userDoc" in query
         assert query.count("{userId: $userId}") == 1
 
@@ -148,9 +151,13 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_arango_permission_path_checks_all_principals(self) -> None:
         for name in ("arango record", "arango recordGroup"):
             query = _role_queries()[name]
-            assert query.count("._from IN principal_ids") == 5, name
-            # the only single-user anchor left is the link lookup itself
-            assert query.count("._from == u._id") == 1, name
+            # a linked account counts only on a target of the link's connector (elsewhere the path reads the user alone), in the four
+            # paths of its own and its groups', roles' and teams' grants
+            assert query.count("._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])") == 4, name
+            assert "PARSE_IDENTIFIER(kh_t).key : DOCUMENT(kh_t).connectorId) == " in query, name
+            # the single-user anchors: the link lookup, and the organisation step, which reads the viewer's organisation only
+            assert query.count("._from == u._id") == 2, name
+            assert "FILTER belongs_edge._from == u._id" in query, name
 
     def test_every_neo4j_permission_path_checks_all_principals(self) -> None:
         for name in ("neo4j record", "neo4j recordGroup"):
@@ -160,14 +167,18 @@ class TestRoleBuildersCountTheLinkedAccount:
             assert query.count("WITH principal, target") == 5, name
             assert query.count("MATCH (principal)-") == 3, name
             assert query.count("EXISTS { (principal)-[:PERMISSION {type: 'USER'}]->(") == 2, name
-            assert "UNWIND principals AS principal" in query, name
+            # a linked account counts only on a target of the link's connector
+            assert "UNWIND [p IN principals WHERE p = u\n" in query, name
+            assert "OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = " in query, name
             assert query.count("OPTIONAL MATCH (u)-") == 1, name
+            # the organisation path reads the viewer's organisation only, never a linked account's
+            assert query.count("WHERE principal = u AND p9.role IS NOT NULL") == 1, name
             assert "[u] + collect(DISTINCT source_account) AS principals" in query
 
     def test_a_linked_connector_counts_as_the_users_own_app(self) -> None:
         """Without this the creator lists the connector but cannot open its app node."""
         neo4j_query = _neo4j()._get_permission_role_cypher("app", "app", "u")
-        assert "(u)-[linked_app:AUTHENTICATED_AS {connectorId: app.id}]->(:User)" in neo4j_query
+        assert "(u)-[linked_app:AUTHENTICATED_AS {connectorId: app.id}]->(linked_src:User|SourceAccount) WHERE coalesce(linked_src.state, '') <> 'withdrawn'" in neo4j_query
         assert "coalesce(own_app_rel, linked_app) AS user_app_rel" in neo4j_query
 
         arango_query = _arango()._get_permission_role_aql("app", "app", "u")
@@ -222,7 +233,7 @@ class TestBuilderBackedMethodsRunOnceAsTheCaller:
 class TestAccessContextCountsTheLink:
     def test_the_gate_opens_the_linked_connector(self) -> None:
         cypher = Neo4jProvider._kh_gate_cypher()
-        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)" in cypher
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_gate_src:User|SourceAccount) WHERE coalesce(kh_gate_src.state, '') <> 'withdrawn'" in cypher
         assert "kh_linkedApp.orgId = $org_id" in cypher
         aql = ArangoHTTPProvider._kh_gate_aql()
         assert "FOR kh_link IN authenticatedAs" in aql
@@ -233,7 +244,7 @@ class TestAccessContextCountsTheLink:
         provider.client.execute_query = AsyncMock(return_value=[])
         await provider.get_knowledge_hub_access_v3(CREATOR_KEY, ORG)
         query = provider.client.execute_query.await_args.args[0]
-        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)" in query
+        assert "OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount)" in query
         assert "kh_lg.connectorId = kh_link.connectorId" in query
 
     async def test_arango_grants_of_the_linked_account_stay_in_its_connector(self) -> None:

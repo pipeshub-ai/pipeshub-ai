@@ -131,7 +131,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.AUTHENTICATED_AS.value,
         "from_vertex_collections": [CollectionNames.USERS.value],
-        "to_vertex_collections": [CollectionNames.USERS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.SOURCE_ACCOUNTS.value],
     },
     {
         "edge_collection": CollectionNames.ORG_APP_RELATION.value,
@@ -142,7 +142,7 @@ EDGE_DEFINITIONS = [
         "edge_collection": CollectionNames.PERMISSION.value,
         # people: external collaborators hold grants on individual records before
         # (or without ever) becoming platform users.
-        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value, CollectionNames.SOURCE_ACCOUNTS.value],
         # APPS: a collection grant is a permission edge from the user to the App.
         "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.AGENT_SKILLS.value, CollectionNames.APPS.value],
     },

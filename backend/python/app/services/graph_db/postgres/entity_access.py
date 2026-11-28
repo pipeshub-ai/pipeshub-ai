@@ -197,10 +197,10 @@ class EntityAccessMixin(PgBase):
         want, skip = list(source_ids or []), sorted(exclude_app_ids)
 
         async def go(tx: Tx) -> dict[str, Any]:
-            linked = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_principals */ SELECT e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
-                JOIN graph.nodes s ON s.org_id = e.org_id AND s.coll = 'users' AND s.id = e.to_id
-                WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'""", org, uk)
-            principals = [(uk, None), *((r["to_id"], r["cid"]) for r in linked)]
+            linked = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_principals */ SELECT e.to_coll, e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
+                JOIN graph.nodes s ON s.org_id = e.org_id AND s.coll = e.to_coll AND s.id = e.to_id AND coalesce(s.doc->>'state', '') <> 'withdrawn'
+                WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll IN ('users', 'sourceAccounts')""", org, uk)
+            principals = [("users", uk, None), *((r["to_coll"], r["to_id"], r["cid"]) for r in linked)]
             rows = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_apps */ SELECT DISTINCT a.id, a.doc FROM graph.nodes a WHERE a.org_id = $1 AND $1 = $3 AND a.coll = 'apps' AND a.id IN (
                   SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
                   UNION SELECT t.to_id FROM graph.edges p JOIN graph.nodes tm ON tm.org_id = p.org_id AND tm.coll = 'teams' AND tm.id = p.to_id
@@ -215,18 +215,18 @@ class EntityAccessMixin(PgBase):
                     WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
                   UNION SELECT unnest($7::text[]))
                 AND ((cardinality($8::text[]) = 0 AND NOT coalesce((a.doc->>'isHidden')::boolean, false)) OR a.id = ANY($8::text[])) AND NOT a.id = ANY($9::text[]) ORDER BY a.id""",
-                                  org, uk, org_id, _KB, _RETIRED, list(TEAM_GRANT_ROLES), [cid for _, cid in principals if cid], want, skip)
+                                  org, uk, org_id, _KB, _RETIRED, list(TEAM_GRANT_ROLES), [cid for _, _, cid in principals if cid], want, skip)
             apps = [{"id": r["id"], **{k: _doc(r["doc"]).get(k) for k in ("name", "type", "permissionModel")}} for r in rows]
             levels = [a["id"] for a in apps if (a["type"] or "") != _KB and (a["permissionModel"] or "") != PermissionModel.APP_LEVEL.value]
-            seeds = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_seeds */ WITH pr AS (SELECT * FROM unnest($3::text[], $4::text[]) AS p(uid, cid)),
+            seeds = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_seeds */ WITH pr AS (SELECT * FROM unnest($3::text[], $4::text[], $7::text[]) AS p(uid, cid, ucoll)),
                 reach AS (
-                  SELECT e.to_id AS rg, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = pr.uid
+                  SELECT e.to_id AS rg, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = pr.ucoll AND e.from_id = pr.uid
                     AND e.to_coll = 'recordGroups' AND e.doc->>'type' = 'USER'
-                  UNION ALL SELECT g.to_id, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = pr.uid
+                  UNION ALL SELECT g.to_id, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = pr.ucoll AND e.from_id = pr.uid
                     AND e.to_coll IN ('groups', 'roles') AND e.doc->>'type' = 'USER'
                     JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = e.to_coll AND m.id = e.to_id
                     JOIN graph.edges g ON g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = e.to_coll AND g.from_id = m.id AND g.to_coll = 'recordGroups'
-                  UNION ALL SELECT g.to_id, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = pr.uid
+                  UNION ALL SELECT g.to_id, pr.cid FROM pr JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = pr.ucoll AND e.from_id = pr.uid
                     AND e.to_coll = 'teams' AND e.doc->>'type' = 'USER'
                     JOIN graph.nodes m ON m.org_id = e.org_id AND m.coll = 'teams' AND m.id = e.to_id
                     JOIN graph.edges g ON g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = m.id AND g.to_coll = 'recordGroups' AND g.doc->>'type' = 'TEAM'
@@ -236,7 +236,7 @@ class EntityAccessMixin(PgBase):
                 SELECT DISTINCT rg.id, coalesce((rg.doc->>'hideChildren')::boolean, false) AS hide, rg.doc->>'connectorId' AS cid FROM reach JOIN graph.nodes rg ON rg.org_id = $1 AND rg.coll = 'recordGroups' AND rg.id = reach.rg
                 WHERE rg.doc->>'orgId' = $5 AND coalesce((rg.doc->>'isDeleted')::boolean, false) = false AND rg.doc->>'connectorId' = ANY($6::text[])
                   AND (reach.cid IS NULL OR rg.doc->>'connectorId' = reach.cid)""",
-                                    org, uk, [p for p, _ in principals], [c for _, c in principals], org_id, levels)
+                                    org, uk, [p for _, p, _ in principals], [c for _, _, c in principals], org_id, levels, [k for k, _, _ in principals])
             roots = [r for r in seeds if not r["hide"]]
             # The walk stays inside each seed's connector.
             nested = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_nested */ WITH RECURSIVE w(id, cid, depth) AS (

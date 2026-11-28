@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from .model import Gate, Grant, Node, Parent, Principal, World
+from .graph import VARIANTS, compile_world, without_link_source_orgs
+from .model import Gate, Grant, Link, Membership, Node, Parent, Principal, World
 from .runner import ConformanceRunner, OracleLayer
 
 if TYPE_CHECKING:
@@ -128,3 +129,26 @@ def test_lifecycle_flags_reach_the_compiled_graph() -> None:
     by_kind = {n["kind"]: n["props"] for n in compile_world(world, "t")["nodes"]}
     user, group, app, rg = by_kind["User"], by_kind["Group"], by_kind["App"], by_kind["RecordGroup"]
     assert user["isActive"] is False and group["isDeleted"] is True and app["isActive"] is False and rg["hideChildren"] is True
+
+
+def _linked_world() -> World:
+    """u signed connector A in as acct, whose grant on r reaches u through the link; acct also has a BELONGS_TO to a group (no membership)."""
+    return World(
+        principals=(Principal("u"), Principal("acct"), Principal("grp", "group")),
+        nodes=(Node("A", "app"), Node("r", "record", "A", "OPEN", (Parent("A"),))),
+        grants=(Grant("acct", "r"),),
+        memberships=(Membership("acct", "grp", edge="BELONGS_TO"),),
+        links=(Link("u", "acct", "A"),),
+    )
+
+
+def test_without_link_source_orgs_removes_only_the_linked_accounts_organisation_edge() -> None:
+    graph = without_link_source_orgs(compile_world(_linked_world(), "t"))
+    assert {(e["from"], e["to"]) for e in graph["edges"] if e["type"] == "BELONGS_TO"} == {("t-u", "t-orgnode"), ("t-acct", "t-grp")}
+
+
+async def test_a_withdrawn_source_account_gives_the_linked_user_nothing() -> None:
+    world = _linked_world()
+    assert await OracleLayer(VARIANTS["accounts"]).admitted(world, "u", ["r"]) == {"r"}
+    assert await OracleLayer(VARIANTS["withdrawn"]).admitted(world, "u", ["r"]) == set()
+    assert await OracleLayer(VARIANTS["unlinked"]).admitted(world, "u", ["r"]) == set()

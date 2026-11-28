@@ -7354,7 +7354,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // A source account contributes only the groups of the connector it was
             // linked for; its groups under other connectors are not this person's.
             WITH u
-            MATCH (u)-[link:AUTHENTICATED_AS]->(source:User)
+            MATCH (u)-[link:AUTHENTICATED_AS]->(source:User|SourceAccount) WHERE coalesce(source.state, '') <> 'withdrawn'
             MATCH (source)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
             WHERE g.connectorId = link.connectorId
             RETURN g
@@ -9024,7 +9024,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Principals: the user, plus the source account the user authenticated this
             // connector as, reached through the link and never by its userId
-            OPTIONAL MATCH (caller)-[:AUTHENTICATED_AS {{connectorId: $connectorId}}]->(source_account:User)
+            OPTIONAL MATCH (caller)-[:AUTHENTICATED_AS {{connectorId: $connectorId}}]->(source_account:User|SourceAccount) WHERE coalesce(source_account.state, '') <> 'withdrawn'
             WITH caller, appGranted, collect(DISTINCT source_account) AS source_accounts
 
             // Domain, "anyone" and link shares grant no access, so no path reads them.
@@ -9045,9 +9045,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     WHERE (g:Group OR g:Role OR g:Teams)
                     RETURN granted
                     UNION
-                    WITH userDoc
+                    WITH userDoc, caller
                     MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[orgPerm:PERMISSION]->(granted)
-                    WHERE orgPerm.type IN $orgShareTypes
+                    WHERE userDoc = caller AND orgPerm.type IN $orgShareTypes      // the caller's organisation only, never a linked account's
                     RETURN granted
                 }}
                 WITH granted
@@ -9290,7 +9290,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         // The user everywhere, plus each source account they authenticated a
         // connector as, counted for that connector only (get_accessible_containers).
-        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User)
+        OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(source_account:User|SourceAccount) WHERE coalesce(source_account.state, '') <> 'withdrawn'
         WITH u, [{user: u, connectorId: null}] +
                 [p IN collect({user: source_account, connectorId: linked.connectorId})
                    WHERE p.user IS NOT NULL] AS principals
@@ -13888,8 +13888,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Principals: the user, plus the source account the user authenticated this record's
             // connector as. One row per principal; their access paths are merged after the query.
-            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User)
-            WHERE linked.connectorId = rec.connectorId
+            OPTIONAL MATCH (caller)-[linked:AUTHENTICATED_AS]->(source_account:User|SourceAccount)
+            WHERE linked.connectorId = rec.connectorId AND coalesce(source_account.state, '') <> 'withdrawn'
             WITH caller, rec, collect(DISTINCT source_account) AS source_accounts
 
             // The record's record-group ancestors with their distance, walked once from
@@ -13903,6 +13903,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH caller, rec, source_accounts, kh_ancestors,
                  [(rec)-[:BELONGS_TO]->(kh_kb:App) WHERE kh_kb.type = "KB" AND rec.connectorName = $kb_connector_name | kh_kb] AS kh_kbs
             UNWIND [caller] + source_accounts AS u
+            // a grant held through the link counts only on a record group of the link's connector, the record's
+            WITH u, rec, kh_kbs, CASE WHEN u = caller THEN kh_ancestors
+                                      ELSE [a IN kh_ancestors WHERE a.node.connectorId = rec.connectorId] END AS kh_ancestors
 
             // Direct access
             OPTIONAL MATCH (u)-[directPerm:PERMISSION {type: "USER"}]->(rec)
@@ -13948,6 +13951,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Traverse UP from record to find RecordGroups in hierarchy, then check if user has direct permission
             OPTIONAL MATCH (rec)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg:RecordGroup)
             OPTIONAL MATCH (u)-[inheritedRgPerm:PERMISSION {type: "USER"}]->(inheritedRg)
+            WHERE inheritedRg IN [a IN kh_ancestors | a.node]      // a linked account's are kept to its connector above
             WITH u, rec, kh_ancestors, kh_kbs, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
                  [x IN COLLECT({type: "INHERITED_RECORD_GROUP", source: inheritedRg, role: inheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS inheritedRgAccess
 
@@ -13962,7 +13966,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Organization access: User -> Organization -> Record
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(org:Organization {id: $org_id})-[orgRecPerm:PERMISSION]->(rec5:Record {id: $record_id})
-            WHERE orgRecPerm.type IN $org_share_types
+            WHERE u.id = $user_key AND orgRecPerm.type IN $org_share_types      // the caller's organisation only, never a linked account's
               AND (rec5.origin <> "CONNECTOR" OR rec5.connectorId IN $user_apps_ids)
             WITH u, rec, kh_ancestors, kh_kbs, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess,
                  [x IN COLLECT({type: "ORGANIZATION", source: org, role: orgRecPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgAccess
@@ -13971,6 +13975,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (u, kh_ancestors) {
                 UNWIND [a IN kh_ancestors WHERE a.depth <= 2 | a.node] AS rg3
                 MATCH (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3)
+                WHERE u.id = $user_key      // the caller's organisation only, never a linked account's
                 RETURN [x IN COLLECT(DISTINCT {type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgRgAccess
             }
 
@@ -20809,7 +20814,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
           AND (NOT (grantee:User AND type(gateRel) = 'PERMISSION' AND gatedApp.type = 'KB')
                OR {_kb_edge_role_ok('gateRel')})
         WITH {keep}, granteeIds, collect(DISTINCT gatedApp.id) AS gatedApps
-        OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)
+        OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_gate_src:User|SourceAccount) WHERE coalesce(kh_gate_src.state, '') <> 'withdrawn'
         OPTIONAL MATCH (kh_linkedApp:App {{id: kh_link.connectorId}})
         WHERE kh_linkedApp.orgId = {org}
         WITH {keep}, granteeIds, gatedApps, collect(DISTINCT kh_linkedApp.id) AS kh_linkedApps
@@ -20919,7 +20924,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (u:User {{id: $user_key}})
         {self._kh_gate_cypher()}
         CALL (u) {{
-            OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)
+            OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount) WHERE coalesce(kh_src.state, '') <> 'withdrawn'
             // One pass over the source account's edges gives its badges and its own
             // grants: an account that syncs a connector can hold tens of thousands.
             OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_t)
@@ -21020,8 +21025,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND {_cypher_grant_edge("kh_grantee", "kh_ge")}
             WITH u, collect(DISTINCT kh_g) AS kh_own
             CALL (u) {{
-                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)
-                WHERE kh_link.connectorId = $connector_id
+                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount)
+                WHERE kh_link.connectorId = $connector_id AND coalesce(kh_src.state, '') <> 'withdrawn'
                 // One pass over the source account's edges gives its badges and its own grants.
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_b)
                 WITH collect(DISTINCT CASE WHEN kh_e.type = 'USER'
@@ -21179,6 +21184,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters = {**{k: v for k, v in parameters.items() if k != "kh_cross"}, "kh_x": cross}
         elif "$kh_cross" in query and cross is None:
             parameters = {**parameters, "kh_cross": []}
+        accounts = [g[len(self._KH_ACCOUNT):] for g in parameters.get("kh_grantees") or [] if g.startswith(self._KH_ACCOUNT)]
+        if accounts:
+            # A viewer linked to a source account: each grant probe (`_kh_grants_by_probe`) also tests a SourceAccount holder, under its
+            # label, against the account's bare id. Every other viewer runs the probe without source accounts, so it plans as before them.
+            query = self._KH_PROBE_HOLDERS.sub(
+                r"WHERE (\1:User|Group|Role|Teams OR \2) AND \1.id IN $kh_grantees OR \1:SourceAccount AND \1.id IN $kh_sa }", query)
+            parameters = {**parameters, "kh_sa": accounts}
         names = tuple(sorted(k for k, v in parameters.items() if isinstance(v, list)))
         if names:
             # Only the lists this statement reads are sent: callers share one
@@ -21429,6 +21441,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _KH_PROBE_GROUP_MAX = 20000
     _KH_GRANT_TEST = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.id IN \$grantedIds\b")
 
+    # How `_kh_holder_key` names a SourceAccount among the grantees, and the holder test of each grant probe (`_kh_grants_by_probe`).
+    _KH_ACCOUNT = "sourceAccounts/"
+    _KH_PROBE_HOLDERS = re.compile(
+        r"WHERE \((kh_gr\d+):User OR \1:Group OR \1:Role OR \1:Teams OR (\(\1:Organization AND kh_gp\d+\.type IN \[[^\]]*\]\))\)"
+        r" AND \1\.id IN \$kh_grantees \}")
+
+    @staticmethod
+    def _kh_holder_key(g: str) -> str:
+        """How a holder of grants is named in ``$kh_grantees`` and the cross lists: a SourceAccount as ``sourceAccounts/<id>``, every
+        other holder by its id. Ids are unique per label only, so a SourceAccount and a User may share one; the name keeps them apart."""
+        return f"(CASE WHEN {g}:SourceAccount THEN 'sourceAccounts/' + {g}.id ELSE {g}.id END)"
+
     @staticmethod
     @lru_cache(maxsize=256)
     def _kh_grants_by_probe(query: str) -> str:
@@ -21485,9 +21509,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             g, p = f"kh_xg_{v}", f"kh_xp_{v}"
             return (f"({v}.connectorId IN $kh_x.probe AND ({v}:Record OR {v}:RecordGroup) AND NOT coalesce({v}.isDeleted, false)"
                     f" AND EXISTS {{ ({v})<-[{p}:PERMISSION]-({g})"
-                    f" WHERE ({g}:User OR {g}:Group OR {g}:Role OR {g}:Teams"
+                    f" WHERE ({g}:User OR {g}:SourceAccount OR {g}:Group OR {g}:Role OR {g}:Teams"
                     f" OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
-                    f" AND ({g}.id IN $kh_x.common OR {g}.id IN coalesce($kh_x.scoped[{v}.connectorId], [])) }})")
+                    f" AND ({Neo4jProvider._kh_holder_key(g)} IN $kh_x.common"
+                    f" OR {Neo4jProvider._kh_holder_key(g)} IN coalesce($kh_x.scoped[{v}.connectorId], [])) }})")
 
         return Neo4jProvider._KH_CROSS_TEST.sub(probe, query)
 
@@ -21564,10 +21589,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(kh_org:Organization)
             WITH u, kh_badges, collect(DISTINCT kh_org.id) AS kh_orgs
             CALL (u) {
-                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)
+                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount) WHERE coalesce(kh_src.state, '') <> 'withdrawn'
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_lb)
                 WHERE (kh_lb:Group OR kh_lb:Role OR kh_lb:Teams) AND kh_e.type = 'USER'
-                RETURN collect(DISTINCT [kh_link.connectorId, kh_src.id])
+                RETURN collect(DISTINCT [kh_link.connectorId, CASE WHEN kh_src:SourceAccount THEN 'sourceAccounts/' + kh_src.id ELSE kh_src.id END])
                        + collect(DISTINCT [kh_link.connectorId, kh_lb.id]) AS kh_linked
             }
             RETURN u.id AS user, kh_badges AS badges, kh_orgs AS orgs, kh_linked AS linked
@@ -21587,7 +21612,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         granted = await self.client.execute_query(
             f"""
             UNWIND $holders AS kh_h
-            MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
+            // a SourceAccount is named sourceAccounts/<id> (_kh_holder_key): the label is matched with the id
+            CALL (kh_h) {{
+                MATCH (kh_g:SourceAccount {{id: substring(kh_h[0], 15)}}) WHERE kh_h[0] STARTS WITH 'sourceAccounts/' RETURN kh_g
+                UNION
+                MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}}) WHERE NOT kh_h[0] STARTS WITH 'sourceAccounts/' RETURN kh_g
+            }}
             MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
             WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
               AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
@@ -21637,11 +21667,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(kh_org:Organization)
             WITH u, kh_badges, collect(DISTINCT kh_org.id) AS kh_orgs
             CALL (u) {
-                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User)
-                WHERE kh_link.connectorId = $connector_id
+                OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount)
+                WHERE kh_link.connectorId = $connector_id AND coalesce(kh_src.state, '') <> 'withdrawn'
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_b)
                 WHERE (kh_b:Group OR kh_b:Role OR kh_b:Teams) AND kh_e.type = 'USER'
-                RETURN collect(DISTINCT kh_src.id) + collect(DISTINCT kh_b.id) AS kh_linked
+                RETURN collect(DISTINCT CASE WHEN kh_src:SourceAccount THEN 'sourceAccounts/' + kh_src.id ELSE kh_src.id END)
+                       + collect(DISTINCT kh_b.id) AS kh_linked
             }
             RETURN [u.id] + kh_badges + kh_orgs + kh_linked AS grantees
             """,
@@ -21675,9 +21706,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND NOT coalesce(c.isPlaceholder, false)
               AND coalesce(c.accessRule, 'OPEN') = 'OPEN'
               AND EXISTS {{ (c)<-[kh_gp:PERMISSION]-(kh_gr)
-                             WHERE (kh_gr:User OR kh_gr:Group OR kh_gr:Role OR kh_gr:Teams
+                             WHERE (kh_gr:User OR kh_gr:SourceAccount OR kh_gr:Group OR kh_gr:Role OR kh_gr:Teams
                                     OR (kh_gr:Organization AND kh_gp.type IN {_ORG_SHARE_TYPES_CYPHER}))
-                               AND kh_gr.id IN $kh_grantees }}
+                               AND {self._kh_holder_key("kh_gr")} IN $kh_grantees }}
             WITH DISTINCT c
             WITH [g IN {self._kh_v3_chain_top_owns("c")} | g.id] AS ownGroups, collect(c.id) AS ids
             RETURN collect({{ownGroups: ownGroups, ids: ids}}) AS byGroups
@@ -22357,7 +22388,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH t
             WHERE t:Record AND t.origin IS NOT NULL AND t.origin <> 'CONNECTOR'
               AND NOT EXISTS {{ MATCH (kh_a:App {{id: t.connectorId}}) }}
-              AND EXISTS {{ (t)<-[kh_gp:PERMISSION]-(kh_g)
+              // the grantees by their labels: a node of another label that shares an id (a SourceAccount) holds nothing
+              AND EXISTS {{ (t)<-[kh_gp:PERMISSION]-(kh_g:User|Group|Role|Teams|Organization)
                              WHERE kh_g.id IN $granteeIds AND {_cypher_grant_edge("kh_g", "kh_gp")} }}
             RETURN t AS ok
         }}
@@ -26320,7 +26352,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
             OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
             // Connectors the user authenticated as another source account
-            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)
+            OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(linked_src:User|SourceAccount) WHERE coalesce(linked_src.state, '') <> 'withdrawn'
             OPTIONAL MATCH (app3:App {id: linked.connectorId})
             WITH collect(DISTINCT app1) + collect(DISTINCT app2) + collect(DISTINCT app3) AS app_list
             UNWIND app_list AS app
@@ -26953,8 +26985,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Principals: the user, plus the source account the user authenticated this node's
             // connector as. The link is per connector, so it never grants outside that connector.
-            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
-            WHERE linked.connectorId = {node_var}.connectorId
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User|SourceAccount)
+            WHERE linked.connectorId = {node_var}.connectorId AND coalesce(source_account.state, '') <> 'withdrawn'
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
 
@@ -26967,7 +26999,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
-            UNWIND principals AS principal
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            UNWIND [p IN principals WHERE p = {user_var}
+                    OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = {node_var}.connectorId] AS principal
 
             // The group, role and team paths start at the target and only probe the
             // principal's membership. The principals granted on one node are few; one
@@ -27013,9 +27048,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Path 9: User -> Org -> target
             CALL {{
-                WITH principal, target
+                // the viewer's organisation only: a linked account adds its own and its groups' grants, never its organisation's
+                WITH principal, target, {user_var}
                 MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-                WHERE p9.role IS NOT NULL AND p9.role <> ''
+                WHERE principal = {user_var} AND p9.role IS NOT NULL AND p9.role <> ''
                 RETURN collect(DISTINCT p9.role) AS org_roles
             }}
 
@@ -27088,8 +27124,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Principals: the user, plus the source account the user authenticated this node's
             // connector as. The link is per connector, so it never grants outside that connector.
-            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User)
-            WHERE linked.connectorId = {node_var}.connectorId
+            OPTIONAL MATCH ({user_var})-[linked:AUTHENTICATED_AS]->(source_account:User|SourceAccount)
+            WHERE linked.connectorId = {node_var}.connectorId AND coalesce(source_account.state, '') <> 'withdrawn'
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  [{user_var}] + collect(DISTINCT source_account) AS principals
 
@@ -27101,7 +27137,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
-            UNWIND principals AS principal
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            UNWIND [p IN principals WHERE p = {user_var}
+                    OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = {node_var}.connectorId] AS principal
 
             // The group, role and team paths start at the target and only probe the
             // principal's membership. The principals granted on one node are few; one
@@ -27147,9 +27186,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Path 5: User -> Org -> target
             CALL {{
-                WITH principal, target
+                // the viewer's organisation only: a linked account adds its own and its groups' grants, never its organisation's
+                WITH principal, target, {user_var}
                 MATCH (principal)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-                WHERE p9.role IS NOT NULL AND p9.role <> ''
+                WHERE principal = {user_var} AND p9.role IS NOT NULL AND p9.role <> ''
                 RETURN collect(DISTINCT p9.role) AS org_roles
             }}
 
@@ -27211,7 +27251,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH ({user_var})-[own_app_rel:USER_APP_RELATION]->({node_var})
 
             // A connector the user authenticated as another source account is the user's app too
-            OPTIONAL MATCH ({user_var})-[linked_app:AUTHENTICATED_AS {{connectorId: {node_var}.id}}]->(:User)
+            OPTIONAL MATCH ({user_var})-[linked_app:AUTHENTICATED_AS {{connectorId: {node_var}.id}}]->(linked_src:User|SourceAccount) WHERE coalesce(linked_src.state, '') <> 'withdrawn'
 
             // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
             OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})

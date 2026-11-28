@@ -1804,6 +1804,30 @@ people_schema = {
     "message": "Document does not match the people schema.",
 }
 
+# One account of a source directory (see CollectionNames.SOURCE_ACCOUNTS). The id is derived from (orgId, connectorId, sourceUserId).
+source_account_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "orgId": {"type": "string", "minLength": 1},
+            "connectorId": {"type": "string", "minLength": 1},
+            "sourceUserId": {"type": "string", "minLength": 1},
+            "email": {"type": ["string", "null"]},
+            "previousEmails": {"type": "array", "items": {"type": "string"}},
+            "fullName": {"type": ["string", "null"]},
+            "isGuest": {"type": "boolean"},
+            "state": {"type": "string", "enum": ["listed", "withdrawn", "unlisted"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "connectorId", "sourceUserId", "state", "createdAtTimestamp", "updatedAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the source account schema.",
+}
+
 # Knowledge Node Schema
 knowledge_schema = {
     "rule": {

@@ -45,6 +45,7 @@ from app.schema.arango.documents import (
     project_record_schema,
     pull_request_record_schema,
     record_group_schema,
+    source_account_schema,
     record_schema,
     stage_state_schema,
     sql_column_record_schema,
@@ -153,6 +154,7 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.COMMENTS.value: adapt_schema(comment_record_schema),
     CollectionNames.PEOPLE.value: adapt_schema(people_schema),
     CollectionNames.USERS.value: adapt_schema(user_schema),
+    CollectionNames.SOURCE_ACCOUNTS.value: adapt_schema(source_account_schema),
     CollectionNames.GROUPS.value: None,  # No schema
     CollectionNames.ROLES.value: adapt_schema(app_role_schema),
     CollectionNames.ORGS.value: adapt_schema(orgs_schema),
