@@ -14,6 +14,7 @@ import pytest
 
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import drainer, modes, reader
+from app.services.graph_db.postgres.kg import verify as verify_mod
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
@@ -98,9 +99,12 @@ async def test_a_backfill_copies_a_connector_and_flips_it_to_shadow_with_its_dig
 
 async def test_the_principals_verify_reads_no_record_the_users_have_a_permission_on(pg_db, monkeypatch) -> None:
     """The closure is all the principals' verify compares, and no record goes into it: a page of users of a large org has permissions on hundreds of thousands of records, and
-    reading each one's document and children outlasted the statement budget. u1 has a permission on f1, so the old snapshot read it."""
+    reading each one's document and children outlasted the statement budget. u1 has a permission on f1 and its source account acct one on x1, so the old snapshot read both."""
     p, org = await fresh_world(pg_db)
+    with ctx(org):      # a source account's own permission: its record is no more part of the closure than the user's
+        await p.batch_create_edges([edge("acct", "users", "x1", "records", type="USER", role="READER")], "permission")
     assert (await bf.backfill(pg_db, org, "app1", page=3)).flipped
+    monkeypatch.setattr(verify_mod, "PAGE", 1)        # a page of one user: u1's source account is read as its source account, not as a user of the page
     asked: set = set()
     for name in ("load_nodes", "load_has_children", "load_sks"):
         real = getattr(reader, name)

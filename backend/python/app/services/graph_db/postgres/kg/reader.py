@@ -200,12 +200,12 @@ async def snapshot(tx: Tx, org: str, focus: set[Key], allocate, *, known_childre
     nodes = await load_nodes(tx, org, focus)
     to, frm = await load_edges(tx, org, focus)
     ends = {e.frm for e in to} | {e.to for e in to} | {e.frm for e in frm} | {e.to for e in frm}
-    if closure_only:
-        ends = {k for k in ends if k[0] not in ("records", "recordGroups")}
     # a user's source accounts: their out-edges give the badge groups
     sources = {e.to for e in frm if e.coll == "authenticatedAs"}
     s_to, s_frm = await load_edges(tx, org, sources - focus) if sources - focus else ([], [])
     ends |= {e.to for e in s_frm} | {e.frm for e in s_frm} | {e.frm for e in s_to} | {e.to for e in s_to}
+    if closure_only:      # after the source accounts' ends too: their permissions reach records as well
+        ends = {k for k in ends if k[0] not in ("records", "recordGroups")}
     ends |= {("apps", c) for e in frm if e.coll == "authenticatedAs" and isinstance(c := e.doc.get("connectorId"), str)}      # the connector a source account is linked in
     nodes.update(await load_nodes(tx, org, ends - set(nodes)))
     apps = {("apps", c) for k, d in nodes.items() if k[0] in RECORD_COLLS and (c := app_id_of(k, d))}        # the app of every node: its sk is the node's app_sk
