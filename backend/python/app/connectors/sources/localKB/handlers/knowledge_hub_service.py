@@ -522,8 +522,10 @@ class KnowledgeHubService:
 
         if parent_id is None and flatten:
             # The search partitions by connector, so it needs the grants too; a
-            # provider that reads them per connector does so inside each page.
-            if getattr(self.graph_provider, "kh_grants_per_connector", False) is not True:
+            # provider that reads them per connector does so inside each page,
+            # when it can read them there for this listing now.
+            if getattr(self.graph_provider, "kh_grants_per_connector", False) is not True \
+                    or not await self.graph_provider.kh_pages_read_grants(user_key, org_id, sorted(access["gated_app_ids"])):
                 access = _without_apps(
                     await self.graph_provider.get_knowledge_hub_access_v3(user_key=user_key, org_id=org_id),
                     excluded,

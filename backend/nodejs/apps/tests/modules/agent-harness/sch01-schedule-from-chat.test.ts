@@ -414,6 +414,8 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     clock: TestClock;
     schedules: ScheduleService;
     call(body: Record<string, unknown>): Promise<{ status: number; body?: unknown; code?: string }>;
+    /** The error the last refused call passed to `next`, as the error middleware would write it. */
+    lastError(): unknown;
   }
 
   const resolved = (
@@ -485,6 +487,7 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     const controller = new AgentHarnessChatScheduleController(service, {
       authorizeAttempt: sinon.stub().resolves(),
     } as never);
+    let refused: unknown;
     const call = async (body: Record<string, unknown>) => {
       const res = { statusCode: 0, payload: undefined as unknown, status: sinon.stub(), json: sinon.stub() };
       res.status.callsFake((s: number) => ((res.statusCode = s), res));
@@ -502,12 +505,13 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
         next,
       );
       if (next.called) {
-        const error = next.firstCall.args[0] as { statusCode: number; code?: string };
+        refused = next.firstCall.args[0];
+        const error = refused as { statusCode: number; code?: string };
         return { status: error.statusCode, code: String(error.code) };
       }
       return { status: res.statusCode, body: res.payload };
     };
-    return { controller, events, marked, setting, actors, store, clock, schedules, call };
+    return { controller, events, marked, setting, actors, store, clock, schedules, call, lastError: () => refused };
   }
 
   const body = (args: unknown = ARGS, interactionId = ixOf(ARGS)) => ({
@@ -543,8 +547,41 @@ describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', ()
     expect(again.status).to.equal(200);
     expect(again.body).to.deep.include({ created: false });
     expect((again.body as { schedule: { id: string } }).schedule.id).to.equal(first.schedule.id);
-    expect(first.schedule.id).to.equal(chatScheduleId(ORG, ixOf(ARGS)));
+    expect(first.schedule.id).to.equal(chatScheduleId(ORG, RUN, ixOf(ARGS)));
     expect(await w.store.list(ORG, {}, 10)).to.have.length(1);
+  });
+
+  it('the loop\'s interaction ids repeat in every run, so the id is per run: two runs never share a schedule', () => {
+    // The durable loop's first approval is ix.approve.t1.0 in every run; an id of the org and the interaction alone
+    // answered every later run's t1.0 with the first run's schedule, someone else's included.
+    const loopFirst = 'ix.approve.t1.0';
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.not.equal(chatScheduleId(ORG, 'run-b', loopFirst));
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.equal(chatScheduleId(ORG, 'run-a', loopFirst));
+    expect(chatScheduleId(ORG, 'run-a', loopFirst)).to.not.equal(chatScheduleId('org-2', 'run-a', loopFirst));
+  });
+
+  it('a schedule at this decision\'s id that another run or person made is never answered with: 403, nothing leaked', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const id = chatScheduleId(ORG, RUN, ixOf(ARGS));
+    await w.store.create(
+      aSchedule({
+        id,
+        orgId: ORG,
+        actorId: BOB,
+        name: 'Bob\'s private reminder',
+        origin: { conversationId: 'ses-bob', runId: 'run-bob', interactionId: ixOf(ARGS) },
+      }),
+      { perOrg: 500, perActor: 50 },
+    );
+    const answer = await w.call(body());
+    expect(answer).to.deep.equal({ status: 403, code: 'HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN' });
+    // What the response carries is the HttpError itself (scheduleHttpError): its message and every field it has.
+    const error = w.lastError() as Error;
+    expect(error.message).to.be.a('string').and.not.equal('');
+    const carried = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    expect(carried).to.not.include('private');
+    expect(carried).to.not.include('run-bob');
   });
 
   it('two requests of one decision at once make one schedule', async () => {

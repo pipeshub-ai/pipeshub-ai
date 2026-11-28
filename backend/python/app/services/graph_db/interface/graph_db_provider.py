@@ -7835,6 +7835,12 @@ class IGraphDBProvider(ABC):
     # (a dict it fills as ``{app_id: granted ids}``): the global listing then lets
     # every connector's page read its grants beside the others.
     kh_grants_per_connector = False
+
+    async def kh_pages_read_grants(self, user_key: str, org_id: str, gated_app_ids: list[str]) -> bool:
+        """For a backend with ``kh_grants_per_connector``: whether this listing's pages read the grants themselves (True), or are given them, read once for all
+        (False: ``get_knowledge_hub_access_v3``), because a page could only read them as that read does, once per connector."""
+        return True
+
     # Rows one read of the rows before a numbered page may take (``KnowledgeHubService._walk_pages``); 0 is a page's worth, a read per page. Raised by a backend
     # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
     kh_skip_rows = 0
@@ -8280,9 +8286,12 @@ class IGraphDBProvider(ABC):
         access: dict[str, Any],
         *,
         transaction: str | None = None,
+        user_key: str | None = None,
     ) -> None:
         """Name the parent of rows merged from several connector pages asked for
-        with ``name_parents=False``: one batch check for the whole page."""
+        with ``name_parents=False``: one batch check for the whole page.
+        ``user_key`` is the viewer, for a backend whose check can read their
+        grants itself when ``access`` lacks some (pages that did not report them)."""
         await self._kh_v3_name_parents(
             rows, org_id=org_id, apps=set(access.get("gated_app_ids") or ()), access=access,
             listed_under=None, transaction=transaction,

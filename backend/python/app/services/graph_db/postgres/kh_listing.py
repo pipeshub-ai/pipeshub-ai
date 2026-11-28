@@ -314,8 +314,8 @@ class KhListingMixin(PgBase):
                 user_key=user_key, grants_out=grants_out, limit=limit, sort_field=sort_field, order=order, after=after, direction=direction, filters=filters, include_total=include_total,
                 include_scope=include_scope, via_parent_id=via_parent_id, transaction=transaction, name_parents=name_parents, by_class=snapshot)
         # Every gated connector's grants (`_kh_grants`); a row's own grant is this App's.
-        gset = await self._kh_grants(app_id, org_id, grantee_ids, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction, by_class=snapshot, ids_out=grants_out is not None)
-        if grants_out is not None:
+        gset = await self._kh_grants(app_id, org_id, grantee_ids, gated_app_ids, granted_ids, grants_by_connector, user_key, transaction, by_class=snapshot)
+        if grants_out is not None and not gset.by_sk:      # grants read from kg are keys: the merged page's naming reads them per node (``name_knowledge_hub_parents``)
             grants_out[app_id] = sorted(gset.own)
         access, held = gset.access, gset
 
@@ -501,10 +501,10 @@ class KhListingMixin(PgBase):
         raise KnowledgeHubListingNotReady
 
     async def _kh_grants(self, app_id: str, org_id: str, grantee_ids: list[str], gated_app_ids: list[str], granted_ids: list[str] | None,
-                         grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None, *, by_class: bool, ids_out: bool) -> KhGrants:
-        """The viewer's grants for a page of ``app_id``. A page that reads them itself (``user_key``, no grants given, none asked back by id) in its own snapshot (``by_class``)
-        reads them from kg when kg holds every gated connector current (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
-        if by_class and user_key and granted_ids is None and grants_by_connector is None and not ids_out and kg_read.enabled() and current_or_system().kind != "system":
+                         grants_by_connector: dict[str, list[str]] | None, user_key: str | None, transaction: str | None, *, by_class: bool) -> KhGrants:
+        """The viewer's grants for a page of ``app_id``. A page that reads them itself (``user_key``, no grants given) in its own snapshot (``by_class``) reads them from kg when
+        kg serves every gated connector (:meth:`_kh_kg_grants`); otherwise, and for the grants a caller gives, by node id (``_kh_v3_page_grants``)."""
+        if by_class and user_key and granted_ids is None and grants_by_connector is None and kg_read.enabled() and current_or_system().kind != "system":
             org = current_org_id()
             got = None
             if org_id == org:
@@ -542,6 +542,34 @@ class KhListingMixin(PgBase):
             return None
         access = {"grantee_ids": gate["grantee_ids"], "gated_app_ids": apps, "linked": {c: hs for c, hs in gate["linked"].items() if c in wanted}}
         return KhGrants(frozenset(by.get(app_id) or ()), frozenset(sk for sks in by.values() for sk in sks), access, by_sk=True)
+
+    async def kh_pages_read_grants(self, user_key: str, org_id: str, gated_app_ids: list[str]) -> bool:
+        """Whether each page of a global listing can read the viewer's grants from kg now (the page's own read, :meth:`_kh_kg_grants`, answers); otherwise the listing reads them by
+        node id once, for every page."""
+        org = current_org_id()
+        if org_id != org or not user_key or not kg_read.enabled() or current_or_system().kind == "system":
+            return False
+        try:
+            return await self._q(lambda tx: self._kh_kg_grants(tx, org, "", user_key, gated_app_ids), None, isolation="repeatable_read") is not None
+        except Exception as e:      # kg's read is optional, as on the page (``_kh_grants``): a failed one is the read by id's
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.WARNING, op="kh_pages_read_grants", step="kg_grants")
+            return False
+
+    async def name_knowledge_hub_parents(self, rows: list[dict[str, Any]], org_id: str, access: dict[str, Any], *, transaction: str | None = None,
+                                         user_key: str | None = None) -> None:
+        """The interface's naming. When the pages left grants by node id for some gated connector unread (they read them from kg), the check reads the viewer's grants per node
+        from the gate instead (``access.grants_of``), so a parent is named the same as with every grant."""
+        by = access.get("by_connector")
+        gated = list(access.get("gated_app_ids") or ())
+        if user_key and (by is None or not set(gated) <= set(by)) and org_id == current_org_id():
+            org = org_id
+            gate = await self._q(lambda tx: self._check_gate(tx, org, user_key), transaction, isolation="repeatable_read")
+            keep = [a for a in gated if a in set(gate["gated_app_ids"])]
+            access = {**gate, "gated_app_ids": gated} if "linked" not in gate else \
+                {"grantee_ids": gate["grantee_ids"], "gated_app_ids": keep, "linked": {c: hs for c, hs in gate["linked"].items() if c in set(keep)}}
+            await self._kh_v3_name_parents(rows, org_id=org_id, apps=set(gated), access=access, listed_under=None, transaction=transaction)
+            return
+        await super().name_knowledge_hub_parents(rows, org_id, access, transaction=transaction)
 
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:
         """The access check for a list of ids: kg first for a connector it serves, the live walk otherwise."""

@@ -185,6 +185,24 @@ async def test_the_reaper_keeps_a_membership_made_ordinary_while_it_runs(pg_db) 
         assert await _app_edges(pg_db, org) == {"x2": False}
 
 
+async def test_a_reindex_grant_written_while_the_reaper_runs_ends_with_the_membership(pg_db) -> None:
+    """A reindex writes x2's grant in one transaction (on_updated_record_permissions) and its membership in the next (on_external_app_users). A reaper
+    that runs while the grant is uncommitted does not see it and drops the membership; the membership the reindex writes after its grant commits stays,
+    and a reaper run after that keeps it."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _world_x(p, org)
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com"}], "users")
+        await p.batch_create_edges([edge("x2", "users", "app1", "apps", isExternalUser=True, syncState="COMPLETED", lastSyncUpdate=1)], "userAppRelation")
+        tid = await p.begin_transaction([], [])
+        await p.batch_create_edges([_perm("x2", "users", "r1", "records")], "permission", transaction=tid)
+        await _reap_while(p, tid)
+        assert await _app_edges(pg_db, org) == {}      # what a reindex that writes no membership leaves: x2 cannot reach the App
+        await p.ensure_app_membership("x2", "users", "app1", is_external=True)
+        await p.reap_stale_external_app_relations("app1")
+        assert await _app_edges(pg_db, org) == {"x2": True}
+
+
 async def test_a_person_granted_while_the_reaper_runs_is_not_deleted(pg_db) -> None:
     """A person held on the App only by its flagged membership. A writer takes the person (upsert_person_by_email, as the processor's principal lookup
     does for a grant) and grants it a record while the reaper runs. The reaper may drop the membership, never the person the committed grant comes from."""
