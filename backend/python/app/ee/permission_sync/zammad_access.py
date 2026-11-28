@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Who may read a Zammad group's tickets, by Zammad's own rule.
 
 Zammad lets an agent read a ticket when the agent is active, holds ``ticket.agent``,

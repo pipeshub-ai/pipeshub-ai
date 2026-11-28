@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Zendesk: reading who may see what from Zendesk.
 
 Ticket access, from each agent's access level and custom role, the ticket groups' members, the
