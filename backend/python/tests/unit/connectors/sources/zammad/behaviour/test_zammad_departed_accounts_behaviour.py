@@ -60,7 +60,16 @@ class World:
         client.get_base_url.return_value = "https://zammad.test"
         self.connector.external_client = client
         self.connector.base_url = "https://zammad.test"
-        self.connector._get_fresh_datasource = AsyncMock(return_value=ZammadDataSource(client))
+        # The token saved in the connector's settings; reading the config installs it in the client, as the
+        # real _get_fresh_datasource does. A token saved elsewhere reaches the client only on that read.
+        self.stored_token: str | None = None
+        datasource = ZammadDataSource(client)
+
+        async def fresh_datasource() -> ZammadDataSource:
+            self.zammad.token = self.stored_token
+            return datasource
+
+        self.connector._get_fresh_datasource = fresh_datasource
         self.connector._sync_tickets_for_groups = AsyncMock()
         self.connector._remove_tickets_in_excluded_groups = AsyncMock()
         self.connector._sync_knowledge_bases = AsyncMock()
@@ -227,12 +236,12 @@ async def test_a_token_replaced_after_a_listing_of_its_own_record_keeps_members_
     groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
     roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
     world.zammad.lists_everyone = False
-    world.zammad.token = "old"
+    world.stored_token = "old"
     fetch_users = world.connector._fetch_users
 
     async def listed_then_replaced(*args: object) -> object:
         listing = await fetch_users(*args)
-        world.zammad.token, world.zammad.me = "new", 2  # the owner saved another account's token
+        world.stored_token, world.zammad.me = "new", 2  # the owner saved another account's token
         return listing
 
     world.connector._fetch_users = listed_then_replaced
@@ -250,13 +259,13 @@ async def test_a_token_replaced_between_pages_of_the_user_list_keeps_members_as_
     as a complete list of 100 users, which would take group and role access from the other 50."""
     groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
     roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
-    world.zammad.token = "old"
+    world.stored_token = "old"
     real_execute = world.zammad.execute
 
     async def execute(request: HTTPRequest) -> FakeHttpResponse:
         response = await real_execute(request)
         if urlparse(request.url).path == "/api/v1/users" and int((request.query_params or {}).get("page", 1)) == 1:
-            world.zammad.token, world.zammad.lists_everyone = "new", False  # saved while page 1 was read
+            world.stored_token, world.zammad.lists_everyone = "new", False  # saved while page 1 was read
         return response
 
     world.zammad.execute = execute
@@ -273,7 +282,8 @@ async def test_a_token_replaced_between_pages_of_the_user_list_keeps_members_as_
 async def test_a_token_replaced_between_pages_of_the_role_or_group_list_keeps_members_as_stored(
     world: World, listing: str,
 ) -> None:
-    """Two pages of roles or groups, the second read with another token: the read is unfinished, not complete."""
+    """Two pages of roles or groups, the second read with another token: the read is unfinished, and nothing
+    collected from page 1 is written as if the list were complete."""
     for i in range(100):  # one more page; none of these roles lets anyone read a ticket, none of these groups has users
         if listing == "roles":
             world.zammad.roles[1000 + i] = agent_role(1000 + i, name=f"Filler {i}", permissions=())
@@ -281,13 +291,15 @@ async def test_a_token_replaced_between_pages_of_the_role_or_group_list_keeps_me
             world.zammad.groups[1000 + i] = {"id": 1000 + i, "name": f"Filler {i}", "active": True}
     groups_before = {gid: set(m) for gid, m in world.directory.group_members.items()}
     roles_before = {rid: set(m) for rid, m in world.directory.role_members.items()}
-    world.zammad.token = "old"
+    group_writes_before = world.directory.group_writes
+    world.zammad.users[7]["group_ids"].pop(str(SUPPORT))  # page 1 alone would write Support without u7
+    world.stored_token = "old"
     real_execute = world.zammad.execute
 
     async def execute(request: HTTPRequest) -> FakeHttpResponse:
         response = await real_execute(request)
-        if urlparse(request.url).path == f"/api/v1/{listing}" and int((request.query_params or {}).get("page", 1)) == 1:
-            world.zammad.token = "new"  # saved while page 1 was read
+        if urlparse(request.url).path == f"/api/v1/{listing}" and int((request.query_params or {}).get("page", 1)) == 2:
+            world.stored_token = "new"  # saved in the settings while page 2 was read, after page 1 was taken in
         return response
 
     world.zammad.execute = execute
@@ -298,6 +310,7 @@ async def test_a_token_replaced_between_pages_of_the_role_or_group_list_keeps_me
     assert world.linked() == EVERYONE
     assert {gid: world.directory.group_members[gid] for gid in groups_before} == groups_before
     assert {rid: world.directory.role_members[rid] for rid in roles_before} == roles_before
+    assert world.directory.group_writes == group_writes_before, "no group members written from part of a list"
 
 
 async def test_a_token_whose_own_account_cannot_be_read_withdraws_nobody(world: World) -> None:

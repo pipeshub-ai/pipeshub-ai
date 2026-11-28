@@ -469,10 +469,11 @@ class ZammadConnector(BaseConnector):
         get_client = getattr(self.external_client, "get_client", None)
         return getattr(get_client(), "token", None) if callable(get_client) else None
 
-    def _token_replaced(self, started_with: object, read: str, page: int) -> bool:
+    async def _token_replaced(self, started_with: object, read: str, page: int) -> bool:
         """Whether the stored token changed since a paged read started: pages read with two tokens are two
-        accounts' views, so the read is unfinished and what it decides stays as stored."""
-        if self._token_in_use() == started_with:
+        accounts' views, so the read is unfinished and what it decides stays as stored. Asks the stored config,
+        since a token saved elsewhere reaches the client only on that read; a failed read counts as replaced."""
+        if await self._still_holds(started_with):
             return False
         self.logger.warning(
             f"The Zammad access token was replaced while the {read} was read (page {page}); group and role "
@@ -850,7 +851,7 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_users(page=page, per_page=per_page)
 
-            if self._token_replaced(self._users_listed_with, "user list", page):
+            if await self._token_replaced(self._users_listed_with, "user list", page):
                 outcome = ReadOutcome.INTERRUPTED
                 break
             if not response.success:
@@ -1067,7 +1068,8 @@ class ZammadConnector(BaseConnector):
         while True:
             response = await datasource.list_groups(page=page, per_page=per_page)
 
-            if self._token_replaced(started_with, "group list", page):
+            if await self._token_replaced(started_with, "group list", page):
+                user_groups = []  # members collected so far were read for a list that is not one view
                 listing_complete = False
                 self._incomplete.append(f"the group list ({ReadOutcome.INTERRUPTED.value})")
                 break
@@ -1184,7 +1186,7 @@ class ZammadConnector(BaseConnector):
         per_page = 100
         while True:
             response = await datasource.list_roles(page=page, per_page=per_page, expand=True)
-            if self._token_replaced(started_with, "role list", page):
+            if await self._token_replaced(started_with, "role list", page):
                 return roles, ReadOutcome.INTERRUPTED
             if not response.success:
                 outcome = read_failure(response.status_code)
