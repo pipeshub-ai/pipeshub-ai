@@ -12,6 +12,11 @@ TELEMETRY_DEFAULT_ENABLED = True
 # same preview as ``argsPreview``, which the chat shows as it is.
 TOOL_ARGS_PREVIEW_CHARS = 2000
 
+# Whether every agent run, a service-account agent's included, runs as the identified person who asks: no service
+# identity (the Slack bot's token) starts one, and its tools use that person's own connections. Here a
+# service-account agent runs on its own identity and connections, also when a service starts it.
+AGENTS_RUN_AS_THE_CALLER = False
+
 # Extra migration module directories, relative to ``backend/`` (e.g. ``"db/extra/usage"``), added to the
 # ones under ``backend/db/versions/``. Read by ``backend/db`` by file path: keep this module import-free.
 EXTRA_MIGRATION_LOCATIONS: list[str] = []

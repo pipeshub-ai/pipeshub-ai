@@ -13,13 +13,14 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from app.harness.assembly import tool_environment
 from app.harness.assembly.model_identity import bind_run_identity
-from app.harness.assembly.tool_environment import _artifact_owner  # pyright: ignore[reportPrivateUsage]
 from app.services.model_identity.call_context import peek_call_context
 from app.services.model_identity.principal import PrincipalKind
 from app.services.model_identity.runtime import IdentityRuntime, set_identity_runtime
 from app.services.model_identity.workload import Workload
 from harness_core.driver.refusal import RunRefused
+from tests.support import edition_defaults
 
 ORG = "org-sm2"
 ALICE = "user-alice"
@@ -94,14 +95,36 @@ class _Graph:
         return self.user
 
 
+def _artifact_owner(run: Any, graph: _Graph) -> Any:  # noqa: ANN401
+    return tool_environment._artifact_owner(run, graph)  # pyright: ignore[reportPrivateUsage]
+
+
+def _service_agent_identity(run: Any, graph: _Graph) -> tuple[dict[str, Any], bool]:  # noqa: ANN401
+    """A build whose agents all run as the caller: whose a service-account agent's run is, its files included."""
+    agent = {"_key": "agent-1", "isServiceAccount": True, "createdBy": "creator-key"}
+    return asyncio.run(tool_environment._identity(run, agent, graph, None))  # pyright: ignore[reportPrivateUsage]
+
+
 def test_a_service_account_agents_files_belong_to_the_person_chatting() -> None:
-    graph = _Graph(user={"_key": ALICE, "orgId": ORG})
+    graph = _Graph(user={"_key": ALICE, "userId": ALICE, "orgId": ORG, "email": "alice@example.com"})
+    if edition_defaults.agents_run_as_the_caller():
+        info, service_account = _service_agent_identity(_run(), graph)
+        assert (info["userId"], service_account) == (ALICE, False), "the run, and what it makes, is the person's"
+        assert graph.asked == [ALICE]
+        return
     assert asyncio.run(_artifact_owner(_run(), graph)) == ALICE
     assert graph.asked == [ALICE]
 
 
 def test_a_service_identity_or_a_caller_of_another_org_leaves_them_the_creators() -> None:
     graph = _Graph(user={"_key": ALICE, "orgId": ORG})
+    if edition_defaults.agents_run_as_the_caller():
+        # No run as a service identity at all, so nothing it makes is anyone's.
+        with pytest.raises(RunRefused) as refused:
+            _service_agent_identity(_run(via="service"), graph)
+        assert refused.value.error_type == "unidentified_caller"
+        assert graph.asked == []
+        return
     assert asyncio.run(_artifact_owner(_run(via="service"), graph)) is None
     assert graph.asked == []
     assert asyncio.run(_artifact_owner(_run(), _Graph(user={"_key": ALICE, "orgId": "org-other"}))) is None
@@ -109,6 +132,9 @@ def test_a_service_identity_or_a_caller_of_another_org_leaves_them_the_creators(
 
 def test_a_caller_that_cannot_be_read_refuses_the_run() -> None:
     with pytest.raises(RunRefused) as refused:
-        asyncio.run(_artifact_owner(_run(), _Graph(error=RuntimeError("graph down"))))
+        if edition_defaults.agents_run_as_the_caller():
+            _service_agent_identity(_run(), _Graph(error=RuntimeError("graph down")))
+        else:
+            asyncio.run(_artifact_owner(_run(), _Graph(error=RuntimeError("graph down"))))
     assert refused.value.error_type == "identity_unavailable"
     assert isinstance(refused.value.__cause__, HTTPException)

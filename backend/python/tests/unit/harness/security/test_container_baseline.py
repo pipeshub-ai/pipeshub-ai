@@ -21,6 +21,8 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.support import edition_defaults
+
 REPO = Path(__file__).resolve().parents[6]
 COMPOSE_DIR = REPO / "deployment" / "docker-compose"
 E2E_DIR = REPO / "deployment" / "e2e"
@@ -39,7 +41,7 @@ SHIPPED = ("docker-compose.yml", "docker-compose.monitoring.yml", "docker-compos
            # PIPESHUB_COMPOSE_OVERRIDES.
            "docker-compose.postgres-only.yml", "docker-compose.postgres-backup.yml",
            # Main's own MongoDB login for the API (#6416): listed in PIPESHUB_COMPOSE_OVERRIDES.
-           "docker-compose.mongo-app-user.yml")
+           "docker-compose.mongo-app-user.yml", *edition_defaults.shipped_compose_files_extra())
 # Contributor builds, legacy layouts and integration fixtures: never what install.sh or the docs start for an
 # install. docker-compose.sandbox-legacy.yml belongs to the legacy Docker proxy (R38-EGRESS). They may not weaken a
 # service the base file hardens (test_no_compose_file_opens_a_hole), but they are not held to the full baseline.

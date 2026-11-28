@@ -80,16 +80,22 @@ class Rig:
             return '{"id": "J-1"}'
 
         w.replace_tool(monkeypatch, w.FakeJira, "create_issue", create_issue)
-        services, skills = w.Services(), FakeGraphProvider()
+        services, skills = w.Services(w.agent_doc(createdBy=AUTHOR)), FakeGraphProvider()
         services.config.put(
             PLATFORM_SETTINGS_KEY, {"featureFlags": {**RIG_PLATFORM_FLAGS, "ENABLE_MCP": True, "ENABLE_SKILLS": True}}
         )
         elsewhere = services.graph.get_document
+        # The agent's editor owns it: an assignment holds while its owner can still see the skill.
+        owners = {(CollectionNames.AGENT_INSTANCES.value, w.AGENT), (CollectionNames.USERS.value, AUTHOR)}
+        _ = await skills.batch_upsert_nodes(
+            [{"_key": w.AGENT, "orgId": w.ORG, "createdBy": AUTHOR}], CollectionNames.AGENT_INSTANCES.value
+        )
+        _ = await skills.batch_upsert_nodes([{"_key": AUTHOR, "orgId": w.ORG}], CollectionNames.USERS.value)
 
         async def get_document(
             key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
         ) -> dict[str, Any] | None:
-            source = skills.get_document if collection in SKILL_COLLECTIONS else elsewhere
+            source = skills.get_document if collection in SKILL_COLLECTIONS or (collection, key) in owners else elsewhere
             return await source(key, collection)
 
         services.graph.get_document = get_document
@@ -200,6 +206,7 @@ async def test_skl15_on_today_s_loop_a_loaded_skill_narrows_nothing(monkeypatch:
     context = AgentContext(
         org_id=w.ORG, user_id=w.ACTOR, user_email="user@corp.example", user_info={"userId": w.ACTOR, "orgId": w.ORG},
         graph_provider=rig.skills, config_service=rig.services.config, agent_skills=[SKILL],  # type: ignore[arg-type]
+        agent_owner_key=AUTHOR,
     )
     manager = await build_skill_manager(context, TransportRegistry())
     assert manager is not None

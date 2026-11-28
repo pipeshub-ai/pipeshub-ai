@@ -11,6 +11,7 @@ import pytest
 
 from app.harness.assembly.context import RunContext
 from app.harness.assembly.tool_environment import _identity
+from tests.support import edition_defaults
 from tests.unit.harness.assembly.world import ORG, agent_doc, claim, pinned_spec
 
 CREATOR = {"_key": "creator-key", "userId": "creator-user", "orgId": ORG, "email": "creator@corp.example", "fullName": "Cora Creator"}
@@ -30,11 +31,24 @@ def _run(caller: dict[str, Any] | None) -> RunContext:
     return RunContext.from_claim(claim(pinned_spec(tool_ids=[]), caller=caller))
 
 
+async def _refused_without_a_person(run: RunContext, graph: MagicMock) -> None:
+    """A build whose agents all run as the caller: an actor with no user document (Node's synthetic Slack identity)
+    is refused, and the run never falls back to the agent creator."""
+    from harness_core.driver.run_driver import RunRefused
+
+    with pytest.raises(RunRefused):
+        await _identity(run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t"))
+    graph.check_agent_permission.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_the_slack_caller_names_the_user_and_the_creator_scopes_the_knowledge() -> None:
     run = _run(SLACK_CALLER)
     assert (run.caller_email, run.caller_display_name) == ("sam@slack.example", "Sam from Slack")
     graph = _graph()
+    if edition_defaults.agents_run_as_the_caller():
+        await _refused_without_a_person(run, graph)
+        return
     info, service_account = await _identity(
         run, agent_doc(isServiceAccount=True, createdBy="creator-key"), graph, logging.getLogger("t")
     )
@@ -48,6 +62,9 @@ async def test_the_slack_caller_names_the_user_and_the_creator_scopes_the_knowle
 
 @pytest.mark.asyncio
 async def test_without_a_caller_the_run_keeps_the_creator_as_legacy_does() -> None:
+    if edition_defaults.agents_run_as_the_caller():
+        await _refused_without_a_person(_run(None), _graph())
+        return
     info, _ = await _identity(
         _run(None), agent_doc(isServiceAccount=True, createdBy="creator-key"), _graph(), logging.getLogger("t")
     )

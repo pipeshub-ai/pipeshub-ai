@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from app.utils.encryption.secret_key_ring import secret_key_ring, weak_secret_reason
+from tests.support import edition_defaults
 
 REPO = Path(__file__).resolve().parents[6]
 COMPOSE_DIR = REPO / "deployment" / "docker-compose"
@@ -198,7 +199,8 @@ def test_the_socket_proxy_and_each_caller_share_a_generated_token(path: Path) ->
                if isinstance(svc, dict) and "tcp://docker-socket-proxy" in " ".join(map(str, svc.get("environment") or []))]
     if not isinstance(proxy, dict) and not callers:
         return
-    overlay = path.parent.name == "e2e" or path.name == "docker-compose.sandbox-legacy.yml"
+    overlay = (path.parent.name == "e2e" or path.name == "docker-compose.sandbox-legacy.yml"
+               or str(path.relative_to(REPO)) in edition_defaults.compose_overlays_extra())
     base = _services_of(_BASE_COMPOSE) if overlay else {}
     proxy_env = _env(proxy or {}) | _env(base.get("docker-socket-proxy") or {})
     assert proxy_env & set(_PROXY_TOKENS), f"{path.name}: the proxy has no caller credential"

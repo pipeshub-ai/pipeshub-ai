@@ -8,6 +8,7 @@ decide. So the run asks; an admin's Block still refuses.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from harness_core.effects.types import refresh_policy
 from harness_core.kernel.core.messages import ToolCall
 from harness_core.testing import ModelScript, Reply, ScriptedModel, Turn
 from harness_core.testing.durable import ScriptedModelPort
+from tests.support import edition_defaults
 
 from . import world as w
 
@@ -51,11 +53,14 @@ async def _service_identity(*_: Any, **__: Any) -> dict[str, Any]:  # noqa: ANN4
 async def _build(services: w.Services) -> AssembledRuntime:
     port = ScriptedModelPort(ScriptedModel(ModelScript(id="t", turns=[Turn(reply=Reply(text="ok"))])))
     assembler = PipesHubRuntimeAssembler(services, model_factory=w.model_factory(port))
-    with (
-        patch("app.api.routes.agent._enrich_user_info_for_service_account_agent_chat", _service_identity),
-        patch("app.api.routes.agent._resolve_service_account_caller_identity", _service_identity),
-        patch("app.api.routes.agent._service_account_artifact_owner", _owner),
-    ):
+    with ExitStack() as stack:
+        # A build whose agents all run as the caller has no service-account identity to stand in for.
+        if not edition_defaults.agents_run_as_the_caller():
+            stack.enter_context(
+                patch("app.api.routes.agent._enrich_user_info_for_service_account_agent_chat", _service_identity)
+            )
+            stack.enter_context(patch("app.api.routes.agent._resolve_service_account_caller_identity", _service_identity))
+            stack.enter_context(patch("app.api.routes.agent._service_account_artifact_owner", _owner))
         runtime = await w.first_use(await assembler.build(w.claim(w.pinned_spec(tool_ids=[JIRA_SEARCH, JIRA_CREATE]))))
     await refresh_policy(runtime.approval)
     return runtime

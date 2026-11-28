@@ -146,8 +146,10 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.skills.graph_store import GraphSkillStore
     from app.agents.registry.toolset_registry import ToolsetRegistry
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
@@ -181,6 +183,29 @@ def split_record_continuation(
     block its read starts at, or ``None`` to refuse the call and ask for one record at a time. OSS: refuse, since
     one offset applied to every id re-reads whichever stopped later and skips the start of the others."""
     return None
+
+
+async def shared_connector_instances(graph_provider: "IGraphDBProvider", user_id: str, org_id: str) -> list[dict]:
+    """Personal connector instances other users shared with ``user_id``, which a chat may query read-only on their
+    owner's credentials (``app.utils.connector_instances.fetch_shared_connector_instances``). OSS: none; a personal
+    connector is its owner's alone."""
+    return []
+
+
+async def skill_offer_store(
+    graph: "IGraphDBProvider", org_id: str, viewers: tuple[str | None, ...], assigned: frozenset[str],
+    agent_key: str | None,
+) -> "GraphSkillStore":
+    """The store a run's skill offer reads (``skills.offer.offered_skills``): what a run of the agent ``agent_key``,
+    which assigns ``assigned``, by the person stamped under ``viewers`` may be offered. OSS: the person's own skills
+    and every skill the agent assigns."""
+    from app.agents.agent_loop.skills.graph_store import (
+        GraphSkillStore,
+        SkillVisibility,
+    )
+    from app.agents.agent_loop.skills.offer import OFFER_READER_IDENTITY
+
+    return GraphSkillStore(graph, org_id, OFFER_READER_IDENTITY, visibility=SkillVisibility.of(viewers, shared=assigned))
 
 
 def configure_app(app: "FastAPI", service: str) -> None:

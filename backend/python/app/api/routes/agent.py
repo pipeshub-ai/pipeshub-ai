@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app import edition
 from app.agent_loop_lib.modules.providers.skills.base import SkillStatus
 from app.agents.agent_environment import AgentEnvironmentRefused, agent_environment
 from app.agents.agent_gates import (
@@ -4100,12 +4101,13 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
 @router.get(
     "/{agent_id}/run-definition",
     # The stream's own rule (main #4220): the universal agent with conversation:chat, a named one with agent:execute.
+    # The Slack bot's service token too, unless this build runs every agent as the identified person asking.
     dependencies=[
         Depends(
             require_scopes(
                 OAuthScopes.AGENT_EXECUTE,
                 OAuthScopes.CONVERSATION_CHAT,
-                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+                service_scopes=() if edition.AGENTS_RUN_AS_THE_CALLER else (TokenScopes.CONVERSATION_CREATE,),
             )
         ),
         Depends(require_agent_execute_for_named_agents),

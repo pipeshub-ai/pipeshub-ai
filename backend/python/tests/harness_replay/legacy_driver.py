@@ -74,6 +74,7 @@ from tests.harness_replay.world import (
     activate,
     deactivate,
 )
+from tests.support import edition_defaults
 from tests.support.bound_org import another_request
 from tests.support.knowledge_builder import builder_patches
 
@@ -436,6 +437,7 @@ async def drive(spec: DriveSpec) -> DriveResult:
             stack.enter_context(patch.dict(os.environ, env))
             # Both legacy routes run behind the auth middleware, which binds the token's org for the request.
             stack.enter_context(another_request(ORG_ID, USER_ID))
+            await edition_defaults.verify_loop_caller({"userId": USER_ID, "orgId": ORG_ID, "email": "user@corp.example"})
             stats = stack.enter_context(
                 tool_boundary(
                     recorder, spec.frozen, spec.approve, freeze=is_external_tool

@@ -20,11 +20,14 @@ from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.api.routes import skills
 from tests.support.bound_org import bound_like_auth
 from tests.support.config_service import FakeConfigurationService
+from tests.support.edition_defaults import skill_candidates_are_their_learners_alone
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
 ORG = "org-1"
 OWNER = "owner-1"
 OTHER = "other-1"
+# A build where a candidate is its learner's alone answers anyone else as it answers a missing id.
+LEARNERS_ALONE = skill_candidates_are_their_learners_alone()
 
 
 class _UsersGraph(FakeGraphProvider):
@@ -86,7 +89,11 @@ async def _queue(graph: FakeGraphProvider, *, learner: str = f"key-{OWNER}", can
 
 
 async def _pending(graph: FakeGraphProvider) -> list[str]:
-    return [c.candidate_id for c in await GraphSkillStore(graph, ORG, "x").get_pending_candidates()]  # type: ignore[arg-type]
+    readers = (f"key-{OWNER}", f"key-{OTHER}") if LEARNERS_ALONE else ("x",)  # each learner reads only their own
+    return [
+        c.candidate_id for who in readers
+        for c in await GraphSkillStore(graph, ORG, who).get_pending_candidates()  # type: ignore[arg-type]
+    ]
 
 
 # ---- who decides a proposal -------------------------------------------------------------------------------------
@@ -112,7 +119,7 @@ async def test_another_member_cannot_decide_someone_elses_proposal(action: str) 
     with _admin(False):
         response = _client(graph, OTHER).post(f"/api/v1/skills/candidates/cand-1/{action}")
 
-    assert response.status_code == 403
+    assert response.status_code == (404 if LEARNERS_ALONE else 403)
     assert await _pending(graph) == ["cand-1"]
 
 
@@ -123,6 +130,10 @@ async def test_an_admin_still_decides_any_proposal() -> None:
     with _admin(True):
         response = _client(graph, OTHER).post("/api/v1/skills/candidates/cand-1/approve")
 
+    if LEARNERS_ALONE:
+        assert response.status_code == 404, response.text
+        assert await _pending(graph) == ["cand-1"]
+        return
     assert response.status_code == 200, response.text
     assert await _pending(graph) == []
 
@@ -147,6 +158,11 @@ async def test_an_admin_approving_someone_elses_proposal_makes_it_the_learners_s
     with _admin(False):
         learner_view = _client(graph, OWNER).get("/api/v1/skills/weekly-digest")
 
+    if LEARNERS_ALONE:
+        assert response.status_code == 404, response.text
+        assert learner_view.status_code == 404
+        assert await _pending(graph) == ["cand-1"]
+        return
     assert response.status_code == 200, response.text
     doc = _skill_doc(graph)
     assert doc["createdBy"] == f"key-{OWNER}"
@@ -181,6 +197,10 @@ async def test_a_proposal_with_no_recorded_learner_is_the_approving_admins() -> 
     with _admin(True):
         response = _client(graph, OTHER).post("/api/v1/skills/candidates/legacy/approve")
 
+    if LEARNERS_ALONE:
+        assert response.status_code == 404, response.text
+        assert not graph._collections.get(skills.CollectionNames.AGENT_SKILLS.value)
+        return
     assert response.status_code == 200, response.text
     assert _skill_doc(graph, "old-one")["createdBy"] == f"key-{OTHER}"
     assert _skill_doc(graph, "old-one")["approvedBy"] == OTHER
@@ -199,8 +219,8 @@ async def test_a_proposal_no_one_recorded_as_its_learner_is_an_admins_alone() ->
     with _admin(True):
         decided = _client(graph, OWNER).post("/api/v1/skills/candidates/legacy/reject")
 
-    assert refused.status_code == 403
-    assert decided.status_code == 200
+    assert refused.status_code == (404 if LEARNERS_ALONE else 403)
+    assert decided.status_code == (404 if LEARNERS_ALONE else 200)
 
 
 async def test_the_pending_list_shows_a_member_only_their_own_proposals_and_who_learned_them() -> None:
@@ -217,7 +237,8 @@ async def test_the_pending_list_shows_a_member_only_their_own_proposals_and_who_
     assert mine[0]["source_agent_key"] == "a7"
     assert mine[0]["source_run_id"] == "run-9"
     assert mine[0]["proposed_by"] == f"key-{OWNER}"
-    assert sorted((c["candidate_id"], c["mine"]) for c in every) == [("cand-1", True), ("cand-2", False)]
+    others = [] if LEARNERS_ALONE else [("cand-2", False)]
+    assert sorted((c["candidate_id"], c["mine"]) for c in every) == [("cand-1", True), *others]
 
 
 # ---- approve with edits, one version ------------------------------------------------------------------------------

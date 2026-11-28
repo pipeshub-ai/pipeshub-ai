@@ -575,7 +575,7 @@ so C-16 can tell "not a flag" from "forgotten".
 | `PIPESHUB_PROMPT_CACHE` | env | tuning: main's provider prompt caching (#4038), on unless set to anything but true; changes cost and latency, never what a run may do |
 | `PIPESHUB_LLM_STALL_TIMEOUT_SECONDS` | env | tuning: main's per-phase read, write and pool limit for the OpenAI and Azure transports (#4290), unset or 0 keeps the one request timeout; a stalled stream fails sooner and the SDK retries it |
 | `PIPESHUB_PROMPT_CACHE_TTL` | env | tuning: the Anthropic cache breakpoint lifetime (5m or 1h; anything else is 5m) |
-| `PIPESHUB_PROMPT_CACHE_RETENTION` | env | tuning: the OpenAI prompt-cache retention (default 24h; off or none sends none) |
+| `PIPESHUB_PROMPT_CACHE_RETENTION` | env | tuning: the OpenAI prompt-cache retention: `24h` or `in_memory`; `off` or `none` sends none; unset or blank is the build's default (`PROMPT_CACHE_RETENTION_DEFAULT` in `harness_core/edition_constants.py`). Any other value stops each service that makes model calls at start |
 | `PIPESHUB_PROMPT_CACHE_SHARDS` | env | tuning: how many prompt-cache routing keys a session spreads over (1-1024, default 8) |
 | `MCP_STDIO_ALLOWED_COMMANDS` | env | policy list, not a switch: main's commands a catalog STDIO MCP server may launch (#4003), comma-separated; unset is npx and uvx, a shell is never allowed whatever it lists |
 | `SANDBOX_EGRESS_PROXY_CONTAINER` | env | address: the proxy container the broker attaches sandboxes to |

@@ -38,6 +38,7 @@ from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.utils.env_utils import bind_host, bind_port, env_int
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
+from harness_core.models.transports.prompt_cache import check_prompt_cache_settings
 
 logger = logging.getLogger("extraction_main")
 
@@ -52,6 +53,7 @@ signal.signal(signal.SIGINT, handle_sigterm)
 
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
+check_prompt_cache_settings()
 
 container = ExtractionAppContainer.init("extraction_service")
 container_lock = asyncio.Lock()

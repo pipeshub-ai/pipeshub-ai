@@ -19,10 +19,13 @@ from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.api.routes import skills
 from tests.support.bound_org import bound_like_auth
 from tests.support.config_service import FakeConfigurationService
+from tests.support.edition_defaults import skill_candidates_are_their_learners_alone
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
 ORG = "org-1"
 MEMBER = "member-1"
+# A build where a candidate is its learner's alone answers anyone else, an admin too, as it answers a missing id.
+LEARNERS_ALONE = skill_candidates_are_their_learners_alone()
 
 
 class _UsersGraph(FakeGraphProvider):
@@ -88,7 +91,7 @@ async def test_sk6_a_member_with_skill_write_cannot_review_a_candidate(action: s
     with patch.object(edition_config, "check_user_is_admin", new=AsyncMock(return_value=False)):
         response = _client(graph).post(f"/api/v1/skills/candidates/cand-1/{action}")
 
-    assert response.status_code == 403
+    assert response.status_code == (404 if LEARNERS_ALONE else 403)
     assert await _pending(graph) == ["cand-1"]
 
 
@@ -99,6 +102,10 @@ async def test_sk7_an_admin_approves_a_candidate_into_a_skill() -> None:
     with patch.object(edition_config, "check_user_is_admin", new=AsyncMock(return_value=True)):
         response = _client(graph).post("/api/v1/skills/candidates/cand-1/approve")
 
+    if LEARNERS_ALONE:
+        assert response.status_code == 404, response.text
+        assert await _pending(graph) == ["cand-1"]
+        return
     assert response.status_code == 200, response.text
     assert response.json()["name"] == "weekly-digest"
     assert await _pending(graph) == []
@@ -111,6 +118,10 @@ async def test_sk7_an_admin_rejects_a_candidate() -> None:
     with patch.object(edition_config, "check_user_is_admin", new=AsyncMock(return_value=True)):
         response = _client(graph).post("/api/v1/skills/candidates/cand-1/reject")
 
+    if LEARNERS_ALONE:
+        assert response.status_code == 404, response.text
+        assert await _pending(graph) == ["cand-1"]
+        return
     assert response.status_code == 200
     assert await _pending(graph) == []
 

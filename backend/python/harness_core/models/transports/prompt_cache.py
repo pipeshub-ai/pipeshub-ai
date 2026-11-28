@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from harness_core.edition_constants import PROMPT_CACHE_RETENTION_DEFAULT
 from harness_core.models.capabilities import model_capabilities
 from harness_core.models.openai_hosts import is_openai_api_host
 
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 ANTHROPIC_TTLS = frozenset({"5m", "1h"})
+# The values OpenAI documents for prompt_cache_retention (developers.openai.com/api/docs/guides/prompt-caching:
+# "`in_memory`" and "`24h`"); anything else is a typo the provider would refuse.
+RETENTION_VALUES = frozenset({"in_memory", "24h"})
 ANTHROPIC_TOP_LEVEL_HOSTS = ("api.anthropic.com", ".services.ai.azure.com")
 AZURE_OPENAI_HOSTS = (".openai.azure.com", ".cognitiveservices.azure.com")
 # Azure AI Foundry hosts OpenAI models next to Llama, Mistral, DeepSeek, ...;
@@ -84,17 +88,25 @@ ALL_CACHE_PARAMS = frozenset({"*"})
 class PromptCacheSettings:
     enabled: bool = True
     anthropic_ttl: str = "5m"
-    openai_retention: str | None = "24h"
+    # Unset, the build's default (harness_core.edition_constants); "off" sends none.
+    openai_retention: str | None = PROMPT_CACHE_RETENTION_DEFAULT
     routing_shards: int = 8
 
     @classmethod
     def from_env(cls) -> PromptCacheSettings:
         ttl = (os.getenv("PIPESHUB_PROMPT_CACHE_TTL", "").strip() or "5m").lower()
-        retention = (os.getenv("PIPESHUB_PROMPT_CACHE_RETENTION") or "24h").strip()
+        # Blank is unset, as every setting read from the environment here (app.utils.env_flags.env_flag_set): the
+        # build's default. "off" or "none" sends none.
+        retention = (os.getenv("PIPESHUB_PROMPT_CACHE_RETENTION") or "").strip() or PROMPT_CACHE_RETENTION_DEFAULT or ""
+        if retention.lower() not in {"", "off", "none", *RETENTION_VALUES}:
+            raise ValueError(
+                f"PIPESHUB_PROMPT_CACHE_RETENTION={retention!r} is not supported. Leave it unset, set it to off, "
+                f"or to one of: {', '.join(sorted(RETENTION_VALUES))}."
+            )
         return cls(
             enabled=os.getenv("PIPESHUB_PROMPT_CACHE", "True").strip().lower() == "true",
             anthropic_ttl=ttl if ttl in ANTHROPIC_TTLS else "5m",
-            openai_retention=None if retention.lower() in {"", "off", "none"} else retention,
+            openai_retention=None if retention.lower() in {"", "off", "none"} else retention.lower(),
             routing_shards=_shards(os.getenv("PIPESHUB_PROMPT_CACHE_SHARDS"), 8),
         )
 
@@ -103,9 +115,18 @@ class PromptCacheSettings:
         return anthropic_breakpoint(self.anthropic_ttl)
 
 
+def check_prompt_cache_settings() -> None:
+    """Refuse to start on a PIPESHUB_PROMPT_CACHE_RETENTION this build does not send (raises ``ValueError`` naming the
+    allowed values). Every service main that makes model calls runs it at load, so a bad value stops the process
+    instead of failing each chat; ``from_env`` keeps the same check for any other reader."""
+    PromptCacheSettings.from_env()
+
+
 @dataclass(frozen=True)
 class CacheScope:
-    """Whose requests may share a provider cache: one org, split by
+    """Whose requests may share a provider cache: one org, or one principal of it
+    when ``principal_id`` names one (the acting user, or the service account of an
+    unattended run), split by
     ``shard_key`` (a conversation, or a record) where a provider routes by key.
     ``family`` names a fixed prompt (an indexing prompt), so each one warms
     keys of its own."""
@@ -113,9 +134,12 @@ class CacheScope:
     org_id: str
     shard_key: str | None = None
     family: str = ""
+    principal_id: str = ""
 
     def key(self, shards: int) -> str:
-        return routing_key(self.org_id, self.shard_key, shards, family=self.family)
+        return routing_key(
+            self.org_id, self.shard_key, shards, family=self.family, principal_id=self.principal_id,
+        )
 
 
 @dataclass(frozen=True)

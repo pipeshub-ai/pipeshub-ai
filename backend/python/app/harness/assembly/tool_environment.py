@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from app import edition
 from app.agents.run_definition import ASSISTANT_AGENT_KEY
 from app.harness.classification import in_tool_call
 from app.utils.run_model_scope import RunModelScope, run_model_scope
@@ -383,14 +384,21 @@ async def _identity(
         AgentNotFoundError,
         _apply_user_context_gate,
         _enrich_user_info,
-        _enrich_user_info_for_service_account_agent_chat,
         _get_user_document,
-        _resolve_service_account_caller_identity,
     )
 
+    as_the_caller = edition.AGENTS_RUN_AS_THE_CALLER
+    if as_the_caller and run.via == "service":
+        raise RunRefused("unidentified_caller", "an agent runs only as an identified person")
     user_context = {"userId": run.actor_id, "orgId": run.org_id}
     try:
-        if agent is not None and agent.get("isServiceAccount", False):
+        if agent is not None and agent.get("isServiceAccount", False) and not as_the_caller:
+            # Imported here: a build whose agents run as the caller has no service-account identity to resolve.
+            from app.api.routes.agent import (
+                _enrich_user_info_for_service_account_agent_chat,
+                _resolve_service_account_caller_identity,
+            )
+
             enriched = await _enrich_user_info_for_service_account_agent_chat(
                 agent, graph, logger, run.org_id
             )
@@ -404,7 +412,8 @@ async def _identity(
         user_doc = await _get_user_document(run.actor_id, graph, logger)
         enriched = await _enrich_user_info(user_context, user_doc)
         if agent is not None and run.agent is not None and not is_system_assistant(run):
-            permitted = await graph.check_agent_permission(
+            # A service-account agent is the org's: the run-definition route already checked its org.
+            permitted = agent.get("isServiceAccount", False) or await graph.check_agent_permission(
                 run.agent.agent_key, user_doc["_key"], run.org_id
             )
             if not permitted:
@@ -652,6 +661,8 @@ async def _agent_environment(
         "mcpServerConfigs": mcp_server_configs,
         "knowledge": agent_knowledge,
         "skills": list(run.skills) or None,
+        # Whose agent it is, for a build that loads an assigned skill only while its owner can still see it.
+        "agentOwnerKey": (agent or {}).get("createdBy"),
         "connector_configs": await fetch_connector_configs(config_service, connector_ids),
         "toolsetConfigs": toolset_configs,
         "conversationId": run.session_id,

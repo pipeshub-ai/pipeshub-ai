@@ -57,7 +57,10 @@ from app.modules.demo_data.chat import (
 )
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
-from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.connector_instances import (
+    fetch_shared_connector_instances,
+    fetch_user_connector_instances,
+)
 from app.utils.error_class import log_failure
 from app.utils.image_admission import admission_from_state
 from app.utils.logging_fields import log_event
@@ -373,9 +376,12 @@ async def prepare_chat_state(
     # of it sits before the first streamed byte -- run it as one wave. The
     # SQL and Slack checks used to issue the SAME `get_user_connector_
     # instances` query twice; they now share one result.
-    connector_instances, web_search_config, resolved_attachments, available_connectors, demo_excluded = (
+    connector_instances, shared_instances, web_search_config, resolved_attachments, available_connectors, demo_excluded = (
         await asyncio.gather(
             fetch_user_connector_instances(
+                graph_provider, user_info["userId"], org_id, log,
+            ),
+            fetch_shared_connector_instances(
                 graph_provider, user_info["userId"], org_id, log,
             ),
             resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
@@ -399,7 +405,9 @@ async def prepare_chat_state(
             demo_exclusions_for_run(graph_provider, config_service, user_info, log),
         )
     )
-    has_sql_connector = connector_instances_have_sql(connector_instances)
+    # Shared personal databases are queried on their owner's credentials, read-only.
+    sql_instances = [*connector_instances, *shared_instances]
+    has_sql_connector = connector_instances_have_sql(sql_instances)
     has_slack_connector = connector_instances_have_slack(connector_instances)
     has_code_connector = connector_instances_have_code(connector_instances)
     filters = await _turn_filters(query_info, user_info, org_id, policy, graph_provider, resolved_attachments, log)
@@ -422,7 +430,7 @@ async def prepare_chat_state(
     )
     apply_policy_to_chat_state(
         chat_state, policy, web_search_config,
-        sql_connector_ids=sql_connector_instance_ids(connector_instances, org_id),
+        sql_connector_ids=sql_connector_instance_ids(sql_instances, org_id),
     )
     apply_mode_instructions(chat_state, policy)
     chat_state["custom_instructions"] = resolve_custom_instructions(system_prompts_config, policy)
