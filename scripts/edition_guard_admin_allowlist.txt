@@ -14,6 +14,7 @@ route GET /control-plane/bindings -- each person lists their own connections; th
 page actions -- upstream workspace page: actions
 page actions/personal -- upstream workspace page: a person's own actions
 page actions/team -- upstream workspace page: the team's actions
+page agent-activity -- read-only: the calls made with this org's access tokens, so an admin can see what agents and integrations did with them; it changes nothing
 page ai-models -- upstream workspace page: the AI models the org configures
 page api-toolsets -- upstream workspace page: API toolsets
 page archived-chats -- upstream workspace page: a person's archived chats

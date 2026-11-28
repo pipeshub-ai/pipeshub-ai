@@ -3036,7 +3036,8 @@
         "aiAccounts": "AI 계정",
         "schedules": "스케줄",
         "memories": "메모리",
-        "aiSettings": "AI 설정"
+        "aiSettings": "AI 설정",
+        "agentActivity": "에이전트 활동"
       }
     },
     "actions": {
@@ -6025,6 +6026,29 @@
         "write": "먼저 사용자에게 확인",
         "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
       }
+    },
+    "agentActivity": {
+      "title": "에이전트 활동",
+      "subtitle": "이 워크스페이스에서 개인 액세스 토큰, OAuth 앱 토큰, 서비스 토큰으로 수행된 호출이며 최신 순으로 표시됩니다. 성공한 읽기 호출은 분 단위로 묶입니다. 로그인한 대시보드에서 수행된 호출은 기록되지 않으며, 항목은 30일 동안 보관됩니다.",
+      "filterKind": "토큰 유형",
+      "filterStatus": "상태",
+      "allKinds": "모든 토큰 유형",
+      "allStatuses": "모든 상태",
+      "kindPat": "개인 액세스 토큰",
+      "kindOauth": "OAuth 앱",
+      "kindDelegated": "서비스 토큰",
+      "columnUser": "사용자",
+      "columnToken": "토큰",
+      "columnRequest": "요청",
+      "columnStatus": "상태",
+      "columnTime": "시간",
+      "scopeDenied": "범위 없음",
+      "rolledUp": "호출 {{calls}}회",
+      "loadMore": "더 불러오기",
+      "retry": "다시 시도",
+      "loadError": "에이전트 활동을 불러올 수 없습니다.",
+      "emptyTitle": "아직 호출이 없습니다",
+      "emptyDescription": "액세스 토큰으로 수행된 호출이 여기에 표시됩니다."
     }
   },
   "filePreview": {

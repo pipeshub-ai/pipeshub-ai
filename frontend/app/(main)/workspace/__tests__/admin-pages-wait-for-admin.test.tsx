@@ -5,18 +5,22 @@ import { Theme } from '@radix-ui/themes';
 
 import '@/lib/__tests__/test-i18n';
 
+// jsdom has no ResizeObserver; Radix measures with it.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as never;
+
 // Bots and Prompts read admin-only settings. Bots loaded them on mount, before
 // knowing who the user was, so a member who opened it by URL got a 403 from the
 // server. Prompts (fixed on main in #4808) is held to the same contract here.
 
 // Hoisted with the mocks: the pages are imported with the file (below), so the mocks' state must exist first.
-const { user, replace, getSlackBotConfigs, getSystemPrompts } = vi.hoisted(() => ({
+const { user, replace, getSlackBotConfigs, getSystemPrompts, listAgentActivity } = vi.hoisted(() => ({
   user: { isAdmin: null as boolean | null, isProfileInitialized: false },
   replace: vi.fn(),
   getSlackBotConfigs: vi.fn(async () => []),
   getSystemPrompts: vi.fn(async () => ({
     customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '',
   })),
+  listAgentActivity: vi.fn(async () => ({ items: [] })),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -39,6 +43,9 @@ vi.mock('../bots/components', () => ({
 
 vi.mock('../prompts/api', () => ({ PromptsApi: { getSystemPrompts } }));
 
+vi.mock('../agent-activity/api', () => ({ AgentActivityApi: { list: listAgentActivity } }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>loading</div> }));
 
 // Imported with the file, not inside a test: the first dynamic import compiled the Bots page's module graph (about
@@ -46,10 +53,12 @@ vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => <div>l
 // hoisted, so the pages still see them.
 import BotsPage from '../bots/page';
 import PromptsPage from '../prompts/page';
+import AgentActivityPage from '../agent-activity/page';
 
 const pages = [
   { name: 'Bots', Page: BotsPage, fetched: getSlackBotConfigs },
   { name: 'Prompts', Page: PromptsPage, fetched: getSystemPrompts },
+  { name: 'Agent activity', Page: AgentActivityPage, fetched: listAgentActivity },
 ];
 
 function renderPage(Page: React.ComponentType) {

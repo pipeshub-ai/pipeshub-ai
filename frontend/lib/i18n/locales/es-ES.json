@@ -2923,7 +2923,8 @@
         "aiAccounts": "Cuentas de IA",
         "schedules": "Programaciones",
         "memories": "Recuerdos",
-        "aiSettings": "Ajustes de IA"
+        "aiSettings": "Ajustes de IA",
+        "agentActivity": "Actividad de agentes"
       }
     },
     "actions": {
@@ -6050,6 +6051,29 @@
         "write": "pide confirmación al usuario primero",
         "destructive": "bloqueada salvo que las reglas de acción del agente lo permitan"
       }
+    },
+    "agentActivity": {
+      "title": "Actividad de agentes",
+      "subtitle": "Llamadas hechas en este espacio de trabajo con tokens de acceso personal, tokens de aplicaciones OAuth y tokens de servicio, las más recientes primero. Las lecturas correctas se agrupan por minuto. Las llamadas desde el panel con sesión iniciada no se registran, y las entradas se conservan 30 días.",
+      "filterKind": "Tipo de token",
+      "filterStatus": "Estado",
+      "allKinds": "Todos los tipos de token",
+      "allStatuses": "Todos los estados",
+      "kindPat": "Token de acceso personal",
+      "kindOauth": "Aplicación OAuth",
+      "kindDelegated": "Token de servicio",
+      "columnUser": "Usuario",
+      "columnToken": "Token",
+      "columnRequest": "Solicitud",
+      "columnStatus": "Estado",
+      "columnTime": "Hora",
+      "scopeDenied": "Falta un ámbito",
+      "rolledUp": "{{calls}} llamadas",
+      "loadMore": "Cargar más",
+      "retry": "Reintentar",
+      "loadError": "No se pudo cargar la actividad de agentes.",
+      "emptyTitle": "Aún no hay llamadas",
+      "emptyDescription": "Aquí aparecen las llamadas hechas con tokens de acceso."
     }
   },
   "filePreview": {

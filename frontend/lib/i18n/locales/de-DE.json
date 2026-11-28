@@ -2880,7 +2880,8 @@
         "aiAccounts": "KI-Konten",
         "schedules": "Zeitpläne",
         "memories": "Erinnerungen",
-        "aiSettings": "KI-Einstellungen"
+        "aiSettings": "KI-Einstellungen",
+        "agentActivity": "Agentenaktivität"
       }
     },
     "actions": {
@@ -5976,6 +5977,29 @@
         "write": "fragt zuerst den Benutzer",
         "destructive": "blockiert, sofern die Aktionsregeln des Agenten es nicht erlauben"
       }
+    },
+    "agentActivity": {
+      "title": "Agentenaktivität",
+      "subtitle": "Aufrufe in diesem Arbeitsbereich mit persönlichen Zugriffstoken, OAuth-App-Token und Diensttoken, die neuesten zuerst. Erfolgreiche Lesezugriffe werden pro Minute zusammengefasst. Aufrufe aus dem angemeldeten Dashboard werden nicht erfasst, und Einträge werden 30 Tage lang aufbewahrt.",
+      "filterKind": "Tokentyp",
+      "filterStatus": "Status",
+      "allKinds": "Alle Tokentypen",
+      "allStatuses": "Alle Status",
+      "kindPat": "Persönliches Zugriffstoken",
+      "kindOauth": "OAuth-App",
+      "kindDelegated": "Diensttoken",
+      "columnUser": "Benutzer",
+      "columnToken": "Token",
+      "columnRequest": "Anfrage",
+      "columnStatus": "Status",
+      "columnTime": "Zeit",
+      "scopeDenied": "Fehlender Scope",
+      "rolledUp": "{{calls}} Aufrufe",
+      "loadMore": "Mehr laden",
+      "retry": "Erneut versuchen",
+      "loadError": "Die Agentenaktivität konnte nicht geladen werden.",
+      "emptyTitle": "Noch keine Aufrufe",
+      "emptyDescription": "Hier erscheinen Aufrufe, die mit Zugriffstoken gemacht wurden."
     }
   },
   "filePreview": {
