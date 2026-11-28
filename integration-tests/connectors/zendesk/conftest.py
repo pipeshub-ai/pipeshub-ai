@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,12 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from ai_models_setup import SeededAIModel
+from ai_models_setup import (
+    SeededAIModel,
+    SeededIndexingModels,
+    setup_test_indexing_models,
+    teardown_test_indexing_models,
+)
 from connectors.zendesk.constants import (
     ZENDESK_TEST_ARTICLE_ID,
     ZENDESK_TEST_TICKET_ID,
@@ -23,7 +29,15 @@ from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.oauth_token_helper import inject_access_token
 from helper.source_credentials import source_unavailable
+from xdist_shared import shared_session_resource
 from pipeshub_client import PipeshubClient
+
+from connectors.zendesk.sim_world import (  # noqa: F401 - fixtures of the zendesk_sim suite (ZENDESK_SIM_ITS.md)
+    zendesk_front,
+    zendesk_sim,
+    zendesk_sim_people,
+    zendesk_world,
+)
 
 logger = logging.getLogger("zendesk-live-it")
 REQUIRED_ENV = (
@@ -33,8 +47,30 @@ REQUIRED_ENV = (
 
 
 @pytest.fixture(scope="session")
-def ai_models_configured(pipeshub_client: PipeshubClient) -> SeededAIModel:
-    """Use the admin account's existing models for this read-only source suite."""
+def ai_models_configured(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    pipeshub_client: PipeshubClient,
+) -> Iterator[SeededAIModel]:
+    """Live suite: use the admin account's existing models (read-only source). Simulator suite (ZENDESK_SIM_URL set,
+    a stack of its own): seed the models as the root fixture does, so indexing finishes."""
+    if os.getenv("ZENDESK_SIM_URL"):
+        with shared_session_resource(
+            "ai_models_configured",
+            config=request.config,
+            tmp_path_factory=tmp_path_factory,
+            create=lambda: setup_test_indexing_models(pipeshub_client),
+            destroy=lambda models: teardown_test_indexing_models(pipeshub_client, models),
+            dump=lambda models: {"llm": asdict(models.llm), "embedding": asdict(models.embedding)},
+            load=lambda raw: SeededIndexingModels(
+                llm=SeededAIModel(**raw["llm"]), embedding=SeededAIModel(**raw["embedding"])),
+        ) as models:
+            yield models.llm
+        return
+    yield _live_models(pipeshub_client)
+
+
+def _live_models(pipeshub_client: PipeshubClient) -> SeededAIModel:
     models_client = AIModelsClient(pipeshub_client)
     selected: dict[str, dict[str, Any]] = {}
     for model_type in ("llm", "embedding"):

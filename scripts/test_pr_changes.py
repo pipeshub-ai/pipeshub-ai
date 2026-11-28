@@ -336,7 +336,7 @@ class TestIntegrationShards(unittest.TestCase):
         self.assertNotIn("integration_helpers", runs("backend/python/tests/unit/x.py"))
 
     def test_a_connectors_own_code_runs_its_shard_and_core(self) -> None:
-        self.assertEqual(shards("backend/python/app/connectors/sources/zendesk/connector.py"), {"connectors-2", "core"})
+        self.assertEqual(shards("backend/python/app/connectors/sources/zendesk/connector.py"), {"connectors-1", "connectors-2", "core"})
         self.assertEqual(shards("backend/python/app/sources/client/s3/s3.py"), {"connectors-1", "connectors-5", "core"})
         self.assertEqual(shards("backend/python/app/sources/external/google/drive.py"), {"connectors-2", "connectors-4", "connectors-5", "core"})
 
@@ -355,7 +355,7 @@ class TestIntegrationShards(unittest.TestCase):
                 self.assertEqual(shards(path), ALL_SHARDS)
 
     def test_a_connectors_tests_run_its_shard(self) -> None:
-        self.assertEqual(shards("integration-tests/connectors/zendesk/test_zendesk_full.py"), {"connectors-2"})
+        self.assertEqual(shards("integration-tests/connectors/zendesk/test_zendesk_full.py"), {"connectors-1", "connectors-2"})
         self.assertEqual(shards("integration-tests/connectors/sharepoint/test_x.py"), {"connectors-1", "connectors-3"})
         self.assertEqual(shards("integration-tests/connectors/demo/test_demo.py"), {"demo"})
         self.assertEqual(shards("integration-tests/connectors/cifs/test_x.py"), {"core"})
@@ -380,7 +380,7 @@ class TestIntegrationShards(unittest.TestCase):
 
     def test_markdown_the_code_or_tests_read_is_not_docs(self) -> None:
         self.assertEqual(shards("integration-tests/parsers/fixtures/research.md"), {"core"})
-        self.assertEqual(shards("integration-tests/connectors/zendesk/README.md"), {"connectors-2"})
+        self.assertEqual(shards("integration-tests/connectors/zendesk/README.md"), {"connectors-1", "connectors-2"})
         self.assertEqual(shards("backend/python/app/agents/skills/x/SKILL.md"), ALL_SHARDS)
         self.assertEqual(shards("docs/indexing-service.md", "changelog/1.0.0.md"), set())
         self.assertEqual(shards("integration-tests/README.md"), set())
@@ -425,7 +425,7 @@ class TestIntegrationShards(unittest.TestCase):
 
     def test_shards_come_out_in_the_workflows_order(self) -> None:
         listed = list(pc.integration_shards(["frontend/app/page.tsx", "integration-tests/connectors/zendesk/test_x.py"]))
-        self.assertEqual(listed, ["connectors-2", "core"])
+        self.assertEqual(listed, ["connectors-1", "connectors-2", "core"])
 
 
 def _imports(path: Path, package: str) -> set[str]:
