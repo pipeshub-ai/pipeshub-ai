@@ -960,3 +960,45 @@ async def test_pg_a_database_that_never_answers_is_dead_lettered_by_the_backstop
         await asyncio.sleep(0.1)
     assert await pg.queue.backlog("g", [pg.topic]) == {"dead": 1}
     assert len(runs) == 7  # four refunded hand-backs, then the three attempts
+
+
+async def test_pg_a_record_cut_by_its_budget_after_progress_resumes_without_a_counted_attempt(pg, monkeypatch) -> None:
+    """S-3a: more budget cuts than the attempt limit allows (3) neither dead-letter the event nor count; the last attempt completes it."""
+    from app.modules.indexing.record_progress import current_progress
+    from app.services.messaging.config import messaging_env
+    from app.services.messaging.worker_loop import WorkerLoop
+
+    monkeypatch.setattr(messaging_env.__class__, "record_processing_timeout_for", lambda *_a, **_k: 0.5, raising=False)
+    monkeypatch.setattr(messaging_env.__class__, "embed_cut_requeue_delay_seconds", 0.05, raising=False)
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
+    runs: list[int] = []
+    commits: list[int] = []
+
+    async def commit(_seconds: float, uncounted: int) -> bool:
+        commits.append(uncounted)
+        return True
+
+    async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
+        runs.append(m.payload["i"])
+        progress = current_progress()
+        assert progress is not None
+        progress.bind(record_id="r", delivery_id="d", prior_seconds=0.0, prior_uncounted=0, commit=commit)
+        progress.plan(10, 0)
+        progress.beat(9)  # about 90 % embedded
+        if len(runs) <= 5:  # more than MAX_DELIVERY_ATTEMPTS (3)
+            await asyncio.sleep(30)  # cut by the budget
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+    worker = WorkerLoop(LOG, thread_name="pg-cut-worker")
+    try:
+        c = PgMessagingConsumer(LOG, pg.config("idx"), indexing=True, worker=worker)
+        c.queue = pg.queue
+        pg.consumers.append(c)
+        await c.start(handler)
+        await send(pg, 1)
+        await until(lambda: len(runs) >= 6, timeout=60.0)
+        await asyncio.sleep(0.5)  # the ack lands
+        assert await pg.queue.backlog("idx", [pg.topic]) == {}  # acked, not dead-lettered
+        assert len(commits) == 5
+    finally:
+        worker.stop()

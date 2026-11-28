@@ -246,13 +246,15 @@ class TestTheDecisionHelper:
 
 
 @pytest.mark.asyncio
-class TestPostgresKeepsTheFlatCap:
-    async def test_its_handler_is_given_no_progress_to_report_to(self) -> None:
-        # Kills: wiring the stall timer into a consumer whose timeout lives on another loop.
+class TestPostgresCutsAndResumes:
+    async def test_its_handler_is_given_a_progress_whose_deadline_moves_on_the_owner_loop(self) -> None:
+        # Kills: a PostgreSQL consumer with no cut-and-resume (a cut counted as a failed attempt), and a progress whose budget is the
+        # bare timeout of the other loop (a reschedule from the worker loop is unsafe).
         seen: list[Any] = []
 
         async def handler(message: Any) -> AsyncGenerator[PipelineEvent, None]:  # noqa: ANN401
-            seen.append(current_progress())
+            p = current_progress()
+            seen.append((p is not None, type(p.budget).__name__ if p is not None else None))
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r"))
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r"))
 
@@ -266,4 +268,4 @@ class TestPostgresKeepsTheFlatCap:
             await consumer._process(Delivery(topic="t", message_id=1, attempts=1, value=value, key=None), final=False)
         finally:
             worker.stop()
-        assert seen == [None]
+        assert seen == [(True, "RecordBudget")]
