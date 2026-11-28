@@ -46,20 +46,20 @@ function seed(sessions: number, over: Record<string, unknown> = {}): InMemoryCha
 
 const countOptions = (): unknown => (ChatSession.countDocuments as unknown as sinon.SinonStub).lastCall.args[1]
 
-describe('list paging and capped counts', () => {
+describe('list paging and counts', () => {
   beforeEach(() => useConversationExtensions({ acl: testAcl }))
   afterEach(() => {
     useConversationExtensions(undefined)
     sinon.restore()
   })
 
-  it('#68: the count stops at 1,000, and the page after the cap is still known to exist', async () => {
+  it('the count is exact past 1,000, as main counted, and the page after the tenth is known to exist', async () => {
     seed(1001)
 
     const tenth = await call(chatList, { page: '10', limit: '100' })
     expect(tenth.conversations).to.have.length(100)
-    expect(tenth.pagination).to.include({ totalCount: 1000, totalPages: 10, hasNextPage: true, hasPrevPage: true })
-    expect(countOptions()).to.deep.equal({ limit: 1000 })
+    expect(tenth.pagination).to.include({ totalCount: 1001, totalPages: 11, hasNextPage: true, hasPrevPage: true })
+    expect(countOptions()).to.equal(undefined)
 
     const last = await call(chatList, { page: '11', limit: '100' })
     expect(last.conversations.map((c) => c.title)).to.deep.equal(['mine 1'])
@@ -84,12 +84,12 @@ describe('list paging and capped counts', () => {
     const first = await call(chatList, { source: 'shared', page: '1', limit: '2' })
     expect(first.conversations.map((c) => c.title)).to.deep.equal(['theirs 3', 'theirs 2'])
     expect(first.pagination).to.include({ totalCount: 3, hasNextPage: true })
-    expect(countOptions()).to.deep.equal({ limit: 1000 })
+    expect(countOptions()).to.equal(undefined)
     const second = await call(chatList, { source: 'shared', page: '2', limit: '2' })
     expect(second.pagination).to.include({ totalCount: 3, hasNextPage: false })
   })
 
-  it('agent lists: the count stops at 1,000, the next page comes from one extra row, and each list keeps to the page size', async () => {
+  it('agent lists: the count is exact past 1,000, the next page comes from one extra row, and each list keeps to the page size', async () => {
     const store = seed(1001, { sessionType: 'agent', agentKey: AGENT_KEY })
     for (let i = 1; i <= 3; i += 1) {
       store.addSession({ orgId: ORG, userId: OTHER, initiator: OTHER, sessionType: 'agent', agentKey: AGENT_KEY, title: `theirs ${String(i)}`, lastActivityAt: i, isShared: true, sharedWith: [{ userId: OWNER, accessLevel: 'read' }] })
@@ -97,8 +97,8 @@ describe('list paging and capped counts', () => {
 
     const tenth = await call(agentList, { page: '10', limit: '100' }, { agentKey: AGENT_KEY })
     expect(tenth.conversations).to.have.length(100)
-    expect(tenth.pagination).to.include({ totalCount: 1000, hasNextPage: true })
-    expect(countOptions()).to.deep.equal({ limit: 1000 })
+    expect(tenth.pagination).to.include({ totalCount: 1001, totalPages: 11, hasNextPage: true })
+    expect(countOptions()).to.equal(undefined)
 
     const first = await call(agentList, { page: '1', limit: '2' }, { agentKey: AGENT_KEY })
     expect(first.conversations.map((c) => c.title)).to.deep.equal(['mine 1001', 'mine 1000'])

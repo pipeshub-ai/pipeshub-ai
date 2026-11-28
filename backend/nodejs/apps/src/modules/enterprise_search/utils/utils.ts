@@ -1230,37 +1230,25 @@ export const turnViewerId = (
 
 /**
  * Which rows a streamed turn's final frame carries. `'turn'`: only the rows the turn wrote, for a
- * client that merges them by id into the rows it has (it sends `frame=turn`). `'newest'`: the newest
- * `FULL_FRAME_MAX_ROWS` rows, for a client that replaces its whole list with the frame.
+ * client that merges them by id into the rows it has (it sends `frame=turn`). `'whole'`: every row of
+ * the conversation, as main sent it, for a client that replaces its whole list with the frame.
  */
-export type StreamFrame = 'turn' | 'newest';
-
-/** The most rows a final frame reads back, so an answer in a long chat never reads the whole chat. */
-export const FULL_FRAME_MAX_ROWS = 1000;
+export type StreamFrame = 'turn' | 'whole';
 
 /** The frame a streaming request asked for. */
 export const streamFrameOf = (req: { query?: unknown }): StreamFrame =>
   (req.query as { frame?: unknown } | undefined)?.frame === 'turn'
     ? 'turn'
-    : 'newest';
+    : 'whole';
 
-/** The rows a frame reads back, oldest first: the newest `FULL_FRAME_MAX_ROWS` for `'newest'`, else all of them. */
+/** Every row of the conversation, oldest first: what a frame that is not `'turn'` carries. */
 const framedMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   orgId: mongoose.Types.ObjectId | string,
-  frame: StreamFrame | undefined,
   populateCitations: boolean,
   mongoSession?: ClientSession | null,
 ): ReturnType<typeof getMessages> =>
-  frame === 'newest'
-    ? (
-        await getMessages(
-          sessionId,
-          { orgId, populateCitations, sort: -1, limit: FULL_FRAME_MAX_ROWS },
-          mongoSession,
-        )
-      ).reverse()
-    : getMessages(sessionId, { orgId, populateCitations }, mongoSession);
+  getMessages(sessionId, { orgId, populateCitations }, mongoSession);
 
 /**
  * Attach populated citation documents across ALL messages of a session.
@@ -1289,9 +1277,9 @@ const framedMessages = async (
  * an accepted gap for the disconnected/test-only path (see the Phase 1
  * plan's "Known Phase 2 items").
  *
- * `frame` is for a streamed turn: `'newest'` reads only the newest rows, and
- * `'turn'` reads nothing, so the frame is `fallbackMessages` (the turn's own
- * rows) with the in-memory citations, marked `frame: 'turn'`.
+ * `frame` is for a streamed turn: `'turn'` reads nothing, so the frame is
+ * `fallbackMessages` (the turn's own rows) with the in-memory citations,
+ * marked `frame: 'turn'`.
  */
 export const attachPopulatedCitations = async (
   session: any,
@@ -1318,7 +1306,6 @@ export const attachPopulatedCitations = async (
       messages = await framedMessages(
         sessionId,
         (session as { orgId: string }).orgId,
-        frame,
         true,
         mongoSession,
       );
@@ -4504,7 +4491,6 @@ export const reloadForErrorFrame = async (
       : await framedMessages(
           conversation._id,
           conversation.orgId,
-          frame,
           false,
           mongoSession,
         );

@@ -4,7 +4,6 @@ import sinon from 'sinon'
 import mongoose from 'mongoose'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import * as agui from '../../../../src/modules/enterprise_search/utils/agui'
-import { FULL_FRAME_MAX_ROWS } from '../../../../src/modules/enterprise_search/utils/utils'
 import { FakeQuery, InMemoryChatStore, oid, settle } from '../controller/chat-test-harness'
 import { AGENT_KEY, appConfig, finalAnswer, Flow, flows, ORG, OWNER, Run, RUN, seedConversation, startStream, StreamHandler } from '../controller/streaming-flows'
 import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
@@ -176,15 +175,15 @@ describe('final stream frame', () => {
   })
 
   describe('without frame=turn (a client from before it)', () => {
-    it(`carries the newest ${FULL_FRAME_MAX_ROWS} rows, oldest first`, async () => {
+    it('carries every row of the chat, oldest first, as main sent them', async () => {
       connected()
-      const run = await startStream(longChat(flow('addMessageStream'), FULL_FRAME_MAX_ROWS + 5))
+      const run = await startStream(longChat(flow('addMessageStream'), 1005))
 
       await finishWith(run)
 
       const conversation = finishedConversation(run)
       expect(conversation).to.not.have.property('frame')
-      expect(idsOf(conversation.messages as Row[])).to.deep.equal(idsOf(run.messages().slice(-FULL_FRAME_MAX_ROWS)))
+      expect(idsOf(conversation.messages as Row[])).to.deep.equal(idsOf(run.messages()))
     })
 
     it('a regenerate error frame carries the rows, not a turn', async () => {
@@ -212,7 +211,7 @@ describe('final stream frame', () => {
       expect((finishedConversation(run).messages as Row[]).map((m) => m.messageType)).to.deep.equal(['user_query', 'bot_response'])
     })
 
-    it(`a client from before frame=turn still gets the newest ${FULL_FRAME_MAX_ROWS} rows to show`, async function () {
+    it('a client from before frame=turn still gets every row, as main sent them', async function () {
       this.timeout(120_000)
       connected()
       const run = await startStream(longChat(flow('addMessageStream'), ROWS))
@@ -220,7 +219,7 @@ describe('final stream frame', () => {
       await finishWith(run)
 
       const rows = finishedConversation(run).messages as Row[]
-      expect(rows).to.have.length(FULL_FRAME_MAX_ROWS)
+      expect(rows).to.have.length(run.messages().length)
       expect(rows.at(-1)?.content).to.equal('Three themes.')
     })
   })

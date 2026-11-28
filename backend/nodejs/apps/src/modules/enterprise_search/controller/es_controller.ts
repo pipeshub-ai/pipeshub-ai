@@ -1339,8 +1339,8 @@ export const addMessageStreamInternal = (
 ): ReturnType<typeof asInternal> =>
   asInternal(addMessageStream(appConfig, deps), appConfig);
 
-/** Lists count matches up to this many; one row past the page tells whether another page follows. */
-const LIST_COUNT_CAP = 1000;
+/** The most pinned chats a list page reads to put them first. */
+const PINNED_ROWS_CAP = 1000;
 
 /** The caller's own pins: their `isPinned` as creator, and the ones `pins.setOwn` keeps. */
 const pinnedByCaller = (
@@ -1389,7 +1389,7 @@ const pinnedFirstRows = async (
 ): Promise<object[]> => {
   const pinnedRows = await ChatSession.find({ $and: [filter, pinned] })
     .sort(sort)
-    .limit(LIST_COUNT_CAP)
+    .limit(PINNED_ROWS_CAP)
     .select(select)
     .lean()
     .exec();
@@ -1483,9 +1483,10 @@ export const getAllConversations = async (
             select,
           );
 
+    // The count is exact, as main's was; one row past the page tells whether another page follows.
     const [rows, totalCount] = await Promise.all([
       rowsRead,
-      ChatSession.countDocuments(filter, { limit: LIST_COUNT_CAP }),
+      ChatSession.countDocuments(filter),
     ]);
     const conversations = rows.slice(0, limit);
     const ownPinned = new Set(ownPinIds?.map(String));
@@ -6616,7 +6617,7 @@ export const getAllAgentConversations = async (
         .select(listViews().select(ctx))
         .lean()
         .exec(),
-      ChatSession.countDocuments(filter, { limit: LIST_COUNT_CAP }),
+      ChatSession.countDocuments(filter),
       ChatSession.find(sharedWithMeFilter)
         .sort(sortOptions as any)
         .skip(skip)
