@@ -24,8 +24,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { toast, useToastStore } from '@/lib/store/toast-store';
 import { exportConversation } from '@/chat/utils/export-conversation';
 import { sidebarDot, type SidebarDot } from '@/lib/harness-jobs/jobs-list';
-import { slotWaitingCount } from '@/chat/interactions';
-import type { ChatSlot } from '@/chat/types';
+import { slotWaitingCount, waitsInScope } from '@/chat/interactions';
 import { chatExtension, chatSlots } from '@/config';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
@@ -161,16 +160,6 @@ export function markWords(t: (key: string) => string, mark: SidebarDot): string 
   if (mark.dot === 'needsYou') return t('sidebar.dot.needsYou');
   if (mark.dot === 'working') return t('sidebar.dot.working');
   return mark.unseen ? t('sidebar.dot.finished') : t('chat.answerReady.unread');
-}
-
-/** A slot of this chat, in this sidebar's scope, holds an ask open on its person (`slotWaitingCount`, D10). */
-function waitsInScope(slots: Record<string, ChatSlot>, conversationId: string, scopeAgentId: string | null): boolean {
-  return Object.values(slots).some(
-    (slot) =>
-      slot.convId === conversationId &&
-      (scopeAgentId === null ? !slot.threadAgentId : slot.threadAgentId === scopeAgentId) &&
-      slotWaitingCount(slot) > 0,
-  );
 }
 
 interface ChatSectionElementProps {

@@ -80,6 +80,38 @@ describe('CJ14-FU-2 each More keeps the marks of the chats it hides', () => {
     expect(markOn(moreRows()[0])).toBeNull();
   });
 
+  describe('with the agent harness off, when the server sends no run state', () => {
+    it('says working for a hidden chat this tab is answering, as its row would', () => {
+      render([...quiet('y', 5), chat('a')]);
+      expect(markOn(moreRows()[0])).toBeNull();
+      act(() => {
+        const slotId = useChatStore.getState().createSlot('a');
+        useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+      });
+      expect(markOn(moreRows()[0])).toBe('working');
+    });
+
+    it('says a hidden chat needs you while its question card waits on the person', () => {
+      render([...quiet('y', 5), chat('a')]);
+      act(() => {
+        const slotId = useChatStore.getState().createSlot('a');
+        useChatStore.getState().updateSlot(slotId, {
+          pendingAskUserQuestion: { status: 'pending', assistantMessageId: 'r1' } as never,
+          messages: [{ id: 'r1', role: 'assistant', content: [] } as never],
+        });
+      });
+      expect(markOn(moreRows()[0])).toBe('needsYou');
+    });
+
+    it('says finished for a hidden chat whose answer this tab saw finish out of view, until it is read', () => {
+      render([...quiet('y', 5), chat('a')]);
+      act(() => useChatStore.setState({ unreadConversationIds: new Set(['a']) }));
+      expect(markOn(moreRows()[0])).toBe('finished');
+      act(() => useChatStore.getState().markConversationRead('a'));
+      expect(markOn(moreRows()[0])).toBeNull();
+    });
+  });
+
   it('strongestDot ranks needs you, working, then finished and not seen', () => {
     expect(strongestDot([null, { dot: 'finished' }, { dot: 'finished', unseen: true }])).toEqual({ dot: 'finished', unseen: true });
     expect(strongestDot([{ dot: 'working' }, { dot: 'needsYou' }, { dot: 'finished', unseen: true }])).toEqual({ dot: 'needsYou' });

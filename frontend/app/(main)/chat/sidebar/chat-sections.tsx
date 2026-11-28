@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useChatStore } from '@/chat/store';
+import { isConversationStreamingInScope, useChatStore } from '@/chat/store';
 import { usePendingForSidebar } from './use-pending-for-sidebar';
 import type { MoreChatsSection } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -19,7 +19,9 @@ import { chatSlots } from '@/config';
 import { RAIL_SHARED_UNPINNED_ROWS, RAIL_UNPINNED_ROWS } from '../constants';
 import type { Conversation } from '@/chat/types';
 import { readRailMemory, writeRailMemory } from './rail-memory';
-import { sidebarDot, strongestDot } from '@/lib/harness-jobs/jobs-list';
+import { sidebarDot, strongestDot, type SidebarDot } from '@/lib/harness-jobs/jobs-list';
+import type { ChatSlot } from '@/chat/types';
+import { waitsInScope } from '@/chat/interactions';
 import { ChatDotMark, markWords } from './chat-section-element';
 
 /**
@@ -39,13 +41,40 @@ function railRows(conversations: Conversation[], hasNextPage: boolean, limit: nu
 
 /**
  * The strongest mark of the chats a More hides, so a chat past the cap still says it needs the person: needs you over
- * working over finished and not seen, from the list already loaded (no added request). The chat open now shows no
- * finished mark, as its row would not.
+ * working over finished and not seen, each as its row would mark it, from the list already loaded and this tab's own
+ * runs (no added request): the server's run state where the agent harness sends one, and else what this tab is
+ * answering, waiting on or saw finish out of view. The chat open now shows no finished mark, as its row would not.
  */
-function hiddenMark(hidden: Conversation[], currentConversationId: string | null) {
+function hiddenMark(
+  hidden: Conversation[],
+  currentConversationId: string | null,
+  slots: Record<string, ChatSlot>,
+  unread: ReadonlySet<string>,
+): SidebarDot | null {
   return strongestDot(
-    hidden.map((c) => sidebarDot(c.harnessState, { streaming: false, unread: false, active: c.id === currentConversationId })),
+    hidden.map((c) =>
+      sidebarDot(c.harnessState, {
+        streaming: isConversationStreamingInScope(slots, c.id, null),
+        unread: unread.has(c.id),
+        active: c.id === currentConversationId,
+        waiting: waitsInScope(slots, c.id, null),
+      }),
+    ),
   );
+}
+
+/** A mark as a string a store selector can return, so the rail redraws only when a More's mark changes. */
+const markKey = (mark: SidebarDot | null): string => (mark === null ? '' : `${mark.dot}${mark.unseen ? ':unseen' : ''}`);
+const markOfKey = (key: string): SidebarDot | null => {
+  if (key === '') return null;
+  const [dot, unseen] = key.split(':');
+  return { dot: dot as SidebarDot['dot'], ...(unseen === 'unseen' && { unseen: true }) };
+};
+
+/** The mark of a More (`hiddenMark`), redrawn as the hidden chats' own state changes and only when the mark does. */
+function useHiddenMark(hidden: Conversation[], currentConversationId: string | null): SidebarDot | null {
+  const key = useChatStore((s) => markKey(hiddenMark(hidden, currentConversationId, s.slots, s.unreadConversationIds)));
+  return useMemo(() => markOfKey(key), [key]);
 }
 
 /** Number of skeleton items shown while loading each section */
@@ -129,8 +158,8 @@ export const ChatSections = React.memo(function ChatSections({
   const today = useLocalDay();
   const yourDays = useMemo(() => groupConversationsWithPinned(your.rows, today), [your.rows, today]);
   // Each More carries the strongest mark of the chats it hides, in the row mark's words for a screen reader.
-  const sharedMoreMark = useMemo(() => hiddenMark(shared.hidden, currentConversationId), [shared.hidden, currentConversationId]);
-  const yourMoreMark = useMemo(() => hiddenMark(your.hidden, currentConversationId), [your.hidden, currentConversationId]);
+  const sharedMoreMark = useHiddenMark(shared.hidden, currentConversationId);
+  const yourMoreMark = useHiddenMark(your.hidden, currentConversationId);
 
   // Rows Shared chats shows, its More included.
   const sharedRowsShown = shared.rows.length + (shared.hasMore ? 1 : 0);
