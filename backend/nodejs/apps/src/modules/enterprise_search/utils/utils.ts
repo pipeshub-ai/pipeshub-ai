@@ -20,12 +20,14 @@ import {
   redactConversationFor,
   redactMessagesFor,
   viewerOf,
+  type Readable,
   type ViewerMessage,
 } from './viewer-redaction';
 import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import {
   idOf as idOfValue,
   isWithheld,
+  readerView,
   visibleRows,
   WITHHELD,
   rememberAnswerClosures,
@@ -1077,15 +1079,38 @@ export const redactRunConversationFor = async (
   const owner = String(conversation.initiator);
   const messages = (conversation.messages ?? []) as ViewerMessage[];
   const ownerOf = (m: ViewerMessage): string => messageActor(m, owner);
+  const { userId, orgId } = viewer;
+  // As a fetch judges them: the reader check over the per-record view, so another person's answer after one hidden from
+  // the watcher is hidden too, and their failed run says only that it failed.
+  const { rows } = await readerView(
+    { userId, orgId, member: true },
+    conversation as ReaderSession,
+    messages,
+    {
+      member: true,
+      appConfig,
+      ownerId: owner,
+      perRecordView: async <R extends object>(list: R[], known: Readable) =>
+        (await redactMessagesFor(
+          appConfig,
+          { userId, orgId },
+          list as unknown as ViewerMessage[],
+          ownerOf,
+          {
+            known,
+            fresh: (m) =>
+              opts.ownAnswer !== undefined && m.runId === opts.ownAnswer,
+            ...(opts.citationsDecided && { citationsDecided: () => true }),
+            checkFailed: opts.checkFailed,
+          },
+        )) as unknown as R[],
+    },
+  );
   return {
     ...(owner === viewer.userId
       ? conversation
       : { ...withoutOwnerOnlyFields(conversation), sharedWith: undefined }),
-    messages: await redactMessagesFor(appConfig, viewer, messages, ownerOf, {
-      fresh: (m) => opts.ownAnswer !== undefined && m.runId === opts.ownAnswer,
-      ...(opts.citationsDecided && { citationsDecided: () => true }),
-      checkFailed: opts.checkFailed,
-    }),
+    messages: rows,
   };
 };
 

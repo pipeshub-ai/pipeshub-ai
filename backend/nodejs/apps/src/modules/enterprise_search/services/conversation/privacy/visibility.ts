@@ -196,6 +196,8 @@ export interface ReaderRow {
   messageType?: unknown;
   requestedBy?: unknown;
   authorUserId?: unknown;
+  /** Who sent a collaborator's turn the harness wrote. */
+  senderId?: unknown;
   runId?: unknown;
   labelVer?: unknown;
   provenance?: unknown;
@@ -5307,6 +5309,18 @@ const approvalCardStubs = (
       })
     : [];
 
+/**
+ * The line for each of an answer's calls that waited on its asker's card (`approvalCardStub`), read from the row as it
+ * is stored: what anyone else reading the answer is given of those calls.
+ */
+export const cardStubsOf = (
+  stored: object,
+  now: number = Date.now(),
+): Plain[] => {
+  const { parts, approvalAnswered } = stored as Plain;
+  return approvalCardStubs(parts, approvalAnswered, now);
+};
+
 /** Whether a card of the answer still waits for its asker: not answered, and not past its expiry (`cardStatus`). */
 export const waitsForApproval = (
   row: object,
@@ -5371,12 +5385,31 @@ const copyInWords = <T extends object>(copy: T): T => {
     : copy;
 };
 
-/** A text part of `row` as anyone but its asker is given it (`withoutWaitingLine`); none that held that line alone. */
-const othersTextPart = (row: object, part: unknown): unknown[] => {
-  if (!isPlain(part) || typeof part.content !== 'string') return [part];
-  const content = withoutWaitingLine(row, part.content);
-  if (content === part.content) return [part];
-  return content === '' ? [] : [{ ...part, content }];
+/**
+ * A text part of `row` as anyone but its asker is given it: without the run that wrote it, which is its asker's, and
+ * without the line for its asker alone (`withoutWaitingLine`); none that held that line alone.
+ */
+export const othersTextPart = (row: object, part: unknown): unknown[] => {
+  if (!isPlain(part)) return [part];
+  const { runId: _run, ...rest } = part;
+  if (typeof rest.content !== 'string') return [rest];
+  const content = withoutWaitingLine(row, rest.content);
+  if (content === rest.content) return [rest];
+  return content === '' ? [] : [{ ...rest, content }];
+};
+
+/**
+ * Whether an answer as stored holds steps of its run that nobody but its asker is given: reasoning, tools, or any part
+ * of its transcript but its text.
+ */
+export const holdsSteps = (row: object): boolean => {
+  const x = row as Plain;
+  return (
+    (Array.isArray(x.reasoning) && x.reasoning.length > 0) ||
+    (Array.isArray(x.tools) && x.tools.length > 0) ||
+    (Array.isArray(x.parts) &&
+      (x.parts as unknown[]).some((p) => isPlain(p) && p.type !== 'text'))
+  );
 };
 
 /**
@@ -5390,11 +5423,12 @@ export function answerTextParts(parts: readonly unknown[]): unknown[] {
 }
 
 /**
- * Another person's answer as a reader who may see it gets it: no steps, reasoning or tool output. A call that waited
- * on its asker's approval card stays as a stub (`approvalCardStub`), read from `stored`, the row as it is stored: the
- * per-record view has already cut another person's parts to their text. The line such a run closes with is its asker's
- * (`withoutWaitingLine`). An answer that loses any of its steps here says so (`activityWithheld`), as one the per-record
- * view cut already does.
+ * Another person's answer as a reader who may see it gets it: no steps, reasoning or tool output, and none of what its
+ * run said of the asker's own tools (`unavailableTools`, which offers them to connect them) or which run wrote its text.
+ * A call that waited on its asker's approval card stays as a stub (`approvalCardStub`), read from `stored`, the row as it
+ * is stored: the per-record view has already cut another person's parts to their text. The line such a run closes with
+ * is its asker's (`withoutWaitingLine`). An answer that loses any of its steps here says so (`activityWithheld`), as one
+ * the per-record view cut already does.
  */
 export function withoutSteps<T extends object>(
   row: T,
@@ -5405,14 +5439,9 @@ export function withoutSteps<T extends object>(
   // A question or note is its author's own words, and a card is shaped for each reader where it is drawn: neither
   // carries the steps of a run.
   if (r.messageType !== 'bot_response' && r.messageType !== 'error') return row;
-  const view: Plain = { ...r };
-  const hadSteps = (x: Plain): boolean =>
-    (Array.isArray(x.reasoning) && x.reasoning.length > 0) ||
-    (Array.isArray(x.tools) && x.tools.length > 0) ||
-    (Array.isArray(x.parts) &&
-      (x.parts as unknown[]).some((p) => isPlain(p) && p.type !== 'text'));
+  const { unavailableTools: _tools, ...view }: Plain = { ...r };
   // The per-record view cuts another person's steps first: the row as stored says whether there were any.
-  if (hadSteps(r) || hadSteps(stored as Plain)) view.activityWithheld = true;
+  if (holdsSteps(r) || holdsSteps(stored)) view.activityWithheld = true;
   if ('reasoning' in view) view.reasoning = [];
   if ('tools' in view) view.tools = [];
   const kept = stored as Plain;
@@ -5501,14 +5530,35 @@ export async function readerView<M extends object>(
         { known: settled },
       )) as unknown as R[]);
   if (judged.perRecord) {
-    const shown = await perRecord(rows, known, appConfig);
+    const deps = { ...configured, ...opts.deps };
+    // Whether an answer before the rows is hidden from the reader is read beside the rows' own view.
+    const [shown, before] = await Promise.all([
+      perRecord(rows, known, appConfig),
+      asRows.some((row) => answerOfAnother(row, viewer, ownerId))
+        ? hiddenBefore(viewer, asRows, {
+            deps,
+            known,
+            ownerId,
+            appConfig,
+            sessionId: idOf(session?._id),
+            timeoutMs: opts.timeoutMs,
+          })
+        : Promise.resolve(undefined),
+    ]);
     shown.forEach((m, i) => {
       const id = idOf((rows[i] as unknown as ReaderRow)._id);
       const hidden = (m as unknown as Plain).answerHidden;
       if (id === undefined || !isPlain(hidden)) return;
       verdicts.set(id, perRecordVerdict(hidden));
     });
-    return { rows: shown, verdicts };
+    return {
+      rows: withoutLabels(viewer, asRows, shown, verdicts, {
+        ownerId,
+        before,
+        now,
+      }),
+      verdicts,
+    };
   }
   const through = rows
     .map((m, i) => ({ m, i }))
@@ -5606,6 +5656,197 @@ export async function readerView<M extends object>(
     return verdict.cardWithheld === true ? withheldCardAnswer(shown) : shown;
   });
   return { rows: out, verdicts };
+}
+
+/** Rows read, at most, before the first row a read is given, to tell whether an answer there is hidden from its reader. */
+const EARLIER_ROWS_MAX = MAX_JUDGED_ROWS;
+
+/**
+ * Whose turn a row that names nobody is, in a read with no labels: its sender's (a collaborator's turn as the harness
+ * stores it, by `senderId` alone), else the chat owner's.
+ */
+const turnOwnerOf = (
+  row: ReaderRow,
+  ownerId: string | undefined,
+): string | undefined => idOf(row.senderId) ?? ownerId;
+
+/** An answer, or the error that ended a run, that someone other than the reader asked for. */
+const answerOfAnother = (
+  row: ReaderRow,
+  viewer: Reader,
+  ownerId: string | undefined,
+): boolean =>
+  isLabelledType(row) &&
+  rowAuthorOf(row, turnOwnerOf(row, ownerId)) !== viewer.userId;
+
+/** How an answer the per-record view hid stands for the reader: `unchecked` when its check could not run. */
+const hiddenByView = (
+  view: Plain,
+): Extract<Verdict, 'hidden' | 'unchecked'> | undefined => {
+  const marker = view.answerHidden;
+  if (!isPlain(marker)) return undefined;
+  return marker.reason === ANSWER_UNCONFIRMED.reason ? 'unchecked' : 'hidden';
+};
+
+/**
+ * Whether an answer before the first of `rows` in their chat is hidden from the reader by the per-record view: `hidden`,
+ * `unchecked` while one could not be checked (or the rows before are too many to read), else undefined. Rows that
+ * carry no place in their chat (a page as a response gives it) are placed by their stored ids; rows the store cannot
+ * place (new ones) come after every row it holds, and rows of no chat it can name are judged among themselves. Every
+ * store read is held to the read's own deadline: one that fails or comes too late leaves it unchecked.
+ */
+async function hiddenBefore(
+  viewer: Reader,
+  rows: ReadonlyArray<ReaderRow & Plain>,
+  ctx: {
+    deps: VisibilityDeps;
+    known: Readable;
+    ownerId: string | undefined;
+    appConfig: AppConfig | undefined;
+    sessionId: string | undefined;
+    timeoutMs: number | undefined;
+  },
+): Promise<Extract<Verdict, 'hidden' | 'unchecked'> | undefined> {
+  const deadline =
+    ctx.known.deadline ??
+    Date.now() + (ctx.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS);
+  const placeOf = (row: ReaderRow): number | undefined =>
+    typeof row.seq === 'number' ? row.seq : undefined;
+  let placed: ReaderRow[] = rows.filter((row) => placeOf(row) !== undefined);
+  if (placed.length === 0) {
+    const ids = rows
+      .map((row) => idOf(row._id))
+      .filter((id): id is string => id !== undefined);
+    try {
+      placed =
+        ids.length === 0
+          ? []
+          : [
+              ...(
+                await beforeDeadline(
+                  deadline,
+                  ctx.deps.labels(viewer.orgId, ids),
+                )
+              ).values(),
+            ].filter((row) => placeOf(row) !== undefined);
+    } catch {
+      return 'unchecked';
+    }
+  }
+  const upTo =
+    placed.length === 0
+      ? Number.MAX_SAFE_INTEGER
+      : Math.min(...placed.map((row) => placeOf(row) as number)) - 1;
+  const sessionId =
+    ctx.sessionId ??
+    [...placed, ...rows]
+      .map((row) => idOf(row.sessionId))
+      .find((id) => id !== undefined);
+  // Rows of no chat the store can name have nothing stored before them: they are judged among themselves.
+  if (sessionId === undefined) return undefined;
+  let read: ReaderRow[];
+  try {
+    read = await beforeDeadline(
+      deadline,
+      ctx.deps.rowsUpTo(viewer.orgId, sessionId, upTo, EARLIER_ROWS_MAX + 1),
+    );
+  } catch {
+    return 'unchecked';
+  }
+  const earlier = read
+    .filter(
+      (row): row is ReaderRow & { seq: number } =>
+        typeof row.seq === 'number' && row.seq <= upTo && row.removedAt == null,
+    )
+    .sort((a, b) => a.seq - b.seq);
+  const cut = earlier.length > EARLIER_ROWS_MAX;
+  const judged = cut
+    ? earlier.slice(earlier.length - EARLIER_ROWS_MAX)
+    : earlier;
+  if (!judged.some(isLabelledType)) return cut ? 'unchecked' : undefined;
+  let viewed: ReaderRow[];
+  try {
+    viewed = await ctx.deps.perRecordView(viewer, judged, ctx.ownerId, {
+      known: ctx.known,
+      timeoutMs: ctx.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+      // Past the cap, the oldest turn read may have begun before it: what it holds is not known.
+      leadUnknown: cut,
+      ...(ctx.appConfig !== undefined && { appConfig: ctx.appConfig }),
+    });
+  } catch {
+    return 'unchecked';
+  }
+  let out: Extract<Verdict, 'hidden' | 'unchecked'> | undefined = cut
+    ? 'unchecked'
+    : undefined;
+  viewed.forEach((view, i) => {
+    const row = judged[i];
+    if (!row || !isLabelledType(row)) return;
+    const hidden = hiddenByView(view as Plain);
+    if (hidden === 'hidden' || (hidden === 'unchecked' && out === undefined))
+      out = hidden;
+  });
+  return out;
+}
+
+/**
+ * The per-record view's rows as the reader is given them when no answer carries a label (the label rule is off). No
+ * label says what an answer's run was given, and every earlier row of its chat went to it as history, so another
+ * person's answer is shown only while no answer before it is hidden from the reader: after one that is, it is hidden as
+ * built on it (`parent`), or as unchecked while that one could not be checked. `before` says how the answers before the
+ * rows stand. Someone else's answer the per-record view hid says why as the label rule says it (`hiddenRowFor`): sources
+ * the reader can't open, which only its asker had and lost. The reader's own answers are the per-record view's alone.
+ */
+function withoutLabels<M extends object>(
+  viewer: Reader,
+  rows: ReadonlyArray<ReaderRow & Plain>,
+  shown: M[],
+  verdicts: Map<string, RowVerdict>,
+  ctx: {
+    ownerId: string | undefined;
+    before: Extract<Verdict, 'hidden' | 'unchecked'> | undefined;
+    now: number;
+  },
+): M[] {
+  let before = ctx.before;
+  return shown.map((view, i) => {
+    const row = rows[i];
+    if (!row || !isLabelledType(row)) return view;
+    const another = answerOfAnother(row, viewer, ctx.ownerId);
+    // A hidden answer was lost only by the person whose turn it was.
+    const hiddenFor = {
+      userId: viewer.userId,
+      ownerId: turnOwnerOf(row, ctx.ownerId),
+    };
+    const id = idOf(row._id);
+    let hidden = hiddenByView(view as unknown as Plain);
+    let out = view;
+    if (hidden !== undefined) {
+      if (another)
+        out = hiddenRowFor(
+          row,
+          { verdict: hidden, reason: 'sources' },
+          hiddenFor,
+        ) as M;
+    } else if (another && before !== undefined) {
+      hidden = before;
+      out = hiddenRowFor(
+        row,
+        { verdict: before, reason: 'parent' },
+        hiddenFor,
+      ) as M;
+      if (id !== undefined)
+        verdicts.set(id, {
+          verdict: before,
+          reason: 'parent',
+          validUntil: ctx.now + UNCHECKED_TTL_MS,
+        });
+    }
+    // An answer hidden from the reader, whoever asked it, went to every later run as history.
+    if (hidden === 'hidden' || (hidden === 'unchecked' && before === undefined))
+      before = hidden;
+    return out;
+  });
 }
 
 /**

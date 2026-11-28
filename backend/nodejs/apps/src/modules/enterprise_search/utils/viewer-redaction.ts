@@ -49,10 +49,14 @@ import type { AppConfig } from '../../tokens_manager/config/config';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { conversationExtensions } from '../services/conversation/conversation-extensions';
 import {
+  cardStubsOf,
+  holdsSteps,
   idOf as idOfValue,
+  othersTextPart,
   readerView,
   rowAuthorOf,
   unlabelledAnswers,
+  withoutWaitingLine,
   type ReaderRow,
   type ReaderSession,
 } from '../services/conversation/privacy/visibility';
@@ -881,10 +885,10 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     // The views extension gets the row with its steps cut, and what it gives back is cut again: no extension shows
     // another person's steps.
     const viewed = conversationExtensions().views.viewOthersRow(
-      withoutOthersSteps(view, m.messageType),
+      withoutOthersSteps(view, m.messageType, m),
       m,
     );
-    return withoutOthersSteps({ ...viewed }, m.messageType) as M;
+    return withoutOthersSteps({ ...viewed }, m.messageType, m) as M;
   });
 };
 
@@ -892,29 +896,47 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
  * Another person's answer or tool row without their reasoning, tool steps or tool results, even where the answer is
  * shown: of an activity transcript only the final answer text and a background job's card (its steps emptied) stay,
  * and a note on records not found keeps none of their names. A question keeps all of it. It cuts from the row's own
- * fields, so it holds again for whatever a views extension gives back.
+ * fields, so it holds again for whatever a views extension gives back; `stored` is the row as it is stored.
+ *
+ * Of an answer, it says that steps were left out (`activityWithheld`) when the stored row had any, before they are
+ * cut. A call that waited on its asker's approval card is the card's line (`cardStubsOf`), never the line its run closed
+ * with for the asker alone (`withoutWaitingLine`), and its text names no run of the asker's. The tools the asker could
+ * not use, with the offer to connect them, are the asker's (`unavailableTools`).
  */
 const withoutOthersSteps = (
   view: Record<string, unknown>,
   messageType: string | undefined,
+  stored: object = view,
 ): Record<string, unknown> => {
   if (messageType === 'user_query') return view;
+  const isAnswerRow = messageType === 'bot_response' || messageType === 'error';
+  if (isAnswerRow && holdsSteps(stored)) view.activityWithheld = true;
   if ('reasoning' in view) view.reasoning = [];
   if ('tools' in view) view.tools = [];
+  if ('unavailableTools' in view) delete view.unavailableTools;
   if (messageType === 'tool_call') view.content = '';
+  else if (isAnswerRow && typeof view.content === 'string')
+    view.content = withoutWaitingLine(stored, view.content);
   if (Array.isArray(view.parts))
-    view.parts = (view.parts as Array<PartEntry | null>)
-      .filter(
-        (part) =>
-          (part?.type === 'text' && part.isFinal === true) || isJobCard(part),
-      )
-      .map((part) =>
-        isJobCard(part)
-          ? { ...part, parts: [] }
-          : part && 'notFound' in part
-            ? { ...part, notFound: sharedNotFound(part.notFound) }
-            : part,
-      );
+    view.parts = [
+      // A stub this cut made before (the extension gets the cut row) is made again from the stored row.
+      ...(isAnswerRow ? cardStubsOf(stored) : []),
+      ...(view.parts as Array<PartEntry | null>)
+        .filter(
+          (part) =>
+            (part?.type === 'text' && part.isFinal === true) || isJobCard(part),
+        )
+        .flatMap((part) =>
+          isJobCard(part)
+            ? [{ ...part, parts: [] }]
+            : (othersTextPart(stored, part) as Array<PartEntry | null>).map(
+                (text) =>
+                  text && 'notFound' in text
+                    ? { ...text, notFound: sharedNotFound(text.notFound) }
+                    : text,
+              ),
+        ),
+    ];
   if (view.notFound !== undefined)
     view.notFound = sharedNotFound(view.notFound);
   return view;

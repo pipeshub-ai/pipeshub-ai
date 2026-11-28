@@ -250,8 +250,9 @@ describe('es_controller: a shared reader of a conversation sees only the citatio
       const s = setup()
       const out = await read(kind.handler(), request(RECIPIENT, kind.params(s)))
       expect(out.body).to.not.include('NAME-rec-open')
-      // The record-access redaction asks for them itself; the backend admits none, so the answer is hidden as lost.
-      expect(out.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
+      // The record-access redaction asks for them itself; the backend admits none, so the answer is hidden: from a
+      // recipient, as sources they can't open (only its asker had them, and lost them).
+      expect(out.answerHidden).to.deep.equal({ redacted: true, reason: 'no_access' })
       expect(out.citations).to.deep.equal([])
     })
   }

@@ -661,7 +661,8 @@ describe('lost access hides the whole answer, for the owner too', () => {
     stubConversation([asked(), richAnswer()])
     const { answer: a } = await fetchAll(VIEWER)
 
-    expect(a.answerHidden).to.deep.equal(lost)
+    // Hidden from them as sources they can't open: only its asker had them, and lost them.
+    expect(a.answerHidden).to.deep.equal(REDACTED)
     expect(JSON.stringify(a)).to.not.contain('The answer')
     expect(JSON.stringify(a)).to.not.contain('And the budget')
     expect(JSON.stringify(a)).to.not.contain('I looked at')
@@ -1371,7 +1372,7 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     stubConversation([{ ...answer(), notFound: { subject: SECRET }, limits: { line: SECRET }, runOutcome: { closing: SECRET } }])
     for (const reader of [VIEWER, OWNER]) {
       const message = await fetchConversation(reader)
-      expect(message.answerHidden.reason).to.equal('no_longer_accessible')
+      expect(message.answerHidden.reason).to.equal(reader === OWNER ? 'no_longer_accessible' : 'no_access')
       expect(JSON.stringify(message)).to.not.contain(SECRET)
     }
   })

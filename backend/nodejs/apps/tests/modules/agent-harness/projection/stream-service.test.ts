@@ -26,6 +26,7 @@ import { testCipher } from '../support/data-protection';
 import { InMemoryRecordReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-record-access';
 import { RunConversationView } from '../../../../src/modules/agent-harness/ports/conversation-reader';
 import { redactRunConversationFor } from '../../../../src/modules/enterprise_search/utils/utils';
+import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
 import { SharedCitationService } from '../../../../src/modules/agent-harness/application/shared-citations';
 import { InMemoryArtifactReadAccess } from '../../../../src/modules/agent-harness/adapters/in-memory-artifact-access';
@@ -842,7 +843,12 @@ describe('agent-harness projection: RunStreamService', () => {
       const snapshot = sink.frames().filter((f) => f.type === 'STATE_SNAPSHOT').map((f) => f['snapshot'] as Record<string, unknown>);
       return String(snapshot.find((s) => s['final'] === true)!['answer']);
     };
-    afterEach(() => sinon.restore());
+    // These rows are the whole chat: its store holds nothing before them.
+    beforeEach(() => configureVisibility({ rowsUpTo: async () => [] }));
+    afterEach(() => {
+      sinon.restore();
+      resetVisibility();
+    });
 
     it('withheld: no answer text, citation, step or earlier answer reaches the viewer', async () => {
       const world = new World('agent_quick_tool_call');
@@ -912,6 +918,28 @@ describe('agent-harness projection: RunStreamService', () => {
       expect(sink.body).to.include('STORED answer');
       expect(sink.body).to.not.include(NOTICE);
       expect(sink.body).to.not.include(TOOL);
+    });
+
+    it("the run's answer after one withheld from the viewer is withheld too, though it cites nothing", async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      // The earlier answer cites a record the viewer can't open; the run's own turn reused it and cites nothing.
+      const sink = await watch(world, conversation(world, {
+        before: [
+          { _id: 'row-q1', seq: 1, messageType: 'user_query', content: 'before' },
+          { _id: 'row-a1', seq: 2, messageType: 'bot_response', content: OTHER, citations: [{ citationId: 'c', citationData: { content: OTHER, metadata: { recordId: FILE } } }] },
+        ],
+        question: { _id: 'row-q2', seq: 3 },
+        answer: { _id: 'row-a2', seq: 4 },
+      }));
+      for (const leaked of [OTHER, 'STORED answer', JSON.stringify(await answerOf(world)).slice(1, -1), FILE])
+        expect(sink.body, leaked).to.not.include(leaked);
+      expect(sink.body).to.include(NOTICE);
+      const finished = sink.frames().at(-1)!;
+      expect(finished.type).to.equal('RUN_FINISHED');
+      const rows = ((finished['result'] as Record<string, unknown>)['conversation'] as { messages: Array<Record<string, unknown>> }).messages;
+      // Both answers are hidden from the viewer: the earlier one for its record, the run's own as built on it.
+      expect(rows.filter((row) => row['messageType'] === 'bot_response').map((row) => row['answerHidden'] !== undefined)).to.deep.equal([true, true]);
     });
 
     it('a viewer nobody named, or a run whose stored answer is gone, reads no answer', async () => {
