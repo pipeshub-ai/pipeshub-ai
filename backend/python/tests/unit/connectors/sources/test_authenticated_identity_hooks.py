@@ -19,6 +19,7 @@ import pytest
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.failure_notices import SyncRunState
 from app.connectors.core.base.connector.source_user_listing import (
     Presence,
     SourceUserListing,
@@ -57,11 +58,19 @@ from app.sources.client.notion.notion import (
 from app.sources.external.servicenow.models import TableAPIRecord
 
 
+async def _send(call: Callable[[], object]) -> object:
+    return await call()
+
+
 def _connector(cls: type, **attrs: object) -> MagicMock:
     conn = MagicMock(spec=cls)
     conn.logger = MagicMock()
     conn.connector_id = "connector-1"
     conn.register_authenticated_source_user = AsyncMock()
+    # A mock's run state is never "not signed out", and its call wrapper never makes the call.
+    conn.run_state = SyncRunState()
+    if cls is ZoomConnector:
+        conn._signed_in = AsyncMock(side_effect=_send)
     for name, value in attrs.items():
         setattr(conn, name, value)
     return conn
@@ -2338,6 +2347,7 @@ class TestGitHubTeamsListingReads:
         conn.data_source = MagicMock()
         conn.data_entities_processor.org_id = "org-fix1"
         conn.runtime.ds_call = ds_call
+        conn.run_state = SyncRunState()
         return UsersSync(conn)
 
     @staticmethod

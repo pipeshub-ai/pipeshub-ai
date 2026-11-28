@@ -114,6 +114,16 @@ def test_the_changed_lists_change_only_by_the_new_types() -> None:
     assert "OOXML_EXTENSIONS" not in now and "OOXML_MIME_TYPES" not in now
 
 
+def test_the_reconciled_lists_gain_only_the_spreadsheets() -> None:
+    pinned, now = _PINNED["globals"], ALLOWED_GLOBAL_DELTAS
+    assert now["RECONCILIATION_ENABLED_EXTENSIONS"] == sorted(
+        [*pinned["RECONCILIATION_ENABLED_EXTENSIONS"], *delta_rules._SHEET_EXTENSIONS]
+    )
+    assert now["RECONCILIATION_ENABLED_MIME_TYPES"] == sorted(
+        [*pinned["RECONCILIATION_ENABLED_MIME_TYPES"], *delta_rules._SHEET_MIMES]
+    )
+
+
 def test_no_rule_lets_a_cell_main_indexed_change_unless_it_is_listed() -> None:
     """A cell main read (gate ok, a parser reached) keeps every decision but its tier and kind, whatever the rules say,
     except the cells listed one by one in EXISTING_CELL_EXCEPTIONS. Its tier and kind may only become its reader's
@@ -161,13 +171,17 @@ def test_every_tier_and_kind_is_the_one_its_reader_has() -> None:
 
 
 def test_main_indexed_cells_differ_only_where_listed() -> None:
-    """Outside the listed cells, a cell main read changes only its tier and kind, to its reader's."""
+    """Outside the listed cells, a cell main read changes only its tier and kind, to its reader's, and a spreadsheet's
+    update stops replacing the whole record (``clears_embeddings_first`` false, ``sheets-reconciled``)."""
     rows = {gen.case_key(r): r for r in _PINNED["rows"]}
     changed = {k for k in ALLOWED_DELTAS if delta_rules.main_indexed(rows[k])}
     assert set(delta_rules.EXISTING_CELL_EXCEPTIONS) <= changed
     others = changed - set(delta_rules.EXISTING_CELL_EXCEPTIONS)
-    assert {c for k in others for c in ALLOWED_DELTAS[k]} <= set(_TIER_KIND)
-    assert {w for k in others for w in ALLOWED_DELTA_REASONS[k]} == {"reader-labels"}
+    sheets = {k for k in others if ALLOWED_DELTAS[k].get("clears_embeddings_first") is False}
+    assert {c for k in others for c in ALLOWED_DELTAS[k]} <= {*_TIER_KIND, "clears_embeddings_first"}
+    assert all("sheets-reconciled" in ALLOWED_DELTA_REASONS[k] for k in sheets)
+    assert {w for k in others - sheets for w in ALLOWED_DELTA_REASONS[k]} == {"reader-labels"}
+    assert {w for k in sheets for w in ALLOWED_DELTA_REASONS[k]} <= {"reader-labels", "sheets-reconciled"}
 
 
 @pytest.mark.parametrize(

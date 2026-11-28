@@ -15,6 +15,12 @@
  */
 import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import {
+  isRetryableRefreshStatus,
+  parseRetryAfterMs,
+  REFRESH_ATTEMPT_TIMEOUT_MS,
+  REFRESH_BODY_TIMEOUT_MS,
+} from '@/lib/api/refresh-retry';
 
 export const SESSION_HINT_KEY = 'pipeshub_signed_in';
 /** Where builds before ADR-WEB-02 kept the tokens; read once to move them, then deleted. */
@@ -76,8 +82,13 @@ export function signedInMark(): string | null {
   return storage()?.getItem(SESSION_HINT_KEY) ?? null;
 }
 
+/** The signed-in mark a session with this access token writes. */
+export function markOf(accessToken: string): string {
+  return accountOfToken(accessToken) ?? 'signed-in';
+}
+
 export function markSignedIn(accessToken: string): void {
-  const value = accountOfToken(accessToken) ?? 'signed-in';
+  const value = markOf(accessToken);
   try {
     if (storage()?.getItem(SESSION_HINT_KEY) !== value) storage()?.setItem(SESSION_HINT_KEY, value);
   } catch {
@@ -85,8 +96,13 @@ export function markSignedIn(accessToken: string): void {
   }
 }
 
-export function clearSignedInMark(): void {
+/**
+ * Removes the signed-in mark. With `expected`, only while the mark still reads that: once another tab has signed in
+ * as someone else the mark is theirs, and removing it would end their restore and their refreshes.
+ */
+export function clearSignedInMark(expected?: string | null): void {
   try {
+    if (expected !== undefined && signedInMark() !== expected) return;
     storage()?.removeItem(SESSION_HINT_KEY);
   } catch {
     // ignore
@@ -117,31 +133,86 @@ export type AccessTokenAnswer =
   | { outcome: 'issued'; accessToken: string; refreshToken?: string }
   /** The server said no (signed out, expired, no session): sign in again. */
   | { outcome: 'refused' }
-  /** No answer (offline, server down, rate limited): the session may still be good. */
-  | { outcome: 'unreachable' };
+  /**
+   * No answer, or one that is known to be temporary (offline, server down, a 408, rate limited, too slow): the session
+   * may still be good. `retryAfterMs` is the server's `Retry-After`, when it sent one.
+   */
+  | { outcome: 'unreachable'; retryAfterMs?: number };
 
-async function postRefresh(init: RequestInit): Promise<AccessTokenAnswer> {
-  let response: Response;
+type RefreshBody = { accessToken?: unknown; refreshToken?: unknown } | null;
+
+/** Counts refresh attempts, so a replacement token that arrives late is kept only while no later attempt has started. */
+let refreshGeneration = 0;
+
+/**
+ * `keepLate` stores a replacement refresh token whose body arrived after REFRESH_BODY_TIMEOUT_MS, when the attempt has
+ * already settled as no answer. Only a bearer client needs it; the cookie path gets its replacement as a header.
+ */
+async function postRefresh(
+  init: RequestInit,
+  keepLate?: (refreshToken: string) => Promise<void>,
+): Promise<AccessTokenAnswer> {
+  const generation = ++refreshGeneration;
+  // One attempt may not hang the refresh: no answer within the limit counts as no answer.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REFRESH_ATTEMPT_TIMEOUT_MS);
   try {
-    response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
-      method: 'POST',
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
+    let response: Response;
+    try {
+      response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
+        method: 'POST',
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
+        signal: controller.signal,
+      });
+    } catch {
+      return { outcome: 'unreachable' };
+    }
+    // A 5xx, a 408 or the global limiter's 429 (it answers before authentication, keyed per IP) is no verdict on the session.
+    if (isRetryableRefreshStatus(response.status)) {
+      const retryAfterMs = parseRetryAfterMs(response.headers?.get?.('Retry-After'));
+      return retryAfterMs === null ? { outcome: 'unreachable' } : { outcome: 'unreachable', retryAfterMs };
+    }
+    if (!response.ok) return { outcome: 'refused' };
+    // The server said yes and has already replaced the refresh token; a bearer client gets the replacement only in
+    // this body, so cutting the read off would leave it holding the spent token, and its next refresh ends the session.
+    // A separate, longer bound keeps a stalled body from holding the refresh lock; past it the read goes on.
+    clearTimeout(timer);
+    // undefined: the server said yes and its body did not arrive (a navigation cut the read off mid-restore). The
+    // session it renewed is good. Read as refused, this removed the signed-in mark and the next page load signed out.
+    const body = response.json().then(
+      (data) => data as RefreshBody,
+      () => undefined,
+    );
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<'late'>((resolve) => {
+      bodyTimer = setTimeout(() => resolve('late'), REFRESH_BODY_TIMEOUT_MS);
     });
-  } catch {
-    return { outcome: 'unreachable' };
+    const data = await Promise.race([body, late]);
+    clearTimeout(bodyTimer);
+    if (data === 'late') {
+      if (keepLate) {
+        void body
+          .then((lateData) => (lateData === undefined ? undefined : answerFrom(lateData)))
+          .then((answer) => {
+            const token = answer?.outcome === 'issued' ? answer.refreshToken : undefined;
+            if (!token) return;
+            // Under the lock, and only if no attempt started since: a later one may already have kept a newer token.
+            return oneRefreshAtATime(async () => {
+              if (refreshGeneration === generation) await keepLate(token);
+            });
+          })
+          .catch(() => undefined);
+      }
+      return { outcome: 'unreachable' };
+    }
+    return data === undefined ? { outcome: 'unreachable' } : answerFrom(data);
+  } finally {
+    clearTimeout(timer);
   }
-  // The global limiter answers before authentication, keyed per IP: like a 5xx, it is no verdict on the session.
-  if (response.status >= 500 || response.status === 429) return { outcome: 'unreachable' };
-  if (!response.ok) return { outcome: 'refused' };
-  let data: { accessToken?: unknown; refreshToken?: unknown } | null;
-  try {
-    data = (await response.json()) as { accessToken?: unknown; refreshToken?: unknown } | null;
-  } catch {
-    // The server said yes and its body did not arrive: a navigation cut the read off mid-restore, and the session it
-    // renewed is good. Read as refused, this removed the signed-in mark and the next page load signed the person out.
-    return { outcome: 'unreachable' };
-  }
+}
+
+function answerFrom(data: RefreshBody): AccessTokenAnswer {
   if (typeof data?.accessToken !== 'string' || !data.accessToken) return { outcome: 'refused' };
   return typeof data.refreshToken === 'string' && data.refreshToken
     ? { outcome: 'issued', accessToken: data.accessToken, refreshToken: data.refreshToken }
@@ -171,10 +242,11 @@ async function desktopRefresh(vault: DesktopSessionBridge): Promise<AccessTokenA
     return { outcome: 'unreachable' };
   }
   if (!refreshToken) return { outcome: 'refused' };
-  const answer = await postRefresh({ headers: { Authorization: `Bearer ${refreshToken}` } });
-  if (answer.outcome === 'issued' && answer.refreshToken) {
-    await vault.writeRefreshToken(answer.refreshToken).catch(() => false);
-  }
+  const keep = async (token: string) => {
+    await vault.writeRefreshToken(token).catch(() => false);
+  };
+  const answer = await postRefresh({ headers: { Authorization: `Bearer ${refreshToken}` } }, keep);
+  if (answer.outcome === 'issued' && answer.refreshToken) await keep(answer.refreshToken);
   return answer;
 }
 
@@ -218,19 +290,21 @@ async function editionRefresh(credential: EditionRefreshCredential): Promise<Acc
   if (!headers) return { outcome: 'refused' };
   // Credentials too: an edition whose headers ask for the cookie (naming the org, `x-pipeshub-session-org`) is
   // answered from it, and the from-source split is another origin.
-  const answer = await postRefresh({ credentials: 'include', headers });
-  if (answer.outcome === 'issued' && answer.refreshToken) {
-    if (editionRefreshKeeper) {
-      try {
-        await editionRefreshKeeper(answer.refreshToken);
-      } catch (error) {
-        console.error('The edition could not keep the renewed session token:', error);
-      }
-    } else {
-      console.error('The session token was renewed but the edition installed no keeper: the next refresh will end it');
-    }
-  }
+  const answer = await postRefresh({ credentials: 'include', headers }, keepEditionToken);
+  if (answer.outcome === 'issued' && answer.refreshToken) await keepEditionToken(answer.refreshToken);
   return answer;
+}
+
+async function keepEditionToken(refreshToken: string): Promise<void> {
+  if (!editionRefreshKeeper) {
+    console.error('The session token was renewed but the edition installed no keeper: the next refresh will end it');
+    return;
+  }
+  try {
+    await editionRefreshKeeper(refreshToken);
+  } catch (error) {
+    console.error('The edition could not keep the renewed session token:', error);
+  }
 }
 
 /** A new access token from the session's refresh token, wherever it is kept. */

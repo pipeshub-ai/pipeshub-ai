@@ -7294,6 +7294,9 @@
     "appLimited_other": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver."
   },
   "errorToast": {
+    "reconnecting": "Reconectando…",
+    "reconnectingDescription": "Ahora mismo no podemos comprobar tu sesión. Sigues con la sesión iniciada. Lo reintentaremos durante unos minutos y después cuando vuelvas o te reconectes.",
+    "sessionUnavailable": "Ahora mismo no podemos comprobar tu sesión. Reconectando…",
     "accessDenied": "Acceso denegado",
     "invalidRequest": "Solicitud no válida",
     "notFound": "No encontrado",

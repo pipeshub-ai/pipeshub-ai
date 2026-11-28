@@ -44,6 +44,7 @@ from uuid import uuid4
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.failure_notices import SyncRunState
 from app.connectors.core.base.connector.source_user_listing import (
     Presence,
     SourceUserListing,
@@ -874,6 +875,7 @@ class GitHubTeams(Source):
             org_id=f"org-{uuid4()}", get_all_app_users=AsyncMock(return_value=[]), on_new_app_users=AsyncMock(),
         )
         conn.runtime.ds_call = self.ds_call
+        conn.run_state = SyncRunState()
         self.users = github_users.UsersSync(conn)
         return conn
 

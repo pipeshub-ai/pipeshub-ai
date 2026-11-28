@@ -1,0 +1,69 @@
+{
+  "codes": [
+    "AUTH_TOKEN_MISSING",
+    "AUTH_TOKEN_INVALID",
+    "AUTH_SESSION_REFUSED",
+    "AUTH_FAILED",
+    "SESSION_CHECK_UNAVAILABLE"
+  ],
+  "notification": {
+    "tokenMissing": {
+      "message": "Authentication token missing",
+      "data": {
+        "code": "AUTH_TOKEN_MISSING",
+        "retryable": false
+      }
+    },
+    "tokenInvalid": {
+      "message": "Invalid token",
+      "data": {
+        "code": "AUTH_TOKEN_INVALID",
+        "retryable": false
+      }
+    },
+    "sessionCheckUnavailable": {
+      "message": "Unable to check the session right now",
+      "data": {
+        "code": "SESSION_CHECK_UNAVAILABLE",
+        "retryable": true
+      }
+    }
+  },
+  "desktopProxy": {
+    "tokenMissing": {
+      "message": "Authentication token missing",
+      "data": {
+        "code": "AUTH_TOKEN_MISSING",
+        "retryable": false
+      }
+    },
+    "tokenInvalid": {
+      "message": "Authentication token expired",
+      "data": {
+        "code": "AUTH_TOKEN_INVALID",
+        "retryable": false
+      }
+    },
+    "tokenWithoutIds": {
+      "message": "Token is missing userId or orgId",
+      "data": {
+        "code": "AUTH_TOKEN_INVALID",
+        "retryable": false
+      }
+    },
+    "sessionRefused": {
+      "message": "Authentication refused: User not found, please login again",
+      "data": {
+        "code": "AUTH_SESSION_REFUSED",
+        "retryable": false
+      }
+    },
+    "sessionCheckUnavailable": {
+      "message": "Unable to check the session right now",
+      "data": {
+        "code": "SESSION_CHECK_UNAVAILABLE",
+        "retryable": true
+      }
+    }
+  }
+}

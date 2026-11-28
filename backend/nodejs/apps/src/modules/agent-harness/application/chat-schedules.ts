@@ -131,10 +131,21 @@ const notApproved = (why: string): HarnessScheduleRefusedError =>
     `This schedule was not approved as asked (${why})`,
   );
 
-/** One id per (org, decision): a second request for the same decision lands on the schedule the first made. */
-export const chatScheduleId = (orgId: string, interactionId: string): string =>
+/**
+ * One id per (org, run, decision): a second request for the same decision lands on the schedule the first made.
+ * The run is part of it because an interaction id is unique only within its run: the loop's first approval is
+ * `ix.approve.t1.0` in every run, so an id of the org and the interaction alone gave every run the first one's schedule.
+ */
+export const chatScheduleId = (
+  orgId: string,
+  runId: string,
+  interactionId: string,
+): string =>
   `sch_${createHash('sha256')
-    .update(`schedule-from-chat\u0000${orgId}\u0000${interactionId}`, 'utf8')
+    .update(
+      `schedule-from-chat\u0000${orgId}\u0000${runId}\u0000${interactionId}`,
+      'utf8',
+    )
     .digest('hex')
     .slice(0, 32)}`;
 
@@ -222,8 +233,8 @@ export class ChatScheduleService {
     if (run === null) throw new HarnessNotFoundError();
     const events = await this.options.runs.runEvents(orgId, runId);
     this.assertApproved(run, events, request);
-    const id = chatScheduleId(orgId, request.interactionId);
-    const made = await this.existing(orgId, id, request.interactionId);
+    const id = chatScheduleId(orgId, run.runId, request.interactionId);
+    const made = await this.existing(orgId, id, run, request.interactionId);
     if (made !== null) return { schedule: view(made), created: false };
     const actor = await this.options.actors.authorize(orgId, run.actorId);
     if ('refused' in actor) {
@@ -255,7 +266,7 @@ export class ChatScheduleService {
     } catch (error) {
       // The store's insert under the id this decision derives is what makes it once: a live schedule there is the
       // one a racing request made; a tombstone (SCHEDULE_APPROVAL_USED) is one its person deleted.
-      const raced = await this.existing(orgId, id, request.interactionId);
+      const raced = await this.existing(orgId, id, run, request.interactionId);
       if (raced !== null) return { schedule: view(raced), created: false };
       throw error;
     }
@@ -307,13 +318,27 @@ export class ChatScheduleService {
     }
   }
 
+  /** The schedule this decision already made, only if it is this run's and this person's: never anyone else's. */
   private async existing(
     orgId: string,
     id: string,
+    run: HarnessRun,
     interactionId: string,
   ): Promise<AgentSchedule | null> {
     const found = await this.options.store.get(orgId, id);
-    return found?.origin?.interactionId === interactionId ? found : null;
+    if (found === null) return null;
+    const origin = found.origin;
+    if (
+      origin?.interactionId === interactionId &&
+      origin.runId === run.runId &&
+      found.actorId === run.actorId
+    ) {
+      return found;
+    }
+    throw new HarnessScheduleRefusedError(
+      'SCHEDULE_FORBIDDEN',
+      'That schedule is not this chat’s to answer with',
+    );
   }
 
   private assertApproved(

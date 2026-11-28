@@ -26,9 +26,11 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
+from app.connectors.core.address_policy import public_only_for_scope
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectionCheckResult,
+    ConnectorInitError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -135,6 +137,7 @@ from app.sources.external.mariadb.profiling import (
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_fetcher import HostCheckError
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
 
@@ -457,6 +460,11 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                 return False
 
             self.database_name = database
+            # A personal connector may be saved by any user, so it dials public addresses only.
+            # Either record naming it personal is enough.
+            public_only = public_only_for_scope(self.scope) or public_only_for_scope(
+                config.get("scope", self.scope)
+            )
             self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
@@ -468,9 +476,15 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
                 user=user,
                 password=password,
                 ssl_ca_pem=auth_config.get("sslCa") or None,
+                public_only=public_only,
             )
             client = mariadb_config.create_client()
-            await client.connect()
+            try:
+                await client.connect()
+            except ConnectionError as e:
+                if isinstance(e.__cause__, HostCheckError):
+                    raise ConnectorInitError(str(e.__cause__)) from e
+                raise
 
             self.data_source = MariaDBDataSource(client)
             self.profiler = MariaDBProfiler(client)
@@ -478,6 +492,8 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
             self.logger.info("MariaDB connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to initialize MariaDB connector: {e}", exc_info=True)
             return False
@@ -1255,8 +1271,10 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         )
 
     @classmethod
-    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
-        return await check_mariadb_connection(auth_config, logger)
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
+    ) -> ConnectionCheckResult:
+        return await check_mariadb_connection(auth_config, logger, public_only=public_only)
 
     async def test_connection_and_access(self) -> bool:
         if not self.data_source:

@@ -3,6 +3,7 @@ from logging import Logger
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.failure_notices import reports_failed_sync
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -279,6 +280,7 @@ class GitLabPersonalConnector(GitLabConnector):
         """
         return self._connector_group_permission
 
+    @reports_failed_sync("GitLab")
     async def run_sync(self) -> None:
         """Sync GitLab content visible to the configured user. Groups inherit the app."""
         try:
