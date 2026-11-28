@@ -145,13 +145,13 @@ def test_a_graph_outage_on_delete_is_one_warning_with_the_toolset_id(
 
     response = client.delete(f"{PREFIX}/instances/i1")
 
-    assert response.status_code == 500
+    assert response.status_code == 503
     assert response.json() == {"detail": "Cannot delete toolset instance: Unable to verify if it's in use by agents. "
                                          "Please try again or contact support."}
     record, fields = _end(caplog)
     assert _loud(caplog) == [record]
     assert (record.levelno, fields["status"], fields["error_class"], fields["toolset_id"]) == (
-        logging.WARNING, 500, "unavailable", "i1")
+        logging.WARNING, 503, "unavailable", "i1")
     assert not [r for r in caplog.records if r.name == routes.__name__]
 
 

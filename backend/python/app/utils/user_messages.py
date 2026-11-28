@@ -49,7 +49,8 @@ FILE_PREVIEW_UNAVAILABLE = (
 def action_failed(action: str) -> str:
     """Why an action failed, in the user's words.
 
-    ``action`` completes "We couldn't …", e.g. ``"delete this folder"``.
+    ``action`` completes "We couldn't …", e.g. ``"delete this folder"``. A 500 raised with it from a store outage leaves
+    as a 503 with the same text (``install_request_logging``'s hand-over).
     """
     return f"We couldn't {action}. {RETRY_HINT}"
 

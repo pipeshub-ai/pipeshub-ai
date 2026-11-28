@@ -153,8 +153,9 @@ async def read_record_content(
 
     if mode == "thread":
         # Told apart before reading, so "not from Slack" is the caller's 422
-        # rather than a failure of ours -- and a graph read that failed is
-        # ours, a 500, not a claim that the record has no thread. Any Slack
+        # rather than a failure of ours -- and a graph read that failed is a
+        # 500 (a 503 when the graph could not answer: the request log's
+        # hand-over), not a claim that the record has no thread. Any Slack
         # record reads: one in no single thread comes back as itself, followed
         # by the threads its messages started.
         try:

@@ -117,6 +117,11 @@ def chain_has(exc: BaseException, *types: type[BaseException]) -> bool:
     return chain_link(exc, *types) is not None
 
 
+def chain_or_members_have(exc: BaseException, *types: type[BaseException]) -> bool:
+    """Whether a link of ``exc``'s chain, or of a member's chain through exception groups in it, is one of ``types``."""
+    return any(isinstance(link, types) for link in _links_and_members(exc))
+
+
 def first_leaf(exc: BaseException) -> BaseException:
     """The first exception in ``exc`` that isn't a group: what a task group's failure was."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -135,7 +140,7 @@ def quotes_content(exc: BaseException) -> bool:
     # The parsing service's error message quotes the record's name, and its client copies it (ParsingClientError).
     quoting = (*CONTENT_ERRORS, *_types("pydantic", "ValidationError"),
                *_types("app.services.parsing.client", "ParsingClientError"))
-    return any(isinstance(link, quoting) for link in _links_and_members(exc))
+    return chain_or_members_have(exc, *quoting)
 
 
 def _links_and_members(exc: BaseException) -> Iterator[BaseException]:

@@ -585,6 +585,13 @@ class TestChainHas:
         assert EC.chain_has(outer, KeyError, ValueError) is True
         assert EC.chain_has(outer, KeyError) is False
 
+    def test_chain_or_members_have_reads_through_groups(self) -> None:
+        group = ExceptionGroup("g", [ConnectionError("a"), _chained(RuntimeError("member"), OSError("inner"))])
+        outer = _chained(RuntimeError("outer"), group)
+        assert EC.chain_has(outer, OSError) is False
+        assert EC.chain_or_members_have(outer, OSError) is True
+        assert EC.chain_or_members_have(outer, KeyError) is False
+
     def test_chain_link_is_the_first_match(self) -> None:
         inner = OSError("inner")
         middle = _chained(ValueError("middle"), inner)

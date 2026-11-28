@@ -30,6 +30,7 @@ from app.api.middlewares.request_log import (
     mark_request_failure,
     path_log_fields,
 )
+from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
 from app.core.org_context import OrgContext, set_request_context
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.telemetry.middleware import MetricsMiddleware
@@ -57,6 +58,88 @@ REFUSALS: dict[str, Callable[[], HTTPException]] = {
 SHARED = RuntimeError("one failure behind several requests")
 # Built at run time: a traceback prints source lines, so a literal there would show in the stack.
 ECHOED = "-".join(("SENTINEL", "ARGS"))
+CATCH_ALL = "We couldn't load your things. Please try again; if it keeps failing, contact your admin."
+
+
+def _500_from(cause: BaseException, **headers: str) -> Callable[[], None]:
+    """A route catch-all: ``raise HTTPException(500, action_failed(...)) from e``."""
+    def catch_all() -> None:
+        raise HTTPException(status_code=500, detail=CATCH_ALL, headers=headers or None) from cause
+
+    return catch_all
+
+
+def _500_while_handling(failure: Exception, *, from_none: bool = False) -> Callable[[], None]:
+    """A catch-all that raises inside ``except`` without ``from`` (the implicit ``__context__``), or ``from None``."""
+    def catch_all() -> None:
+        try:
+            raise failure
+        except Exception:
+            if from_none:
+                raise HTTPException(status_code=500, detail=CATCH_ALL) from None
+            raise HTTPException(status_code=500, detail=CATCH_ALL)  # noqa: B904 - the implicit chain is the case
+
+    return catch_all
+
+
+def _bug_from_outage() -> None:
+    try:
+        raise ConnectionError("graph down")
+    except ConnectionError as outage:
+        try:
+            raise KeyError("orgId") from outage
+        except KeyError as bug:
+            raise HTTPException(status_code=500, detail=CATCH_ALL) from bug
+
+
+def _commit_unknown_deeper() -> None:
+    try:
+        raise RuntimeError("save failed") from CommitOutcomeUnknown("connection lost after COMMIT was sent")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=CATCH_ALL) from e
+
+
+def _not_retry_safe() -> None:
+    """A route that knows its write partly landed: "try again" would be wrong, whatever the cause."""
+    error = HTTPException(status_code=500, detail=CATCH_ALL)
+    error.retry_safe = False  # type: ignore[attr-defined]
+    raise error from ConnectionError("graph down")
+
+
+def _swallowed_503() -> None:
+    try:
+        raise HTTPException(status_code=503, detail="busy", headers={"Retry-After": "5"}) from ConnectionError("down")
+    except HTTPException as e:
+        raise HTTPException(status_code=500, detail=CATCH_ALL) from e
+
+
+# A store or service that could not answer: the catch-all's 500 is answered 503 + Retry-After.
+OUTAGE_500S: dict[str, Callable[[], None]] = {
+    "connection": lambda: _500_from(ConnectionError(f"driver said {ECHOED}"))(),
+    "timeout": lambda: _500_from(TimeoutError(f"driver said {ECHOED}"))(),
+    "timeout-implicit": lambda: _500_while_handling(TimeoutError(f"driver said {ECHOED}"))(),
+    "outage-group": lambda: _500_from(ExceptionGroup("g", [ConnectionError(f"driver said {ECHOED}"), TimeoutError("b")]))(),
+    "db-connection-lost": lambda: _500_from(ConnectionLost("gone", retry_safe=False))(),
+    "db-pool-timeout": lambda: _500_from(PoolTimeout("no free connection"))(),
+    "other-route-header": lambda: _500_from(ConnectionError("graph down"), **{"X-Probe": "1"})(),
+    "swallowed-503": _swallowed_503,
+}
+# Ours, or not known to be safe to resend: the catch-all's 500 stays.
+OUR_500S: dict[str, Callable[[], None]] = {
+    "bug": lambda: _500_from(KeyError("orgId"))(),
+    "from-none": lambda: _500_while_handling(ConnectionError("graph down"), from_none=True)(),
+    "bug-beside-outage": lambda: _500_from(ExceptionGroup("g", [ConnectionError("a"), KeyError("b")]))(),
+    "bug-from-outage": _bug_from_outage,
+    "commit-outcome-unknown": lambda: _500_from(CommitOutcomeUnknown("connection lost after COMMIT was sent"))(),
+    "commit-outcome-unknown-deeper": _commit_unknown_deeper,
+    "commit-outcome-unknown-in-group": lambda: _500_from(ExceptionGroup(
+        "g", [ConnectionError("a"), CommitOutcomeUnknown("connection lost after COMMIT was sent")]))(),
+    "not-retry-safe": _not_retry_safe,
+}
+
+
+class _StoreFailed(HTTPException):
+    """A route's own HTTPException subclass, with a dict detail (Node reads its ``code``)."""
 
 
 class _Clock:
@@ -177,6 +260,32 @@ def _build_app(clock: _Clock, *, before_install: Callable[[FastAPI], None] | Non
         except KeyError as e:
             error_class.log_failure(logging.getLogger(LOGGER + ".route"), "kb.save", e)
             raise HTTPException(status_code=500, detail="Failed to save.") from e
+
+    @app.get("/api/v1/catch-all/status/{code}")
+    async def catch_all_status(code: int) -> None:
+        raise HTTPException(status_code=code, detail=CATCH_ALL) from ConnectionError("graph down")
+
+    @app.get("/api/v1/catch-all/own-headers")
+    async def catch_all_own_headers() -> None:
+        _500_from(ConnectionError("graph down"), **{"Retry-After": "30", "X-Probe": "1"})()
+
+    @app.get("/api/v1/catch-all/own-headers-lowercase")
+    async def catch_all_own_headers_lowercase() -> None:
+        _500_from(ConnectionError("graph down"), **{"retry-after": "30"})()
+
+    @app.get("/api/v1/catch-all/marked")
+    async def catch_all_marked(request: Request) -> None:
+        exc = HTTPException(status_code=500, detail=CATCH_ALL)
+        mark_request_failure(request, exc, reason="probe_reason", include_error_text=True)
+        raise exc from ConnectionError(f"driver said {ECHOED}")
+
+    @app.get("/api/v1/catch-all/subclass")
+    async def catch_all_subclass() -> None:
+        raise _StoreFailed(status_code=500, detail={"code": "store_failed", "message": CATCH_ALL}) from ConnectionError("down")
+
+    @app.get("/api/v1/catch-all/{shape}")
+    async def catch_all(shape: str) -> None:
+        {**OUTAGE_500S, **OUR_500S}[shape]()
 
     @app.get("/api/v1/returns500")
     async def returns500() -> JSONResponse:
@@ -803,6 +912,131 @@ async def test_a_logging_failure_never_breaks_the_request(clock: _Clock, monkeyp
 
     assert response.status_code == 200
     assert response.json() == {"kb_id": "1"}
+
+
+# --- a raised 500 whose cause is retry-later is answered 503 ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", sorted(OUTAGE_500S))
+async def test_a_500_raised_from_an_outage_is_answered_503_with_retry_after_and_the_routes_detail(
+        clock: _Clock, capture, shape: str) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/catch-all/{shape}")
+
+    assert (response.status_code, response.headers.get("retry-after")) == (503, "5")
+    assert response.json() == {"detail": CATCH_ALL}
+
+
+@pytest.mark.parametrize("shape", sorted(OUR_500S))
+async def test_a_500_raised_from_our_bug_or_an_unknown_commit_stays_500(clock: _Clock, capture, shape: str) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/catch-all/{shape}")
+
+    assert response.status_code == 500
+    assert "retry-after" not in response.headers
+    assert response.json() == {"detail": CATCH_ALL}
+
+
+async def test_a_500_with_no_cause_stays_500(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/http/500")
+
+    assert response.status_code == 500
+    assert "retry-after" not in response.headers
+
+
+@pytest.mark.parametrize("code", [404, 409, 502, 504])
+async def test_any_other_status_raised_from_an_outage_keeps_its_status(clock: _Clock, capture, code: int) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/catch-all/status/{code}")
+
+    assert response.status_code == code
+    assert "retry-after" not in response.headers
+
+
+async def test_the_routes_own_headers_and_retry_after_are_kept(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/catch-all/own-headers")
+
+    assert response.status_code == 503
+    assert (response.headers.get("retry-after"), response.headers.get("x-probe")) == ("30", "1")
+
+
+async def test_a_routes_lowercase_retry_after_is_the_only_one_sent(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/catch-all/own-headers-lowercase")
+
+    assert response.status_code == 503
+    assert response.headers.get_list("retry-after") == ["30"]
+
+
+@pytest.mark.parametrize(("shape", "cls", "cause_type"), [
+    ("connection", "unavailable", "ConnectionError"),
+    ("timeout", "timeout", "TimeoutError"),
+    ("timeout-implicit", "timeout", "TimeoutError"),
+    ("outage-group", "unavailable", "ConnectionError"),
+])
+async def test_the_line_of_a_503_answer_is_a_warning_of_the_causes_class_without_the_drivers_text(
+        clock: _Clock, capture, shape: str, cls: str, cause_type: str) -> None:
+    app = _build_app(clock)
+
+    await _get(app, f"/api/v1/catch-all/{shape}")
+
+    record, fields = _one_end(capture)
+    assert (fields["status"], fields["error_class"], record.levelno) == (503, cls, logging.WARNING)
+    assert (fields["error_type"], fields["cause_type"]) == ("HTTPException", cause_type)
+    assert "error_message" not in fields
+    assert ECHOED not in str(fields)
+
+
+async def test_a_route_subclass_keeps_its_dict_detail_and_its_type_on_the_line(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/catch-all/subclass")
+
+    assert (response.status_code, response.json()) == (503, {"detail": {"code": "store_failed", "message": CATCH_ALL}})
+    _, fields = _one_end(capture)
+    assert fields["error_type"] == "_StoreFailed"
+
+
+async def test_the_line_of_a_503_answer_keeps_the_routes_mark(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/catch-all/marked")
+
+    assert response.status_code == 503
+    _, fields = _one_end(capture)
+    assert (fields["status"], fields["reason"], fields["cause_type"]) == (503, "probe_reason", "ConnectionError")
+    # The mark lets the text on: the rule hides it.
+    assert "error_message" not in fields
+    assert ECHOED not in str(fields)
+
+
+async def test_a_handler_installed_before_sees_the_routes_500_and_its_cause_on_the_503(clock: _Clock) -> None:
+    """EE's ``on_http`` (configure_app runs before install_request_logging) walks a 5xx's ``__cause__``."""
+    chains: list[list[BaseException]] = []
+
+    async def edition_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        chain, link = [], exc.__cause__
+        while link is not None:
+            chain.append(link)
+            link = link.__cause__
+        chains.append(chain)
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    app = _build_app(clock, before_install=lambda a: a.add_exception_handler(StarletteHTTPException, edition_handler))
+
+    response = await _get(app, "/api/v1/catch-all/connection")
+
+    assert response.status_code == 503
+    ((route_500, outage),) = chains
+    assert (type(route_500), route_500.status_code, type(outage)) == (HTTPException, 500, ConnectionError)
 
 
 # --- installation --------------------------------------------------------------------------------------------------
