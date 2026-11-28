@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Zoom: reading who may see a meeting from Zoom.
 
 The host, alternative hosts, participants (Zoom's report API) and invitees of each meeting, as grants

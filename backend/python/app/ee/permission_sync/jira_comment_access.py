@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Which comments, and which of an issue's attachments, every viewer of the issue may read.
 
 An issue's content is indexed once and served to everyone who can open the issue, so it

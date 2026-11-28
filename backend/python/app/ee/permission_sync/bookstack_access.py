@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Who may view a BookStack book, chapter or page, worked out as BookStack works it out.
 
 BookStack decides per item and per role (``JointPermissionBuilder``), then per user over all of the user's

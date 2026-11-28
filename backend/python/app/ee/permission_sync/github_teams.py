@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """GitHub Teams: reading who may see a repository from GitHub.
 
 Collaborators with their roles, and the read a repository's visibility gives (the whole company for a

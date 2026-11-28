@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Drupal Wiki: reading who may see what from Drupal Wiki.
 
 Groups with their members, and the grants a space's access status and member list give. The free

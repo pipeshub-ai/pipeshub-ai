@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Salesforce: reading who may see what from Salesforce.
 
 Each user's access to each record and account (UserRecordAccess), the readers of products, roles and public
