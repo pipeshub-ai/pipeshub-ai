@@ -5053,6 +5053,7 @@
         "deleteTitle": "要刪除「{{name}}」嗎？",
         "deleteBody": "確定要刪除此技能嗎？此操作無法復原。",
         "cannotDeleteTitle": "無法刪除此技能",
+        "notVisibleCount": "{{count}} 個您無法檢視的項目",
         "requiredBy": "此技能為其他技能所需：{{names}}。請改為棄用，讓相依項目仍可解析。",
         "usedByAgents": "此技能已指派給：{{names}}。刪除後將從這些項目中取消指派。"
       },

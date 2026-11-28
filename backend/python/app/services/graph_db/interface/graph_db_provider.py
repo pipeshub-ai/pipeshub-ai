@@ -1166,15 +1166,18 @@ class IGraphDBProvider(ABC):
         match_field: str,
         match_value: Any,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """Write `node` over the existing document only while `match_field`
-        still equals `match_value`. One round-trip.
+        still equals `match_value`, and every field in `expected` still holds
+        its value (``None`` means absent). One round-trip.
 
         Used for optimistic concurrency: a caller that last observed
         `updatedAtTimestamp=T` must not clobber a write that already moved
         the timestamp. `batch_upsert_nodes` / `update_node` are unconditional
         and cannot express that. Returns True iff the write applied; False
-        if the document is missing or the field no longer matches (the
+        if the document is missing or a field no longer matches (the
         document is left unchanged). Does not insert a new document.
         """
         pass

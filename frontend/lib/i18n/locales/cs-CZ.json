@@ -5243,6 +5243,7 @@
         "deleteTitle": "Smazat \"{{name}}\"?",
         "deleteBody": "Opravdu chcete tuto dovednost smazat? Tuto akci nelze vrátit zpět.",
         "cannotDeleteTitle": "Tuto dovednost nelze smazat",
+        "notVisibleCount": "{{count}}, které nevidíte",
         "requiredBy": "Tuto dovednost vyžadují jiné dovednosti: {{names}}. Místo toho ji označte jako zastaralou, aby se závislé dovednosti stále daly vyhodnotit.",
         "usedByAgents": "Tato dovednost je přiřazena: {{names}}. Smazáním jim bude odebrána."
       },

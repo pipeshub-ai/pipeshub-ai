@@ -8,7 +8,10 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent_loop_lib.core.exceptions import RegistryError
+from app.agent_loop_lib.modules.providers.skills.base import SkillReferentialUsage
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
+from app.agents.agent_loop.skills.graph_store import collect_referential_usage
+from app.agents.agent_loop.skills.graph_store import edge_source_key as _edge_source_key
 from app.api.routes.skills import (
     DeprecateRequest,
     FinalizeImportRequest,
@@ -18,7 +21,6 @@ from app.api.routes.skills import (
     RollbackRequest,
     SkillWriteRequest,
     UrlImportRequest,
-    _edge_source_key,
     _get_user_context,
     _get_user_key,
     _handle_format_error,
@@ -28,6 +30,12 @@ from app.api.routes.skills import (
 from tests.support.bound_org import another_request, bind_test_org
 
 MODULE = "app.api.routes.skills"
+
+
+async def _check_usage(name: str, org_id: str, graph_provider) -> dict:
+    """The org-wide collector `GraphSkillStore.get_referential_usage` narrows to its caller."""
+    usage = await collect_referential_usage(graph_provider, org_id, name, skill={})
+    return {"usedByAgents": usage.used_by_agents, "requiredBySkills": usage.required_by_skills}
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +661,7 @@ class TestDeprecateSkill:
 
 
 # ============================================================================
-# _check_usage
+# collect_referential_usage (what the store narrows)
 # ============================================================================
 
 class TestCheckUsage:
@@ -662,7 +670,6 @@ class TestCheckUsage:
         gp = AsyncMock()
         gp.get_edges_to_node = AsyncMock(return_value=[])
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert usage["usedByAgents"] == []
         assert usage["requiredBySkills"] == []
@@ -676,7 +683,6 @@ class TestCheckUsage:
         ])
         gp.get_document = AsyncMock(return_value={"name": "My Agent"})
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert len(usage["usedByAgents"]) == 1
         assert usage["usedByAgents"][0]["id"] == "agent1"
@@ -690,7 +696,6 @@ class TestCheckUsage:
             [{"from_id": "o1_other-skill", "type": "requires"}],
         ])
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert "other-skill" in usage["requiredBySkills"]
 
@@ -702,7 +707,6 @@ class TestCheckUsage:
             [],
         ])
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert usage["usedByAgents"] == []
 
@@ -715,7 +719,6 @@ class TestCheckUsage:
         ])
         gp.get_document = AsyncMock(return_value=None)
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert usage["usedByAgents"] == []
 
@@ -727,7 +730,6 @@ class TestCheckUsage:
             [{"from_id": "o1_other", "type": "related"}],
         ])
 
-        from app.api.routes.skills import _check_usage
         usage = await _check_usage("my-skill", "o1", gp)
         assert usage["requiredBySkills"] == []
 
@@ -742,11 +744,16 @@ class TestGetSkillUsage:
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
 
-        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
-             patch(f"{MODULE}._check_usage", new_callable=AsyncMock, return_value={"usedByAgents": [], "requiredBySkills": []}):
+        manager.get_referential_usage = AsyncMock(return_value=SkillReferentialUsage(other_agent_count=2))
+
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
             from app.api.routes.skills import get_skill_usage
             resp = await get_skill_usage(req, "test-skill")
         assert resp.status_code == 200
+        assert json.loads(resp.body) == {
+            "usedByAgents": [], "requiredBySkills": [], "otherAgentCount": 2, "otherSkillCount": 0,
+        }
+        manager.get_skill.assert_awaited_once_with("test-skill")
 
 
 # ============================================================================
@@ -1301,7 +1308,7 @@ class TestFinalizeImport:
             from app.api.routes.skills import finalize_import
             resp = await finalize_import(req, payload)
         assert resp.status_code == 201
-        manager.write_resource.assert_awaited_once()
+        assert manager.create.await_args.args[4] == {"ref.md": "# ref"}
 
     @pytest.mark.asyncio
     async def test_no_frontmatter_raises_400(self):

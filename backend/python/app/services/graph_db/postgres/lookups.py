@@ -772,19 +772,25 @@ class LookupsMixin(PgBase):
             raise      # as the Neo4j and Arango providers: the caller must not add edges for people that were not written
 
     async def update_node_if_match(self, key: str, collection: str, node: dict, match_field: str, match_value: Any,  # noqa: ANN401
-                                   transaction: str | None = None) -> bool:
-        """Replace the document (as ``SET n = $node``) only while ``match_field`` still equals ``match_value``: one statement, so no overwrite
-        slips between the check and the write."""
+                                   transaction: str | None = None, *, expected: dict | None = None) -> bool:
+        """Replace the document (as ``SET n = $node``) only while ``match_field`` still equals ``match_value`` and every field of ``expected``
+        holds (``None`` means absent), so no overwrite slips between the check and the write."""
         org = current_org_id()
         if match_value is None:      # a node without the field is not 'null': as Neo4j's ``n[f] = null``, never a match
             return False
         doc = _node(node, collection)
         doc["id"] = key
         _VALIDATOR.validate_node(collection, doc)
-        r = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
-            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb RETURNING 1) SELECT count(*) FROM u""",
-                                                 org, collection, key, match_field, _j(doc), _j(match_value)), transaction, write=True)
-        return bool(r)
+
+        async def go(tx: Tx) -> int:
+            # The row lock first, in a statement of its own (as update_node_fields_if_match): the expectation is an anti-join, which a writer that
+            # waited for the lock does not re-check against the row it then updates.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = jsonb_strip_nulls($5::jsonb)
+            WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND n.doc->$4::text = $6::jsonb
+                AND NOT EXISTS (SELECT 1 FROM jsonb_each($7::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                RETURNING 1) SELECT count(*) FROM u""", org, collection, key, match_field, _j(doc), _j(match_value), _j(expected or {}))
+        return bool(await self._q(go, transaction, write=True))
 
     async def remove_nodes_by_field(self, collection: str, field_name: str, *, field_value: str | int | bool | None, transaction: str | None = None) -> int:
         org = current_org_id()

@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.commands.render import CommandArgument, parse_arguments
-from app.agent_loop_lib.core.exceptions import AgentLoopError
+from app.agent_loop_lib.core.exceptions import AgentLoopError, RegistryError
 
 """Skill data model — implements the agentskills.io / anthropic/skills
 SKILL.md standard directly (see modules/providers/skills/loader.py for the parser) rather than
@@ -400,6 +400,32 @@ class SkillConflictError(AgentLoopError):
         )
 
 
+class SkillAlreadyExistsError(RegistryError):
+    """A create found the name taken. Says nothing about who holds it or what
+    it contains: the caller may not be allowed to see that skill."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__("Skill name is unavailable")
+
+
+class SkillNameReservedError(RegistryError):
+    """A create used a name only the builtin seeder may take."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"{name!r} is a built-in skill name.")
+
+
+class SkillPermissionError(RegistryError):
+    """A write on a skill its caller may not change. Carries only the name the
+    caller already supplied."""
+
+    def __init__(self, name: str, message: str = "Skill is not writable by this actor") -> None:
+        self.name = name
+        super().__init__(message)
+
+
 class SkillInUseError(AgentLoopError):
     """Delete refused because agents still reference the skill, or another
     skill `requires` it. Carries the same structured payload the REST
@@ -411,18 +437,22 @@ class SkillInUseError(AgentLoopError):
         *,
         used_by_agents: list[dict[str, Any]],
         required_by_skills: list[str],
+        other_agent_count: int = 0,
+        other_skill_count: int = 0,
     ) -> None:
         self.name = name
         self.used_by_agents = used_by_agents
         self.required_by_skills = required_by_skills
-        if required_by_skills:
+        self.other_agent_count = other_agent_count
+        self.other_skill_count = other_skill_count
+        if required_by_skills or other_skill_count:
             message = (
                 f"Skill {name!r} is required by other skill(s) and cannot be deleted. "
                 "Deprecate it instead so dependents still resolve."
             )
         else:
             message = (
-                f"Skill {name!r} is assigned to {len(used_by_agents)} agent(s). "
+                f"Skill {name!r} is assigned to {len(used_by_agents) + other_agent_count} agent(s). "
                 "Retry with detach=true to unassign it from them first, or deprecate it instead."
             )
         super().__init__(message)
@@ -431,10 +461,24 @@ class SkillInUseError(AgentLoopError):
 class SkillReferentialUsage(BaseModel):
     """Who currently depends on a skill — agents assigned it, and other
     skills whose frontmatter `requires` it. Empty on stores without a
-    graph of those edges (filesystem)."""
+    graph of those edges (filesystem).
+
+    A store that knows who is asking names only the agents and skills that
+    caller may see; the rest are counted in `other_agent_count` and
+    `other_skill_count`, so a delete is still refused while they exist."""
 
     used_by_agents: list[dict[str, Any]] = Field(default_factory=list)
     required_by_skills: list[str] = Field(default_factory=list)
+    other_agent_count: int = 0
+    other_skill_count: int = 0
+
+    @property
+    def has_agents(self) -> bool:
+        return bool(self.used_by_agents) or self.other_agent_count > 0
+
+    @property
+    def has_dependent_skills(self) -> bool:
+        return bool(self.required_by_skills) or self.other_skill_count > 0
 
 
 class SkillVersionInfo(BaseModel):

@@ -5053,6 +5053,7 @@
         "deleteTitle": "\"{{name}}\"을(를) 삭제하시겠습니까?",
         "deleteBody": "정말 이 스킬을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
         "cannotDeleteTitle": "이 스킬을 삭제할 수 없습니다",
+        "notVisibleCount": "볼 수 없는 항목 {{count}}개",
         "requiredBy": "이 스킬은 다른 스킬에서 필요로 합니다: {{names}}. 의존 스킬이 계속 작동하도록 삭제 대신 사용 중단하세요.",
         "usedByAgents": "이 스킬은 다음에 할당되어 있습니다: {{names}}. 삭제하면 해당 항목에서 할당이 해제됩니다."
       },

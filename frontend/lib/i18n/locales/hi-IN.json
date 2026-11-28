@@ -5591,6 +5591,7 @@
         "deleteTitle": "\"{{name}}\" हटाएँ?",
         "deleteBody": "क्या आप वाकई यह skill हटाना चाहते हैं? यह क्रिया पूर्ववत नहीं की जा सकती।",
         "cannotDeleteTitle": "यह skill हटाई नहीं जा सकती",
+        "notVisibleCount": "{{count}} जिन्हें आप नहीं देख सकते",
         "requiredBy": "यह skill अन्य skills के लिए आवश्यक है: {{names}}. इसके बजाय इसे अप्रचलित करें ताकि निर्भर skills हल होती रहें।",
         "usedByAgents": "यह skill इन्हें सौंपी गई है: {{names}}. हटाने पर यह उनसे हटा दी जाएगी।"
       },

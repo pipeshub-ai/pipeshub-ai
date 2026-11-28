@@ -5585,6 +5585,7 @@
         "deleteTitle": "„{{name}}“ löschen?",
         "deleteBody": "Möchten Sie diesen Skill wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
         "cannotDeleteTitle": "Dieser Skill kann nicht gelöscht werden",
+        "notVisibleCount": "{{count}}, die Sie nicht sehen können",
         "requiredBy": "Andere Skills benötigen diesen Skill: {{names}}. Markieren Sie ihn stattdessen als veraltet, damit diese Abhängigkeiten weiterhin aufgelöst werden können.",
         "usedByAgents": "Dieser Skill ist folgenden Agenten zugewiesen: {{names}}. Beim Löschen werden diese Zuweisungen entfernt."
       },

@@ -5591,6 +5591,7 @@
         "deleteTitle": "Delete \"{{name}}\"?",
         "deleteBody": "Are you sure you want to delete this skill? This action cannot be undone.",
         "cannotDeleteTitle": "Cannot delete this skill",
+        "notVisibleCount": "{{count}} you can't see",
         "requiredBy": "This skill is required by other skill(s): {{names}}. Deprecate it instead so dependents still resolve.",
         "usedByAgents": "This skill is assigned to: {{names}}. Deleting will unassign it from them."
       },

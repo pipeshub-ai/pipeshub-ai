@@ -894,18 +894,6 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         body={},
         same_for_everyone="only a service agent's binding needs an admin, and these tests make none",
     ),
-    # Never asks who is calling: it is found because it calls the skills manager's
-    # write_resource, which the reader takes for the route of that name. A package with no
-    # name is refused alike, and nothing is made.
-    ConditionalRoute(
-        "api/routes/skills.py::finalize_import", "POST", f"{_SKILLS}/import/finalize",
-        cases=(
-            Case("org", MEMBER, True, 400, "missing a 'name' field"),
-            Case("org", ADMIN, True, 400, "missing a 'name' field"),
-        ),
-        body={"content": "Made by the conditional-admin tests, with no frontmatter."},
-        same_for_everyone="it never asks; the reader matches the manager's write_resource to the route",
-    ),
     # A knowledge base is published, and its publications listed or revoked, by an owner of
     # it or an org admin. The gateway serves these under the harness and forwards them to
     # the query service. The create's expiry is past, so whoever passes the check is

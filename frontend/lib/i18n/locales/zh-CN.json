@@ -5053,6 +5053,7 @@
         "deleteTitle": "删除“{{name}}”？",
         "deleteBody": "确定要删除此技能吗？此操作无法撤销。",
         "cannotDeleteTitle": "无法删除此技能",
+        "notVisibleCount": "{{count}} 个您无法查看的项目",
         "requiredBy": "此技能被其他技能依赖：{{names}}。请改为弃用，以便依赖它的技能仍可正常解析。",
         "usedByAgents": "此技能已分配给：{{names}}。删除后将从这些对象中取消分配。"
       },

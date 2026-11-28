@@ -230,6 +230,59 @@ class TestAuthorLeaves:
 
         assert await erase_skill_author(graph, ORG, ["asha-key", "asha"]) == (0, 0)  # type: ignore[arg-type]
 
+    @staticmethod
+    async def _notes_recreated(graph) -> None:
+        """Asha's personal `notes` with two archived states, deleted; then Bo's own `notes`, edited once."""
+        md = "---\nname: notes\ndescription: d\n---\n\n{}\n"
+        asha = GraphSkillStore(graph, ORG, "asha")
+        await asha.create_skill("notes", md.format("asha v1"))
+        await asha.update_skill("notes", md.format("asha v2"))
+        assert await asha.delete_skill("notes")
+        bo = GraphSkillStore(graph, ORG, "bo")
+        await bo.create_skill("notes", md.format("bo v1"))
+        await bo.update_skill("notes", md.format("bo v2"))
+
+    @staticmethod
+    def _archived(graph) -> set[str]:
+        return {v["content"].strip().rsplit("\n", 1)[-1] for v in graph._col("agentSkillVersions").values()}
+
+    async def test_erasing_the_new_owner_of_a_name_keeps_the_previous_owners_history(self, graph) -> None:
+        await self._notes_recreated(graph)
+        assert self._archived(graph) == {"asha v1", "asha v2", "bo v1"}
+
+        assert await erase_skill_author(graph, ORG, ["bo-key", "bo"]) == (1, 0)  # type: ignore[arg-type]
+        assert f"{ORG}_notes" not in graph._col("agentSkills")
+        assert self._archived(graph) == {"asha v1", "asha v2"}
+
+    async def test_erasing_the_previous_owner_of_a_name_erases_their_history_only(self, graph) -> None:
+        await self._notes_recreated(graph)
+
+        assert await erase_skill_author(graph, ORG, ["asha-key", "asha"]) == (0, 0)  # type: ignore[arg-type]
+        assert self._archived(graph) == {"bo v1"}
+        assert graph._col("agentSkills")[f"{ORG}_notes"]["createdBy"] == "bo"
+
+    @pytest.mark.parametrize("collection", ["agentSkills", "agentSkillVersions"])
+    async def test_a_failed_read_erases_nothing_and_raises(self, graph, collection, monkeypatch) -> None:
+        """As the providers do, a failed read is [] unless the caller asks it to raise: erasure must ask, so the
+        user-deleted event fails and is redelivered instead of acting on an empty read."""
+        await self._notes_recreated(graph)
+        await _team_triage(graph)
+        before = (dict(graph._col("agentSkills")), dict(graph._col("agentSkillVersions")))
+        read = graph.get_nodes_by_filters
+
+        async def failing(col, filters, *args, raise_on_error=False, **kwargs) -> list[dict]:
+            if col == collection:
+                if raise_on_error:
+                    raise RuntimeError("store unavailable")
+                return []
+            return await read(col, filters, *args, raise_on_error=raise_on_error, **kwargs)
+
+        monkeypatch.setattr(graph, "get_nodes_by_filters", failing)
+        for who in (["asha-key", "asha"], ["bo-key", "bo"]):
+            with pytest.raises(RuntimeError):
+                await erase_skill_author(graph, ORG, who)  # type: ignore[arg-type]
+        assert (dict(graph._col("agentSkills")), dict(graph._col("agentSkillVersions"))) == before
+
     async def test_the_org_admin_governs_a_command_whose_author_left(self, graph) -> None:
         await _team_triage(graph)
         await erase_skill_author(graph, ORG, ["asha-key"])  # type: ignore[arg-type]

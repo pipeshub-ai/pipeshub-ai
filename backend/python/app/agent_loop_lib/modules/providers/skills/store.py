@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
@@ -12,6 +13,9 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillStatus,
     SkillVersionInfo,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 """Storage ABCs for skills (SOLID — Interface Segregation): read-only
 consumers (e.g. a future read-only catalog UI, the prompt renderer's
@@ -62,9 +66,11 @@ class SkillReader(ABC):
         return result
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
-        """Agents assigned this skill and other skills that `requires` it.
-        Default is empty (filesystem / in-memory stores have no agent
-        graph). `GraphSkillStore` overrides."""
+        """Agents assigned this skill and other skills that `requires` it, as
+        this store's caller may see them: none for a skill the caller cannot
+        see, and only counts for agents and skills it cannot see. Default is
+        empty (filesystem / in-memory stores have no agent graph).
+        `GraphSkillStore` overrides."""
         return SkillReferentialUsage()
 
 
@@ -120,8 +126,18 @@ class SkillWriter(ABC):
         `expected_updated_at` has the same meaning as on `update_skill`."""
 
     @abstractmethod
-    async def delete_skill(self, name: str) -> bool:
-        """Hard-delete a skill and its directory. Returns False if unknown."""
+    async def delete_skill(self, name: str, *, expected: Mapping[str, Any] | None = None) -> bool:
+        """Hard-delete a skill and its directory. Returns False if unknown.
+
+        `expected` is what `deletion_binding` returned for `name`: the delete then
+        applies only to the skill that read saw, and raises `SkillConflictError` when
+        the name holds another one by now (deleted and created again in between)."""
+
+    async def deletion_binding(self, name: str) -> Mapping[str, Any] | None:
+        """Read before a delete decides anything (`SkillManager.delete` checks usage
+        after it), and passed back to `delete_skill` as `expected`. None: this store
+        does not bind deletes to a read."""
+        return None
 
     @abstractmethod
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
