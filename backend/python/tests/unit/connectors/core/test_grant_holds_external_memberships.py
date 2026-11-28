@@ -373,3 +373,62 @@ async def test_without_a_transaction_a_failed_read_of_the_people_after_the_grant
     with pytest.raises(ConnectionError):
         await store.batch_create_edges([_grant("person", "p1")], "permission")
     store.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
+
+
+@pytest.mark.asyncio
+async def test_a_team_write_makes_again_a_membership_removed_while_it_waited_that_the_team_keeps() -> None:
+    """u1's flagged memberships of app1 and app2 are read before the team write and only app2's is there after it: app1's was removed while the
+    write waited for the org's lock. app1's is kept by the team's grants (external_memberships_kept), so it is made again in the transaction."""
+    store, provider, calls = _store()
+    provider.lock_external_app_memberships = AsyncMock(side_effect=[[("users", "u1", "app1"), ("users", "u1", "app2")], [("users", "u1", "app2")]])
+    provider.external_memberships_kept = AsyncMock(return_value=[("users", "u1", "app1")])
+    store.ensure_app_membership = AsyncMock()
+    await store.batch_create_edges([_grant("users", "u1", tc="teams", ti="t1")], "permission")
+    assert [c.kwargs.get("lock") for c in provider.lock_external_app_memberships.await_args_list] == [False, False]
+    provider.external_memberships_kept.assert_awaited_once_with([("users", "u1", "app1")], transaction="txn-1")
+    store.ensure_app_membership.assert_awaited_once_with("u1", "users", "app1", is_external=True)
+
+
+@pytest.mark.asyncio
+async def test_a_grant_on_a_record_reads_no_membership_and_a_team_write_with_none_flagged_reads_once() -> None:
+    store, provider, calls = _store()
+    await store.batch_create_edges([_grant("users", "u1")], "permission")
+    provider.lock_external_app_memberships.assert_not_awaited()      # a record's grant pays nothing for the team path
+    await store.batch_create_edges([_grant("users", "u1", tc="teams", ti="t1")], "permission")
+    assert provider.lock_external_app_memberships.await_count == 1      # nothing flagged: no read after
+
+
+@pytest.mark.asyncio
+async def test_a_team_write_run_again_keeps_what_its_first_attempt_read() -> None:
+    """The first attempt read u1's membership and conflicted (ArangoDB, behind the sweep); the runner runs it again in a new snapshot where the
+    removal is committed: the second attempt reads nothing, but the runner's one set still holds what the first read, so it is made again."""
+    from app.connectors.core.base.data_store import graph_data_store
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    class Conflict(Exception):
+        code = 1200
+    import logging
+    attempts: list[int] = []
+
+    async def write(*_a: object, **_k: object) -> bool:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise Conflict("write-write conflict")
+        return True
+    provider = MagicMock(begin_transaction=AsyncMock(return_value="t"), rollback_transaction=AsyncMock(), commit_transaction=AsyncMock(),
+                         batch_create_edges=AsyncMock(side_effect=write), is_write_conflict=MagicMock(return_value=True),
+                         is_transient_error=MagicMock(return_value=True), opens_explicit_transaction=MagicMock(return_value=True),
+                         lock_external_app_memberships=AsyncMock(side_effect=[[("users", "u1", "app1")], [], []]),
+                         external_memberships_kept=AsyncMock(return_value=[("users", "u1", "app1")]),
+                         ensure_app_membership=AsyncMock())
+    provider.logger = logging.getLogger("team-carry-test")
+    graph_data_store._retry_delay, real = (lambda _a: 0), graph_data_store._retry_delay
+    try:
+        async def add(tx_store: object) -> None:
+            await tx_store.batch_create_edges([_grant("users", "u1", tc="teams", ti="t1")], "permission")
+        await GraphDataStore(provider.logger, provider).execute_idempotent_in_transaction(add, explicit=True)
+    finally:
+        graph_data_store._retry_delay = real
+    assert len(attempts) == 2
+    provider.ensure_app_membership.assert_awaited_once()
+    assert provider.ensure_app_membership.await_args.args[:3] == ("u1", "users", "app1")

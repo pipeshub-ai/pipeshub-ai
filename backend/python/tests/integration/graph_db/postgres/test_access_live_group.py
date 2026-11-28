@@ -710,3 +710,49 @@ async def test_a_trashed_grant_s_collaborator_loses_the_app_and_its_org_wide_rec
         await p.commit_transaction(tid)
         assert await _app_edges(pg_db, org) == {"x2": True}
         assert await visible() == {"r-org", "r1"}
+
+
+async def test_a_team_member_reaches_the_team_s_records_of_an_app_only_through_its_app_membership(pg_db) -> None:
+    """As on Neo4j and ArangoDB: a team without an edge to app1 gives its member x2 its grant on r1 only while x2 holds its own membership of app1."""
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": "x2", "orgId": org, "email": "x2@example.com", "userId": "uid-x2", "isActive": True}], "users")
+        await p.batch_upsert_nodes([{"_key": "t", "name": "t", "orgId": org}], "teams")
+        await p.batch_create_edges([_perm("x2", "users", "t", "teams"), _perm("t", "teams", "r1", "records", "TEAM")], "permission")
+        assert await p.filter_accessible_record_ids(["r1"], "uid-x2", org) == {"r1"}
+        await p.delete_edge("x2", "users", "app1", "apps", "userAppRelation")
+        assert await p.filter_accessible_record_ids(["r1"], "uid-x2", org) == set()
+
+
+async def test_a_team_write_queued_behind_the_sweep_keeps_the_added_member_s_membership(pg_db) -> None:
+    """As on Neo4j and ArangoDB: x2's membership was marked by the first pass; the sweep removes it and stays open; a team write making x2 a
+    member of t (granted r1) waits for the org's lock, then makes the membership again with the lock held: x2 holds app1 when the team write
+    commits, with no later ensure_app_membership."""
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    p, org = PostgresGraphProvider(logging.getLogger("live-group"), pg_db), new_org()
+    with ctx(org):
+        await _x2_flagged(p, org)
+        await p.batch_upsert_nodes([{"_key": "t", "name": "t", "orgId": org}], "teams")
+        await p.batch_create_edges([_perm("t", "teams", "r1", "records", "TEAM")], "permission")
+        rid = await p.begin_transaction([], [])
+        writing = None
+        try:
+            await p.reap_stale_external_app_relations("app1", transaction=rid)
+
+            async def add_member(tx_store) -> None:
+                assert await tx_store.batch_create_edges([_perm("x2", "users", "t", "teams")], "permission")
+            writing = asyncio.create_task(GraphDataStore(logging.getLogger("live-group"), p).execute_idempotent_in_transaction(add_member, explicit=True))
+            await _until_waiting_on(p, pg_db, rid, writing)
+            await p.commit_transaction(rid)
+            rid = None
+            await asyncio.wait_for(writing, 10)
+        finally:
+            if writing is not None and not writing.done():
+                writing.cancel()
+                with contextlib.suppress(BaseException):
+                    await writing
+            if rid is not None:
+                with contextlib.suppress(Exception):
+                    await p.rollback_transaction(rid)
+        assert await _app_edges(pg_db, org) == {"x2": True}

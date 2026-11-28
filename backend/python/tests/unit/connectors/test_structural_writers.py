@@ -611,7 +611,6 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     # rolls back / deletes conversation attachments: records created by the chat upload, which have no connector and are never stamped
     ("app/api/routes/chatbot.py", "delete_nodes_and_edges"): "conversation attachments: records with no connector and no stamp",
     # teams: a user-to-team permission edge, and a team node
-    ("app/api/routes/entity.py", "batch_create_edges"): "user-to-team permission edges: a team is not a record or group",
     ("app/api/routes/entity.py", "delete_nodes"): "a team node",
     # agent templates, tools, toolsets, knowledge links: the collection is a variable holding agent resources, never records or groups
     ("app/api/routes/agent.py", "delete_nodes"): "agent resources, not records or record groups (the collection is a variable)",

@@ -364,6 +364,9 @@ class GraphTransactionStore(TransactionStore):
         # The apps (and org) whose grant lock this transaction holds: held to its end, so a later grant statement need not write the lock again.
         # This store's transaction only: a retry opens a new store, and commit and rollback empty it.
         self._app_locks: set[str] = set()
+        # The flagged memberships the users a team write adds held before it (_write_team_memberships); a runner that runs the write again
+        # passes one set to every attempt, as a retry's snapshot no longer has what a reaper removed.
+        self._team_carried: set[tuple[str, str, str]] = set()
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -716,9 +719,26 @@ class GraphTransactionStore(TransactionStore):
         if not grants:
             return await write(edges)
         if self.explicit:
-            return await write(edges, lock_grants=grants, lock_held=self._app_locks)
+            teams = [g for g in grants if g[2] == CollectionNames.TEAMS.value and g[0] in _GRANT_HOLDERS]
+            if not teams:
+                return await write(edges, lock_grants=grants, lock_held=self._app_locks)
+            return await self._write_team_memberships(teams, lambda: write(edges, lock_grants=grants, lock_held=self._app_locks))
         held = await self.graph_provider.lock_external_app_memberships(grants, transaction=self.txn)
         return await self._write_grant_alone(edges, grants, held, write)
+
+    async def _write_team_memberships(self, teams: list[tuple[str, str, str, str]], write: Callable[[], Awaitable[_T]]) -> _T:
+        """A team's membership is written outside a sync (create_team, update_team), so no membership step follows it. It waits for any
+        reaper of the org's apps (the org's lock), and one may have removed a flagged membership of an added user meanwhile, which the
+        team's grants keep once this commits. The added users' flagged memberships are read before the write and again after it, with the
+        lock held; one gone that a chain keeps is made again in this transaction. Team writes are few and small; no other grant pays this."""
+        self._team_carried.update(await self.graph_provider.lock_external_app_memberships(teams, transaction=self.txn, lock=False))
+        result = await write()
+        if self._team_carried:
+            now = set(await self.graph_provider.lock_external_app_memberships(teams, transaction=self.txn, lock=False))
+            gone = sorted(self._team_carried - now)
+            if gone:
+                await self._make_again(await self.graph_provider.external_memberships_kept(gone, transaction=self.txn))
+        return result
 
     async def _make_again(self, memberships: list[tuple[str, str, str]], failure: Exception | None = None) -> None:
         """Makes each flagged membership (principal collection, principal, app) again, create-only, every one attempted whatever another raised;
@@ -1724,7 +1744,8 @@ class GraphDataStore(DataStoreProvider):
         return await self.graph_provider.get_existing_record_keys(record_ids)
 
     @asynccontextmanager
-    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None, *,
+                          team_carried: set[tuple[str, str, str]] | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Create a graph database transaction store context manager.
 
@@ -1751,6 +1772,8 @@ class GraphDataStore(DataStoreProvider):
         tx_store = GraphTransactionStore(
             self.graph_provider, txn, explicit=self.graph_provider.opens_explicit_transaction(explicit) is True,
         )
+        if team_carried is not None:
+            tx_store._team_carried = team_carried
 
         try:
             yield tx_store
@@ -1857,10 +1880,11 @@ class GraphDataStore(DataStoreProvider):
         ``explicit`` is passed to :meth:`transaction`.
         """
         attempts = 0
+        carried: set[tuple[str, str, str]] = set()      # what the attempts' team writes read (_write_team_memberships)
         while True:
             attempts += 1
             try:
-                async with self.transaction(explicit=explicit) as tx_store:
+                async with self.transaction(explicit=explicit, team_carried=carried) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not self.is_transient_error(e, explicit=explicit):
@@ -1889,10 +1913,11 @@ class GraphDataStore(DataStoreProvider):
         :meth:`transaction`.
         """
         attempts = 0
+        carried: set[tuple[str, str, str]] = set()      # what the attempts' team writes read (_write_team_memberships)
         while True:
             attempts += 1
             try:
-                async with self.transaction(explicit=explicit) as tx_store:
+                async with self.transaction(explicit=explicit, team_carried=carried) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not (self.graph_provider.is_write_conflict(e) or isinstance(e, ScopeGenerationConflict)):

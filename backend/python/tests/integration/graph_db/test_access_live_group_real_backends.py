@@ -1108,3 +1108,74 @@ async def test_on_neo4j_without_a_transaction_timeout_an_unjustified_membership_
     await asyncio.sleep(0.1)
     await g.reap_stale_external_app_relations(w.sid(APP))
     assert "ext-own-gone" not in await _edges_to_app(w)
+
+
+async def test_a_team_member_reaches_the_team_s_records_of_an_app_only_through_its_app_membership(world: _World) -> None:
+    """The connector gate (``_kh_gate_cypher`` and its PostgreSQL and ArangoDB twins) opens an App to a user only through an edge to it held by
+    the user or a grantee (its groups, roles, teams, organization). A team without an edge to the App (Drive and the other collaborator
+    connectors never write one) gives its members its grants on the App's records only while each member has its own membership of the App:
+    so a team membership needs the member's flagged membership, and a team writer the reaper raced can leave it without one."""
+    w, g = world, world.graph
+    if w.kind != "Teams":
+        pytest.skip("the team path")
+    uid = f"uid-ext-own-live-{w.run}"
+    assert await g.batch_upsert_nodes([{"id": w.sid("ext-own-live"), "userId": uid, "orgId": w.org, "email": "ext-own-live@example.com",
+                                        "fullName": "Ext own live", "isActive": True}], collection="users")
+    assert await _visible(w, uid, ["r-own-live"]) == {"r-own-live"}      # through its team own-live's grant
+    if hasattr(g, "client"):
+        await g.client.execute_query("MATCH (:User {id: $u})-[r:USER_APP_RELATION]->(:App {id: $a}) DELETE r",
+                                     parameters={"u": w.sid("ext-own-live"), "a": w.sid(APP)})
+    else:
+        await g.http_client.execute_aql("FOR e IN userAppRelation FILTER e._from == @u AND e._to == @a REMOVE e IN userAppRelation",
+                                        {"u": f"users/{w.sid('ext-own-live')}", "a": f"apps/{w.sid(APP)}"})
+    assert await _visible(w, uid, ["r-own-live"]) == set()      # the team's grant alone does not open the App
+
+
+async def test_a_team_write_queued_behind_the_sweep_keeps_the_added_member_s_membership(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A team write runs outside a sync (create_team, update_team): no membership step follows it. ext-own-gone's membership was marked by the
+    first pass (no grant then). The sweep removes it and stays open; a team write that makes ext-own-gone a member of q-team (granted
+    r-own-live of the App) waits for the org's lock the sweep holds (Neo4j) or conflicts with it and runs again (ArangoDB). The write read the
+    membership before its statement, so once it holds the lock it makes it again: the membership is there when the team write commits, with no
+    later ensure_app_membership (Cursor's form of the queued writer, for the team path)."""
+    from app.connectors.core.base.data_store import graph_data_store
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    w, g = world, world.graph
+    monkeypatch.setattr(graph_data_store, "_retry_delay", lambda _attempt: 0.3)
+    org_node = _node("Organization", w.org, with_org=False, name="Org", accountType="enterprise", isActive=True)
+    team = _node("Teams", "q-team", name="q team")
+    w.nodes.append(team)
+    rid = granting = None
+    try:
+        assert await g.batch_upsert_nodes([org_node["props"]], collection="organizations")
+        assert await g.batch_upsert_nodes([{**team["props"], "id": w.sid("q-team"), "orgId": w.org}], collection="teams")
+        assert await g.batch_create_edges([{"from_id": w.sid("q-team"), "from_collection": "teams", "to_id": w.sid("r-own-live"), "to_collection": "records",
+                                            "type": "TEAM", "role": "READER", "createdAtTimestamp": TS}], collection="permission")
+        rid = await g.begin_transaction(["users", "records", "apps", "person"], ["apps", "organizations", "userAppRelation", "person"])
+        await g.reap_stale_external_app_relations(w.sid(APP), transaction=rid)      # the sweep: ext-own-gone's membership removed, not committed
+
+        async def add_member(tx_store: Any) -> None:  # noqa: ANN401
+            assert await tx_store.batch_create_edges([{"from_id": w.sid("ext-own-gone"), "from_collection": "users", "to_id": w.sid("q-team"),
+                                                       "to_collection": "teams", "type": "USER", "role": "READER", "createdAtTimestamp": TS}],
+                                                     "permission")
+        granting = asyncio.create_task(GraphDataStore(logging.getLogger("live-group-it"), g).execute_idempotent_in_transaction(add_member, explicit=True))
+        if hasattr(g, "client"):
+            await _until_it_meets(g, granting)
+            assert not granting.done()
+        else:
+            await asyncio.sleep(0.2)      # the first attempt conflicts at once with the sweep's write of the org's document
+        await g.commit_transaction(rid)
+        rid = None
+        await asyncio.wait_for(granting, 20)
+        assert (await _edges_to_app(w)).get("ext-own-gone") is True
+    finally:
+        if granting is not None and not granting.done():
+            granting.cancel()
+            with contextlib.suppress(BaseException):
+                await granting
+        if rid is not None:
+            with contextlib.suppress(Exception):
+                await g.rollback_transaction(rid)
+        if hasattr(g, "client"):
+            await g.client.execute_query("MATCH (o:Organization {id: $o}) DETACH DELETE o", parameters={"o": w.org})
+        else:
+            await g.http_client.execute_aql("FOR d IN organizations FILTER d._key == @o REMOVE d IN organizations", {"o": w.org})

@@ -9634,6 +9634,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                              FOR a IN {apps} FILTER a._key == k UPDATE a WITH {{}} IN {apps} RETURN NEW._key)""", {
             "lock_targets": [{"c": c, "k": k} for c, k in targets], "lock_held": sorted(lock_held or ())}
 
+    async def external_memberships_kept(self, memberships: list[tuple[str, str, str]], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        if not memberships:
+            return []
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR row IN @rows
+                LET pid = CONCAT(row.c, "/", row.p)
+                LET app_key = row.a
+                FILTER {self._external_grant_exists_aql("pid", "app_key")}
+                RETURN row
+            """,
+            bind_vars={"rows": [{"c": c, "p": p, "a": a} for c, p, a in memberships]}, txn_id=transaction,
+        )
+        return sorted((r["c"], r["p"], r["a"]) for r in rows or [])
+
     async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
         if not record_ids:
             return 0
@@ -9717,6 +9732,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """Touch the flagged (external-collaborator) app memberships the grants ``(holder
         collection, holder, target collection, target)`` would keep, as
@@ -9745,14 +9762,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN u._key)
                             : [])
             ))
-            FOR k IN keys
-                UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar}
-                RETURN {{ principal: NEW._from, app: NEW._to }}
+            {f"FOR k IN keys UPDATE k WITH {{ updatedAtTimestamp: @now }} IN {uar} RETURN {{ principal: NEW._from, app: NEW._to }}" if lock else
+             f"FOR k IN keys LET u = DOCUMENT({uar}, k) RETURN {{ principal: u._from, app: u._to }}"}
             """,
             bind_vars={"grants": [{"hc": hc, "hi": hi, "tc": tc, "ti": ti} for hc, hi, tc, ti in grants],
                        "record_colls": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
                        "people_colls": [CollectionNames.USERS.value, CollectionNames.PEOPLE.value],
-                       "now": get_epoch_timestamp_in_ms()},
+                       **({"now": get_epoch_timestamp_in_ms()} if lock else {})},
             txn_id=transaction,
         )
         return sorted({(*r["principal"].split("/", 1), r["app"].split("/", 1)[1]) for r in rows or []})
@@ -11891,8 +11907,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "createdAtTimestamp": ts,
                     "updatedAtTimestamp": ts,
                 }
-                await self.batch_create_edges(
-                    [permission_edge], CollectionNames.PERMISSION.value
+                await self.batch_create_edges(      # a team membership: under the org's lock
+                    [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
                 )
                 self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
@@ -11976,8 +11992,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
-            await self.batch_create_edges(
-                [permission_edge], CollectionNames.PERMISSION.value
+            await self.batch_create_edges(      # a team membership: under the org's lock
+                [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
             )
             self.logger.debug(f"Added user {user_key} to All team with role {role}")
 

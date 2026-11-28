@@ -629,7 +629,7 @@ class IdentityMixin(PgBase):
             org, principal_collection, principal_id, connector_id, _j(props)), transaction, write=True)      # the write clears a reaper's mark: still wanted
 
     async def lock_external_app_memberships(self, grants: list[tuple[str, str, str, str]],
-                                            transaction: str | None = None) -> list[tuple[str, str, str]]:
+                                            transaction: str | None = None, *, lock: bool = True) -> list[tuple[str, str, str]]:
         """Row-locks, until the transaction ends, the flagged (external-collaborator) app memberships that the grants ``(holder collection, holder,
         target collection, target)`` would keep: the lock the reaper takes before it decides (``reap_stale_external_app_relations``). Returns them as
         ``(principal collection, principal, app)``; nothing is locked or written for a principal without one."""
@@ -647,11 +647,33 @@ class IdentityMixin(PgBase):
                   JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = f.from_coll AND m.from_id = f.from_id
                     AND m.to_coll = a.hc AND m.to_id = a.hi AND m.doc->>'type' = 'USER'
                   WHERE a.hc IN ('groups', 'roles', 'teams')
-                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams'))
-            SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
-            WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
-            ORDER BY 1, 2, 3 FOR UPDATE OF u""", org, *(list(c) for c in cols)), transaction, write=True)
+                UNION SELECT g.hc, g.hi, NULL FROM g WHERE g.hc IN ('users', 'person') AND g.tc IN ('groups', 'roles', 'teams')),
+              locked AS (SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+                WHERE $6::boolean AND u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true'
+                ORDER BY 1, 2, 3 FOR UPDATE OF u),
+              seen AS (SELECT u.from_coll, u.from_id, u.to_id FROM graph.edges u JOIN k ON u.from_coll = k.c AND u.from_id = k.i AND (k.app IS NULL OR u.to_id = k.app)
+                WHERE NOT $6::boolean AND u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.doc->>'isExternalUser' = 'true')
+            SELECT * FROM locked UNION ALL SELECT * FROM seen""", org, *(list(c) for c in cols), lock), transaction, write=True)
         return sorted({(r["from_coll"], r["from_id"], r["to_id"]) for r in rows})
+
+    async def external_memberships_kept(self, memberships: list[tuple[str, str, str]], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        org = current_org_id()
+        if not memberships:
+            return []
+        cols = list(zip(*memberships, strict=True))
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.external_memberships_kept */ SELECT x.pc, x.pid, x.app
+            FROM unnest($2::text[], $3::text[], $4::text[]) AS x(pc, pid, app)
+            WHERE EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                          WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = x.pc AND g.from_id = x.pid AND g.doc->>'type' = 'USER'
+                            AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = x.app AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+               OR EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
+                            AND g.to_coll IN ('records', 'recordGroups')
+                          JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                          JOIN graph.nodes mg ON mg.org_id = m.org_id AND mg.coll = m.to_coll AND mg.id = m.to_id
+                          WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = x.pc AND m.from_id = x.pid AND m.doc->>'type' = 'USER'
+                            AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = x.app AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+            ORDER BY 1, 2, 3""", org, *(list(c) for c in cols)), transaction, write=True)
+        return [(r["pc"], r["pid"], r["app"]) for r in rows]
 
     async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
         org = current_org_id()
@@ -1105,7 +1127,7 @@ class IdentityMixin(PgBase):
             edges.append({"from_id": key, "from_collection": "users", "to_id": team_id, "to_collection": "teams", "type": "USER", "role": role,
                           "createdAtTimestamp": now, "updatedAtTimestamp": now})
         if edges:
-            await self.batch_create_edges(edges, "permission", tid)
+            await self.batch_create_edges(edges, "permission", tid, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in edges])      # a team membership: under the org's lock
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         """Adds the user to the org's "All" team (made when missing): OWNER if nobody is in it, else READER. Idempotent. A user who is not in the graph is not added."""

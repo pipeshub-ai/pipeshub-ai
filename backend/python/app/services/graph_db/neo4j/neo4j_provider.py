@@ -11274,8 +11274,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "createdAtTimestamp": ts,
                     "updatedAtTimestamp": ts,
                 }
-                await self.batch_create_edges(
-                    [permission_edge], CollectionNames.PERMISSION.value
+                await self.batch_create_edges(      # a team membership: under the org's lock
+                    [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
                 )
                 self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
@@ -11365,8 +11365,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "createdAtTimestamp": ts,
                 "updatedAtTimestamp": ts,
             }
-            await self.batch_create_edges(
-                [permission_edge], CollectionNames.PERMISSION.value
+            await self.batch_create_edges(      # a team membership: under the org's lock
+                [permission_edge], CollectionNames.PERMISSION.value, lock_grants=[(e["from_collection"], e["from_id"], e["to_collection"], e["to_id"]) for e in [permission_edge]]
             )
             self.logger.debug(f"Added user {user_key} to All team with role {role}")
 
@@ -19331,6 +19331,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN collect(held.id) AS lock_new
                 }}""", {"lock_held": sorted(lock_held or ()), **{f"lock_apps_{i}": by_label[label] for i, label in enumerate(sorted(by_label))}}
 
+    async def external_memberships_kept(self, memberships: list[tuple[str, str, str]], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        if not memberships:
+            return []
+        app_label = collection_to_label(CollectionNames.APPS.value)
+        kept: list[tuple[str, str, str]] = []
+        for coll in sorted({c for c, _, _ in memberships}):
+            rows = await self.client.execute_query(
+                f"""
+                UNWIND $rows AS row
+                MATCH (principal:{collection_to_label(coll)} {{id: row.p}})
+                MATCH (app:{app_label} {{id: row.a}})
+                WITH row, principal, app WHERE {self._external_grant_exists_cypher("principal", "app")}
+                RETURN row.p AS p, row.a AS a
+                """,
+                parameters={"rows": [{"p": p, "a": a} for c, p, a in memberships if c == coll]}, txn_id=transaction,
+            )
+            kept += [(coll, r["p"], r["a"]) for r in rows or []]
+        return sorted(kept)
+
     async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
         if not record_ids:
             return 0
@@ -19403,6 +19422,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """Write-lock, until the transaction ends, the flagged (external-collaborator) app
         memberships the grants ``(holder collection, holder, target collection, target)``
@@ -19436,11 +19457,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $rows AS row
                 {match}
                 WITH DISTINCT p, r, app WHERE r.isExternalUser = true
-                SET r.{_MATCH_LOCK} = true
-                REMOVE r.{_MATCH_LOCK}
+                FOREACH (_ IN CASE WHEN $lock THEN [1] ELSE [] END | SET r.{_MATCH_LOCK} = true REMOVE r.{_MATCH_LOCK})
                 RETURN p.id AS id, labels(p) AS labels, app.id AS app
                 """,
-                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)]},
+                parameters={"rows": [{"h": h, "t": t} for h, t in sorted(pairs)], "lock": lock},
                 txn_id=transaction,
             )
             for row in rows or []:

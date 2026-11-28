@@ -392,6 +392,7 @@ class TestAbstractMethodInventory:
         "lock_external_app_memberships",
         "lock_grant_apps",
         "stash_external_memberships",
+        "external_memberships_kept",
         "restore_external_memberships",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",

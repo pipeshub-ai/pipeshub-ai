@@ -753,7 +753,7 @@ class _TeamGraph:
     async def find_team_by_name(self, org_id: str, name: str, exclude_team_id: str | None = None) -> None:
         return None
 
-    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None) -> list:
+    async def lock_external_app_memberships(self, grants: list, transaction: str | None = None, *, lock: bool = True) -> list:
         self._statement()      # a statement like any other: it can be the one that conflicts
         return []
 
@@ -949,7 +949,7 @@ class TestUpdateTeam:
         assert gp.update_node.await_args.args[2]["name"] == "Renamed"
         assert gp.get_team_with_users.await_args.kwargs["is_org_admin"] is True
         # with no role of their own to keep, the admin can add themselves
-        (edges, _), _ = gp.batch_create_edges.call_args
+        edges = gp.batch_create_edges.call_args.args[0]      # through the store: the edges, then keywords
         assert [e["from_id"] for e in edges] == ["user-key-1"]
 
     @pytest.mark.asyncio
@@ -1409,6 +1409,9 @@ class _TeamUpdateGraph:
         for e in edges:
             self.perms[e["from_id"]] = e["role"]
         return True
+
+    async def lock_external_app_memberships(self, grants: list, transaction=None, **_: object) -> list:
+        return []      # the added members hold no flagged membership here: the team write's read finds none
 
 
 _OWNER_AND_READERS = {"user-1": "OWNER", "c": "READER", "d": "READER"}

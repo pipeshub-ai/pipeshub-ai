@@ -4536,10 +4536,12 @@ class IGraphDBProvider(ABC):
         self,
         grants: list[tuple[str, str, str, str]],
         transaction: str | None = None,
+        *,
+        lock: bool = True,
     ) -> list[tuple[str, str, str]]:
         """
         Hold, until the transaction ends, the flagged (``isExternalUser``) app memberships
-        that the grants would keep: the lock ``reap_stale_external_app_relations`` takes
+        that the grants would keep (with ``lock=False``, only read them): the lock ``reap_stale_external_app_relations`` takes
         before it decides. A grant writer calls it before writing the grants, so a reaper
         either waits for them to commit and sees them, or decided before they existed.
 
@@ -4556,6 +4558,11 @@ class IGraphDBProvider(ABC):
             The memberships held, as ``(principal collection, principal, app)``, sorted.
         """
         pass
+
+    @abstractmethod
+    async def external_memberships_kept(self, memberships: list[tuple[str, str, str]], transaction: str | None = None) -> list[tuple[str, str, str]]:
+        """Of the flagged memberships (principal collection, principal, app), those a grant chain keeps, as the reaper decides it: the principal's
+        USER grant on a live record or record group of the app, or its USER membership of a group, role or team holding one."""
 
     @abstractmethod
     async def stash_external_memberships(self, record_ids: list[str], transaction: str | None = None) -> int:
