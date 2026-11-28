@@ -66,13 +66,28 @@ export function ShareableRow({
   onRoleDropdownOpenChange,
 }: ShareableRowProps) {
   const { t } = useTranslation();
+  // A suggestion the person picks: a checkbox for the keyboard and screen readers, named by its content.
+  const selectable = showRadio && onToggle !== undefined;
   return (
     <Flex
       align="center"
       gap="3"
+      {...(selectable && {
+        role: 'checkbox',
+        'aria-checked': isSelected,
+        tabIndex: 0,
+        className: 'focus-ring-inset',
+        onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+          if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            onToggle();
+          }
+        },
+      })}
       style={{
         padding: '6px 0',
         minHeight: '40px',
+        borderRadius: 'var(--radius-2)',
         cursor: showRadio ? 'pointer' : 'default',
       }}
       onClick={showRadio ? onToggle : undefined}
@@ -136,6 +151,7 @@ export function ShareableRow({
       {/* Right side: radio / role dropdown / owner label / invite */}
       {showRadio && (
         <Box
+          aria-hidden="true"
           style={{
             width: 16,
             height: 16,
@@ -165,6 +181,7 @@ export function ShareableRow({
           role={role}
           onRoleChange={onRoleChange}
           onRemove={onRemove}
+          memberName={name}
           isTeam={type === 'team' && !teamHasRoles}
           noRolesInfo={noRolesInfo}
           roles={roleOptions?.roles}
@@ -180,9 +197,15 @@ export function ShareableRow({
       )}
 
       {showInvite && (
-        <Text
-          size="2"
+        <button
+          type="button"
+          className="focus-ring-inset"
           style={{
+            padding: 0,
+            border: 'none',
+            borderRadius: 'var(--radius-1)',
+            background: 'none',
+            font: 'inherit',
             color: 'var(--accent-11)',
             cursor: 'pointer',
             flexShrink: 0,
@@ -192,8 +215,8 @@ export function ShareableRow({
             onInvite?.();
           }}
         >
-          {t('shareSidebar.invite')}
-        </Text>
+          <Text size="2">{t('shareSidebar.invite')}</Text>
+        </button>
       )}
     </Flex>
   );

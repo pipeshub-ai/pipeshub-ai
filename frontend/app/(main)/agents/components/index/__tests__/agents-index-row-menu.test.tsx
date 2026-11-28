@@ -72,7 +72,7 @@ function page(agents: AgentListRecord[]) {
   };
 }
 
-const rowOf = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+const rowOf = (name: string) => screen.getByText(name).closest('[data-testid="agent-index-row"]') as HTMLElement;
 
 async function renderIndex() {
   renderInTheme(<AgentsIndex />);

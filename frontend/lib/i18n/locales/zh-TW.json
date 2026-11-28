@@ -7498,6 +7498,7 @@
     "removeConfirmTitle": "移除存取權？",
     "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。",
     "removeSelection": "移除 {{name}}",
+    "roleOf": "{{role}}，{{name}}",
     "peopleCanSee_other": "{{count}} 人可以查看此對話",
     "loadingPeople": "正在載入人員…"
   },

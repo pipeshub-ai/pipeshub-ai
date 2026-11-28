@@ -7550,6 +7550,7 @@
     "removeConfirmTitle": "पहुँच हटाएँ?",
     "removeConfirmDescription": "{{name}} की पहुँच तुरंत हट जाएगी। आप बाद में फिर से साझा कर सकते हैं।",
     "removeSelection": "{{name}} को हटाएँ",
+    "roleOf": "{{role}}, {{name}}",
     "peopleCanSee_one": "{{count}} व्यक्ति इस चैट को देख सकता है",
     "peopleCanSee_other": "{{count}} लोग इस चैट को देख सकते हैं",
     "loadingPeople": "लोग लोड हो रहे हैं…"

@@ -7550,6 +7550,7 @@
     "removeConfirmTitle": "Zugriff entfernen?",
     "removeConfirmDescription": "{{name}} verliert sofort den Zugriff. Sie können später erneut teilen.",
     "removeSelection": "{{name}} entfernen",
+    "roleOf": "{{role}}, {{name}}",
     "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
     "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen",
     "loadingPeople": "Personen werden geladen…"

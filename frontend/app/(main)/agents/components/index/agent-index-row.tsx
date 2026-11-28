@@ -1,6 +1,6 @@
 'use client';
 
-import type { CSSProperties, KeyboardEvent, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 import { Box, Flex, IconButton, Text } from '@radix-ui/themes';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
@@ -34,6 +34,20 @@ const CELL: CSSProperties = {
   minWidth: 0,
 };
 const CLIP: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' };
+/** The name as a button that looks like the text it holds: the row draws the hover, the class the focus ring. */
+const NAME_BUTTON: CSSProperties = {
+  display: 'flex',
+  minWidth: 0,
+  padding: 0,
+  margin: 0,
+  border: 'none',
+  borderRadius: 'var(--radius-2)',
+  background: 'none',
+  color: 'inherit',
+  font: 'inherit',
+  textAlign: 'left',
+  cursor: 'pointer',
+};
 
 interface AgentIndexRowProps {
   agent: AgentListRecord;
@@ -43,8 +57,9 @@ interface AgentIndexRowProps {
 }
 
 /**
- * One agent in the index. The whole row opens the agent's chat, as its sidebar row does, and it
- * holds its own ⋯ menu, so it is a role="button" grid row rather than a <button>.
+ * One agent in the index. A click anywhere on the row opens the agent's chat, as its sidebar row does. For the
+ * keyboard and screen readers the agent's name is the control that opens it, and the ⋯ menu is the one beside it:
+ * neither holds the other, so the row itself is no control.
  */
 export function AgentIndexRow({ agent, owner, onDeleted }: AgentIndexRowProps) {
   const router = useRouter();
@@ -68,23 +83,12 @@ export function AgentIndexRow({ agent, owner, onDeleted }: AgentIndexRowProps) {
     open();
   };
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    // Keys pressed on the ⋯ or inside its menu belong to them.
-    if (e.target !== e.currentTarget) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      open();
-    }
-  };
-
   return (
     <>
       <Box
-        role="button"
-        tabIndex={0}
+        data-testid="agent-index-row"
         className="sidebar-row-hoverable"
         onClick={handleClick}
-        onKeyDown={handleKeyDown}
         style={{
           display: 'grid',
           gridTemplateColumns: agentIndexGrid(isMobile).columns,
@@ -100,28 +104,31 @@ export function AgentIndexRow({ agent, owner, onDeleted }: AgentIndexRowProps) {
           <span aria-hidden="true" style={{ display: 'inline-flex', flexShrink: 0 }}>
             <MaterialIcon name="smart_toy" size={20} color="var(--text-tertiary)" />
           </span>
-          {/* Two lines tall with or without a description, so every row is the same height. */}
-          <Flex
-            direction="column"
-            justify="center"
-            style={{
-              minWidth: 0,
-              alignItems: 'flex-start',
-              rowGap: 'calc(var(--space-1) / 2)',
-              minHeight: 'calc(var(--line-height-2) + var(--line-height-1) + var(--space-1) / 2)',
-              overflow: 'hidden',
-            }}
-          >
-            <Text size="2" weight="medium" style={{ ...CLIP, color: 'var(--text-primary)' }}>
-              {name}
-            </Text>
-            {detail && (
-              // The column stops at 640px, so a long description can be read in full on hover.
-              <Text size="1" title={detail} style={{ ...CLIP, color: 'var(--text-secondary)' }}>
-                {detail}
+          {/* The name opens the agent: the row's control for the keyboard and screen readers. */}
+          <button type="button" className="focus-ring-inset" onClick={open} style={NAME_BUTTON}>
+            {/* Two lines tall with or without a description, so every row is the same height. */}
+            <Flex
+              direction="column"
+              justify="center"
+              style={{
+                minWidth: 0,
+                alignItems: 'flex-start',
+                rowGap: 'calc(var(--space-1) / 2)',
+                minHeight: 'calc(var(--line-height-2) + var(--line-height-1) + var(--space-1) / 2)',
+                overflow: 'hidden',
+              }}
+            >
+              <Text size="2" weight="medium" style={{ ...CLIP, color: 'var(--text-primary)' }}>
+                {name}
               </Text>
-            )}
-          </Flex>
+              {detail && (
+                // The column stops at 640px, so a long description can be read in full on hover.
+                <Text size="1" title={detail} style={{ ...CLIP, color: 'var(--text-secondary)' }}>
+                  {detail}
+                </Text>
+              )}
+            </Flex>
+          </button>
         </Flex>
 
         {/* Facts about the agent, all in the secondary role: "You" reads like anyone else's name. */}

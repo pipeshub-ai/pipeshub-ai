@@ -1,3 +1,4 @@
+import axe from 'axe-core';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
@@ -135,7 +136,7 @@ describe('the Agents index', () => {
     expect(within(header()).queryByText('120')).toBeNull();
     expect(header().querySelector('.rt-Badge')).toBeNull();
     expect(screen.getByText('Showing 1-50 of 120')).toBeTruthy();
-    const rowOf = (name: string) => screen.getByText(name).closest('[role="button"]') as HTMLElement;
+    const rowOf = (name: string) => screen.getByText(name).closest('[data-testid="agent-index-row"]') as HTMLElement;
     expect(within(rowOf('Agent a1')).getByText('You')).toBeTruthy();
     expect(within(rowOf('Agent a2')).getByText('Bob Builder')).toBeTruthy();
     expect(rowOf('Agent a3').textContent).not.toContain('You');
@@ -219,7 +220,7 @@ describe('the Agents index', () => {
   it('leads each row with the agent glyph, 12px before its name and description, hidden from screen readers', async () => {
     agentsApi.getAgents.mockResolvedValue(page([agent('a1', ME, { description: 'Answers travel questions' })]));
     renderInTheme(<AgentsIndex />);
-    const row = (await screen.findByText('Agent a1')).closest('[role="button"]') as HTMLElement;
+    const row = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
 
     const cell = row.firstElementChild as HTMLElement;
     const glyph = cell.querySelector('[data-icon="smart_toy"]') as HTMLElement;
@@ -245,10 +246,31 @@ describe('the Agents index', () => {
     expect(screen.getByText('Made before handles')).toBeTruthy();
   });
 
+  it("opens the agent's chat by keyboard from its name, a control beside the row's menu, never holding it", async () => {
+    agentsApi.getAgents.mockResolvedValue(page([agent('a1', ME, { description: 'Answers travel questions' })]));
+    renderInTheme(<AgentsIndex />);
+    const row = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
+
+    // The row is no control of its own: the name opens the agent, the menu is its sibling.
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.getAttribute('tabindex')).toBeNull();
+    const name = within(row).getByRole('button', { name: /^Agent a1/ });
+    const menu = within(row).getByRole('button', { name: 'Actions for Agent a1' });
+    expect(name.contains(menu)).toBe(false);
+    expect(menu.closest('button, [role="button"]')).toBe(menu);
+    name.focus();
+    expect(document.activeElement).toBe(name);
+    fireEvent.click(name);
+    expect(router.push).toHaveBeenCalledWith('/chat/?agentId=a1');
+
+    const result = await axe.run(document.body, { runOnly: ['nested-interactive', 'button-name'] });
+    expect(result.violations.map((v) => v.id)).toEqual([]);
+  });
+
   it("opens the agent's chat from the row, but not from its menu", async () => {
     agentsApi.getAgents.mockResolvedValue(page([agent('a1', ME)]));
     renderInTheme(<AgentsIndex />);
-    const row = (await screen.findByText('Agent a1')).closest('[role="button"]') as HTMLElement;
+    const row = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
 
     const trigger = within(row).getByRole('button', { name: 'Actions for Agent a1' });
     fireEvent.click(trigger);
@@ -295,7 +317,7 @@ describe('the Agents index', () => {
   it('stops the Agent column at 640px so the owner and date stay beside the name, and drops the date on phones', async () => {
     agentsApi.getAgents.mockResolvedValue(page([agent('a1', ME, { updatedAtTimestamp: Date.now() })]));
     const wide = renderInTheme(<AgentsIndex />);
-    const row = (await screen.findByText('Agent a1')).closest('[role="button"]') as HTMLElement;
+    const row = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
     const columns = 'minmax(160px, calc(var(--space-9) * 10)) 110px 96px minmax(var(--space-7), 1fr)';
     expect(row.style.gridTemplateColumns).toBe(columns);
     expect((screen.getByText('Updated').parentElement!.parentElement as HTMLElement).style.gridTemplateColumns).toBe(columns);
@@ -305,7 +327,7 @@ describe('the Agents index', () => {
 
     layout.drawer = true;
     renderInTheme(<AgentsIndex />);
-    const phoneRow = (await screen.findByText('Agent a1')).closest('[role="button"]') as HTMLElement;
+    const phoneRow = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
     expect(phoneRow.style.gridTemplateColumns).toBe('minmax(160px, 1fr) 110px var(--space-7)');
     expect(phoneRow.children).toHaveLength(3);
     expect(screen.queryByText('Updated')).toBeNull();
@@ -316,7 +338,7 @@ describe('the Agents index', () => {
     permissions.denied.add('deleteAgent');
     agentsApi.getAgents.mockResolvedValue(page([agent('a1', ME)]));
     renderInTheme(<AgentsIndex />);
-    const row = (await screen.findByText('Agent a1')).closest('[role="button"]') as HTMLElement;
+    const row = (await screen.findByText('Agent a1')).closest('[data-testid="agent-index-row"]') as HTMLElement;
 
     await openMenu(within(row).getByRole('button', { name: 'Actions for Agent a1' }));
     expect((await screen.findByRole('menuitem', { name: /Edit agent/ })).getAttribute('aria-disabled')).toBe('true');

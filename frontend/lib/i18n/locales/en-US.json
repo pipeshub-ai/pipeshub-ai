@@ -7614,6 +7614,7 @@
     "removeConfirmTitle": "Remove access?",
     "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later.",
     "removeSelection": "Remove {{name}}",
+    "roleOf": "{{role}}, {{name}}",
     "peopleCanSee_one": "{{count}} person can see this chat",
     "peopleCanSee_other": "{{count}} people can see this chat",
     "loadingPeople": "Loading people…"

@@ -382,6 +382,8 @@ export function ShareSidebar({
 
   // Create-team form state (when currentView === 'create-team')
   const createFormRef = useRef<CreateTeamFormHandle>(null);
+  /** What had focus when the drawer opened (its page's Share button, say), to give it back on close. */
+  const openerRef = useRef<HTMLElement | null>(null);
   const [createFormState, setCreateFormState] = useState<CreateTeamFormState>({
     isValid: false,
     isSubmitting: false,
@@ -390,6 +392,18 @@ export function ShareSidebar({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
+        // The drawer opens from its page, not from a trigger of its own: it gives focus back to what had it then.
+        onOpenAutoFocus={() => {
+          openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }}
+        onCloseAutoFocus={(e) => {
+          const opener = openerRef.current;
+          openerRef.current = null;
+          if (opener?.isConnected) {
+            e.preventDefault();
+            opener.focus();
+          }
+        }}
         onPointerDownOutside={(e) => {
           // Prevent dialog from closing while a portaled role dropdown is open.
           if (isRoleDropdownOpen) {

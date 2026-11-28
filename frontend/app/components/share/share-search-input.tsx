@@ -110,15 +110,26 @@ export function ShareSearchInput({
             >
               {selection.email || selection.name}
             </Text>
-            <Box
-              style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+            <button
+              type="button"
+              className="focus-ring-inset"
+              aria-label={t('shareSidebar.removeSelection', { name: selection.email || selection.name })}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                padding: 0,
+                border: 'none',
+                borderRadius: 'var(--radius-1)',
+                background: 'none',
+                cursor: 'pointer',
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 onRemoveSelection(selection.id);
               }}
             >
               <MaterialIcon name="close" size={14} color={selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)'} />
-            </Box>
+            </button>
           </Flex>
         ))}
 

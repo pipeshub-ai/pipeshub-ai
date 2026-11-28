@@ -7498,6 +7498,7 @@
     "removeConfirmTitle": "移除访问权限？",
     "removeConfirmDescription": "{{name}} 将立即失去访问权限。您之后可以再次共享。",
     "removeSelection": "移除 {{name}}",
+    "roleOf": "{{role}}，{{name}}",
     "peopleCanSee_other": "{{count}} 人可以查看此聊天",
     "loadingPeople": "正在加载人员…"
   },

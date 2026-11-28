@@ -7752,6 +7752,7 @@
     "removeConfirmTitle": "Odebrat přístup?",
     "removeConfirmDescription": "{{name}} okamžitě ztratí přístup. Později můžete znovu sdílet.",
     "removeSelection": "Odebrat {{name}}",
+    "roleOf": "{{role}}, {{name}}",
     "peopleCanSee_one": "Tento chat vidí {{count}} osoba",
     "peopleCanSee_few": "Tento chat vidí {{count}} osoby",
     "peopleCanSee_many": "Tento chat vidí {{count}} osoby",

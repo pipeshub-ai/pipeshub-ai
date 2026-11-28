@@ -7651,6 +7651,7 @@
     "removeConfirmTitle": "¿Quitar el acceso?",
     "removeConfirmDescription": "{{name}} perderá el acceso de inmediato. Puedes volver a compartir más tarde.",
     "removeSelection": "Quitar a {{name}}",
+    "roleOf": "{{role}}, {{name}}",
     "peopleCanSee_one": "{{count}} persona puede ver este chat",
     "peopleCanSee_many": "{{count}} de personas pueden ver este chat",
     "peopleCanSee_other": "{{count}} personas pueden ver este chat",

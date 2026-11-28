@@ -33,6 +33,8 @@ interface RoleDropdownMenuProps {
   labels?: Record<ShareRole, { label: string; description: string }>;
   /** Roles offered in the menu (default: owner, editor, viewer). */
   roles?: ShareRole[];
+  /** Whose level the menu sets, when it is a member's: its button says so, so two members' buttons differ. */
+  memberName?: string;
 }
 
 const SELECTABLE_ROLES: ShareRole[] = ['OWNER', 'WRITER', 'READER'];
@@ -43,7 +45,7 @@ const MENU_WIDTH = 292;
  * Share dialog: it is its own focus scope and dismiss layer, so focus moves into it
  * on open, Arrow keys and Enter work, and Escape closes only the menu.
  */
-export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, onOpenChange, labels, roles = SELECTABLE_ROLES }: RoleDropdownMenuProps) {
+export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false, noRolesInfo, onOpenChange, labels, roles = SELECTABLE_ROLES, memberName }: RoleDropdownMenuProps) {
   const { t } = useTranslation();
   const effectiveLabels = labels ?? getShareRoleLabels(t);
   const isNoRoles = isTeam || !!noRolesInfo;
@@ -59,6 +61,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
       <DropdownMenu.Trigger>
         <button
           type="button"
+          {...(memberName && { 'aria-label': t('shareSidebar.roleOf', { role: triggerLabel, name: memberName }) })}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
