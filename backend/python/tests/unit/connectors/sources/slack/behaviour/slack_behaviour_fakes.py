@@ -418,6 +418,9 @@ class FakeSlackStore:
     are implemented.
     """
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the licence gate has its own tests
+
     def __init__(
         self, org_id: str = "org-1", creator_email: Optional[str] = None, authenticator_email: str | None = None,
     ) -> None:

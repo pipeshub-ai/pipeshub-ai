@@ -17,7 +17,6 @@ from msgraph.generated.models.group import Group  # type: ignore
 from msgraph.generated.models.mail_folder import MailFolder  # type: ignore
 from msgraph.generated.models.message import Message  # type: ignore
 from msgraph.generated.models.post import Post  # type: ignore
-from msgraph.generated.models.user import User  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -132,6 +131,7 @@ from app.connectors.sources.microsoft.common.outlook_folders import (
     unsynced_attachment_kind,
 )
 from app.connectors.sources.microsoft.common.sign_in_errors import describe_sign_in_error
+from app.ee.permission_sync.outlook_team import OutlookPermissionsMixin
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -314,7 +314,7 @@ class OutlookUserListing(UserListing):
         ))
     )\
     .build_decorator()
-class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
+class OutlookConnector(OutlookPermissionsMixin, OutlookFolderInventoryMixin, BaseConnector):
     """Microsoft Outlook connector for syncing emails and attachments."""
 
     FOLDER_FILTER_KEYS = (SyncFilterKey.FOLDERS, SyncFilterKey.CUSTOM_FOLDERS)
@@ -949,13 +949,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                     # Add group mailbox RecordGroup to batch with group permission
                     if group_record_group:
-                        # Create group-level permission for the Microsoft 365 group
-                        group_permission = Permission(
-                            external_id=group_id,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.GROUP
-                        )
-                        group_record_groups_batch.append((group_record_group, [group_permission]))
+                        group_record_groups_batch.append((group_record_group, await self._group_mailbox_grants(group_id)))
 
                     # Process batch if size reached
                     if len(user_groups_batch) >= batch_size:
@@ -1086,71 +1080,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         except Exception as e:
             self.logger.error(f"Error getting Microsoft 365 groups: {e}", exc_info=True)
             raise
-
-    async def _get_group_members(self, group_id: str) -> list[User]:
-        """Get members of a specific group with pagination."""
-        try:
-            if not self.external_users_client:
-                raise Exception("External Users Groups client not initialized")
-
-            all_members = []
-            next_url = None
-            page_num = 1
-
-            while True:
-                response = await self.external_users_client.groups_list_transitive_members(
-                    group_id=group_id,
-                    next_url=next_url,
-                    select=OutlookAPIFields.GROUP_MEMBER_SELECT_FIELDS
-                )
-
-                if not response.success:
-                    # Raise: the member list replaces every membership edge, so a partial
-                    # one would revoke the missing members' access for this run.
-                    raise Exception(f"Failed to get members page {page_num} for group {group_id}: {response.error}")
-
-                # response.data is DirectoryObjectCollectionResponse with .value containing list[User]
-                members_page = response.data.value if response.data.value else []
-                all_members.extend(members_page)
-
-                # Check for next page
-                next_url = response.data.odata_next_link if response.data.odata_next_link else None
-                if not next_url:
-                    break
-
-                page_num += 1
-
-            return all_members
-
-        except Exception as e:
-            self.logger.error(f"Error getting group members for {group_id}: {e}")
-            raise
-
-    async def _get_user_groups(self, user_id: str) -> list[Group]:
-        """Get groups that a user is a member of (cached for performance).
-
-        Returns:
-            List of Pydantic Group objects
-        """
-        try:
-            if not self.external_users_client:
-                return []
-
-            # Use the existing groups_list_member_of method
-            response = await self.external_users_client.groups_list_member_of(
-                group_id=user_id,  # Note: This method name is misleading, it actually takes user_id
-                select=OutlookAPIFields.USER_GROUP_SELECT_FIELDS
-            )
-
-            if not response.success:
-                return []
-
-            # response.data is DirectoryObjectCollectionResponse with .value containing list[Group]
-            return response.data.value if response.data.value else []
-
-        except Exception as e:
-            self.logger.error(f"Error getting user groups for {user_id}: {e}")
-            return []
 
     def _transform_group_to_record_group(self, group: Group) -> RecordGroup | None:
         """

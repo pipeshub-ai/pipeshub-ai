@@ -114,6 +114,7 @@ def connector():
 
         logger = _make_logger()
         dep = MagicMock()
+        dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
         dep.org_id = "org-1"
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
