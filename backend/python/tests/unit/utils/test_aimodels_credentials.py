@@ -363,6 +363,27 @@ async def test_health_image_probe_asks_for_a_decision_on_key_providers(monkeypat
     assert seen == [{"provider": provider, "configuration": {}}]
 
 
+@pytest.mark.asyncio
+async def test_health_image_probe_passes_the_saved_bedrock_keys() -> None:
+    from app.api.routes.health import (
+        _ImageEmbeddingSettingsError,
+        _probe_image_embedding,
+    )
+    from app.config.ai_models.providers.common_fields import (
+        AWS_ACCESS_KEY_ID,
+        AWS_SECRET_KEY,
+    )
+
+    configuration = {AWS_ACCESS_KEY_ID.name: "AKIA", AWS_SECRET_KEY.name: "s3cret", "region": "us-east-1"}
+    with patch(
+        "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
+        side_effect=RuntimeError("stop"),
+    ) as create, pytest.raises(_ImageEmbeddingSettingsError):
+        await _probe_image_embedding({"provider": "bedrock", "configuration": configuration}, "m", 8, MagicMock())
+    built = create.call_args.args[0]
+    assert (built.aws_access_key_id, built.aws_secret_access_key) == ("AKIA", "s3cret")
+
+
 @pytest.mark.parametrize(
     "path,builder",
     [
