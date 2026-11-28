@@ -11,6 +11,7 @@ import {
   AGENT_HARNESS_SESSION_RUN_SERVICE,
 } from '../../../../src/modules/agent-harness/composition'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck'
 
 describe('Enterprise Search Routes', () => {
   let container: Container
@@ -812,6 +813,22 @@ describe('Enterprise Search Routes', () => {
       const webSearchUsageRoute = routes.find((r: any) => r.path === '/web-search-usage/:provider' && r.methods.get)
       expect(webSearchUsageRoute).to.exist
       expect(webSearchUsageRoute?.stack.length ?? 0).to.be.greaterThanOrEqual(4)
+    })
+
+    // They list every agent in the org by name and creator, private ones too, for the admin's
+    // pre-delete check, so only an org admin may call them.
+    it('agent usage lookups check for an org admin before validating or proxying', () => {
+      const router = createAgentConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
+
+      for (const path of ['/model-usage/:model_key', '/web-search-usage/:provider']) {
+        const handlers = routes.find((r: any) => r.path === path && r.methods.get)?.stack.map((l: any) => l.handle) ?? []
+        const gate = handlers.indexOf(userAdminCheck)
+        expect(gate, path).to.be.greaterThan(0)
+        expect(gate, path).to.be.lessThan(handlers.length - 2)
+      }
     })
 
     it('search router should register all search CRUD operations', () => {
