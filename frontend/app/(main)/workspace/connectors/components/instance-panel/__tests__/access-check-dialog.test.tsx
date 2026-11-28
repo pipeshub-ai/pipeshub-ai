@@ -13,7 +13,18 @@ const listUsers = vi.fn();
 vi.mock('@/app/(main)/workspace/users/api', () => ({
   UsersApi: { listUsers: (...args: unknown[]) => listUsers(...args) },
 }));
+const searchNodes = vi.fn();
+vi.mock('@/knowledge-base/api', () => ({
+  KnowledgeHubApi: { searchNodes: (...args: unknown[]) => searchNodes(...args) },
+}));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+
+const hit = (id: string, name: string, parentName?: string) => ({
+  id,
+  name,
+  nodeType: 'record',
+  ...(parentName ? { parent: { id: `p-${id}`, nodeType: 'folder', name: parentName } } : {}),
+});
 
 import { AccessCheckDialog } from '../access-check-dialog';
 import { installDomShims } from '../../../__tests__/fixtures';
@@ -62,7 +73,7 @@ async function pickDana() {
 
 async function check(record = 'rec-1') {
   await pickDana();
-  fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: record } });
+  fireEvent.change(screen.getByLabelText('Record'), { target: { value: record } });
   fireEvent.click(screen.getByRole('button', { name: 'Check' }));
 }
 
@@ -70,6 +81,7 @@ beforeEach(() => {
   installDomShims();
   listUsers.mockReset().mockResolvedValue({ users: [DANA], totalCount: 1 });
   explainAccess.mockReset();
+  searchNodes.mockReset().mockResolvedValue({ items: [] });
 });
 afterEach(() => cleanup());
 
@@ -79,12 +91,12 @@ describe('AccessCheckDialog', () => {
 
     expect(screen.getByRole('dialog', { name: "Check someone's access" })).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Person' })).toBeTruthy();
-    expect(screen.getByLabelText('Record ID').getAttribute('aria-describedby')).toBeTruthy();
+    expect(screen.getByLabelText('Record').getAttribute('aria-describedby')).toBeTruthy();
     const button = screen.getByRole('button', { name: 'Check' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     await pickDana();
     expect(button.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: '  rec-1 ' } });
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: '  rec-1 ' } });
     expect(button.disabled).toBe(false);
   });
 
@@ -184,7 +196,7 @@ describe('AccessCheckDialog', () => {
     await screen.findByRole('heading', { name: 'Dana Reyes cannot see this record.' });
     expect(screen.getByText('About record rec-1')).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: 'rec-2' } });
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'rec-2' } });
 
     expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
     expect(screen.queryByText('About record rec-1')).toBeNull();
@@ -197,7 +209,7 @@ describe('AccessCheckDialog', () => {
     await check('rec-1');
     expect(screen.getByRole('status')).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: 'rec-2' } });
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'rec-2' } });
     finish(answer());
     await settle();
 
@@ -236,7 +248,7 @@ describe('AccessCheckDialog', () => {
     );
 
     await waitFor(() => expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull());
-    expect((screen.getByLabelText('Record ID') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Record') as HTMLInputElement).value).toBe('');
 
     let finish: (a: AccessExplanation) => void = () => {};
     explainAccess.mockReturnValueOnce(new Promise<AccessExplanation>((r) => (finish = r)));
@@ -253,6 +265,91 @@ describe('AccessCheckDialog', () => {
 
     expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it("finds a record by name in this connector, checks it by its id, and names it in the result", async () => {
+    searchNodes.mockResolvedValue({
+      items: [hit('rec-7', 'Q3 plan', 'Finance'), { id: 'f-1', name: 'Q3 folder', nodeType: 'folder' }],
+    });
+    explainAccess.mockResolvedValue(answer());
+    await open();
+    await pickDana();
+
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q3' } });
+    const matches = await screen.findByRole('group', { name: 'Matching records' });
+    expect(searchNodes).toHaveBeenCalledTimes(1);
+    // Records only, asked of the server, so matching folders cannot fill the page.
+    expect(searchNodes.mock.calls[0][0]).toMatchObject({
+      q: 'Q3',
+      parent: { nodeType: 'app', id: 'conn-1' },
+      nodeTypes: 'record',
+    });
+    // Only records: a folder cannot be checked.
+    expect(matches.querySelectorAll('button').length).toBe(1);
+    expect(matches.textContent).toContain('Finance');
+
+    fireEvent.click(screen.getByRole('button', { name: /Q3 plan/ }));
+    expect((screen.getByLabelText('Record') as HTMLInputElement).value).toBe('Q3 plan');
+    expect(screen.queryByRole('group', { name: 'Matching records' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+
+    await screen.findByRole('heading', { name: 'Dana Reyes cannot see this record.' });
+    expect(explainAccess).toHaveBeenCalledWith('conn-1', 'u-dana', 'rec-7');
+    expect(screen.getByText('About record Q3 plan')).toBeTruthy();
+  });
+
+  it('checks the typed text as an id once the name is edited after a pick', async () => {
+    searchNodes.mockResolvedValue({ items: [hit('rec-7', 'Q3 plan')] });
+    explainAccess.mockResolvedValue(answer());
+    await open();
+    await pickDana();
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q3' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Q3 plan/ }));
+
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'rec-pasted' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+
+    await screen.findByRole('heading', { name: 'Dana Reyes cannot see this record.' });
+    expect(explainAccess).toHaveBeenCalledWith('conn-1', 'u-dana', 'rec-pasted');
+  });
+
+  it('says when no record matches or the search fails, and still lets a pasted id be checked', async () => {
+    await open();
+    await pickDana();
+
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'nothing' } });
+    expect(await screen.findByText('No records you can open match. You can still paste a record ID.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Check' }) as HTMLButtonElement).disabled).toBe(false);
+
+    searchNodes.mockRejectedValueOnce(new Error('down'));
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'nothing2' } });
+    expect(await screen.findByText('The search did not work. You can still paste a record ID.')).toBeTruthy();
+  });
+
+  it('drops the matches for an earlier query that arrive after the text changed', async () => {
+    let late: (v: unknown) => void = () => {};
+    searchNodes.mockImplementation(({ q }: { q: string }) =>
+      q === 'Q3' ? new Promise((resolve) => (late = resolve)) : Promise.resolve({ items: [] })
+    );
+    await open();
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q3' } });
+    await waitFor(() => expect(searchNodes).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q4' } });
+    expect(await screen.findByText('No records you can open match. You can still paste a record ID.')).toBeTruthy();
+    late({ items: [hit('rec-7', 'Q3 plan')] });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(screen.queryByRole('group', { name: 'Matching records' })).toBeNull();
+    expect(screen.getByText('No records you can open match. You can still paste a record ID.')).toBeTruthy();
+  });
+
+  it('does not search for one letter', async () => {
+    await open();
+    fireEvent.change(screen.getByLabelText('Record'), { target: { value: 'Q' } });
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(searchNodes).not.toHaveBeenCalled();
   });
 
   it('offers no link or button that opens the record, whatever the answer', async () => {

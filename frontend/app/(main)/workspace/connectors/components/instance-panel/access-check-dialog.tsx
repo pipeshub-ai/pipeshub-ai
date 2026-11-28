@@ -9,10 +9,14 @@ import { isProcessedError } from '@/lib/api/api-error';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 import type { User } from '@/app/(main)/workspace/users/types';
+import { KnowledgeHubApi } from '@/knowledge-base/api';
+import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/knowledge-base/utils';
 import { ConnectorsApi } from '../../api';
 import type { AccessExplanation, AccessExplanationCode } from '../../types';
 
 const MAX_PEOPLE = 100;
+const RECORD_SEARCH_LIMIT = 10;
+const RECORD_SEARCH_DEBOUNCE_MS = 250;
 const NEXT_STEP: Partial<Record<AccessExplanationCode, true>> = {
   not_linked: true,
   no_grant: true,
@@ -29,8 +33,17 @@ const NEXT_STEP: Partial<Record<AccessExplanationCode, true>> = {
 type Phase =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'done'; who: string; recordId: string; result: AccessExplanation }
+  | { kind: 'done'; who: string; record: string; result: AccessExplanation }
   | { kind: 'error'; reason: 'failed' | 'notFound' | 'rateLimited' };
+
+interface RecordHit {
+  id: string;
+  name: string;
+  /** The folder or group it sits in, to tell same-named records apart. */
+  where?: string;
+}
+
+type RecordSearch = { kind: 'idle' } | { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; hits: RecordHit[] };
 
 export interface AccessCheckDialogProps {
   connectorId: string;
@@ -60,7 +73,10 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
   const people: User[] | null = peopleData?.users ?? null;
   const peopleFailed = peopleError !== undefined;
   const [userId, setUserId] = useState('');
-  const [recordId, setRecordId] = useState('');
+  // What the admin typed: a name to search for, or a pasted record id.
+  const [recordQuery, setRecordQuery] = useState('');
+  const [picked, setPicked] = useState<RecordHit | null>(null);
+  const [search, setSearch] = useState<RecordSearch>({ kind: 'idle' });
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const resultHeading = useRef<HTMLHeadingElement>(null);
   // Each check and each edit of the inputs takes a new number; a response that is not for the latest one is dropped.
@@ -71,29 +87,67 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
     latest.current += 1;
     setPhase({ kind: 'idle' });
     setUserId('');
-    setRecordId('');
+    setRecordQuery('');
+    setPicked(null);
   }, [connectorId]);
+
+  // Searches this connector's records by name. It finds only what the admin can read; any other record is checked by its id.
+  useEffect(() => {
+    const q = recordQuery.trim();
+    if (picked || q.length < KB_MIN_SEARCH_QUERY_LENGTH) {
+      setSearch({ kind: 'idle' });
+      return;
+    }
+    setSearch({ kind: 'loading' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      KnowledgeHubApi.searchNodes({
+        q,
+        parent: { nodeType: 'app', id: connectorId },
+        // Records only, so folders that match the name do not fill the page.
+        nodeTypes: 'record',
+        limit: RECORD_SEARCH_LIMIT,
+        signal: controller.signal,
+      })
+        .then((res) => {
+          // A late page for an earlier query must not replace the list for the text now in the field.
+          if (controller.signal.aborted) return;
+          const hits = res.items
+            .filter((n) => n.nodeType === 'record')
+            .map((n) => ({ id: n.id, name: n.name, where: n.parent?.name }));
+          setSearch({ kind: 'ready', hits });
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setSearch({ kind: 'error' });
+        });
+    }, RECORD_SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [connectorId, picked, recordQuery]);
 
   useEffect(() => {
     if (phase.kind === 'done' || phase.kind === 'error') resultHeading.current?.focus();
   }, [phase]);
 
-  const canCheck = userId !== '' && recordId.trim() !== '' && phase.kind !== 'loading';
+  const recordId = picked?.id ?? recordQuery.trim();
+  const canCheck = userId !== '' && recordId !== '' && phase.kind !== 'loading';
 
   const check = useCallback(async () => {
     const who = people?.find((u) => u.userId === userId);
-    const asked = recordId.trim();
+    const record = picked?.name ?? recordId;
     const mine = ++latest.current;
     setPhase({ kind: 'loading' });
     try {
-      const result = await ConnectorsApi.explainAccess(connectorId, userId, asked);
-      if (mine === latest.current) setPhase({ kind: 'done', who: who ? userLabel(who) : '', recordId: asked, result });
+      const result = await ConnectorsApi.explainAccess(connectorId, userId, recordId);
+      if (mine === latest.current) setPhase({ kind: 'done', who: who ? userLabel(who) : '', record, result });
     } catch (err: unknown) {
       if (mine !== latest.current) return;
       const status = isProcessedError(err) ? err.statusCode : undefined;
       setPhase({ kind: 'error', reason: status === 404 ? 'notFound' : status === 429 ? 'rateLimited' : 'failed' });
     }
-  }, [connectorId, people, recordId, userId]);
+  }, [connectorId, people, picked, recordId, userId]);
 
   const changeInputs = (update: () => void): void => {
     latest.current += 1;
@@ -160,14 +214,68 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
               </Text>
               <TextField.Root
                 id="access-check-record"
-                value={recordId}
+                value={recordQuery}
                 maxLength={256}
+                autoComplete="off"
                 aria-describedby="access-check-record-hint"
-                onChange={(e) => changeInputs(() => setRecordId(e.target.value))}
-              />
+                onChange={(e) =>
+                  changeInputs(() => {
+                    setRecordQuery(e.target.value);
+                    setPicked(null);
+                  })
+                }
+              >
+                <TextField.Slot>
+                  <MaterialIcon name="search" size={16} />
+                </TextField.Slot>
+              </TextField.Root>
               <Text id="access-check-record-hint" size="1" color="gray">
                 {t('workspace.connectors.accessCheck.recordHint')}
               </Text>
+              {/* Always mounted, so a screen reader announces each change; not a `status`, which belongs to the check. */}
+              <Text aria-live="polite" size="1" color="gray">
+                {search.kind === 'loading'
+                  ? t('workspace.connectors.accessCheck.recordSearching')
+                  : search.kind === 'error'
+                    ? t('workspace.connectors.accessCheck.recordSearchFailed')
+                    : search.kind === 'ready' && search.hits.length === 0
+                      ? t('workspace.connectors.accessCheck.recordNoMatches')
+                      : null}
+              </Text>
+              {search.kind === 'ready' && search.hits.length > 0 ? (
+                <Flex
+                  role="group"
+                  aria-label={t('workspace.connectors.accessCheck.recordMatches')}
+                  direction="column"
+                  gap="1"
+                  style={{ maxHeight: '12rem', overflowY: 'auto' }}
+                >
+                  {search.hits.map((hit) => (
+                    <Button
+                      key={hit.id}
+                      type="button"
+                      variant="soft"
+                      color="gray"
+                      style={{ justifyContent: 'flex-start', height: 'auto', minHeight: '44px', paddingBlock: 'var(--space-1)' }}
+                      onClick={() =>
+                        changeInputs(() => {
+                          setPicked(hit);
+                          setRecordQuery(hit.name);
+                        })
+                      }
+                    >
+                      <Flex direction="column" align="start">
+                        <Text size="2">{hit.name}</Text>
+                        {hit.where ? (
+                          <Text size="1" color="gray">
+                            {hit.where}
+                          </Text>
+                        ) : null}
+                      </Flex>
+                    </Button>
+                  ))}
+                </Flex>
+              ) : null}
             </Flex>
           </Flex>
 
@@ -219,7 +327,7 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
                 </Flex>
               </Heading>
               <Text size="1" color="gray">
-                {t('workspace.connectors.accessCheck.askedAbout', { record: phase.recordId })}
+                {t('workspace.connectors.accessCheck.askedAbout', { record: phase.record })}
               </Text>
               <Text size="2">
                 {t(`workspace.connectors.accessCheck.reason.${phase.result.code}`, {
