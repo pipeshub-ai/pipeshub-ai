@@ -1,3 +1,8 @@
+# Copyright (c) 2026 PipesHub Inc.
+# Licensed under the PipesHub Enterprise License. See the LICENSE file in this
+# ee folder. Free for development, testing and evaluation. Production use needs
+# a PipesHub licence key.
+
 """Box: reading who may see what from Box.
 
 Item collaborators, Box groups with their members, and the clean-up when a collaboration is removed. The free
