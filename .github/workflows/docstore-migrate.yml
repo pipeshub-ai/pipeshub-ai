@@ -190,9 +190,9 @@ jobs:
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 29 \
                 --expect-suite 'docstore-migrate: rollback and the reverse copy=29' ;;
             switchover)
-              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 44 \
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 45 \
                 --expect-suite 'docstore-migrate: offline and online switch-over=22' \
-                --expect-suite 'docstore-migrate: follow, drain, reset and schema=22' ;;
+                --expect-suite 'docstore-migrate: follow, drain, reset and schema=23' ;;
             rest)
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" "$T/docstore-fence-junit.xml" "$T/mongo-fence-single-junit.xml" --allow "timing" --min-tests 100 \
                 --expect-suite 'docstore-migrate: identity collections=8' \

@@ -69,6 +69,22 @@ describe('identity importers: documents become rows', () => {
     expect(await refused(importOrgDocs(tx, 'other', []))).to.contain("does not import 'other'")
   })
 
+  it('org: each chosen slug is claimed in the unit that writes the rows; counter slugs and none are not', async () => {
+    const claims: unknown[][] = []
+    const { tx, writes } = capture((sql, p) => {
+      if (sql.includes('identity.copied_org_slug_claim')) claims.push(p)
+      return { rows: [{ copied_org_slug_claim: true }] }
+    })
+    const base = { domain: 'x.test', contactEmail: 'a@x.test', accountType: 'business', createdAt: T }
+    await importOrgDocs(tx, 'org', [{ ...base, _id: O, slug: 'org-abcdefghijklmnop' }, { ...base, _id: U, slug: 'org-1001' }, { ...base, _id: I }])
+    expect(claims).to.deep.equal([[O, 'org-abcdefghijklmnop']])
+    claims.length = 0
+    // an empty slug is imported unclaimed (the claim refuses '' with 22023, which would fail the whole unit)
+    await importOrgDocs(tx, 'org', [{ ...base, _id: O, slug: '' }])
+    expect(claims).to.deep.equal([])
+    expect(writes['identity.orgs']!.map((r) => r.org_id)).to.include(O.toLowerCase())
+  })
+
   it('counters: Org seeds the sequence, a known name seeds per-organisation counters, another is reported', async () => {
     const { tx } = capture((sql) => (sql.includes('slug_counters') ? { rowCount: 3 } : {}))
     const st = await importCounterDocs(tx, [{ _id: I, name: 'User', seq: 40 }, { _id: U, name: 'Mystery', seq: 1 }, { _id: O }])

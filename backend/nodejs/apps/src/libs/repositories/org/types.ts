@@ -53,6 +53,11 @@ export interface NewOrgWithAdmin {
   ids: NewOrgIds;
   /** Organisation fields as the caller supplied them, plus the derived domain and onboarding status. */
   org: Record<string, unknown>;
+  /**
+   * The organisation's slug; omitted or empty, the store assigns the next `org-<n>`. Lower-case words joined by hyphens, at most
+   * 64 characters, not `org-<digits>`; one that is malformed or already taken fails with the same `ValidationError`.
+   */
+  slug?: string;
   admin: { fullName: string; email: string };
   passwordHash: string;
   ipAddress: string | undefined;
@@ -86,7 +91,7 @@ export interface OrgRepository {
   /**
    * Creates the organisation, its administrator (with a password), the
    * "everyone" and "standard" groups and the default sign-in configuration.
-   * The slug is assigned when the organisation row is written, last. Pass the
+   * The slug is `input.slug`, else assigned when the organisation row is written, last. Pass the
    * `tx` of a unit of work to make the writes atomic where the store can.
    */
   createWithAdmin(

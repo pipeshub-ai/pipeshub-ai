@@ -13,6 +13,35 @@ import { clearRefusals } from './refusals';
 
 const IDENT = /^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$/;
 
+const sideTables = (): string[] =>
+  [...new Set(MAPPINGS.flatMap((m) => m.sideTables ?? []))].filter((t) =>
+    IDENT.test(t),
+  );
+
+/**
+ * Whether a reset stopped between its two steps: no organisation copied, yet a side table still holds rows of the copy before
+ * it. A copy then refuses to start, since those rows would stand for organisations it does not copy.
+ */
+export async function unfinishedReset(rt: MigrationRuntime): Promise<boolean> {
+  for (const t of sideTables()) {
+    const { rows } = await rt.migratePool.query<{ n: boolean }>(
+      `/* pipeshub:reset.side_rows */ SELECT EXISTS (SELECT 1 FROM ${t}) AS n`,
+    );
+    if (rows[0]?.n !== true) continue;
+    const orgs = await rt.jobs(
+      async (_tx, k) =>
+        (
+          await k.query<{ n: boolean }>(
+            '/* pipeshub:reset.orgs_left */ SELECT EXISTS (SELECT 1 FROM identity.orgs) AS n',
+          )
+        ).rows[0]?.n === true,
+      { write: false },
+    );
+    if (!orgs) return true;
+  }
+  return false;
+}
+
 type ResetReport = { ok: boolean; message: string; tables: number };
 
 /** Under the rollback's lock: a reset never runs while a rollback (or its release) does. */
@@ -81,6 +110,14 @@ async function resetLocked(
     for (const t of unique)
       await k.query(`/* pipeshub:reset.delete */ DELETE FROM ${t}`);
   });
+  // A separate statement with the migrate login: the import role holds no DELETE on a global table (rule 26), and no foreign key
+  // can tie these rows to their organisation (rule 8b: a key from a global table into an org table is an existence oracle).
+  // Safe to run again: a reset that stopped here is finished by the next one, and a copy refuses to start until it is
+  // (`unfinishedReset`).
+  for (const t of sideTables())
+    await rt.migratePool.query(
+      `/* pipeshub:reset.delete_side */ DELETE FROM ${t}`,
+    );
   await clearMarkers(rt);
   return {
     ok: true,

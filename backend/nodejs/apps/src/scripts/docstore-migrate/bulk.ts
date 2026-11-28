@@ -18,6 +18,7 @@ import { carriersFor, copyCarried } from './carry/run';
 import { recordKeys } from './keyed-rows';
 import { carryMongo, carryPg } from './carry/steps';
 import { putRefusals } from './refusals';
+import { unfinishedReset } from './reset';
 
 export type Log = (event: string, data?: Record<string, unknown>) => void;
 
@@ -95,6 +96,15 @@ export async function bulk(
   let failed = false;
   js.progress.phase = 'bulk';
   await js.checkpoint();
+  const orgs = js.progress.collections['org'];
+  if (
+    (!opts.only || opts.only.includes('org')) &&
+    (orgs === undefined || (orgs.state !== 'done' && orgs.last === null)) &&
+    (await unfinishedReset(rt))
+  )
+    throw new Error(
+      'a reset did not finish (the slugs of the last copy are still claimed): run `reset --yes` again, then the copy',
+    );
   for (const m of MAPPINGS) {
     if (opts.only && !opts.only.includes(m.collection)) continue;
     const p = (js.progress.collections[m.collection] ??= {

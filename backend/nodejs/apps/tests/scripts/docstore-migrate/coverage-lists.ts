@@ -35,6 +35,7 @@ export const ALLOWED_UNMAPPED_SCHEMA_PATHS: Record<string, string> = {};
 export function reachedTables(): Map<string, string> {
   const out = new Map<string, string>();
   for (const m of MAPPINGS) for (const t of [m.table, ...(m.children ?? []).map((c) => c.table)]) out.set(t, `mapped by ${m.collection}`);
+  for (const m of MAPPINGS) for (const t of m.sideTables ?? []) out.set(t, `written with ${m.collection}`);
   for (const c of CARRIERS) for (const t of c.tables) out.set(t, `carried by ${c.name}`);
   for (const h of HELD) for (const t of h.tables) out.set(t, `held with ${h.collection}`);
   for (const i of IGNORED) for (const t of i.tables ?? []) out.set(t, `not copied with ${i.collection}`);

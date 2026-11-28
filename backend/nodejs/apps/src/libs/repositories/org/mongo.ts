@@ -10,6 +10,9 @@ import {
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
 import { Logger } from '../../services/logger.service';
 import { sessionOf } from '../mongo';
+import { isDuplicateKeyError } from '../../utils/mongo.utils';
+import { callerSlug, slugRefused } from './slug';
+import { UniqueConstraintError } from '../errors';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
 import type {
@@ -27,6 +30,12 @@ const dto = (row: unknown): OrgDto => {
   delete org.adminRoleLease;
   return org;
 };
+/** The unique slug index, raised by the driver or already mapped (`mapMongoError`). */
+const isSlugTaken = (error: unknown): boolean =>
+  (isDuplicateKeyError(error) &&
+    (error as { keyPattern?: Record<string, unknown> }).keyPattern?.slug !==
+      undefined) ||
+  (error instanceof UniqueConstraintError && error.metadata?.key === 'slug');
 const logoDto = (row: unknown): OrgLogoDto => toPlain<OrgLogoDto>(row);
 
 export class MongoOrgRepository implements OrgRepository {
@@ -139,10 +148,14 @@ export class MongoOrgRepository implements OrgRepository {
     adminUserId: string;
     adminEmail: string;
   }> {
+    const slug = callerSlug(input.slug);
+    // `input.slug` is the only way in: a slug among the org fields is dropped, as PostgreSQL never reads it
+    const { slug: _ignored, ...fields } = input.org;
     // Written hidden and made live by the last write (below), so no write of a failed create can leave a live
     // organisation, even one the server applies after the cleanup ran.
     const org = new Org({
-      ...input.org,
+      ...fields,
+      ...(slug === undefined ? {} : { slug }),
       _id: input.ids.orgId,
       isDeleted: true,
       pendingCreate: true,
@@ -269,7 +282,7 @@ export class MongoOrgRepository implements OrgRepository {
             );
         });
       }
-      throw error;
+      throw isSlugTaken(error) ? slugRefused() : error;
     }
     return {
       org: dto(org),

@@ -63,8 +63,9 @@ export async function importOrgDocs(
   if (collection === 'counters') return importCounterDocs(k, docs);
   const stats = emptyStats(docs.length);
   const plan: ImportPlan = [];
+  const orgs = collection === 'org' ? docs.map(orgRow) : [];
   if (collection === 'org') {
-    plan.push({ table: 'identity.orgs', rows: docs.map(orgRow) });
+    plan.push({ table: 'identity.orgs', rows: orgs });
   } else if (collection === 'org-logos') {
     const rows: Row[] = [];
     for (const d of docs) {
@@ -82,5 +83,22 @@ export async function importOrgDocs(
       `the organisation repository does not import '${collection}'`,
     );
   await writePlan(k, plan, stats);
+  if (collection === 'org') {
+    // In the unit that wrote the rows: a chosen slug another organisation holds fails the batch on the unique key, so a claim
+    // racing the copy has exactly one winner.
+    for (const r of orgs) {
+      // an empty slug is the store's to assign (callerSlug), as on a sign-up
+      if (
+        typeof r.slug !== 'string' ||
+        r.slug === '' ||
+        /^org-[0-9]+$/.test(r.slug)
+      )
+        continue;
+      await k.query(
+        '/* pipeshub:identity.copied_org_slug_claim */ SELECT identity.copied_org_slug_claim($1, $2)',
+        [r.org_id, r.slug],
+      );
+    }
+  }
   return stats;
 }

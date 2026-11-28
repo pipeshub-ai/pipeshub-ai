@@ -9,6 +9,7 @@ import re
 import shutil
 import statistics
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,7 +81,7 @@ GRANT SELECT ON kt.notes, kt.secrets TO pipeshub_node;                          
 GRANT USAGE ON SCHEMA kt, ku TO pipeshub_app, pipeshub_jobs, pipeshub_node_login, pipeshub_jobs;
 GRANT USAGE ON SCHEMA kt TO pipeshub_connectors_login;
 RESET ROLE;
-GRANT TEMPORARY ON DATABASE {DB_NAME} TO pipeshub_node, pipeshub_node_login, pipeshub_indexing, pipeshub_indexing_login, pipeshub_connectors, pipeshub_connectors_login;   -- writers that COPY through temp tables (the shadowing check makes one)
+GRANT TEMPORARY ON DATABASE {DB_NAME} TO pipeshub_node, pipeshub_node_login, pipeshub_indexing, pipeshub_indexing_login, pipeshub_connectors, pipeshub_connectors_login, pipeshub_import;   -- writers that COPY through temp tables (the shadowing check makes one)
 INSERT INTO kt.secrets VALUES ('{ORG_B}', 's1', 'top secret of B'), ('{ORG_A}', 's1', 'secret of A');
 """
 
@@ -138,6 +139,28 @@ def rows(cur) -> list[list]:
     return [list(r) for r in cur.fetchall()]
 
 
+IMPORTER = "pipeshub_import"
+
+
+@contextmanager
+def login_as(t: OrgDb, role: str, direct: bool = False):
+    """A service's login: pooled, or (``direct``) a fresh backend. The import role is its own login, enabled only for a document
+    copy (bootstrap_roles), so it is enabled for this connection alone and reached directly (the pooler has no entry for it)."""
+    if role != IMPORTER:
+        with (psycopg.connect(host="127.0.0.1", port=t.cluster.port, user=f"{role}_login", dbname=t.name) if direct
+              else t.pooled(role.removeprefix("pipeshub_"))) as c:
+            yield c
+        return
+    with t.admin() as a:
+        a.execute(f"ALTER ROLE {IMPORTER} LOGIN")
+    try:
+        with psycopg.connect(host="127.0.0.1", port=t.cluster.port, user=IMPORTER, dbname=t.name) as c:
+            yield c
+    finally:
+        with t.admin() as a:
+            a.execute(f"ALTER ROLE {IMPORTER} NOLOGIN")
+
+
 def role_of(fn: vetted.Fn) -> str:
     return fn.writer or "pipeshub_node"
 
@@ -146,7 +169,7 @@ def invoke(t: OrgDb, fn: vetted.Fn, as_org: str | None, args: list, role: str | 
     """What a service does: one pooled transaction, role and org set, then the call."""
     role = role or role_of(fn)
     notes: list[str] = []
-    with t.pooled(role.removeprefix("pipeshub_")) as c, uow(c, role, as_org, user=fn.test.get("user")):
+    with login_as(t, role) as c, uow(c, role, as_org, user=fn.test.get("user")):
         c.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
         got = rows(c.execute(call_sql(fn, len(args)), args))
     assert not notes, f"{fn.qualified} sent notices to the caller: {notes}"          # a notice is a side channel for values of other orgs
@@ -309,7 +332,7 @@ def check_shadowing(t, fn) -> list[str]:
         role = role_of(fn)
         seed(t, fn)         # a write that changes what it reads (a promotion) answers differently the second time: start from the needle again
         # a fresh backend, not a pooled one: a plan cached by an earlier call would hide the shadowing
-        with psycopg.connect(host="127.0.0.1", port=t.cluster.port, user=f"{role}_login", dbname=t.name) as c, uow(c, role, ORG_B, user=fn.test.get("user")):
+        with login_as(t, role, direct=True) as c, uow(c, role, ORG_B, user=fn.test.get("user")):
             c.execute(f'CREATE TEMP TABLE "{short}" ({ddl}) ON COMMIT DROP')
             c.execute(f'INSERT INTO pg_temp."{short}" VALUES ({", ".join(["%s"] * len(cols))})', vals)
             c.execute(f'GRANT ALL ON pg_temp."{short}" TO PUBLIC')           # the attacker owns it: the vetted owner may read it too

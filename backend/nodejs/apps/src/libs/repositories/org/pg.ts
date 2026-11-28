@@ -25,6 +25,7 @@ import type {
 import type { Tx } from '../uow';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importOrgDocs } from './pg-import';
+import { callerSlug, slugRefused } from './slug';
 import { kernelTx } from '../pg';
 
 interface OrgRow {
@@ -289,6 +290,7 @@ export class PgOrgRepository implements OrgRepository, Importable {
       'email',
     ).toLowerCase();
     const adminName = stripNul(input.admin.fullName, 'org', 'name').trim();
+    const slug = callerSlug(input.slug);
     const { orgId, adminUserId } = input.ids;
     const ip = input.ipAddress;
     if (ip === undefined || ip === '')
@@ -297,10 +299,19 @@ export class PgOrgRepository implements OrgRepository, Importable {
     const org = await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const now = new Date();
+      // A chosen slug is claimed across the install first (malformed and taken answer alike); without one, the column's own
+      // default (the shared counter).
+      if (slug !== undefined) {
+        const { rows: claim } = await k.query<{ ok: boolean }>(
+          '/* pipeshub:identity.org_slug_claim */ SELECT identity.org_slug_claim($1) AS ok',
+          [slug],
+        );
+        if (claim[0]?.ok !== true) throw slugRefused();
+      }
       await k.query(
         `/* pipeshub:identity.org_create */ INSERT INTO identity.orgs
-          (org_id, registered_name, short_name, domain, contact_email, account_type, phone_number, permanent_address, on_boarding_status, signup_channel, signup_referrer_domain, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $12, $10, $10)`,
+          (org_id, slug, registered_name, short_name, domain, contact_email, account_type, phone_number, permanent_address, on_boarding_status, signup_channel, signup_referrer_domain, created_at, updated_at)
+          VALUES ($1, COALESCE(NULLIF($13, ''), 'org-' || nextval('identity.org_slug_seq')), $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $11, $12, $10, $10)`,
         [
           orgId,
           str(o.registeredName),
@@ -316,6 +327,7 @@ export class PgOrgRepository implements OrgRepository, Importable {
           now,
           str(o.signupChannel),
           str(o.signupReferrerDomain),
+          slug ?? null,
         ],
       );
       await k.query(
