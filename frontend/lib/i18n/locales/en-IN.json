@@ -59,6 +59,7 @@
     "durableStreamLost": "The connection dropped, but the answer is still being worked on. Reload the page to see it.",
     "errorFallback": "An error occurred. Please try again.",
     "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
+    "regenerateFailed": "Couldn't regenerate. Check your connection and try again.",
     "copyCode": "Copy",
     "copiedCode": "Copied",
     "queued": "Waiting to start…",
@@ -914,6 +915,9 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
+    "voiceCaptureFailed": "Couldn't use the microphone. Check that it is connected and not in use by another app.",
+    "voiceTooLong": "That recording is too long. Try a shorter one.",
+    "voiceTranscribeFailed": "Couldn't turn your speech into text. Try again or type.",
     "noModelsAvailable": "No AI models are configured yet",
     "modelUnavailableGroup": "Unavailable: your organisation lets only some groups use this model",
     "failedToLoadModels": "Failed to load AI models",
@@ -1324,6 +1328,7 @@
     "unpin": "Unpin",
     "pinned": "Pinned",
     "pinFailed": "Could not pin the chat",
+    "answerInProgressSidebar": "Wait for the answer to finish, or press Stop first.",
     "unpinFailed": "Could not unpin the chat",
     "export": {
       "menuItem": "Export",
@@ -3469,6 +3474,8 @@
       "saveConfig": "Save configuration",
       "continueToConfiguration": "Continue to configuration →",
       "oauthSigningIn": "Finish signing in with your provider…",
+      "oauthNotConfirmed": "We could not confirm the sign-in. If you closed the window, select Sign in to try again. If you finished signing in, close this panel and reopen it to check if it says Connected.",
+      "oauthTimedOut": "Sign-in timed out after 5 minutes. Select Sign in to try again.",
       "authRequiredBeforeConfig": "Complete OAuth authorization before configuring sync and filters",
       "backToCredentials": "Back to credentials",
       "backFromConfigure": "Back",
@@ -4864,6 +4871,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "Couldn't load the saved prompts"
+      },
       "label": "System prompt",
       "labelDescription": "Define the behaviour and personality of the AI assistant",
       "title": "Custom system prompt",
@@ -6541,6 +6551,7 @@
     "chatLabelNoName": "Agent version {{version}}"
   },
   "recordView": {
+    "fullscreenBlocked": "Your browser did not allow full screen.",
     "sections": {
       "documentSummary": "Summary",
       "documentFields": "Document",

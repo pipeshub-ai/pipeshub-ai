@@ -374,7 +374,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         await el.requestFullscreen();
       }
     } catch {
-      /* ignore */
+      toast.error(t('recordView.fullscreenBlocked'));
     }
   };
 

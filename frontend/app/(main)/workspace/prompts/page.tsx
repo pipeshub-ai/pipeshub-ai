@@ -185,6 +185,7 @@ export default function PromptsPage() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   // Current editor state
@@ -211,23 +212,29 @@ export default function PromptsPage() {
   }, [isProfileInitialized, isAdmin, router]);
 
   // ── Load on mount ──────────────────────────────────────────
+  const load = useCallback(async () => {
+    setLoadError(false);
+    setIsLoading(true);
+    try {
+      const prompts = await PromptsApi.getSystemPrompts();
+      setCustomPrompt(prompts.customSystemPrompt);
+      setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
+      setCustomPromptAgent(prompts.customSystemPromptAgent);
+      setSavedPrompt(prompts.customSystemPrompt);
+      setSavedPromptWebSearch(prompts.customSystemPromptWebSearch);
+      setSavedPromptAgent(prompts.customSystemPromptAgent);
+    } catch {
+      // Editors stay hidden so a save cannot overwrite prompts that were never read.
+      setLoadError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isProfileInitialized || isAdmin !== true) return;
-    const load = async () => {
-      try {
-        const prompts = await PromptsApi.getSystemPrompts();
-        setCustomPrompt(prompts.customSystemPrompt);
-        setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
-        setCustomPromptAgent(prompts.customSystemPromptAgent);
-        setSavedPrompt(prompts.customSystemPrompt);
-        setSavedPromptWebSearch(prompts.customSystemPromptWebSearch);
-        setSavedPromptAgent(prompts.customSystemPromptAgent);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    load();
-  }, [isProfileInitialized, isAdmin]);
+    void load();
+  }, [isProfileInitialized, isAdmin, load]);
 
   // ── Handlers ───────────────────────────────────────────────
   // "Reset to Default" means removing the org override entirely — an empty
@@ -294,6 +301,19 @@ export default function PromptsPage() {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
         <LottieLoader variant="loader" size={48} showLabel />
+      </Flex>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', width: '100%' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
+          {t('workspace.prompts.loadError.title')}
+        </Text>
+        <Button variant="outline" color="gray" size="2" onClick={() => void load()}>
+          {t('action.tryAgain')}
+        </Button>
       </Flex>
     );
   }

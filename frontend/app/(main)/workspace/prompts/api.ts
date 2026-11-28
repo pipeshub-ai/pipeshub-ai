@@ -26,16 +26,12 @@ export const PromptsApi = {
    * Returns the currently stored custom system prompts.
    */
   async getSystemPrompts(): Promise<SystemPrompts> {
-    try {
-      const { data } = await apiClient.get<SystemPrompts>(PROMPTS_URL);
-      return {
-        customSystemPrompt: data?.customSystemPrompt ?? '',
-        customSystemPromptWebSearch: data?.customSystemPromptWebSearch ?? '',
-        customSystemPromptAgent: data?.customSystemPromptAgent ?? '',
-      };
-    } catch {
-      return { customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' };
-    }
+    const { data } = await apiClient.get<SystemPrompts>(PROMPTS_URL);
+    return {
+      customSystemPrompt: data?.customSystemPrompt ?? '',
+      customSystemPromptWebSearch: data?.customSystemPromptWebSearch ?? '',
+      customSystemPromptAgent: data?.customSystemPromptAgent ?? '',
+    };
   },
 
   /**

@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor, screen, fireEvent } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const replace = vi.fn();
@@ -76,5 +76,26 @@ describe('Prompts page access', () => {
 
     await waitFor(() => expect(getSystemPrompts).toHaveBeenCalledTimes(1));
     expect(replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('Prompts page load failure', () => {
+  it('shows an error with Retry instead of empty editors, and loads on retry', async () => {
+    signInAs(true);
+    getSystemPrompts.mockRejectedValueOnce(new Error('boom'));
+    getSystemPrompts.mockResolvedValue({
+      customSystemPrompt: '',
+      customSystemPromptWebSearch: '',
+      customSystemPromptAgent: 'saved agent text',
+    });
+    render(<PromptsPage />);
+
+    expect(await screen.findByText("Couldn't load the saved prompts")).toBeTruthy();
+    expect(screen.queryByRole('textbox')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByDisplayValue('saved agent text')).toBeTruthy();
+    expect(screen.queryByText("Couldn't load the saved prompts")).toBeNull();
   });
 });

@@ -1519,6 +1519,27 @@ describe('ChatInput — model, voice and search view', () => {
     expect(toastTitles()).toEqual(['Could not access microphone']);
   });
 
+  it.each([
+    ['audio-capture', "Couldn't use the microphone. Check that it is connected and not in use by another app."],
+    ['audio-too-large', 'That recording is too long. Try a shorter one.'],
+    ['recording-error', "Couldn't turn your speech into text. Try again or type."],
+    ['Some raw server text', "Couldn't turn your speech into text. Try again or type."],
+  ])('says what went wrong with voice input (%s)', (code, title) => {
+    renderInput();
+
+    act(() => speech.onError?.(code));
+
+    expect(toastTitles()).toEqual([title]);
+  });
+
+  it('stays quiet when voice input is simply unsupported', () => {
+    renderInput();
+
+    act(() => speech.onError?.('not-supported'));
+
+    expect(toastTitles()).toEqual([]);
+  });
+
   it('explains why voice input is off when no speech model is set up', () => {
     speech.state = { ...speech.state, isSupported: false, unavailableReason: 'stt-not-configured' };
     renderInput();

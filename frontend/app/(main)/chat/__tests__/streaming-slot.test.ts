@@ -2580,7 +2580,7 @@ describe('an answer that finishes while another chat is open', () => {
     expect(unread()).toEqual([]);
   });
 
-  it('says nothing when a regenerate request fails', async () => {
+  it('sends no answer-ready notice when a regenerate request fails, only the failure toast', async () => {
     const slotId = newSlot('conv-1');
     viewAnotherChat();
     useChatStore.getState().updateSlot(slotId, {
@@ -2593,7 +2593,7 @@ describe('an answer that finishes while another chat is open', () => {
 
     await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
 
-    expect(toasts()).toEqual([]);
+    expect(toasts().map((t) => t.title)).toEqual(["Couldn't regenerate. Check your connection and try again."]);
     expect(unread()).toEqual([]);
   });
 

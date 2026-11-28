@@ -60,6 +60,7 @@
     "reconnecting": "Reconectando…",
     "durableStreamLost": "Se perdió la conexión, pero la respuesta se sigue preparando. Recargue la página para verla.",
     "askQuestionResumeFailed": "No se pudieron enviar tus respuestas. Envía de nuevo para reintentar.",
+    "regenerateFailed": "No se pudo regenerar. Comprueba tu conexión e inténtalo de nuevo.",
     "copyCode": "Copiar",
     "copiedCode": "Copiado",
     "queued": "Esperando para empezar…",
@@ -930,6 +931,9 @@
     "listening": "Escuchando...",
     "voiceInputNotSupported": "La entrada de voz no es compatible con este navegador",
     "voiceError": "No se pudo acceder al micrófono",
+    "voiceCaptureFailed": "No se pudo usar el micrófono. Comprueba que esté conectado y que ninguna otra aplicación lo esté usando.",
+    "voiceTooLong": "La grabación es demasiado larga. Prueba con una más corta.",
+    "voiceTranscribeFailed": "No se pudo convertir tu voz en texto. Inténtalo de nuevo o escribe.",
     "noModelsAvailable": "Aún no hay modelos de IA configurados",
     "modelUnavailableGroup": "No disponible: tu organización solo permite este modelo a algunos grupos",
     "failedToLoadModels": "No se pudieron cargar los modelos de IA",
@@ -1302,6 +1306,7 @@
     "unpin": "Desfijar",
     "pinned": "Fijados",
     "pinFailed": "No se pudo fijar el chat",
+    "answerInProgressSidebar": "Espera a que termine la respuesta o pulsa Detener primero.",
     "unpinFailed": "No se pudo desfijar el chat",
     "export": {
       "menuItem": "Exportar",
@@ -3522,6 +3527,8 @@
       "saveConfig": "Guardar configuración",
       "continueToConfiguration": "Continuar a la configuración →",
       "oauthSigningIn": "Termine de iniciar sesión con su proveedor…",
+      "oauthNotConfirmed": "No pudimos confirmar el inicio de sesión. Si cerró la ventana, seleccione Iniciar sesión para volver a intentarlo. Si terminó de iniciar sesión, cierre este panel y vuelva a abrirlo para comprobar si indica Conectado.",
+      "oauthTimedOut": "El inicio de sesión caducó después de 5 minutos. Seleccione Iniciar sesión para volver a intentarlo.",
       "authRequiredBeforeConfig": "Complete la autorización OAuth antes de configurar la sincronización y los filtros",
       "backToCredentials": "Volver a credenciales",
       "backFromConfigure": "Atrás",
@@ -4931,6 +4938,9 @@
       }
     },
     "prompts": {
+      "loadError": {
+        "title": "No se pudieron cargar los prompts guardados"
+      },
       "label": "System prompt",
       "labelDescription": "Define the behaviour and personality of the AI assistant",
       "title": "Custom system prompt",
@@ -6617,6 +6627,7 @@
     "chatLabelNoName": "Versión del agente {{version}}"
   },
   "recordView": {
+    "fullscreenBlocked": "Su navegador no permitió la pantalla completa.",
     "sections": {
       "documentSummary": "Resumen",
       "documentFields": "Documento",
