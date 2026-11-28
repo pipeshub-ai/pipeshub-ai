@@ -1100,7 +1100,7 @@ class TestZoomApiWrappers:
         fail = MagicMock(
             success=False,
             data={"code": 124, "message": "Access token is expired."},
-            message="Failed with status 401",
+            message="Failed with status 500",
         )
         ds = MagicMock()
         ds.report_meetings = AsyncMock(side_effect=[page1, fail])
