@@ -17,6 +17,17 @@ import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/con
 const frame = (type: string, fields: Record<string, unknown> = {}): string =>
   `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`
 
+/** The limit an edition may set (its `TurnStreamExtension.runLimits`): a minute without a byte. None by default. */
+const SILENCE = { silenceMs: 60_000 }
+
+/** The turn extension, setting `limits` on every stream. */
+const withLimits = (limits: Record<string, number | undefined>, extra: Record<string, unknown> = {}): sinon.SinonStub =>
+  sinon.stub(conversationExtensions().turns, 'streamFor').returns({
+    respondingAgentView: () => Promise.resolve(undefined),
+    runLimits: () => limits,
+    ...extra,
+  } as never)
+
 const streamSignal = (): AbortSignal | undefined => {
   const call = (globalThis.fetch as unknown as sinon.SinonStub)
     .getCalls()
@@ -41,14 +52,18 @@ describe('run limits', () => {
   })
 
   describe('RunWatchdog', () => {
-    const watch = (limits = DEFAULT_RUN_LIMITS) => {
+    const watch = (limits: Record<string, number | undefined> = SILENCE) => {
       const breaches: RunLimit[] = []
       const watchdog = new RunWatchdog(limits, (limit) => breaches.push(limit))
       return { watchdog, breaches }
     }
     const LEASED = { silenceMs: 60_000, idleMs: 300_000, toolIdleMs: 660_000, maxMs: 900_000 }
 
-    it('ends a stream with no bytes for 60 s, checked every 5 s; any byte starts the minute again', () => {
+    it('sets no limit by default: a run lasts until the AI backend ends it, as on main', () => {
+      expect(DEFAULT_RUN_LIMITS).to.deep.equal({})
+    })
+
+    it('with a silence limit, ends a stream with no bytes for 60 s, checked every 5 s; any byte starts the minute again', () => {
       const { watchdog, breaches } = watch()
       clock.tick(55_000)
       watchdog.onChunk(frame('HEARTBEAT'))
@@ -134,7 +149,23 @@ describe('run limits', () => {
 
   for (const flow of flows) {
     describe(flow.name, () => {
-      it('ends a run whose AI service fell silent: the browser gets a timeout, what streamed is kept, the AI service is cancelled', async () => {
+      it('by default, a run with no byte for forty minutes is not ended, as on main', async () => {
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still '))
+        await settle()
+        clock.tick(40 * 60_000)
+        await settle(20)
+
+        expect(run.res.writableEnded).to.equal(false)
+        expect(run.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+        run.ai.send('RUN_FINISHED', finalAnswer('Still here.'))
+        run.ai.finish()
+        await run.res.ended
+        expect(run.answer()?.content).to.equal('Still here.')
+      })
+
+      it('with a silence limit, ends a run whose AI service fell silent: the browser gets a timeout, what streamed is kept, the AI service is cancelled', async () => {
+        withLimits(SILENCE)
         const run = await startStream(flow)
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Three '))
         await settle()
@@ -156,6 +187,7 @@ describe('run limits', () => {
       })
 
       it('records an error when a run that timed out had no text', async () => {
+        withLimits(SILENCE)
         const run = await startStream(flow)
         clock.tick(60_000)
         await settle(20)
@@ -186,11 +218,7 @@ describe('run limits', () => {
           text: text.replace('secret', '@Bea'),
           parts,
         }))
-        sinon.stub(conversationExtensions().turns, 'streamFor').returns({
-          respondingAgentView: () => Promise.resolve(undefined),
-          runLimits: () => DEFAULT_RUN_LIMITS,
-          answer: { observe: () => undefined, prepare, stored: sinon.stub().resolves(), redactStopped },
-        })
+        withLimits(SILENCE, { answer: { observe: () => undefined, prepare, stored: sinon.stub().resolves(), redactStopped } })
         const run = await startStream(flow)
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Ask secret'))
         await settle()
@@ -225,6 +253,7 @@ describe('run limits', () => {
       })
 
       it('saves an answer that arrived before the AI service went silent', async () => {
+        withLimits(SILENCE)
         const run = await startStream(flow)
         run.ai.send('RUN_FINISHED', finalAnswer('Done, then silence.'))
         await settle()

@@ -665,11 +665,7 @@ describe('es_controller streaming answers', () => {
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()
 
-        // Browser still connected the whole time; the AI service's heartbeats keep the run inside its limits.
-        for (let i = 0; i < 160; i += 1) {
-          await clock.tickAsync(15_000)
-          run.ai.send('HEARTBEAT')
-        }
+        await clock.tickAsync(40 * 60 * 1000) // browser still connected the whole time
         const second = sendAgain(flow, run)
         await clock.tickAsync(16_000)
         await second.done

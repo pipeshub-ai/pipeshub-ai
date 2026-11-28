@@ -562,10 +562,13 @@ export class StreamedTranscript {
   }
 }
 
-/** When the server ends a run whose AI backend stalls; the handler's `TurnStreamExtension.runLimits` picks them. */
+/**
+ * When the server ends a run whose AI backend stalls; the handler's `TurnStreamExtension.runLimits` picks them. None is
+ * set by default, so a stream that goes quiet is not ended for it, as on main.
+ */
 export interface RunLimits {
   /** No bytes at all for this long: the AI backend, or the connection to it, is gone. */
-  readonly silenceMs: number;
+  readonly silenceMs?: number;
   /** Nothing but heartbeats for this long: a model or a tool hangs. */
   readonly idleMs?: number;
   /** Stands in for `idleMs` while a tool call is open, because a tool sends nothing until it ends. */
@@ -576,8 +579,16 @@ export interface RunLimits {
 
 export type RunLimit = 'silence' | 'idle' | 'max';
 
-/** The AI backend sends a heartbeat every 15 s, so a minute without a byte means it is gone. */
-export const DEFAULT_RUN_LIMITS: RunLimits = { silenceMs: 60_000 };
+/** No limit: an edition that wants one (the AI backend sends a heartbeat every 15 s) sets it in `runLimits`. */
+export const DEFAULT_RUN_LIMITS: RunLimits = {};
+
+const hasLimit = ({
+  silenceMs,
+  idleMs,
+  toolIdleMs,
+  maxMs,
+}: RunLimits): boolean =>
+  [silenceMs, idleMs, toolIdleMs, maxMs].some((ms) => ms !== undefined);
 
 const WATCHDOG_TICK_MS = 5_000;
 
@@ -627,7 +638,8 @@ export class RunWatchdog {
     const { silenceMs, idleMs, toolIdleMs, maxMs } = this.limits;
     const idle = this.openToolCalls > 0 ? (toolIdleMs ?? idleMs) : idleMs;
     if (maxMs !== undefined && now - this.startedAt >= maxMs) return 'max';
-    if (now - this.lastByteAt >= silenceMs) return 'silence';
+    if (silenceMs !== undefined && now - this.lastByteAt >= silenceMs)
+      return 'silence';
     if (idle !== undefined && now - this.lastProgressAt >= idle) return 'idle';
     return undefined;
   }
@@ -759,18 +771,19 @@ export class TurnStreamPump {
           : this.endByServer(SHUTDOWN_FRAME),
       this.o.run.lease?.runId,
     );
-    this.watchdog = new RunWatchdog(
+    const limits =
       this.o.extension?.runLimits(this.o.run, this.o.conversation) ??
-        DEFAULT_RUN_LIMITS,
-      (limit) => {
-        logger.warn('Run reached its time limit; stopping it', {
-          requestId: this.o.requestId,
-          conversationId: this.o.conversation._id,
-          limit,
-        });
-        void this.endByServer(TIMEOUT_FRAME, true);
-      },
-    );
+      DEFAULT_RUN_LIMITS;
+    this.watchdog = hasLimit(limits)
+      ? new RunWatchdog(limits, (limit) => {
+          logger.warn('Run reached its time limit; stopping it', {
+            requestId: this.o.requestId,
+            conversationId: this.o.conversation._id,
+            limit,
+          });
+          void this.endByServer(TIMEOUT_FRAME, true);
+        })
+      : undefined;
     stream.on('data', (chunk: Buffer) => {
       this.o.streamRun?.observe(chunk);
       this.watchdog?.onChunk(chunk);
