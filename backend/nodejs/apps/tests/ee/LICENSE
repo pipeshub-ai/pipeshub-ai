@@ -1,0 +1,67 @@
+PipesHub Enterprise License
+
+Copyright (c) 2026 PipesHub Inc.
+
+1. What this covers. This licence covers the files in any folder named "ee" in
+this repository (the "Enterprise Code"). The rest of the repository is licensed
+under the Apache License 2.0; see LICENSE at the root. Third-party components
+keep the licences their owners chose.
+
+2. Free use. Without paying, you may read, copy, run and modify the Enterprise
+Code for:
+
+  - development and testing;
+  - evaluating PipesHub; and
+  - building and showing a prototype, including one built for a client.
+
+None of these may be production use. PipesHub provides a licence key for these
+uses free of charge where one is needed to turn features on; its limits are set
+by the key.
+
+3. Production use. "Production use" means using the Enterprise Code with an
+organisation's real data for its day-to-day work. It is production use once
+people outside the team building or evaluating the installation rely on it for
+their work. A development, test or demonstration installation is not
+production use, even when it holds a copy of real data. Production use needs a
+valid PipesHub licence key for that installation, obtained under PipesHub's
+subscription terms or another written agreement with PipesHub. You must stay
+within the key's limits: the installation and web address it names, its
+features, its seats and its term.
+
+4. The licence key. You may not:
+
+  - remove, disable, change or work around the licence check;
+  - enable a feature the key does not cover; or
+  - copy Enterprise Code outside an "ee" folder, or into another product, to
+    avoid the key.
+
+5. Your changes. You may change the Enterprise Code and publish patches to it.
+PipesHub and its licensors keep all rights in the Enterprise Code and in any
+changes you make to it. Changed Enterprise Code may be used in production only
+under a valid licence key, like the code it changes.
+
+6. Sharing. You may share the Enterprise Code, changed or not, only:
+
+  - as part of a copy or fork of this repository that keeps this licence, the
+    notices and the licence check intact; or
+  - with a client for whom you are building a prototype under section 2.
+
+You may not sell or sublicense the Enterprise Code, or offer it to others as a
+hosted service, except under a written agreement with PipesHub, such as the
+partner programme.
+
+7. Notices. Every copy must keep this licence and the copyright notices.
+
+8. Contributions. Contributions to Enterprise Code are accepted on the terms in
+CONTRIBUTING.md.
+
+9. Ending. If you break this licence, your rights under it end. If PipesHub
+tells you of a breach and you stop within 30 days, your rights continue, but
+only the first time. This second chance does not apply to removing, disabling
+or working around the licence check on purpose (section 4).
+
+10. No warranty. The Enterprise Code is provided "as is", without warranty of
+any kind. PipesHub is not liable for any claim or damage arising from it, to
+the extent the law allows.
+
+11. Trademarks. This licence grants no right to use PipesHub's names or logos.
