@@ -73,7 +73,8 @@ describe('docstore-migrate carriers without a database (R45-CARRY)', () => {
       expect(d.doc).to.deep.equal({ orgId: a.toHexString(), name: a.toHexString(), refs: [b.toHexString(), 'x', { deep: c.toHexString() }], at: new Date(7) });
       // a string that looks like an id stays a string: only the places that held an ObjectId are listed
       expect(d.oidPaths).to.deep.equal([['orgId'], ['refs', 0], ['refs', 2, 'deep']]);
-      const { _id, ...rest } = raw;
+      const rest: Partial<typeof raw> = { ...raw };
+      delete rest._id;
       expect(withObjectIds(structuredClone(d.doc), d.oidPaths!)).to.deep.equal(rest);
       expect(sourceDoc(raw, 'c').refused, 'without oids an ObjectId inside is still refused').to.contain('orgId');
       expect(() => withObjectIds({ a: 'nope' }, [['a']])).to.throw(/holds no ObjectId/);
